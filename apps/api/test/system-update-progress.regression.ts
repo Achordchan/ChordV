@@ -33,40 +33,47 @@ async function phasePassthrough() {
     const service = buildService();
     (service as unknown as { config: { stateDir: string } }).config.stateDir = state;
     const svc = service as unknown as {
-      readSupervisorPhase(): Promise<{ operationId: string; phase: string } | null>;
+      readSupervisorPhases(): Promise<{ operationId: string; phases: string[] } | null>;
     };
     const file = path.join(state, SYSTEM_UPDATE_PHASE_FILE);
 
-    assert.equal(await svc.readSupervisorPhase(), null, "missing phase.json yields null");
+    assert.equal(await svc.readSupervisorPhases(), null, "missing phase.json yields null");
 
-    // Only allowlisted supervisor phases pass; anything else is dropped.
-    const valid: Array<[string, string]> = [
-      ['{"operationId":"sysop-1","phase":"snapshotting"}', "snapshotting"],
-      ['{"operationId":"sysop-1","phase":"migrating"}', "migrating"],
-      ['{"operationId":"sysop-1","phase":"health-gating"}', "health-gating"],
-      ['{"operationId":"sysop-1","phase":"stabilizing"}', "stabilizing"],
-      ['{"operationId":"sysop-1","phase":"rollback-health-gating"}', "rollback-health-gating"],
-      ['{"operationId":"sysop-1","phase":"rollback-stabilizing"}', "rollback-stabilizing"]
+    // Only allowlisted supervisor phases pass; anything else is dropped. The
+    // cumulative history array is the primary form; the legacy single `phase`
+    // value still parses (older supervisor image).
+    const valid: Array<[string, string[]]> = [
+      ['{"operationId":"sysop-1","phases":["snapshotting"]}', ["snapshotting"]],
+      ['{"operationId":"sysop-1","phases":["snapshotting","migrating"]}', ["snapshotting", "migrating"]],
+      ['{"operationId":"sysop-1","phases":["migrating","health-gating","stabilizing"]}', ["migrating", "health-gating", "stabilizing"]],
+      ['{"operationId":"sysop-1","phases":["rollback-health-gating"]}', ["rollback-health-gating"]],
+      ['{"operationId":"sysop-1","phases":["rollback-stabilizing"]}', ["rollback-stabilizing"]],
+      ['{"operationId":"sysop-1","phase":"migrating"}', ["migrating"]]
     ];
-    for (const [raw, phase] of valid) {
+    for (const [raw, phases] of valid) {
       writeFileSync(file, raw);
-      assert.deepEqual(await svc.readSupervisorPhase(), { operationId: "sysop-1", phase });
+      assert.deepEqual(await svc.readSupervisorPhases(), { operationId: "sysop-1", phases });
     }
     for (const raw of [
       '{"operationId":"sysop-1","phase":"downloading"}', // app-only phase: not supervisor-reportable
       '{"operationId":"sysop-1","phase":"custom-stage"}',
+      '{"operationId":"sysop-1","phases":["downloading"]}',
+      '{"operationId":"sysop-1","phases":["custom-stage"]}',
+      '{"operationId":"sysop-1","phases":[]}',
+      '{"operationId":"sysop-1","phases":"migrating"}',
       '{"operationId":"sysop-1","phase":null}',
       '{"phase":"migrating"}',
-      '{"operationId":"","phase":"migrating"}',
+      '{"phases":["migrating"]}',
+      '{"operationId":"","phases":["migrating"]}',
       'not json',
       "[]"
     ]) {
       writeFileSync(file, raw);
-      assert.equal(await svc.readSupervisorPhase(), null, `must reject ${raw}`);
+      assert.equal(await svc.readSupervisorPhases(), null, `must reject ${raw}`);
     }
     rmSync(file, { force: true });
     mkdirSync(file); // EISDIR: any read failure is null, never a throw
-    assert.equal(await svc.readSupervisorPhase(), null);
+    assert.equal(await svc.readSupervisorPhases(), null);
     rmSync(file, { recursive: true });
   } finally {
     rmSync(state, { recursive: true, force: true });
@@ -90,20 +97,37 @@ async function getOperationAppliesPhaseToMatchingRunningRow() {
   try {
     const file = path.join(state, SYSTEM_UPDATE_PHASE_FILE);
 
-    // Matching operation + running row: supervisor phase wins over the stale row phase.
+    // Matching operation + running row: supervisor history wins over the stale row
+    // phase; the displayed phase is the LAST entry, the whole array is replayed so
+    // the client can mark the unobservable early stages (snapshot/migrate) done.
     row = { id: "r1", operationId: "sysop-2", kind: "update", status: "running", phase: "draining",
       progress: null, actorLabel: null, fromVersion: "1.0.0", toVersion: "1.2.0", failureReason: null,
       migrationApplied: false, startedAt: new Date(), finishedAt: null };
-    writeFileSync(file, '{"operationId":"sysop-2","phase":"migrating"}');
-    assert.equal((await svc.getOperation("sysop-2") as { phase: string }).phase, "migrating");
+    writeFileSync(file, '{"operationId":"sysop-2","phases":["snapshotting","migrating","health-gating"]}');
+    {
+      const dto = await svc.getOperation("sysop-2") as { phase: string; observedPhases: string[] };
+      assert.equal(dto.phase, "health-gating");
+      assert.deepEqual(dto.observedPhases, ["snapshotting", "migrating", "health-gating"]);
+    }
 
     // Non-matching operation: the phase.json belongs to another in-flight op.
-    writeFileSync(file, '{"operationId":"sysop-other","phase":"migrating"}');
-    assert.equal((await svc.getOperation("sysop-2") as { phase: string }).phase, "draining");
+    writeFileSync(file, '{"operationId":"sysop-other","phases":["migrating"]}');
+    {
+      const dto = await svc.getOperation("sysop-2") as { phase: string; observedPhases: string[] | null };
+      assert.equal(dto.phase, "draining");
+      assert.equal(dto.observedPhases, null, "foreign history must not leak into this operation");
+    }
 
     // Terminal row: no phase is surfaced even if a stale one lingers in the DB.
+    writeFileSync(file, '{"operationId":"sysop-2","phases":["stabilizing"]}');
     row = { ...row, status: "succeeded" };
-    assert.equal((await svc.getOperation("sysop-2") as { phase: string }).phase, null);
+    {
+      const dto = await svc.getOperation("sysop-2") as { phase: string; observedPhases: string[] | null };
+      assert.equal(dto.phase, null);
+      assert.equal(dto.observedPhases, null);
+    }
+    row = { ...row, status: "running" };
+    rmSync(file, { force: true });
 
     // progress only travels with the downloading phase.
     row = { ...row, status: "running", phase: "downloading", progress: 42 };
@@ -139,6 +163,18 @@ async function progressWriterThrottleAndDrainGuard() {
   unknownTotal({ downloadedBytes: 5, totalBytes: null });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(writes.length, 1, "unknown total must not produce progress writes");
+
+  // Mirror-fallback retry restarts the byte count at 0 with the same callback:
+  // a LOWER percent must be ignored, or the persisted bar jumps backwards.
+  await new Promise((resolve) => setTimeout(resolve, 2100)); // exit the throttle window
+  assert.equal(writer({ downloadedBytes: 9_000_000, totalBytes: 10_000_000 }), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(writes.length, 2);
+  assert.equal(writes[1].progress, 90, "higher percent still writes");
+  await new Promise((resolve) => setTimeout(resolve, 2100)); // exit the throttle window again
+  assert.equal(writer({ downloadedBytes: 500_000, totalBytes: 10_000_000 }), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(writes.length, 2, "retry's lower byte count must not regress the bar");
 
   // markPhase is best-effort: a DB failure is swallowed, never thrown.
   const failing = buildService({

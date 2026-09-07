@@ -1466,6 +1466,11 @@ export interface SystemUpdateOperationDto {
   // 0-100 byte progress, meaningful only while phase is "downloading" (and only
   // when the server advertised a content length); null otherwise.
   progress: number | null;
+  // Supervisor-side phases already REPORTED for this operation (snapshot/migrate
+  // happen while no app process is alive to be polled, so the server replays the
+  // history from the supervisor's marker; the client uses it to mark those steps
+  // completed). Null when no supervisor history applies.
+  observedPhases: SystemUpdateOperationPhase[] | null;
   actorLabel: string | null;
   fromVersion: string | null;
   toVersion: string | null;

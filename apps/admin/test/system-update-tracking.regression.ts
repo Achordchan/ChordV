@@ -22,15 +22,28 @@ function visit(node: ts.Node) {
 visit(tree); assert.ok(callback);
 const code = ts.transpileModule(`const poll = ${callback};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 const queue: Array<{ run: () => void; delay: number }> = [];
-const phases: string[] = [], completed: unknown[] = [], busy: unknown[] = [];
+const phases: string[] = [], completed: unknown[] = [], busy: unknown[] = [], observed: string[] = [];
 const mounted = { current: true }, polledOpId = { current: "op" }, pollTimer = { current: null };
+// Stand-in for the component's observedPhases ref (a Set with .add).
+const observedPhases = { current: new Set<string>([]) };
 let calls = 0, now = 0;
 let result: unknown = new Error("offline");
-const factory = new Function("fetchSystemOperation", "mounted", "polledOpId", "finishPolling", "setActiveOp", "setPhase", "pollTimer", "window", "POLL_INTERVAL_MS", "MAX_RECONNECT_INTERVAL_MS", "Date", "setBusy", "notifications", "ABSOLUTE_MAX_MS", "MAX_UNREACHABLE_MS", `${code}; return poll;`);
+const factory = new Function("fetchSystemOperation", "mounted", "polledOpId", "finishPolling", "setActiveOp", "setPhase", "pollTimer", "window", "POLL_INTERVAL_MS", "MAX_RECONNECT_INTERVAL_MS", "Date", "setBusy", "notifications", "ABSOLUTE_MAX_MS", "MAX_UNREACHABLE_MS", "observedPhases", `${code}; return poll;`);
 const poll = factory(async () => { calls++; if (result instanceof Error) throw result; return result; }, mounted, polledOpId,
   async (op: unknown) => completed.push(op), () => undefined, (phase: string) => phases.push(phase), pollTimer,
   { setTimeout: (run: () => void, delay: number) => { queue.push({ run, delay }); return queue.length; } },
-  3000, 30000, { now: () => now }, (value: unknown) => busy.push(value), { show: () => undefined }, 90 * 60_000, 40 * 60_000);
+  3000, 30000, { now: () => now }, (value: unknown) => busy.push(value), { show: () => undefined }, 90 * 60_000, 40 * 60_000, observedPhases);
+// Any phase the component would observe must be recorded so a later transplant of
+// the poll callback stays consistent with the real component's ref semantics.
+const recordObserved = () => {
+  if (result && typeof result === "object" && "phase" in (result as Record<string, unknown>) && (result as { phase?: unknown }).phase) {
+    const phase = String((result as { phase: unknown }).phase);
+    observed.push(phase, phase.replace(/^rollback-/, ""));
+  }
+  if (result && typeof result === "object" && Array.isArray((result as { observedPhases?: unknown }).observedPhases)) {
+    for (const phase of (result as { observedPhases: unknown[] }).observedPhases) observed.push(String(phase));
+  }
+};
 async function tick() {
   assert.equal(queue.length, 1, "one request scheduler per operation");
   const next = queue.shift()!;

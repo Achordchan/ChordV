@@ -69,7 +69,13 @@ PROMOTING_FILE="$STATE_DIR/promoting.json"
 # app reads it on each status poll to keep the admin progress display moving while the
 # operation is still running. Best-effort ONLY: write failures are logged and ignored —
 # this file never gates, fences, or drives any supervisor decision, unlike promoting.json.
+# The file carries the CUMULATIVE phase history (not just the latest phase): the early
+# stages (snapshot/migrate) happen while NO app process is alive to serve status polls,
+# so the only way the UI can ever mark them observed is the new app replaying this
+# history on its first poll.
 PHASE_FILE="$STATE_DIR/phase.json"
+# In-memory accumulator backing PHASE_FILE, reset whenever a new operation starts.
+GEN_PHASES=""
 APPROVAL_FILE="$STATE_DIR/approved-generation"
 # A new release must stay up AND healthy for this long before it is trusted as
 # last-good — otherwise a version that serves one probe then crashes on delayed
@@ -240,17 +246,25 @@ approve_generation() {
 clear_promoting() { rm -f "$PROMOTING_FILE" || return 1; sync; }
 
 write_phase() {
-  # write_phase <phase> — publish the current post-exit stage for the app's status
-  # poll. Best-effort cosmetic marker: failures are logged by the caller and ignored.
-  # Keyed to the in-flight operation so the app only applies it to a matching row.
+  # write_phase <phase> — append the stage to the operation's phase history and
+  # republish the whole array. Best-effort cosmetic marker: failures are logged by
+  # the caller and ignored. Keyed to the in-flight operation so the app only applies
+  # it to a matching row.
   local phase="$1"
   [ -n "$GEN_OP" ] || return 0
-  printf '{"operationId":"%s","phase":"%s"}\n' "$GEN_OP" "$phase" > "$PHASE_FILE" 2>/dev/null || \
+  GEN_PHASES="${GEN_PHASES}${GEN_PHASES:+ }${phase}"
+  local phases="" first=1 p
+  for p in $GEN_PHASES; do
+    [ "$first" = "1" ] || phases="$phases,"
+    phases="$phases\"$p\""
+    first=0
+  done
+  printf '{"operationId":"%s","phases":[%s]}\n' "$GEN_OP" "$phases" > "$PHASE_FILE" 2>/dev/null || \
     { log "WARN: cannot write progress phase marker (ignored)"; return 0; }
   return 0
 }
 
-clear_phase() { rm -f "$PHASE_FILE" 2>/dev/null || true; }
+clear_phase() { rm -f "$PHASE_FILE" 2>/dev/null || true; GEN_PHASES=""; }
 
 consume_pending() {
   # Keep the only recovery journal until its complete promotion context is durable.
@@ -751,7 +765,7 @@ handle_failed_promotion() {
   fi
   log "no known-good version to fall back to; retrying $GEN_VERSION in 3s"
   sleep 3
-  GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0; GEN_MIG="false"; GEN_ROLLBACK_FROM=""; GEN_ROLLBACK_REASON=""
+  GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0; GEN_MIG="false"; GEN_ROLLBACK_FROM=""; GEN_ROLLBACK_REASON=""; GEN_PHASES=""
   return 0
 }
 
@@ -844,7 +858,7 @@ if [ -e "$PROMOTING_FILE" ] || [ -L "$PROMOTING_FILE" ]; then
 elif [ -e "$PENDING_FILE" ] || [ -L "$PENDING_FILE" ]; then
   consume_pending
 else
-  GEN_VERSION="$(resolve_start_version)"; GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0
+  GEN_VERSION="$(resolve_start_version)"; GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0; GEN_PHASES=""
 fi
 # Validated migration/rollback context is retained across loop iterations and
 # recovered from the journal above, never reread through a permissive extractor.
@@ -1016,7 +1030,7 @@ while true; do
       continue
     fi
     log "$GEN_VERSION healthy + stable (last-good)"
-    GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0; GEN_MIG="false"; GEN_ROLLBACK_FROM=""; GEN_ROLLBACK_REASON=""
+    GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0; GEN_MIG="false"; GEN_ROLLBACK_FROM=""; GEN_ROLLBACK_REASON=""; GEN_PHASES=""
     clear_phase
     wait "$APP_PID"; EXIT_CODE=$?
     APP_PID=""

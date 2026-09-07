@@ -347,6 +347,14 @@ export function SystemUpdateBadge() {
           }
           if (op) {
             interval = POLL_INTERVAL_MS;
+            // Merge both sources: the current phase (alias + base form) and the
+            // supervisor history the server replayed from phase.json — the early
+            // stages (snapshot/migrate) ran while no app was alive, so the server
+            // is the only place they can be observed from.
+            for (const phase of op.observedPhases ?? []) {
+              observedPhases.current.add(phase);
+              observedPhases.current.add(phase.replace(/^rollback-/, ""));
+            }
             if (op.phase) {
               // Record both the alias (rollback-health-gating) and its base step so
               // observed-completion logic sees either form.
@@ -406,7 +414,11 @@ export function SystemUpdateBadge() {
       const active = ops.find((op) => op.status === "running" || op.status === "pending");
       if (active && !polledOpId.current && mounted.current) {
         polledOpId.current = active.operationId;
-        observedPhases.current = new Set(active.phase ? [active.phase] : []);
+        observedPhases.current = new Set([
+          ...(active.observedPhases ?? []),
+          ...(active.observedPhases ?? []).map((phase) => phase.replace(/^rollback-/, "")),
+          ...(active.phase ? [active.phase, active.phase.replace(/^rollback-/, "")] : [])
+        ]);
         setActiveOp(active);
         setBusy(active.kind);
         setPhase("running");

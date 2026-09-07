@@ -342,17 +342,22 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     await this.consumeResultMarker().catch(() => undefined);
     const row = await this.prisma.systemUpdateOperation.findUnique({ where: { operationId } });
     if (!row) return null;
-    // A running row with no app-side phase left over from before the process swap:
-    // the supervisor's phase.json (if any, and if it belongs to THIS operation) is
-    // more recent than whatever the exiting process last persisted.
+    // A running row's supervisor-side phase history is more recent than whatever
+    // the exiting process last persisted: the early stages (snapshot/migrate) ran
+    // while no app was alive, so this replay is the ONLY way the UI can observe
+    // them. The latest phase from the file (if it matches THIS operation) drives
+    // the displayed phase; the full history lets the client mark earlier
+    // supervisor stages as completed.
     let phase = row.phase as SystemUpdateOperationPhase | null;
+    let supervisorPhases: SystemUpdateOperationPhase[] | null = null;
     if (row.status === "running" || row.status === "pending") {
-      const supervisor = await this.readSupervisorPhase().catch(() => null);
+      const supervisor = await this.readSupervisorPhases().catch(() => null);
       if (supervisor && supervisor.operationId === operationId) {
-        phase = supervisor.phase;
+        supervisorPhases = supervisor.phases;
+        phase = supervisor.phases.at(-1) ?? phase;
       }
     }
-    return this.toOperationDto(row, phase);
+    return this.toOperationDto(row, phase, supervisorPhases);
   }
 
   async startUpdate(
@@ -1247,6 +1252,10 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
    * "still writable" so the (potentially long-running) download loop stops
    * invoking it after drain starts. percent is clamped 0-99 until the file is
    * complete (100 belongs to the terminal outcome, not a still-downloading op).
+   * STRICTLY MONOTONIC: the mirror-first download retries the RAW url after a
+   * mirror failure, restarting the byte count at 0 with the same callback — a
+   * lower percent must be ignored or the persisted bar would jump backwards
+   * (e.g. 80% -> 10%) for the remainder of the retry.
    */
   private downloadProgressWriter(operationId: string): (progress: ExternalReleaseDownloadProgress) => boolean {
     return (progress) => {
@@ -1258,7 +1267,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
         progress.totalBytes && progress.totalBytes > 0
           ? Math.min(99, Math.floor((progress.downloadedBytes / progress.totalBytes) * 100))
           : null;
-      if (percent === null || percent === this.lastProgressWritten) return true;
+      if (percent === null || percent <= this.lastProgressWritten) return true;
       this.lastProgressWritten = percent;
       // Fire-and-forget: the download loop must not block on a DB round-trip.
       void this.markPhase(operationId, "downloading", percent).catch(() => undefined);
@@ -1561,30 +1570,38 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Read the supervisor's current post-exit phase (snapshot/migrate/health gate/
-   * stabilize) from the state-dir phase.json. Cosmetic and best-effort: any read
-   * or parse failure yields null — this never gates an operation. Untrusted
-   * values are dropped (the file is written by our own supervisor, but a stale
-   * or hand-crafted file must not leak arbitrary strings into admin responses).
+   * Read the supervisor's post-exit phase history from the state-dir phase.json.
+   * Cosmetic and best-effort: any read or parse failure yields null — this never
+   * gates an operation. Untrusted values are dropped (the file is written by our
+   * own supervisor, but a stale or hand-crafted file must not leak arbitrary
+   * strings into admin responses). Accepts the cumulative `phases` array (new
+   * supervisor) and the legacy single `phase` value (old supervisor image).
    */
-  private async readSupervisorPhase(): Promise<{ operationId: string; phase: SystemUpdateOperationPhase } | null> {
+  private async readSupervisorPhases(): Promise<{ operationId: string; phases: SystemUpdateOperationPhase[] } | null> {
     if (!this.config.stateDir) return null;
     const file = path.join(this.config.stateDir, SYSTEM_UPDATE_PHASE_FILE);
     let raw: string;
     try {
       raw = await fs.readFile(file, "utf8");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    } catch {
       return null;
     }
     try {
-      const marker = JSON.parse(raw) as { operationId?: unknown; phase?: unknown };
+      const marker = JSON.parse(raw) as { operationId?: unknown; phases?: unknown; phase?: unknown };
       if (
         typeof marker.operationId !== "string" || marker.operationId.trim() !== marker.operationId ||
-        marker.operationId.length === 0 || marker.operationId.length > 64 ||
-        !SUPERVISOR_PHASES.has(marker.phase as string)
+        marker.operationId.length === 0 || marker.operationId.length > 64
       ) return null;
-      return { operationId: marker.operationId, phase: marker.phase as SystemUpdateOperationPhase };
+      // Cumulative history first; fall back to the legacy single-phase marker.
+      const list = Array.isArray(marker.phases)
+        ? marker.phases
+        : marker.phase !== undefined
+          ? [marker.phase]
+          : [];
+      if (list.length === 0 || list.length > 16) return null;
+      const phases = list.filter((phase): phase is string => typeof phase === "string" && SUPERVISOR_PHASES.has(phase));
+      if (phases.length === 0) return null;
+      return { operationId: marker.operationId, phases: phases as SystemUpdateOperationPhase[] };
     } catch {
       return null;
     }
@@ -1604,7 +1621,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     migrationApplied: boolean;
     startedAt: Date;
     finishedAt: Date | null;
-  }, phaseOverride?: SystemUpdateOperationPhase | null): SystemUpdateOperationDto {
+  }, phaseOverride?: SystemUpdateOperationPhase | null, observedPhases?: SystemUpdateOperationPhase[] | null): SystemUpdateOperationDto {
     // Only surfaced while the operation is actually live; a stale phase on a
     // terminal row (e.g. a phase write racing the result marker) is noise. The
     // persisted phase is trusted only inside the union — the column is free text
@@ -1621,6 +1638,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       status: row.status as SystemUpdateOperationDto["status"],
       phase,
       progress: phase === "downloading" ? row.progress : null,
+      observedPhases: live && observedPhases ? observedPhases : null,
       actorLabel: row.actorLabel,
       fromVersion: row.fromVersion,
       toVersion: row.toVersion,
