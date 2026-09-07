@@ -168,3 +168,27 @@ test('拒绝用旧 revision 配置快照覆盖较新的本地状态', () => with
   assert.equal(store.getConfigSnapshot().controlMode, 'direct_primary');
   assert.equal(store.listDesiredUsers().length, 1);
 }));
+
+test('状态库绑定节点身份，换身份打开必须先归档', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-identity-'));
+  const path = join(directory, 'agent.db');
+  const options = { bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * MIB };
+  try {
+    const first = new AgentStore(path, { ...options, nodeId: 'node-1' });
+    first.close();
+    // The state of node-1 must never be inherited by another identity, however
+    // the files got here (interrupted reset, installer, restored backup).
+    assert.throws(
+      () => new AgentStore(path, { ...options, nodeId: 'node-2' }),
+      /属于节点 node-1/
+    );
+    const same = new AgentStore(path, { ...options, nodeId: 'node-1' });
+    same.close();
+
+    // A database created before this check adopts the identity that opens it.
+    const legacy = new AgentStore(join(directory, 'legacy.db'), { ...options, nodeId: 'node-9' });
+    legacy.close();
+    const reopened = new AgentStore(join(directory, 'legacy.db'), { ...options, nodeId: 'node-9' });
+    reopened.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});

@@ -64,7 +64,26 @@ export class AgentStore {
     this.db.pragma('synchronous = FULL');
     this.db.pragma('foreign_keys = ON');
     this.migrate();
+    // The database BELONGS to one node identity. Checking that here — rather
+    // than trusting whatever moved the files around — closes every variant of
+    // "new identity, old state": an interrupted reset, an installer that
+    // replaced an env-only identity, a restored backup, a hand-copied data
+    // directory. Inheriting it would hand the new node the old node's desired
+    // users, command history and unsettled usage batches.
+    this.assertOwnIdentity(options.nodeId);
     this.initializeBoot(options.bootId);
+  }
+
+  private assertOwnIdentity(nodeId: string): void {
+    const recorded = this.getMeta('node_id');
+    if (recorded && recorded !== nodeId) {
+      throw new Error(
+        `本地状态库属于节点 ${recorded}，与当前身份 ${nodeId} 不一致：` +
+          '请先归档或迁移本机运行状态（停止服务后以 CHORDV_AGENT_RESET_IDENTITY=1 启动一次），再重新接入'
+      );
+    }
+    // Databases created before this check simply adopt their current identity.
+    if (!recorded) this.setMeta('node_id', nodeId);
   }
 
   private migrate(): void {

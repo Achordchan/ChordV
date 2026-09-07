@@ -234,3 +234,42 @@ test('a pending secret is never replayed under a different registration token', 
     assert.equal(JSON.parse(fs.readFileSync(file + '.pending', 'utf8')).agentToken, rebound[0].agentToken);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('an interrupted reset is completed before the new identity is used', async () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'agent-credential-reset-crash-'));
+  const file = join(root, 'credentials.json');
+  const databasePath = join(root, 'agent.db');
+  const options = { ...config(file), databasePath };
+  try {
+    const saved = await resolveCredentials(options, async () => identity);
+    fs.writeFileSync(databasePath, 'old node state');
+
+    // Crash in the middle of a reset: the journal is on disk and the credentials
+    // were already renamed, but the database was not. Without the journal the
+    // next boot would look like "never registered" and adopt the old state.
+    const stamp = 1700000000000;
+    fs.writeFileSync(`${file}.reset-journal`, JSON.stringify({ stamp, files: [file, databasePath] }) + '\n');
+    fs.renameSync(file, `${file}.replaced.${stamp}`);
+
+    const fresh = { ...options, registerToken: 'chordv_register_after_crash' };
+    const replacement = { accepted: true, agentId: 'agent-new', nodeId: 'node-new' };
+    const resumed = await resolveCredentials(fresh, async () => replacement);
+    assert.equal(resumed.agentId, 'agent-new');
+    // The interrupted archival finished under the SAME timestamp, so one reset
+    // stays one recoverable set, and no old state is left in place.
+    assert.equal(fs.existsSync(`${databasePath}.replaced.${stamp}`), true);
+    assert.equal(fs.readFileSync(`${databasePath}.replaced.${stamp}`, 'utf8'), 'old node state');
+    assert.equal(fs.existsSync(databasePath), false, '旧状态库不得留给新身份');
+    assert.equal(fs.existsSync(`${file}.reset-journal`), false, '补完后必须清除重置日志');
+    assert.equal(JSON.parse(fs.readFileSync(`${file}.replaced.${stamp}`, 'utf8')).agentId, saved.agentId);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a corrupt reset journal stops startup instead of guessing', async () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'agent-credential-reset-corrupt-'));
+  const file = join(root, 'credentials.json');
+  try {
+    fs.writeFileSync(`${file}.reset-journal`, JSON.stringify({ stamp: 'not-a-number' }));
+    await assert.rejects(resolveCredentials(config(file), async () => { assert.fail('must not register'); }), /重置日志损坏/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

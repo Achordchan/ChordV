@@ -58,6 +58,19 @@ test('read-only credential lookup reports state without generating an identity',
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('the health probe reports an interrupted reset instead of completing it', () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'agent-health-reset-'));
+  const file = join(root, 'credentials.json');
+  try {
+    fs.writeFileSync(file, JSON.stringify({ agentId: 'a', nodeId: 'n', token: 't' }));
+    fs.writeFileSync(`${file}.reset-journal`, JSON.stringify({ stamp: 1, files: [file] }));
+    const before = fs.readdirSync(root).sort();
+    assert.throws(() => readExistingCredentials(config(root)), /上次身份重置未完成/);
+    // Completing the reset is a WRITE; the probe may only report it.
+    assert.deepEqual(fs.readdirSync(root).sort(), before);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('a read-only store refuses to create a database and cannot write', () => {
   const root = fs.mkdtempSync(join(tmpdir(), 'agent-health-store-'));
   const databasePath = join(root, 'nested', 'agent.db');

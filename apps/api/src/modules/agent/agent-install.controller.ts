@@ -150,6 +150,18 @@ if [[ "\$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
+# A legacy host may hold its identity ONLY in the env file, with no credentials
+# file to trigger the agent-side reset guard. Overwriting it here would point a
+# new node at the old node's /var/lib state (desired users, command history,
+# unsettled usage). Refuse before touching anything and require an explicit
+# migration; the agent's own state-library identity check is the backstop.
+if [[ -f "\$ENV_FILE" ]] && grep -qE '^[[:space:]]*(CHORDV_AGENT_ID|CHORDV_AGENT_TOKEN|CHORDV_NODE_ID)=' "\$ENV_FILE"; then
+  echo "安装失败：\$ENV_FILE 中已存在以环境变量配置的 Agent 身份。" >&2
+  echo "如需把本机改接为新节点：停止 chordv-node-agent，归档 /var/lib/chordv-node-agent 与该环境文件后重跑本命令；" >&2
+  echo "如只是升级，请保留原身份并改用发布包升级流程，不要使用注册令牌安装命令。" >&2
+  exit 1
+fi
+
 case "\$(uname -m)" in
   x86_64) ARCH="linux-x64" ;;
   aarch64|arm64) ARCH="linux-arm64" ;;

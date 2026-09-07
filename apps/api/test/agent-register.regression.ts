@@ -242,6 +242,14 @@ async function main() {
   assert.ok(!/chown "\$SERVICE_USER:\$SERVICE_USER" "\$ENV_FILE"/.test(script), "env file must not be service-owned");
   assert.ok(script.includes('chmod 0640 "$ENV_FILE"'), "env file must not be world/group writable");
   assert.ok(script.includes("install -d -m 0750 -o root -g root /etc/chordv"), "env directory must be root-owned");
+  // A legacy env-only identity must not be silently replaced: the new node
+  // would inherit the old node's /var/lib state.
+  assert.ok(
+    /CHORDV_AGENT_ID\|CHORDV_AGENT_TOKEN\|CHORDV_NODE_ID/.test(script),
+    "installer must detect an existing environment identity before overwriting it"
+  );
+  assert.ok(script.indexOf("已存在以环境变量配置的 Agent 身份") < script.indexOf("agent-download"),
+    "the identity guard must run BEFORE anything is downloaded or installed");
   assert.ok(!script.includes("__CHORDV_API_BASE__"), "no placeholder may leak into rendered scripts");
   const bashCheck = spawnSync("bash", ["-n"], { input: script, encoding: "utf8" });
   assert.equal(bashCheck.status, 0, bashCheck.stderr);

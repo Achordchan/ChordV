@@ -45,6 +45,18 @@ if TEST_PAYLOAD=/test/${payload}.tgz TEST_PARTIAL=${partial} bash /test/stage.sh
 `], { encoding: "utf8" });
     assert.equal(run.status, 0, `${name}: ${run.stdout}\n${run.stderr}`);
   }
+  // A host whose identity lives only in the env file must be refused before the
+  // installer touches anything (no download, no release switch).
+  const legacyIdentity = spawnSync("docker", ["run", "--rm", "--network", "none", "--entrypoint", "bash", "-v", `${root}:/test:ro`, "chordv-api:latest", "-ec", setup + `
+mkdir -p /etc/chordv
+printf 'CHORDV_AGENT_ID=agent-old\\nCHORDV_AGENT_TOKEN=chordv_agent_old\\n' > /etc/chordv/node-agent.env
+if TEST_PAYLOAD=/test/valid.tgz bash /test/stage.sh 2>/tmp/guard.err; then exit 99; fi
+grep -q "已存在以环境变量配置的 Agent 身份" /tmp/guard.err
+[[ "$(readlink /opt/chordv-node-agent/current)" == /opt/chordv-node-agent/releases/old ]]
+[[ -z "$(find /opt/chordv-node-agent/releases -maxdepth 1 -name '.staging.*' -print)" ]]
+`], { encoding: "utf8" });
+  assert.equal(legacyIdentity.status, 0, `legacy env identity: ${legacyIdentity.stdout}\n${legacyIdentity.stderr}`);
+
   const success = spawnSync("docker", ["run", "--rm", "--network", "none", "--entrypoint", "bash", "-v", `${root}:/test:ro`, "chordv-api:latest", "-ec", setup + `
 TEST_PAYLOAD=/test/valid.tgz bash /test/stage.sh
 first="$(readlink /opt/chordv-node-agent/current)"
@@ -70,5 +82,5 @@ grep -q valid "$first/dist/src/main.js"
 [[ -z "$(find /opt/chordv-node-agent/releases -maxdepth 1 -name '.staging.*' -print)" ]]
 `], { encoding: "utf8" });
   assert.equal(success.status, 0, `${success.stdout}\n${success.stderr}`);
-  console.log("agent install staging passed (interrupted/corrupt/incomplete preserved, two atomic switches retained old releases, health check rejects non-root/writable env file)");
+  console.log("agent install staging passed (interrupted/corrupt/incomplete preserved, two atomic switches retained old releases, legacy env identity refused before download, health check rejects non-root/writable env file)");
 } finally { rmSync(root, { recursive: true, force: true }); }

@@ -69,18 +69,20 @@ const nonempty = (value: unknown): value is string => typeof value === 'string' 
  * recovery/reconciliation. Runs before the store is opened, with the service
  * stopped (the installer restarts it), so no descriptor is live here.
  */
-function archiveIdentity(config: AgentConfig): string[] {
-  const stamp = Date.now();
+const resetJournalPath = (config: AgentConfig) => `${config.credentialsPath}.reset-journal`;
+
+const archiveCandidates = (config: AgentConfig) => [
+  config.credentialsPath,
+  `${config.credentialsPath}.pending`,
+  config.databasePath,
+  `${config.databasePath}-wal`,
+  `${config.databasePath}-shm`,
+];
+
+function archiveWithStamp(config: AgentConfig, stamp: number): string[] {
   const archived: string[] = [];
   const directories = new Set<string>();
-  const candidates = [
-    config.credentialsPath,
-    `${config.credentialsPath}.pending`,
-    config.databasePath,
-    `${config.databasePath}-wal`,
-    `${config.databasePath}-shm`,
-  ];
-  for (const file of candidates) {
+  for (const file of archiveCandidates(config)) {
     const source = resolve(file);
     if (!fs.existsSync(source)) continue;
     const target = `${source}.replaced.${stamp}`;
@@ -90,6 +92,40 @@ function archiveIdentity(config: AgentConfig): string[] {
   }
   for (const directory of directories) syncDirectory(directory);
   return archived;
+}
+
+function archiveIdentity(config: AgentConfig): string[] {
+  const stamp = Date.now();
+  // Journal BEFORE the first rename. A crash between renaming the credentials
+  // and renaming the database would otherwise look like "no saved identity"
+  // on the next boot — which skips the reset entirely and would register a new
+  // identity on top of the old node's state. The journal makes the reset
+  // resumable, and every file of one reset keeps the same timestamp.
+  writeSecret(resetJournalPath(config), { stamp, files: archiveCandidates(config) });
+  const archived = archiveWithStamp(config, stamp);
+  fs.unlinkSync(resetJournalPath(config));
+  syncDirectory(dirname(resolve(resetJournalPath(config))));
+  return archived;
+}
+
+/** Completes an interrupted reset before any identity or state is used. */
+function finishInterruptedReset(config: AgentConfig): void {
+  const journal = readSecret(resetJournalPath(config));
+  if (!journal) return;
+  if (typeof journal.stamp !== 'number' || !Number.isSafeInteger(journal.stamp)) {
+    throw new Error('Agent 重置日志损坏，请人工确认归档状态后删除该文件');
+  }
+  const archived = archiveWithStamp(config, journal.stamp);
+  fs.unlinkSync(resetJournalPath(config));
+  syncDirectory(dirname(resolve(resetJournalPath(config))));
+  console.warn(
+    `[node-agent] 已补完上次中断的身份重置${archived.length ? `（${archived.join('、')}）` : '（无剩余文件）'}`
+  );
+}
+
+/** True when a reset was interrupted; the read-only health path may only report it. */
+export function hasInterruptedReset(config: AgentConfig): boolean {
+  return fs.existsSync(resetJournalPath(config));
 }
 
 /**
@@ -102,6 +138,8 @@ function archiveIdentity(config: AgentConfig): string[] {
  * and throws when the saved identity cannot be used as-is.
  */
 export function readExistingCredentials(config: AgentConfig): AgentCredentials | null {
+  // Read-only path: report the interrupted reset, never complete it.
+  if (hasInterruptedReset(config)) throw new Error('上次身份重置未完成，服务启动时会先补完归档，健康检查不做任何写入');
   const explicit = [config.agentId, config.nodeId, config.token];
   if (explicit.some(nonempty)) {
     if (!explicit.every(nonempty)) throw new Error('环境凭据必须完整，且不能与注册令牌同时配置');
@@ -120,6 +158,9 @@ export function readExistingCredentials(config: AgentConfig): AgentCredentials |
 export async function resolveCredentials(config: AgentConfig, register = requestRegister): Promise<AgentCredentials> {
   // A complete operator-managed tuple is an explicit override, including rotation.
   // Do not read or overwrite an unrelated saved identity while this source is set.
+  // Before ANY identity is used or registered, including an operator-provided
+  // one: a half-finished reset must not leave the old node's state in place.
+  finishInterruptedReset(config);
   const explicit = [config.agentId, config.nodeId, config.token];
   if (explicit.some(nonempty)) {
     if (!explicit.every(nonempty) || config.registerToken) throw new Error('环境凭据必须完整，且不能与注册令牌同时配置');
