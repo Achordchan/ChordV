@@ -193,20 +193,29 @@ function OperationProgress({
           // failed → auto-rollback), the failed stage stays unmarked instead of
           // wearing a ✓.
           let observedAndAdvanced = false;
-          if (OBSERVED_ONLY_STEPS.has(step.phase) && observedPhases.has(step.phase)) {
+          let superseded = false;
+          if (OBSERVED_ONLY_STEPS.has(step.phase)) {
             for (const candidate of observedPhases) {
               // Only FORWARD phases are advancement evidence: an auto-rollback
               // landing (rollback-health-gating) maps to a later STEP SLOT but
               // means the stage FAILED, not that it completed.
               if (candidate.startsWith("rollback-")) continue;
               if (PHASE_STEPS.findIndex((s) => s.phase === candidate) > index) {
-                observedAndAdvanced = true;
+                if (observedPhases.has(step.phase)) {
+                  observedAndAdvanced = true;
+                } else {
+                  // A later forward phase is already active while this stage was
+                  // never observed: it was bypassed (an update without pending
+                  // migrations goes draining -> health-gating directly), not
+                  // still pending.
+                  superseded = true;
+                }
                 break;
               }
             }
           }
           const skipped = !applicable.has(step.phase);
-          const state = skipped
+          const state = skipped || superseded
             ? "skipped"
             : index === stepIndex
               ? "active"

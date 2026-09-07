@@ -246,23 +246,25 @@ approve_generation() {
 clear_promoting() { rm -f "$PROMOTING_FILE" || return 1; sync; }
 
 write_phase() {
-  # write_phase <phase> — append the stage to the operation's phase history and
-  # republish the whole array. Best-effort cosmetic marker: failures are logged by
-  # the caller and ignored. Keyed to the in-flight operation so the app only applies
-  # it to a matching row. Deduplicated: a re-gated promotion (app exit during
-  # finalization retries) replays the same stages, and the reader rejects arrays
-  # longer than 16 — unbounded append would eventually blank live progress.
+  # write_phase <phase> — publish the stage history PLUS the current stage.
+  # Best-effort cosmetic marker: failures are logged by the caller and ignored.
+  # Keyed to the in-flight operation so the app only applies it to a matching row.
+  # History is deduplicated (a re-gated promotion replays the same stages and the
+  # reader rejects arrays longer than 16), but the CURRENT phase is always appended
+  # as the LAST element — the reader treats the last entry as "now", so a retry
+  # re-entering an earlier stage must move it back, not leave a stale stabilizing.
   local phase="$1"
   [ -n "$GEN_OP" ] || return 0
-  case " $GEN_PHASES " in *" $phase "*) return 0 ;; esac
-  GEN_PHASES="${GEN_PHASES}${GEN_PHASES:+ }${phase}"
+  case " $GEN_PHASES " in *" $phase "*) ;; *) GEN_PHASES="${GEN_PHASES}${GEN_PHASES:+ }${phase}" ;; esac
   local phases="" first=1 p
   for p in $GEN_PHASES; do
     [ "$first" = "1" ] || phases="$phases,"
     phases="$phases\"$p\""
     first=0
   done
-  printf '{"operationId":"%s","phases":[%s]}\n' "$GEN_OP" "$phases" > "$PHASE_FILE" 2>/dev/null || \
+  # The current phase closes the array; a repeat of the history's tail (the common
+  # forward case) is fine — the reader only cares that the LAST entry is current.
+  printf '{"operationId":"%s","phases":[%s%s"%s"]}\n' "$GEN_OP" "$phases" "${phases:+,}" "$phase" > "$PHASE_FILE" 2>/dev/null || \
     { log "WARN: cannot write progress phase marker (ignored)"; return 0; }
   return 0
 }
