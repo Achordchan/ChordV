@@ -105,7 +105,12 @@ export interface HelperResult {
 }
 
 export interface InboundApplier {
-  apply(spec: InboundSpec, requestId: string): Promise<HelperResult>;
+  /**
+   * `commandId` is the control plane's identity for this deployment: a
+   * redelivered command must not rotate keys or restart Xray a second time, and
+   * the per-execution requestId cannot carry that — it is new every time.
+   */
+  apply(spec: InboundSpec, requestId: string, commandId: string): Promise<HelperResult>;
   reset(requestId: string): Promise<HelperResult>;
 }
 
@@ -163,8 +168,8 @@ export class FileInboundApplier implements InboundApplier {
     private readonly sleep: (ms: number) => Promise<void> = (ms) => new Promise((done) => setTimeout(done, ms)),
   ) {}
 
-  apply(spec: InboundSpec, requestId: string): Promise<HelperResult> {
-    return this.request({ requestId, mode: 'ensure', ...spec }, 'ensure');
+  apply(spec: InboundSpec, requestId: string, commandId: string): Promise<HelperResult> {
+    return this.request({ requestId, commandId, mode: 'ensure', ...spec }, 'ensure');
   }
 
   /**

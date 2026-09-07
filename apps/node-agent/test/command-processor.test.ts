@@ -204,10 +204,12 @@ test('非 direct 模式 RECONCILE 只更新本地状态，不写 Xray', async ()
 
 class FakeApplier implements InboundApplier {
   calls: InboundSpec[] = [];
+  commandIds: string[] = [];
   outcome: Partial<HelperResult> = {};
   failure?: Error;
-  async apply(spec: InboundSpec, requestId: string): Promise<HelperResult> {
+  async apply(spec: InboundSpec, requestId: string, commandId: string): Promise<HelperResult> {
     this.calls.push(spec);
+    this.commandIds.push(commandId);
     if (this.failure) throw this.failure;
     return {
       requestId, ok: true, changed: true, restarted: true,
@@ -255,6 +257,8 @@ test('ENSURE_INBOUND 上报可用连接参数，重复下发不再重启 Xray', 
 
     const repeat = await fixture.processor.execute(command('ENSURE_INBOUND', inboundPayload, 'command-2'), true);
     assert.equal(fixture.applier.calls.length, 1, '同一规格不得再次驱动助手重启 Xray');
+    // The helper needs the command identity to recognise a redelivery.
+    assert.deepEqual(fixture.applier.commandIds, ['command-1']);
     assert.equal((repeat.result?.inbound as Record<string, unknown>).changed, false);
     assert.equal((repeat.result?.inbound as Record<string, unknown>).realityPublicKey, 'k'.repeat(43));
   } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }

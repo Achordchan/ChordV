@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
   applyRequest,
-  assertRequestOwnership,
+  readRequest,
   parseRequest,
   parseX25519,
   renderInbound,
@@ -18,8 +19,12 @@ import {
   type InboundRequest,
 } from '../src/xray-apply.js';
 
+// Every deployment is its own command in production; only a REDELIVERY reuses
+// an id, so the fixture hands out a fresh one unless a test asks otherwise.
+let commandCounter = 0;
 const request = (overrides: Partial<InboundRequest> = {}): InboundRequest => ({
   requestId: '11111111-2222-4333-8444-555555555555',
+  commandId: `command-${++commandCounter}`,
   mode: 'ensure',
   inboundTag: 'vless-in',
   listenPort: 443,
@@ -35,8 +40,10 @@ const request = (overrides: Partial<InboundRequest> = {}): InboundRequest => ({
 const keys = { privateKey: 'p'.repeat(43), publicKey: 'P'.repeat(43), shortId: '0123456789abcdef' };
 
 test('root 助手把 agent 请求当作不可信输入逐字段校验', () => {
-  assert.deepEqual(parseRequest(JSON.stringify(request())), request());
-  assert.equal(parseRequest(JSON.stringify({ requestId: request().requestId, mode: 'reset' })).mode, 'reset');
+  const sample = request();
+  assert.deepEqual(parseRequest(JSON.stringify(sample)), sample);
+  assert.equal(parseRequest(JSON.stringify({ requestId: sample.requestId, mode: 'reset' })).mode, 'reset');
+  assert.throws(() => parseRequest(JSON.stringify({ ...sample, commandId: 'bad id!' })), /commandId/);
 
   assert.throws(() => parseRequest('{'), /不是合法 JSON/);
   assert.throws(() => parseRequest('[]'), /格式错误/);
@@ -186,19 +193,34 @@ test('reset 发布空入站并清除密钥状态', () => {
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-test('请求文件的属主与权限位是助手的信任边界', () => {
+test('请求文件的属主、类型与大小都在同一个文件描述符上校验', () => {
   const root = fs.mkdtempSync(join(tmpdir(), 'xray-apply-own-'));
   const file = join(root, 'pending.json');
+  const uid = process.getuid?.() ?? 0;
   try {
-    fs.writeFileSync(file, '{}', { mode: 0o600 });
-    const uid = process.getuid?.() ?? 0;
-    assertRequestOwnership(file, uid);
-    assert.throws(() => assertRequestOwnership(file, uid + 1), /属主/);
+    fs.writeFileSync(file, '{"ok":1}', { mode: 0o600 });
+    assert.equal(readRequest(file, uid), '{"ok":1}');
+    assert.throws(() => readRequest(file, uid + 1), /属主/);
     fs.chmodSync(file, 0o666);
-    assert.throws(() => assertRequestOwnership(file, uid), /不得被组\/其他用户写入/);
+    assert.throws(() => readRequest(file, uid), /不得被组\/其他用户写入/);
     fs.chmodSync(file, 0o600);
+
+    // An unbounded read of a file the agent controls is a memory-exhaustion
+    // lever against a root process, so the limit is enforced before reading.
+    fs.writeFileSync(join(root, 'big.json'), 'x'.repeat(64), { mode: 0o600 });
+    assert.throws(() => readRequest(join(root, 'big.json'), uid, 16), /过大/);
+
+    // Path-then-read is two different files when the agent owns the directory:
+    // a symlink or FIFO swapped in between must not be followed or block root.
     fs.symlinkSync(file, join(root, 'link.json'));
-    assert.throws(() => assertRequestOwnership(join(root, 'link.json'), uid), /普通文件/);
+    assert.throws(() => readRequest(join(root, 'link.json'), uid), /ELOOP|符号|not permitted|ENOENT/i);
+
+    // A FIFO would block a root process indefinitely; O_NONBLOCK plus the
+    // regular-file check on the descriptor is what prevents that.
+    const fifo = join(root, 'fifo.json');
+    if (spawnSync('mkfifo', [fifo]).status === 0) {
+      assert.throws(() => readRequest(fifo, uid), /不是普通文件/);
+    }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -340,5 +362,56 @@ test('轮换失败回滚时，新密钥不得留在状态里', () => {
     assert.equal(state.keys.publicKey, keys.publicKey);
     assert.equal(state.pending, false);
     assert.equal(applyRequest(request(), deps(root, { confDir: applyDeps.confDir, stateFile: applyDeps.stateFile })).realityPublicKey, keys.publicKey);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('重复投递同一条命令不再轮换密钥，也不再重启', () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'xray-apply-redeliver-'));
+  try {
+    let generated = 0;
+    const rotated = { privateKey: 'n'.repeat(43), publicKey: 'N'.repeat(43), shortId: 'ffeeddccbbaa9988' };
+    const applyDeps = deps(root, { generateKeys: () => (generated++ === 0 ? keys : rotated) });
+    const rotate = request({ rotateKeys: true, commandId: 'command-rotate' });
+
+    const first = applyRequest(rotate, applyDeps);
+    assert.equal(first.realityPublicKey, keys.publicKey);
+    assert.equal(applyDeps.restarts, 1);
+
+    // The agent crashed before recording completion, so the same command comes
+    // back. A second rotation would invalidate every subscription issued from
+    // the first one.
+    const redelivered = applyRequest({ ...rotate, requestId: '99999999-2222-4333-8444-555555555555' }, applyDeps);
+    assert.equal(redelivered.realityPublicKey, keys.publicKey);
+    assert.equal(redelivered.changed, false);
+    assert.equal(applyDeps.restarts, 1);
+
+    // A NEW rotation command still rotates.
+    const next = applyRequest(request({ rotateKeys: true, commandId: 'command-rotate-2' }), applyDeps);
+    assert.equal(next.realityPublicKey, rotated.publicKey);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('reset 在发布空入站之前先落盘意图', () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'xray-apply-reset-journal-'));
+  try {
+    const applyDeps = deps(root);
+    applyRequest(request(), applyDeps);
+    const target = join(applyDeps.confDir, '50-inbound.json');
+
+    // Die between publishing the empty inbound and dropping the state: the old
+    // hash and keys would otherwise sit next to an empty config, and a later
+    // ensure of that same spec would take the no-op branch and never restore it.
+    const dying = deps(root, {
+      confDir: applyDeps.confDir, stateFile: applyDeps.stateFile,
+      restart: () => { throw new Error('killed'); },
+    });
+    assert.throws(() => applyRequest(request({ mode: 'reset' }), dying), /重启 Xray 失败/);
+    assert.equal(JSON.parse(readFileSync(applyDeps.stateFile, 'utf8')).pending, false, '回滚成功则状态恢复为已提交');
+
+    fs.writeFileSync(applyDeps.stateFile, JSON.stringify({ ...JSON.parse(readFileSync(applyDeps.stateFile, 'utf8')), pending: true }));
+    fs.writeFileSync(target, JSON.stringify({ inbounds: [] }));
+    const restored = applyRequest(request(), deps(root, { confDir: applyDeps.confDir, stateFile: applyDeps.stateFile }));
+    assert.equal(restored.changed, true, '空入站加未提交状态必须重新部署');
+    assert.equal(JSON.parse(readFileSync(target, 'utf8')).inbounds[0].port, 443);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

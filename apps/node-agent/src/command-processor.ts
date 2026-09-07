@@ -164,7 +164,7 @@ export class CommandProcessor {
     // it completed" must therefore lead back through the helper rather than be
     // answered from memory.
     this.store.setInboundState({ hash, report: {}, appliedRevision: command.targetRevision, complete: false });
-    const applied = await this.inbound.applier.apply(spec, requestId);
+    const applied = await this.inbound.applier.apply(spec, requestId, command.commandId);
     if (applied.listenPort !== spec.listenPort) {
       throw new Error(`配置助手部署的端口 ${applied.listenPort} 与下发的 ${spec.listenPort} 不一致`);
     }

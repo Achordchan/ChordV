@@ -20,6 +20,12 @@ const HOSTNAME = /^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-
 
 export interface InboundRequest {
   requestId: string;
+  /**
+   * The control-plane command this request belongs to. A redelivered command
+   * must not rotate keys or restart Xray a second time, and the per-execution
+   * requestId cannot say that — it is new every time.
+   */
+  commandId: string;
   mode: 'ensure' | 'reset';
   inboundTag: string;
   listenPort: number;
@@ -86,9 +92,11 @@ export function parseRequest(raw: string): InboundRequest {
   const value = parsed as Record<string, unknown>;
   const requestId = requireString(value.requestId, 'requestId');
   if (!/^[A-Za-z0-9-]{8,64}$/.test(requestId)) throw new Error(`requestId 不合法：${requestId}`);
+  const commandId = typeof value.commandId === 'string' ? value.commandId.trim() : '';
+  if (commandId && !/^[A-Za-z0-9_:-]{1,128}$/.test(commandId)) throw new Error(`commandId 不合法：${commandId}`);
   const mode = value.mode === 'reset' ? 'reset' : 'ensure';
   if (mode === 'reset') {
-    return { requestId, mode, inboundTag: '', listenPort: 0, dest: '', serverNames: [], flow: '', fingerprint: '', spiderX: '', rotateKeys: false };
+    return { requestId, commandId, mode, inboundTag: '', listenPort: 0, dest: '', serverNames: [], flow: '', fingerprint: '', spiderX: '', rotateKeys: false };
   }
   const inboundTag = requireString(value.inboundTag, 'inboundTag');
   if (!/^[A-Za-z0-9_-]{1,32}$/.test(inboundTag)) throw new Error(`inboundTag 不合法：${inboundTag}`);
@@ -108,6 +116,7 @@ export function parseRequest(raw: string): InboundRequest {
   if (!spiderX.startsWith('/') || spiderX.length > 64 || /[\s"'\\]/.test(spiderX)) throw new Error(`spiderX 不合法：${spiderX}`);
   return {
     requestId,
+    commandId,
     mode,
     inboundTag,
     listenPort: requirePort(value.listenPort, 'listenPort'),
@@ -216,7 +225,7 @@ function writeFileAtomic(file: string, contents: string, mode: number, owner?: {
   try { fs.fsyncSync(dirDescriptor); } finally { fs.closeSync(dirDescriptor); }
 }
 
-function readState(file: string): { hash: string; keys: RealityKeys; serverName: string; listen: string; listenPort: number; pending: boolean } | undefined {
+function readState(file: string): { hash: string; keys: RealityKeys; serverName: string; listen: string; listenPort: number; pending: boolean; commandId: string } | undefined {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
     const keys = parsed.keys as RealityKeys | undefined;
@@ -230,6 +239,7 @@ function readState(file: string): { hash: string; keys: RealityKeys; serverName:
       // Written before the config is published and cleared after: a crash in
       // between leaves this set, and the no-op branch must then refuse.
       pending: parsed.pending === true,
+      commandId: typeof parsed.commandId === 'string' ? parsed.commandId : '',
     };
   } catch { return undefined; }
 }
@@ -287,12 +297,39 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
     }
     const empty = JSON.stringify({ inbounds: [] }, null, 2) + '\n';
     assertConfigValid(deps, empty);
-    publishAndRestart(deps, target, empty, owner, 0);
+    // Journal the reset first. Dying between publishing the empty inbound and
+    // dropping the state would leave the old hash and keys next to an empty
+    // config: a later ensure of that same spec would take the no-op branch and
+    // never restore the inbound.
+    const committed = fs.existsSync(deps.stateFile) ? fs.readFileSync(deps.stateFile, 'utf8') : undefined;
+    if (state) writeFileAtomic(deps.stateFile, JSON.stringify({ ...state, pending: true }, null, 2) + '\n', 0o600);
+    try {
+      publishAndRestart(deps, target, empty, owner, 0);
+    } catch (error) {
+      // The inbound was restored, so the record of it must be restored too.
+      if (committed !== undefined) writeFileAtomic(deps.stateFile, committed, 0o600);
+      throw error;
+    }
     try { fs.unlinkSync(deps.stateFile); } catch { /* already gone */ }
     return { listen: '', changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listenPort: 0, xrayVersion: xrayVersion(deps.xrayBin) };
   }
 
   const hash = requestHash(request);
+  // A redelivered command must not rotate again: the agent may have crashed
+  // before recording completion, and a second rotation would invalidate every
+  // subscription issued from the first one.
+  if (request.commandId && state?.commandId === request.commandId && !state.pending && fs.existsSync(target)) {
+    return {
+      listen: state.listen || '0.0.0.0',
+      changed: false,
+      restarted: false,
+      realityPublicKey: state.keys.publicKey,
+      shortId: state.keys.shortId,
+      serverName: state.serverName || request.serverNames[0],
+      listenPort: state.listenPort || request.listenPort,
+      xrayVersion: xrayVersion(deps.xrayBin),
+    };
+  }
   const reusable = state && !request.rotateKeys ? state.keys : undefined;
   // `pending` means the recorded state may not describe what Xray is serving
   // (the process died between publishing the config and committing the state),
@@ -325,7 +362,7 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
   // describes the old one — and re-issuing the OLD spec would then take the
   // no-op branch and report a port nothing serves. The pending record makes
   // that window recoverable: it is never answered with, only re-applied from.
-  const record = { hash, keys, serverName, listen, listenPort: request.listenPort, appliedAt: deps.now() };
+  const record = { hash, keys, serverName, listen, listenPort: request.listenPort, commandId: request.commandId, appliedAt: deps.now() };
   const committed = fs.existsSync(deps.stateFile) ? fs.readFileSync(deps.stateFile, 'utf8') : undefined;
   writeFileAtomic(deps.stateFile, JSON.stringify({ ...record, pending: true }, null, 2) + '\n', 0o600);
   try {
@@ -384,12 +421,26 @@ function resolveGid(user: string): number {
   } catch { return 0; }
 }
 
-/** The request file must belong to the agent and be writable by nobody else. */
-export function assertRequestOwnership(file: string, expectedUid: number): void {
-  const stat = fs.lstatSync(file);
-  if (!stat.isFile()) throw new Error('请求文件不是普通文件');
-  if (stat.uid !== expectedUid) throw new Error(`请求文件属主必须是 uid ${expectedUid}，实际 ${stat.uid}`);
-  if ((stat.mode & 0o022) !== 0) throw new Error('请求文件不得被组/其他用户写入');
+/**
+ * Opens the agent's request ONCE and validates that descriptor, then reads a
+ * bounded amount from it. Checking a path and then reading it again is two
+ * different files as far as an agent that owns the directory is concerned: it
+ * can swap in a symlink or a FIFO in between, and an unbounded read of a file
+ * it controls is a memory-exhaustion lever against a root process.
+ */
+export function readRequest(file: string, expectedUid: number, limit = MAX_REQUEST_BYTES): string {
+  const descriptor = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  try {
+    const stat = fs.fstatSync(descriptor);
+    if (!stat.isFile()) throw new Error('请求文件不是普通文件');
+    if (stat.uid !== expectedUid) throw new Error(`请求文件属主必须是 uid ${expectedUid}，实际 ${stat.uid}`);
+    if ((stat.mode & 0o022) !== 0) throw new Error('请求文件不得被组/其他用户写入');
+    if (stat.size > limit) throw new Error('请求文件过大');
+    const buffer = Buffer.alloc(limit + 1);
+    const read = fs.readSync(descriptor, buffer, 0, buffer.length, 0);
+    if (read > limit) throw new Error('请求文件过大');
+    return buffer.subarray(0, read).toString('utf8');
+  } finally { fs.closeSync(descriptor); }
 }
 
 function resolveUid(user: string): number {
@@ -494,28 +545,32 @@ function main(): void {
   };
 
   const pending = join(requestDir, 'pending.json');
+  const claimed = join(requestDir, 'processing.json');
   const result = join(requestDir, 'result.json');
+  const agentUid = resolveUid(agentUser);
   // A path unit does not re-trigger while its service is running, so two quick
   // requests can collapse into one run: keep draining until nothing is left.
   for (let round = 0; round < 8; round++) {
     if (!fs.existsSync(pending)) return;
+    // CLAIM the request by renaming it. An apply can outlast the agent's own
+    // timeout, and the agent may then write a fresh pending.json — deleting
+    // that path afterwards would silently drop a command nobody ever ran.
+    try { fs.renameSync(pending, claimed); } catch { return; }
     let requestId = 'unknown';
     try {
-      assertRequestOwnership(pending, resolveUid(agentUser));
-      const raw = fs.readFileSync(pending, 'utf8');
-      const request = parseRequest(raw);
+      const request = parseRequest(readRequest(claimed, agentUid));
       requestId = request.requestId;
-      fs.unlinkSync(pending);
       const outcome = applyRequest(request, deps);
       writeFileAtomic(result, JSON.stringify({ requestId, ok: true, ...outcome }) + '\n', 0o644);
     } catch (error) {
-      try { fs.unlinkSync(pending); } catch { /* already consumed */ }
       writeFileAtomic(result, JSON.stringify({
         requestId,
         ok: false,
         stage: 'apply',
         error: error instanceof Error ? error.message : String(error),
       }) + '\n', 0o644);
+    } finally {
+      try { fs.unlinkSync(claimed); } catch { /* already gone */ }
     }
   }
 }
