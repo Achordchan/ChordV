@@ -1412,6 +1412,9 @@ export type SystemUpdateOperationStatus =
 // owns snapshotting..stabilizing and publishes them via the state-dir phase file,
 // which the freshly-launched process serves on the status poll. Phases may be
 // skipped (e.g. an update without migrations never shows snapshotting/migrating).
+// rollback-health-gating/rollback-stabilizing mark an AUTOMATIC rollback landing
+// (the failed target being replaced by last-good) under the SAME operation, so the
+// UI can distinguish recovery from the failed update's normal progression.
 export type SystemUpdateOperationPhase =
   | "checking"
   | "downloading"
@@ -1420,7 +1423,9 @@ export type SystemUpdateOperationPhase =
   | "snapshotting"
   | "migrating"
   | "health-gating"
-  | "stabilizing";
+  | "stabilizing"
+  | "rollback-health-gating"
+  | "rollback-stabilizing";
 
 export interface SystemUpdateReleaseInfoDto {
   version: string;

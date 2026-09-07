@@ -915,7 +915,14 @@ while true; do
   export CHORDV_SYSTEM_VERSION="$GEN_VERSION"
   # Only a promotion (update/rollback/restart operation) carries an operation to
   # report progress for; an ordinary relaunch of the last-good version has none.
-  if [ "$GEN_PROMOTION" = "1" ]; then write_phase "health-gating"; else clear_phase; fi
+  # A rollback LANDING (rollbackFrom set) reports rollback-* phases so the UI can
+  # distinguish "the failed target is being replaced by last-good" from a normal
+  # forward progression of the failed update.
+  if [ "$GEN_PROMOTION" = "1" ]; then
+    if [ -n "${GEN_ROLLBACK_FROM:-}" ]; then write_phase "rollback-health-gating"; else write_phase "health-gating"; fi
+  else
+    clear_phase
+  fi
   log "launching $GEN_VERSION"
   ( cd "$RELEASE_DIR" && exec "$NODE_BIN" "$APP_ENTRY" ) &
   APP_PID=$!
@@ -924,7 +931,7 @@ while true; do
     # Healthy: the remaining risk window is the stabilization observation, so
     # advance the cosmetic phase before entering it (a failed gate leaves the
     # phase behind — harmless, the terminal result supersedes it).
-    write_phase "stabilizing"
+    if [ -n "${GEN_ROLLBACK_FROM:-}" ]; then write_phase "rollback-stabilizing"; else write_phase "stabilizing"; fi
     if confirm_stable "$APP_PID"; then
     # Finalization must keep retrying while this app serves, not exhaust a fixed
     # retry budget and wait for an unrelated app exit. Keep ALL generation context

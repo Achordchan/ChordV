@@ -44,7 +44,9 @@ async function phasePassthrough() {
       ['{"operationId":"sysop-1","phase":"snapshotting"}', "snapshotting"],
       ['{"operationId":"sysop-1","phase":"migrating"}', "migrating"],
       ['{"operationId":"sysop-1","phase":"health-gating"}', "health-gating"],
-      ['{"operationId":"sysop-1","phase":"stabilizing"}', "stabilizing"]
+      ['{"operationId":"sysop-1","phase":"stabilizing"}', "stabilizing"],
+      ['{"operationId":"sysop-1","phase":"rollback-health-gating"}', "rollback-health-gating"],
+      ['{"operationId":"sysop-1","phase":"rollback-stabilizing"}', "rollback-stabilizing"]
     ];
     for (const [raw, phase] of valid) {
       writeFileSync(file, raw);
@@ -143,6 +145,28 @@ async function progressWriterThrottleAndDrainGuard() {
     systemUpdateOperation: { update: async () => { throw new Error("db gone"); } }
   });
   await (failing as unknown as { markPhase(op: string, phase: string): Promise<void> }).markPhase("sysop-5", "extracting");
+
+  // FIFO serialization: a SLOW fire-and-forget progress write enqueued before a
+  // later phase transition must not let the transition land first — under DB/pool
+  // latency the row would otherwise regress to an earlier phase.
+  const order: string[] = [];
+  const serialized = buildService({
+    systemUpdateOperation: {
+      update: async (args: unknown) => {
+        const data = (args as { data: { phase: string } }).data;
+        if (data.phase === "downloading") await new Promise((resolve) => setTimeout(resolve, 30));
+        order.push(data.phase);
+      }
+    }
+  });
+  const serialSvc = serialized as unknown as { markPhase(op: string, phase: string, progress?: number): Promise<void> };
+  const slowWrite = serialSvc.markPhase("sysop-8", "downloading", 50); // fire-and-forget style: not awaited
+  void serialSvc.markPhase("sysop-8", "extracting"); // enqueued immediately after
+  void serialSvc.markPhase("sysop-8", "draining");
+  await slowWrite;
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.deepEqual(order, ["downloading", "extracting", "draining"],
+    "phase writes must commit in program order regardless of individual write latency");
 
   // The checking phase is written BEFORE markRunning lands, so its update must
   // target a still-pending row (a running-only filter would deterministically

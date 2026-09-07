@@ -54,7 +54,11 @@ const MAX_MANIFEST_BYTES = 256 * 1024;
 const READINESS_CACHE_TTL_MS = 5_000;
 // Phases the supervisor may report through the state-dir phase.json; a strict allowlist
 // so a stale/hand-crafted file cannot leak arbitrary strings into admin responses.
-const SUPERVISOR_PHASES: ReadonlySet<string> = new Set(["snapshotting", "migrating", "health-gating", "stabilizing"]);
+// rollback-* mark an automatic rollback landing under the same operation.
+const SUPERVISOR_PHASES: ReadonlySet<string> = new Set([
+  "snapshotting", "migrating", "health-gating", "stabilizing",
+  "rollback-health-gating", "rollback-stabilizing"
+]);
 // Phases this app writes itself; the persisted column is free text at the DB level.
 const APP_PHASES: ReadonlySet<string> = new Set(["checking", "downloading", "extracting", "draining"]);
 // Full union for validating whatever a row (or a phase.json override) carries.
@@ -136,6 +140,11 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   // write for the first ~2s of an operation started right after boot.
   private lastProgressWriteAt = -Infinity;
   private lastProgressWritten = -1;
+  // FIFO chain serializing every phase/progress row write. The download loop
+  // fire-and-forgets progress writes; without serialization one could commit
+  // AFTER a later phase transition (extracting/draining) and regress the row to
+  // an earlier phase under DB/pool latency. Chaining preserves program order.
+  private phaseWriteChain: Promise<unknown> = Promise.resolve();
   // Serializes the signed manifest-floor compare-and-write so concurrent update checks
   // cannot interleave and move the anti-replay floor backward (it must only advance).
   private manifestFloorLock: Promise<unknown> = Promise.resolve();
@@ -1211,18 +1220,26 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
    * manifest check), so it targets pending-or-running rows; every later phase
    * only ever applies to a running row.
    */
-  private async markPhase(operationId: string, phase: SystemUpdateOperationPhase, progress?: number) {
-    if (workLifecycle.isDraining || this.shutdownFailed) return;
-    try {
-      await this.prisma.systemUpdateOperation.update({
-        where: phase === "checking"
-          ? { operationId, status: { in: ["pending", "running"] } }
-          : { operationId, status: "running" },
-        data: { phase, ...(progress !== undefined ? { progress } : {}) }
-      });
-    } catch (error) {
-      this.logger.warn(`Progress phase update failed (ignored): ${this.describeError(error)}`);
-    }
+  private markPhase(operationId: string, phase: SystemUpdateOperationPhase, progress?: number): Promise<void> {
+    if (workLifecycle.isDraining || this.shutdownFailed) return Promise.resolve();
+    // Enqueue on the chain (never bypass it), so a slow fire-and-forget progress
+    // write cannot reorder against a later phase transition.
+    const run = this.phaseWriteChain.then(async () => {
+      try {
+        await this.prisma.systemUpdateOperation.update({
+          where: phase === "checking"
+            ? { operationId, status: { in: ["pending", "running"] } }
+            : { operationId, status: "running" },
+          data: { phase, ...(progress !== undefined ? { progress } : {}) }
+        });
+      } catch (error) {
+        this.logger.warn(`Progress phase update failed (ignored): ${this.describeError(error)}`);
+      }
+    });
+    // The chain itself must never reject (a swallowed failure must not poison
+    // later enqueued writes); callers still get the awaited outcome via `run`.
+    this.phaseWriteChain = run;
+    return run;
   }
 
   /**

@@ -113,6 +113,12 @@ const APPLICABLE_STEPS: Record<SystemUpdateOperationDto["kind"], ReadonlySet<Sys
   restart: new Set(["draining", "health-gating", "stabilizing"])
 };
 
+// Supervisor-owned stages: whether they RUN is decided after the app exits (only an
+// update carrying migrations snapshots/migrates), so they are only check-marked when
+// actually OBSERVED by a poll — passing them silently is a skip, not a completion.
+// App-side stages always run in order for the kinds that include them.
+const OBSERVED_ONLY_STEPS: ReadonlySet<SystemUpdateOperationPhase> = new Set(["snapshotting", "migrating"]);
+
 function phaseDescription(phase: SystemUpdateOperationPhase): string {
   switch (phase) {
     case "checking":
@@ -131,6 +137,10 @@ function phaseDescription(phase: SystemUpdateOperationPhase): string {
       return "新版本已启动，正在通过健康检查…";
     case "stabilizing":
       return "新版本运行正常，正在稳定观察…";
+    case "rollback-health-gating":
+      return "新版本未通过验证，回滚目标已启动，正在通过健康检查…";
+    case "rollback-stabilizing":
+      return "回滚目标运行正常，正在稳定观察，随后将恢复服务…";
     default:
       return phase;
   }
@@ -145,10 +155,12 @@ function phaseDescription(phase: SystemUpdateOperationPhase): string {
 function OperationProgress({
   op,
   kind,
+  observedPhases,
   reconnecting
 }: {
   op: SystemUpdateOperationDto | null;
   kind: BusyKind | null;
+  observedPhases: ReadonlySet<string>;
   reconnecting: boolean;
 }) {
   const activeKind = op?.kind ?? kind;
@@ -166,19 +178,29 @@ function OperationProgress({
     );
   }
   const applicable = APPLICABLE_STEPS[op.kind] ?? APPLICABLE_STEPS.update;
-  const stepIndex = PHASE_STEPS.findIndex((step) => step.phase === op.phase);
+  // Auto-rollback landings report "rollback-*" phases for the same step slot.
+  const stepPhase = op.phase.replace(/^rollback-/, "");
+  const stepIndex = PHASE_STEPS.findIndex((step) => step.phase === stepPhase);
   return (
     <Stack gap={6}>
       <Group gap={4} wrap="nowrap" align="center">
         {PHASE_STEPS.map((step, index) => {
+          // Supervisor-owned stages only check-mark when a poll actually OBSERVED
+          // them: an update without migrations passes them silently, and that
+          // silent pass must read as "not run", not "completed".
+          const observed = observedPhases.has(step.phase);
           const skipped = !applicable.has(step.phase);
           const state = skipped
             ? "skipped"
-            : stepIndex >= 0 && index < stepIndex
-              ? "done"
-              : index === stepIndex
-                ? "active"
-                : "todo";
+            : index === stepIndex
+              ? "active"
+              : OBSERVED_ONLY_STEPS.has(step.phase)
+                ? observed
+                  ? "done"
+                  : "todo"
+                : stepIndex >= 0 && index < stepIndex
+                  ? "done"
+                  : "todo";
           return (
             <Group key={step.phase} gap={4} wrap="nowrap">
               {index > 0 ? <Text size="10px" c={state === "todo" || state === "skipped" ? "dimmed" : "blue"}>→</Text> : null}
@@ -227,6 +249,9 @@ export function SystemUpdateBadge() {
   const pollTimer = useRef<number | null>(null);
   const polledOpId = useRef<string | null>(null);
   const mounted = useRef(true);
+  // Supervisor stages (snapshot/migrate) actually seen by a poll for the CURRENT
+  // operation — reset when a new operation begins or is resumed.
+  const observedPhases = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     mounted.current = true;
@@ -322,6 +347,12 @@ export function SystemUpdateBadge() {
           }
           if (op) {
             interval = POLL_INTERVAL_MS;
+            if (op.phase) {
+              // Record both the alias (rollback-health-gating) and its base step so
+              // observed-completion logic sees either form.
+              observedPhases.current.add(op.phase);
+              observedPhases.current.add(op.phase.replace(/^rollback-/, ""));
+            }
             setActiveOp(op);
             setPhase("running");
           } else {
@@ -345,6 +376,7 @@ export function SystemUpdateBadge() {
       setBusy(kind);
       setPhase("running");
       setActiveOp(null);
+      observedPhases.current = new Set();
       try {
         const result =
           kind === "update"
@@ -374,6 +406,7 @@ export function SystemUpdateBadge() {
       const active = ops.find((op) => op.status === "running" || op.status === "pending");
       if (active && !polledOpId.current && mounted.current) {
         polledOpId.current = active.operationId;
+        observedPhases.current = new Set(active.phase ? [active.phase] : []);
         setActiveOp(active);
         setBusy(active.kind);
         setPhase("running");
@@ -501,7 +534,7 @@ export function SystemUpdateBadge() {
                   {phase === "finishing" ? (
                     <Text size="xs">正在刷新版本与操作记录…</Text>
                   ) : (
-                    <OperationProgress op={activeOp} kind={busy} reconnecting={phase === "reconnecting"} />
+                    <OperationProgress op={activeOp} kind={busy} observedPhases={observedPhases.current} reconnecting={phase === "reconnecting"} />
                   )}
                 </Group>
               </Alert>
