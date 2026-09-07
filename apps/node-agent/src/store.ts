@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 import type {
@@ -34,12 +34,30 @@ export interface StoreOptions {
   bootId: string;
   nodeId: string;
   defaultOfflineAllowanceBytes: bigint;
+  /**
+   * Open an EXISTING database without writing to it — no directory creation, no
+   * pragma/schema/boot writes. Used by `--health`, which may run as root: any
+   * file this process created there (db, -wal, -shm) would be owned by root and
+   * break the unprivileged service.
+   */
+  readonly?: boolean;
 }
 
 export class AgentStore {
   private readonly db: Database.Database;
 
   constructor(databasePath: string, private readonly options: StoreOptions) {
+    if (options.readonly) {
+      // A read-only connection to a WAL database still needs the -shm segment,
+      // and SQLite would CREATE it when missing. Running as root that would
+      // leave root-owned journal files beside the service's database, so refuse
+      // instead: no -shm means no running service, which the probe reports.
+      if (!existsSync(`${databasePath}-shm`)) {
+        throw new Error('本地状态库未处于运行状态（缺少 WAL 共享段），健康检查不创建任何文件');
+      }
+      this.db = new Database(databasePath, { readonly: true, fileMustExist: true });
+      return;
+    }
     mkdirSync(dirname(databasePath), { recursive: true });
     this.db = new Database(databasePath);
     this.db.pragma('journal_mode = WAL');
@@ -366,7 +384,8 @@ export class AgentStore {
   healthSnapshot(): Record<string, unknown> {
     return {
       journalMode: this.db.pragma('journal_mode', { simple: true }),
-      bootId: this.options.bootId,
+      // A read-only probe reports the boot the SERVICE recorded, not its own.
+      bootId: this.options.readonly ? this.getMeta('boot_id') : this.options.bootId,
       configRevision: this.getConfigRevision(),
       desiredUsers: this.listDesiredUsers().length,
       pendingBatches: this.pendingBatchCount(),

@@ -60,6 +60,30 @@ const registerTokenFingerprint = (token: string): string =>
 
 const nonempty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
 
+/**
+ * READ-ONLY credential lookup for `--health`. Health checks are normally run by
+ * an operator as root, so this path must never register, generate or persist
+ * anything: a root-owned credential file (or sqlite WAL) inside the service's
+ * data directory would be unreadable/unwritable for the chordv-agent service
+ * and break its next start, and a second generated secret would race the
+ * service's own registration. Returns null when the host is not registered yet
+ * and throws when the saved identity cannot be used as-is.
+ */
+export function readExistingCredentials(config: AgentConfig): AgentCredentials | null {
+  const explicit = [config.agentId, config.nodeId, config.token];
+  if (explicit.some(nonempty)) {
+    if (!explicit.every(nonempty)) throw new Error('环境凭据必须完整，且不能与注册令牌同时配置');
+    return { agentId: config.agentId, nodeId: config.nodeId, token: config.token };
+  }
+  const saved = readSecret(config.credentialsPath);
+  if (!saved) return null;
+  if (!nonempty(saved.agentId) || !nonempty(saved.nodeId) || !nonempty(saved.token)) throw new Error('Agent 凭据文件字段不完整');
+  if (config.registerToken && saved.registerTokenFingerprint !== registerTokenFingerprint(config.registerToken)) {
+    throw new Error('本机保存的 Agent 身份与当前注册令牌不匹配，服务无法启动，请先完成迁移或重置');
+  }
+  return { agentId: saved.agentId, nodeId: saved.nodeId, token: saved.token };
+}
+
 /** No registration request may run before its replay credential is safely persisted. */
 export async function resolveCredentials(config: AgentConfig, register = requestRegister): Promise<AgentCredentials> {
   // A complete operator-managed tuple is an explicit override, including rotation.

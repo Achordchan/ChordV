@@ -226,9 +226,11 @@ async function main() {
 //    script instead of a bare 404. The rendered install script must reference
 //    the /api global prefix and pass a bash syntax check.
 {
-  const { renderInstallScript } = await import("../src/modules/agent/agent-install.controller.js");
+  const { renderInstallScript, normalizeOrigin, AgentInstallController } =
+    await import("../src/modules/agent/agent-install.controller.js");
   const script = renderInstallScript({ token: "chordv_register_render", apiBase: "https://v.example.com" });
-  assert.ok(script.includes('API_BASE="https://v.example.com/api"'), "script must target the /api global prefix");
+  assert.ok(script.includes("API_BASE='https://v.example.com/api'"), "script must target the /api global prefix as a shell literal");
+  assert.ok(script.includes("REGISTER_TOKEN='chordv_register_render'"), "the token must be a single-quoted literal");
   assert.ok(!script.includes("command -v node") || script.includes("candidate_version"), "node probing must check each candidate's version");
   assert.ok(script.includes('CHORDV_API_BASE_URL=${API_BASE%/api}'), "agent env must carry the un-prefixed origin");
   assert.ok(script.includes("^v20\\.19\\."), "script must enforce the same Node 20.19.x contract as release build");
@@ -261,6 +263,60 @@ async function main() {
   assert.deepEqual(await service.resolveTokenNode("chordv_install_spent"), { nodeId: "node-1", usable: false });
   assert.equal(await service.resolveTokenNode("unknown-token"), null);
   assert.equal(await service.resolveTokenNode(""), null);
+
+  // 3b) The origin is derived from ATTACKER-CONTROLLED headers and lands in a
+  //     script that runs as root. Only a bare, validated http(s) origin passes,
+  //     and it is emitted as a single-quoted literal — a Host header carrying
+  //     command substitution must never reach executable code.
+  for (const hostile of [
+    "https://$(id>/tmp/pwn).example.com", "https://`id`.example.com", "https://a.example.com/../x",
+    "https://a.example.com/?x=1", "https://a.example.com#f", "https://user:pw@a.example.com",
+    "https://a.example.com\nrm -rf /", 'https://a.example.com"; id; "', "file:///etc/passwd",
+    "javascript:alert(1)", "not a url", "", "   ", undefined
+  ]) {
+    assert.equal(normalizeOrigin(hostile), "", `hostile origin must be rejected: ${String(hostile)}`);
+  }
+  assert.equal(normalizeOrigin("https://v.example.com/"), "https://v.example.com");
+  assert.equal(normalizeOrigin("http://10.0.0.4:8080"), "http://10.0.0.4:8080");
+  assert.equal(normalizeOrigin("https://[2001:db8::1]:8443"), "https://[2001:db8::1]:8443");
+  // Rendering enforces the same contract even if a caller forgets to validate.
+  assert.throws(() => renderInstallScript({ token: "t", apiBase: "https://a.example.com/$(id)" }), /公网地址无效/);
+  assert.throws(() => renderInstallScript({ token: "$(id)", apiBase: "https://a.example.com" }), /注册令牌格式无效/);
+
+  // End to end through the controller with a hostile Host header: the operator
+  // gets a configuration-error script, not injected commands.
+  const controller = new AgentInstallController(service as never);
+  const captured: string[] = [];
+  const fakeResponse = () => ({ status: () => {}, setHeader: () => {}, end: (body: string) => captured.push(body) });
+  const previousBase = process.env.CHORDV_PUBLIC_BASE_URL;
+  delete process.env.CHORDV_PUBLIC_BASE_URL;
+  try {
+    await controller.installScript(
+      { token: "chordv_install_ok" }, undefined, "$(id>/tmp/pwn).example.com", fakeResponse() as never
+    );
+    assert.equal(captured.length, 1);
+    assert.ok(!captured[0].includes("$(id"), "header-derived shell syntax must never reach the script");
+    assert.match(captured[0], /未配置有效的公网访问地址/);
+    assert.equal(spawnSync("bash", ["-n"], { input: captured[0], encoding: "utf8" }).status, 0);
+
+    // A legitimate Host header still renders a working script, quoted safely.
+    await controller.installScript(
+      { token: "chordv_install_ok" }, "https, http", "v.example.com", fakeResponse() as never
+    );
+    assert.ok(captured[1].includes("API_BASE='https://v.example.com/api'"), captured[1].slice(0, 200));
+    assert.equal(spawnSync("bash", ["-n"], { input: captured[1], encoding: "utf8" }).status, 0);
+
+    // A configured origin wins, and an invalid configured origin is refused too.
+    process.env.CHORDV_PUBLIC_BASE_URL = "https://cfg.example.com/";
+    await controller.installScript({ token: "chordv_install_ok" }, undefined, "v.example.com", fakeResponse() as never);
+    assert.ok(captured[2].includes("API_BASE='https://cfg.example.com/api'"));
+    process.env.CHORDV_PUBLIC_BASE_URL = "https://cfg.example.com/$(id)";
+    await controller.installScript({ token: "chordv_install_ok" }, undefined, "v.example.com", fakeResponse() as never);
+    assert.match(captured[3], /未配置有效的公网访问地址/);
+  } finally {
+    if (previousBase === undefined) delete process.env.CHORDV_PUBLIC_BASE_URL;
+    else process.env.CHORDV_PUBLIC_BASE_URL = previousBase;
+  }
 }
 
 // 4) Agent-side config bootstrap: register token XOR credentials, never both.

@@ -42,9 +42,16 @@ export class AgentInstallController {
     // plain-HTTP access to the Node listener), fall back to the listener's own
     // scheme instead of assuming HTTPS — the Node listener does no direct TLS.
     const configuredBase = process.env.CHORDV_PUBLIC_BASE_URL?.trim().replace(/\/+$/, "");
-    const derivedBase = configuredBase || (host
-      ? `${(forwardedProto?.split(",")[0]?.trim() || "http")}://${host.trim()}`
-      : "");
+    // The host/forwarded-proto headers are ATTACKER-CONTROLLED. They end up
+    // inside a script that an operator runs as root, so only a bare, validated
+    // http(s) origin may pass — never raw header text. An explicitly configured
+    // but INVALID origin is an error in its own right: falling back to the
+    // headers there would reopen exactly the path the configuration closes.
+    const derivedBase = configuredBase
+      ? normalizeOrigin(configuredBase)
+      : normalizeOrigin(host
+        ? `${(forwardedProto?.split(",")[0]?.trim() || "http")}://${host.trim()}`
+        : "");
     if (!resolved) {
       sendScript(response, renderErrorScript("该安装令牌无效（不存在）。请在后台重新生成安装命令。"));
       return;
@@ -56,11 +63,38 @@ export class AgentInstallController {
       return;
     }
     if (!derivedBase) {
-      sendScript(response, renderErrorScript("服务器未配置公网访问地址（CHORDV_PUBLIC_BASE_URL），无法生成安装脚本。"));
+      sendScript(response, renderErrorScript("服务器未配置有效的公网访问地址（CHORDV_PUBLIC_BASE_URL），无法生成安装脚本。"));
       return;
     }
     sendScript(response, renderInstallScript({ token: body.token, apiBase: derivedBase }));
   }
+}
+
+/**
+ * Accepts ONLY a bare `http(s)://host[:port]` origin: no credentials, no path,
+ * query or fragment, and a hostname/IP literal made of characters that cannot
+ * carry shell syntax. Anything else — including a header holding `$(...)`, a
+ * quote or a newline — yields "" so the caller renders the configuration error
+ * script instead of executable attacker input. Returns the normalized origin.
+ */
+export function normalizeOrigin(value: string | undefined): string {
+  const raw = value?.trim();
+  if (!raw || raw.length > 253) return "";
+  let url: URL;
+  try { url = new URL(raw); } catch { return ""; }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return "";
+  if (url.username || url.password || url.search || url.hash) return "";
+  if (url.pathname !== "/" && url.pathname !== "") return "";
+  // url.host is already parsed/normalized; this rejects anything (e.g. an IPv6
+  // literal's brackets aside) that is not a plain hostname/IP plus port.
+  if (!/^(?:[A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/.test(url.host)) return "";
+  if (url.port && Number(url.port) > 65535) return "";
+  return `${url.protocol}//${url.host}`;
+}
+
+/** Encodes a value as a single-quoted shell literal; nothing inside expands. */
+function shellLiteral(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function sendScript(response: Response, body: string) {
@@ -81,13 +115,21 @@ exit 1
 }
 
 export function renderInstallScript({ token, apiBase }: { token: string; apiBase: string }) {
+  // Defense in depth: the two interpolated values are validated HERE too, so a
+  // caller that forgets to check cannot emit a root-executed script carrying
+  // shell syntax. Both are then embedded as single-quoted literals.
+  const origin = normalizeOrigin(apiBase);
+  if (!origin) throw new Error("安装脚本的公网地址无效");
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(token)) throw new Error("安装脚本的注册令牌格式无效");
   return `#!/usr/bin/env bash
 # ChordV Node Agent 一键安装（由控制面动态生成，token 单次有效）
 set -euo pipefail
 
 # Routes live under the Nest global /api prefix (same origin fronts the admin SPA).
-API_BASE="${apiBase}/api"
-REGISTER_TOKEN="${token}"
+# Both values are server-side validated and emitted as single-quoted literals:
+# no expansion or command substitution can happen here.
+API_BASE=${shellLiteral(`${origin}/api`)}
+REGISTER_TOKEN=${shellLiteral(token)}
 INSTALL_DIR="/opt/chordv-node-agent"
 ENV_FILE="/etc/chordv/node-agent.env"
 SERVICE_USER="chordv-agent"
