@@ -77,10 +77,24 @@ chmod 0660 /etc/chordv/node-agent.env
 if bash /test/health-check.sh; then exit 97; fi
 chmod 0640 /etc/chordv/node-agent.env
 bash /test/health-check.sh | grep -qx next
+# The probe opens the service's sqlite database, and SQLite creates the WAL
+# sidecars when they are missing — as root those files would lock the
+# unprivileged agent out of its own state. So a root-run health check must
+# drop to the database's owner before executing the agent.
+mkdir -p /var/lib/chordv-node-agent
+: > /var/lib/chordv-node-agent/agent.db
+chown -R 65534:65534 /var/lib/chordv-node-agent
+printf 'CHORDV_AGENT_NODE_BIN=/usr/local/bin/node\nAGENT_DATABASE_PATH=/var/lib/chordv-node-agent/agent.db\n' > /etc/chordv/node-agent.env
+printf 'console.log(process.getuid());\n' > "$second/dist/src/main.js"
+[[ "$(bash /test/health-check.sh)" == 65534 ]]
+printf 'console.log("next");\n' > "$second/dist/src/main.js"
+printf 'CHORDV_AGENT_NODE_BIN=/usr/local/bin/node\n' > /etc/chordv/node-agent.env
+rm -rf /var/lib/chordv-node-agent
+bash /test/health-check.sh | grep -qx next
 grep -q valid "$first/dist/src/main.js"
 [[ "$(cat /opt/chordv-node-agent/dist/src/main.js)" == legacy ]]
 [[ -z "$(find /opt/chordv-node-agent/releases -maxdepth 1 -name '.staging.*' -print)" ]]
 `], { encoding: "utf8" });
   assert.equal(success.status, 0, `${success.stdout}\n${success.stderr}`);
-  console.log("agent install staging passed (interrupted/corrupt/incomplete preserved, two atomic switches retained old releases, legacy env identity refused before download, health check rejects non-root/writable env file)");
+  console.log("agent install staging passed (interrupted/corrupt/incomplete preserved, two atomic switches retained old releases, legacy env identity refused before download, health check rejects non-root/writable env file and drops to the state database owner)");
 } finally { rmSync(root, { recursive: true, force: true }); }

@@ -101,3 +101,37 @@ test('a read-only store refuses to create a database and cannot write', () => {
     } finally { probe.close(); running.close(); }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('a read-only store refuses to probe a database it does not own', () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'agent-health-owner-'));
+  const databasePath = join(root, 'agent.db');
+  const options = { nodeId: 'n', bootId: 'health-probe', defaultOfflineAllowanceBytes: 1n, readonly: true as const };
+  try {
+    const running = new AgentStore(databasePath, { ...options, readonly: false });
+    try {
+      assert.equal(fs.existsSync(`${databasePath}-shm`), true, 'the running service keeps its WAL sidecars');
+      const euid = process.geteuid?.() ?? 0;
+      if (euid === 0) {
+        // The dangerous case in production: root probing the unprivileged
+        // service's database. The -shm exists right now, so the old existence
+        // check would have opened it — and had the service removed its sidecars
+        // in that window, SQLite would have recreated them owned by root. The
+        // ownership check refuses BEFORE SQLite is touched, which makes the
+        // removal race harmless instead of merely unlikely.
+        for (const suffix of ['', '-wal', '-shm']) fs.chownSync(`${databasePath}${suffix}`, 1000, 1000);
+        const before = fs.readdirSync(root).sort();
+        assert.throws(() => new AgentStore(databasePath, options), /必须以状态库所属用户（uid 1000）运行/);
+        assert.deepEqual(fs.readdirSync(root).sort(), before, 'a refused probe creates nothing');
+        for (const suffix of ['', '-wal', '-shm']) fs.chownSync(`${databasePath}${suffix}`, 0, 0);
+      } else {
+        // Unprivileged: a root-owned path stands in for the reverse mismatch.
+        assert.throws(
+          () => new AgentStore('/bin/sh', options),
+          new RegExp(`必须以状态库所属用户（uid 0）运行，当前 uid ${euid}`),
+        );
+        // Its own database is probed normally.
+        new AgentStore(databasePath, options).close();
+      }
+    } finally { running.close(); }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

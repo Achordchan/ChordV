@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 import type {
@@ -49,9 +49,23 @@ export class AgentStore {
   constructor(databasePath: string, private readonly options: StoreOptions) {
     if (options.readonly) {
       // A read-only connection to a WAL database still needs the -shm segment,
-      // and SQLite would CREATE it when missing. Running as root that would
-      // leave root-owned journal files beside the service's database, so refuse
-      // instead: no -shm means no running service, which the probe reports.
+      // and SQLite would CREATE it when missing. Checking that the segment
+      // exists is NOT enough: the service may stop and remove its sidecars
+      // between the check and SQLite's open, and SQLite would then create them
+      // as whoever runs the probe. So the invariant is ownership — this process
+      // must BE the database's owner, i.e. the service user. Then whatever the
+      // race produces belongs to the service either way, and a probe run as
+      // root (or as any other account) is refused before SQLite is touched.
+      let owner: number;
+      try { owner = statSync(databasePath).uid; }
+      catch { throw new Error('本地状态库不存在（服务尚未启动过），健康检查不创建任何文件'); }
+      const euid = typeof process.geteuid === 'function' ? process.geteuid() : owner;
+      if (euid !== owner) {
+        throw new Error(
+          `健康检查必须以状态库所属用户（uid ${owner}）运行，当前 uid ${euid}：` +
+            '否则 SQLite 可能在数据目录里创建不属于服务的 WAL 文件（见 deploy/health-check.sh 的降权执行）',
+        );
+      }
       if (!existsSync(`${databasePath}-shm`)) {
         throw new Error('本地状态库未处于运行状态（缺少 WAL 共享段），健康检查不创建任何文件');
       }

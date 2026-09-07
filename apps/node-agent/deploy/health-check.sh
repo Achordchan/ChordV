@@ -24,4 +24,32 @@ fi
 set -a
 source "$env_file"
 set +a
-exec "${CHORDV_AGENT_NODE_BIN:-/usr/bin/node}" dist/src/main.js --health
+
+node_bin="${CHORDV_AGENT_NODE_BIN:-/usr/bin/node}"
+db_path="${AGENT_DATABASE_PATH:-/var/lib/chordv-node-agent/agent.db}"
+
+# The probe opens the service's sqlite database read-only. SQLite still needs
+# the WAL sidecars and CREATES them when they are missing, and the service can
+# remove them between any check and that open (a stop or restart racing this
+# script) — so a root-run probe could leave root-owned -wal/-shm files that the
+# unprivileged agent then cannot use. Run the probe as the database's owner
+# instead: anything the race creates belongs to the service either way. The
+# agent refuses a mismatched uid on its own, so a missing runuser must abort
+# rather than silently probe as root.
+db_owner=""
+for candidate in "$db_path" "$(dirname "$db_path")"; do
+  [[ -e "$candidate" ]] || continue
+  db_owner=$(stat -c '%U' "$candidate" 2>/dev/null || stat -f '%Su' "$candidate" 2>/dev/null || true)
+  [[ -n "$db_owner" && "$db_owner" != UNKNOWN ]] && break
+  db_owner=""
+done
+
+if [[ "$(id -u)" -eq 0 && -n "$db_owner" && "$db_owner" != root ]]; then
+  if ! command -v runuser >/dev/null 2>&1; then
+    echo "健康检查中止：缺少 runuser，无法以状态库所属用户 $db_owner 的身份探测" >&2
+    exit 1
+  fi
+  exec runuser -u "$db_owner" -- "$node_bin" dist/src/main.js --health
+fi
+
+exec "$node_bin" dist/src/main.js --health
