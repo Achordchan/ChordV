@@ -56,7 +56,9 @@ Agent 首次启动
   - 已使用令牌只允许持有匹配在册 Agent 凭据的幂等重试，即使原注册令牌已过期也只返回原身份；不同凭据、已撤销 Agent、未使用的过期令牌继续拒绝
 - `AgentRegisterToken` 表:tokenHash(不落明文)、tokenPrefix、nodeId、expiresAt、usedAt
 - agent 侧:启动时无凭据但有 `CHORDV_REGISTER_TOKEN` 环境变量 → 走 register → 先持久化客户端生成的待注册凭据，成功后将身份及凭据写入 AGENT_CREDENTIALS_PATH(JSON,权限 600)→ 后续启动直接用凭据
-- install 脚本注入注册 token 的方式:写入 `/etc/chordv/node-agent.env`
+- install 脚本注入注册 token 的方式:写入 `/etc/chordv/node-agent.env`(root:chordv-agent 0640,目录 root 所有 0750)。该文件被 `deploy/health-check.sh` 以 shell 方式 source,而健康检查常由 root 执行:服务用户只读不写,健康检查在加载前校验 root 所有且组/其他不可写,否则中止。
+- 凭据与注册令牌绑定:正式与待注册凭据都记录注册令牌指纹(仅 sha256,不落明文)。本机已有身份而注册令牌不同(节点删除重建、VPS 复用)时拒绝启动并提示迁移方式,不再静默沿用旧身份;待注册密钥也不跨令牌复用。显式 `CHORDV_AGENT_RESET_IDENTITY=1` 才会把旧凭据改名保留为 `<path>.replaced.<时间戳>` 并以新令牌重新接入。
+- 客户端持久凭据全局唯一:注册时若该凭据哈希已绑定其他节点则直接拒绝(而非撞库唯一索引报 500),`NodeAgent.tokenHash` 的全局唯一索引配合可串行化事务保证同一哈希不可能同时存在两个在册 Agent。
 - 完整管理员环境凭据优先于本地文件，轮换时不再被旧文件覆盖；部分配置和注册令牌冲突明确拒绝。安装包先在独立目录下载、验证并以服务用户解压，再发布不可变版本目录、原子切换current；旧版本与持久数据保留。公开下载通过O_NOFOLLOW打开并对同一文件句柄fstat/流式读取，拒绝符号链接及非普通文件。
 - 请求前持久化是强制前置条件：待注册与正式凭据共用原子写入、0600权限和文件/目录链同步；落盘失败不得发送注册请求，已有不可读/损坏记录不得被当成缺失后重新生成密钥。首次凭据签发在事务内要求pending_register；匹配已用令牌重试仍返回原身份。注册与心跳版本从部署包package.json读取。
 

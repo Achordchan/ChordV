@@ -194,7 +194,10 @@ sync -f "\$INSTALL_DIR"
 
 install -d -m 0750 -o "\$SERVICE_USER" -g "\$SERVICE_USER" /var/lib/chordv-node-agent
 
-install -d -m 0750 /etc/chordv
+# Root-owned directory and file: the env file is shell-sourced by
+# deploy/health-check.sh, which operators run as root. A service-writable env
+# file would turn an agent compromise into root command execution.
+install -d -m 0750 -o root -g root /etc/chordv
 cat > "\$ENV_FILE" <<EOF
 CHORDV_API_BASE_URL=\${API_BASE%/api}
 CHORDV_REGISTER_TOKEN=\$REGISTER_TOKEN
@@ -202,7 +205,9 @@ AGENT_DATABASE_PATH=/var/lib/chordv-node-agent/agent.db
 AGENT_CREDENTIALS_PATH=/var/lib/chordv-node-agent/credentials.json
 CHORDV_AGENT_NODE_BIN=\${NODE_BIN@Q}
 EOF
-chown "\$SERVICE_USER:\$SERVICE_USER" "\$ENV_FILE"
+# systemd reads EnvironmentFile as root before dropping privileges; the group
+# grant only lets the service user read it, never write it.
+chown root:"\$SERVICE_USER" "\$ENV_FILE"
 chmod 0640 "\$ENV_FILE"
 
 cat > /etc/systemd/system/chordv-node-agent.service <<UNIT

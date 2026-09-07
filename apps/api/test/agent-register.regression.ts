@@ -67,6 +67,9 @@ async function main() {
   const updatedNodes: Array<{ where: Record<string, unknown>; data: Record<string, unknown> }> = [];
   let nodeRow: Record<string, unknown> = { id: "node-1", registrationStatus: "pending_register", nodeAgents: [] };
   let liveAgentRow: Record<string, unknown> | null = null;
+  // Live agents belonging to OTHER nodes, i.e. what a cross-node credential
+  // reuse attempt would collide with.
+  const foreignAgents: Array<Record<string, unknown>> = [];
   const prisma = {
     agentRegisterToken: {
       findUnique: async ({ where }: { where: { tokenHash: string } }) => tokens.get(where.tokenHash) ?? null,
@@ -81,6 +84,15 @@ async function main() {
         createdAgents.push({ data });
         liveAgentRow = { id: "agent-row-1", ...data };
         return liveAgentRow;
+      },
+      // Mirrors the global `NodeAgent.tokenHash` unique index: any agent row
+      // (on any node) that already carries this hash is returned.
+      findFirst: async ({ where }: { where: { tokenHash: string; nodeId?: { not: string } } }) => {
+        const rows = [...foreignAgents, ...(liveAgentRow ? [liveAgentRow] : [])] as Array<Record<string, unknown>>;
+        return rows.find((row) =>
+          row.tokenHash === where.tokenHash &&
+          (!where.nodeId?.not || row.nodeId !== where.nodeId.not)
+        ) ?? null;
       }
     },
     node: {
@@ -184,6 +196,29 @@ async function main() {
     expiresAt: new Date(Date.now() + 60_000), usedAt: null, createdAt: new Date()
   });
   await assert.rejects(() => service.register(input(liveAgentToken)), /已存在有效 Agent/);
+
+  // CROSS-NODE CREDENTIAL REUSE: a client presenting a valid token for node-2
+  // while its persistent secret is already bound to node-1 is rejected with a
+  // clear error, not a raw unique-constraint failure — and no agent is created,
+  // so `authenticate()` can never resolve one hash to two nodes.
+  const crossToken = "chordv_register_cross";
+  const boundToken = "chordv_agent_" + "d".repeat(43);
+  foreignAgents.push({ id: "foreign", nodeId: "node-1", agentId: "agent-node-1", tokenHash: hashAgentToken(boundToken) });
+  nodeRow = { id: "node-2", registrationStatus: "pending_register", nodeAgents: [] };
+  liveAgentRow = null;
+  tokens.set(hashAgentToken(crossToken), {
+    id: "t-4", nodeId: "node-2", tokenHash: hashAgentToken(crossToken), tokenPrefix: "chordv_register_",
+    expiresAt: new Date(Date.now() + 60_000), usedAt: null, createdAt: new Date()
+  });
+  const beforeCross = createdAgents.length;
+  await assert.rejects(() => service.register(input(crossToken, boundToken)), /已绑定其他节点/);
+  assert.equal(createdAgents.length, beforeCross, "cross-node reuse must not mint a credential");
+  assert.equal(tokens.get(hashAgentToken(crossToken))?.usedAt, null, "a rejected reuse must not consume the token");
+  // A fresh secret on the same token registers normally.
+  const ownToken = "chordv_agent_" + "e".repeat(43);
+  const crossOk = await service.register(input(crossToken, ownToken));
+  assert.equal(crossOk.nodeId, "node-2");
+  assert.equal(createdAgents.length, beforeCross + 1);
 }
 
 // 3) Install-script rendering: usable token yields a script carrying the
@@ -198,6 +233,13 @@ async function main() {
   assert.ok(script.includes('CHORDV_API_BASE_URL=${API_BASE%/api}'), "agent env must carry the un-prefixed origin");
   assert.ok(script.includes("^v20\\.19\\."), "script must enforce the same Node 20.19.x contract as release build");
   assert.ok(script.includes("ExecStart=${NODE_BIN@Q}"), "systemd unit must use the probed node binary");
+  // The env file is shell-sourced by deploy/health-check.sh, which operators run
+  // as root: it must stay root-owned so a compromised agent cannot inject
+  // commands into a root shell. Group read is all the service ever needs.
+  assert.ok(script.includes('chown root:"$SERVICE_USER" "$ENV_FILE"'), "env file must stay root-owned");
+  assert.ok(!/chown "\$SERVICE_USER:\$SERVICE_USER" "\$ENV_FILE"/.test(script), "env file must not be service-owned");
+  assert.ok(script.includes('chmod 0640 "$ENV_FILE"'), "env file must not be world/group writable");
+  assert.ok(script.includes("install -d -m 0750 -o root -g root /etc/chordv"), "env directory must be root-owned");
   assert.ok(!script.includes("__CHORDV_API_BASE__"), "no placeholder may leak into rendered scripts");
   const bashCheck = spawnSync("bash", ["-n"], { input: script, encoding: "utf8" });
   assert.equal(bashCheck.status, 0, bashCheck.stderr);

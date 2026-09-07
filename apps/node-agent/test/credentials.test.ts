@@ -31,7 +31,11 @@ test('missing parents are created and the durable retry secret precedes the firs
     const saved = await resolveCredentials(config(file), async (_base, payload) => { requests.push(payload); return identity; });
     assert.equal(requests[1].agentToken, requests[0].agentToken);
     assert.equal(saved.token, requests[0].agentToken);
-    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), saved);
+    const persisted = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.deepEqual({ agentId: persisted.agentId, nodeId: persisted.nodeId, token: persisted.token }, saved);
+    // The one-time registration token is never stored, only its fingerprint.
+    assert.match(persisted.registerTokenFingerprint, /^[0-9a-f]{64}$/);
+    assert.equal(fs.readFileSync(file, 'utf8').includes(config(file).registerToken as string), false);
     assert.equal(mode(file), 0o600);
     assert.deepEqual(await resolveCredentials(config(file), async () => { assert.fail('restart must use final credentials'); }), saved);
     assert.equal(fs.readdirSync(dirname(file)).some(name => name.includes('.tmp.')), false);
@@ -171,5 +175,49 @@ test('complete environment credentials override saved or damaged credentials wit
     }
     await assert.rejects(resolveCredentials({ ...options, token: '' }), /环境凭据必须完整/);
     await assert.rejects(resolveCredentials({ ...options, registerToken: 'register' }), /不能与注册令牌/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+
+test('a different registration token must not silently reuse the saved identity', async () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'agent-credential-reonboard-'));
+  const file = join(root, 'credentials.json');
+  try {
+    const saved = await resolveCredentials(config(file), async () => identity);
+    const fresh = { ...config(file), registerToken: 'chordv_register_second_node' };
+    await assert.rejects(
+      resolveCredentials(fresh, async () => { assert.fail('must not register while a stale identity is present'); }),
+      /已存在其他注册令牌签发的 Agent 身份/
+    );
+    // The saved identity is untouched, so the original node keeps working.
+    assert.deepEqual(await resolveCredentials(config(file), async () => { assert.fail('same token must not re-register'); }), saved);
+    // Same token, unchanged host: still no reset, still the same identity.
+    assert.deepEqual(await resolveCredentials({ ...config(file), resetIdentity: true }, async () => { assert.fail('no reset needed'); }), saved);
+
+    const replacement = { accepted: true, agentId: 'agent-second', nodeId: 'node-second' };
+    const requests: AgentRegisterRequest[] = [];
+    const reset = await resolveCredentials({ ...fresh, resetIdentity: true }, async (_base, payload) => { requests.push(payload); return replacement; });
+    assert.deepEqual(reset, { agentId: 'agent-second', nodeId: 'node-second', token: requests[0].agentToken });
+    // A new node never inherits the previous node's client secret.
+    assert.notEqual(reset.token, saved.token);
+    const archived = fs.readdirSync(root).filter(name => name.includes('.replaced.'));
+    assert.equal(archived.length, 1);
+    assert.deepEqual(JSON.parse(fs.readFileSync(join(root, archived[0]), 'utf8')).agentId, saved.agentId);
+    // After the reset the new identity is stable without the flag.
+    assert.deepEqual(await resolveCredentials(fresh, async () => { assert.fail('reset identity must persist'); }), reset);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a pending secret is never replayed under a different registration token', async () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'agent-credential-pending-rebind-'));
+  const file = join(root, 'credentials.json');
+  const first: AgentRegisterRequest[] = [];
+  try {
+    await assert.rejects(resolveCredentials(config(file), async (_base, payload) => { first.push(payload); throw new Error('response lost'); }), /response lost/);
+    const second = { ...config(file), registerToken: 'chordv_register_other_node' };
+    const rebound: AgentRegisterRequest[] = [];
+    await resolveCredentials(second, async (_base, payload) => { rebound.push(payload); return identity; });
+    assert.notEqual(rebound[0].agentToken, first[0].agentToken);
+    assert.equal(JSON.parse(fs.readFileSync(file + '.pending', 'utf8')).agentToken, rebound[0].agentToken);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

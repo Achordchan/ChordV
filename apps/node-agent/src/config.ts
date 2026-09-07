@@ -22,12 +22,23 @@ export interface AgentConfig {
   registerToken?: string;
   /** Where registered credentials are persisted (mode 600), enabling restarts without re-registering. */
   credentialsPath: string;
+  /**
+   * Operator-confirmed re-onboarding: archive a saved identity that a new
+   * registration token did not issue, instead of refusing to start. Off by
+   * default so a repurposed host can never silently keep a stale identity.
+   */
+  resetIdentity?: boolean;
 }
 
 function required(name: string): string {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`缺少环境变量 ${name}`);
   return value;
+}
+
+function truthyFlag(name: string): boolean {
+  const value = process.env[name]?.trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes';
 }
 
 function positiveInteger(name: string, fallback: number): number {
@@ -106,6 +117,7 @@ export function loadConfig(): AgentConfig {
     databasePath: resolve(process.env.AGENT_DATABASE_PATH || './data/node-agent.db'),
     ...(registerToken && !token ? { registerToken } : {}),
     credentialsPath: resolve(process.env.AGENT_CREDENTIALS_PATH || './data/credentials.json'),
+    ...(truthyFlag('CHORDV_AGENT_RESET_IDENTITY') ? { resetIdentity: true } : {}),
     sampleIntervalMs: positiveInteger('AGENT_SAMPLE_INTERVAL_MS', 5_000),
     heartbeatIntervalMs: positiveInteger('AGENT_HEARTBEAT_INTERVAL_MS', 15_000),
     offlineAllowanceBytes,

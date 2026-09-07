@@ -56,10 +56,19 @@ grep -q next "$second/dist/src/main.js"
 mkdir -p /etc/chordv
 printf 'CHORDV_AGENT_NODE_BIN=/usr/local/bin/node\\n' > /etc/chordv/node-agent.env
 bash /test/health-check.sh | grep -qx next
+# The health check sources this file as shell code and normally runs as root, so
+# a non-root owner or a group/other-writable mode must abort instead of loading it.
+chown 65534 /etc/chordv/node-agent.env
+if bash /test/health-check.sh; then exit 98; fi
+chown 0 /etc/chordv/node-agent.env
+chmod 0660 /etc/chordv/node-agent.env
+if bash /test/health-check.sh; then exit 97; fi
+chmod 0640 /etc/chordv/node-agent.env
+bash /test/health-check.sh | grep -qx next
 grep -q valid "$first/dist/src/main.js"
 [[ "$(cat /opt/chordv-node-agent/dist/src/main.js)" == legacy ]]
 [[ -z "$(find /opt/chordv-node-agent/releases -maxdepth 1 -name '.staging.*' -print)" ]]
 `], { encoding: "utf8" });
   assert.equal(success.status, 0, `${success.stdout}\n${success.stderr}`);
-  console.log("agent install staging passed (interrupted/corrupt/incomplete preserved, two atomic switches retained old releases)");
+  console.log("agent install staging passed (interrupted/corrupt/incomplete preserved, two atomic switches retained old releases, health check rejects non-root/writable env file)");
 } finally { rmSync(root, { recursive: true, force: true }); }

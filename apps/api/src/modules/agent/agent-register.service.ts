@@ -195,6 +195,18 @@ export class AgentRegisterService {
             select: { id: true, registrationStatus: true, nodeAgents: { where: { revokedAt: null }, select: { id: true, agentId: true, tokenHash: true } } }
           });
           if (!node) throw new UnauthorizedException("注册令牌对应的节点不存在");
+          // `NodeAgent.tokenHash` is globally unique, so two agents can never
+          // share a hash — but without this check a client reusing its secret
+          // for a second node would hit a raw unique-violation 500. Reject it
+          // explicitly, before the replay branch, so a hash already bound
+          // elsewhere can neither register nor replay here. Serializable
+          // isolation makes the read-then-insert safe against a concurrent
+          // registration of the same secret on another node.
+          const boundElsewhere = await tx.nodeAgent.findFirst({
+            where: { tokenHash: agentTokenHash, nodeId: { not: node.id } },
+            select: { id: true }
+          });
+          if (boundElsewhere) throw new UnauthorizedException("Agent 凭据已绑定其他节点，不能跨节点复用");
           const existing = node.nodeAgents.find((agent) => agent.tokenHash === agentTokenHash);
           if (record.usedAt && existing) {
             // Replay proves possession of the already-issued live credential. It
