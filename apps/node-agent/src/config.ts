@@ -40,6 +40,12 @@ export interface AgentConfig {
    * cannot redirect root's write into Xray's configuration directory.
    */
   inboundResultDir: string;
+  /**
+   * How far the estimated Xray start may move before it counts as a restart.
+   * Uptime has second granularity and sampling has jitter, so a small window is
+   * needed; a false positive only costs one extra (idempotent) reconcile.
+   */
+  restartToleranceMs: number;
   /** Operator override for the address clients dial, ahead of API-observed detection. */
   publicHost?: string;
 }
@@ -134,6 +140,7 @@ export function loadConfig(): AgentConfig {
       || join(dirname(resolve(process.env.AGENT_DATABASE_PATH || './data/node-agent.db')), 'xray')
     ),
     inboundResultDir: resolve(process.env.CHORDV_XRAY_RESULT_DIR || '/var/lib/chordv-xray'),
+    restartToleranceMs: positiveInteger('AGENT_XRAY_RESTART_TOLERANCE_MS', 2_000),
     ...(process.env.CHORDV_NODE_PUBLIC_HOST?.trim() ? { publicHost: process.env.CHORDV_NODE_PUBLIC_HOST.trim() } : {}),
     ...(registerToken && !token ? { registerToken } : {}),
     credentialsPath: resolve(process.env.AGENT_CREDENTIALS_PATH || './data/credentials.json'),

@@ -320,7 +320,13 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
   // A redelivered command must not rotate again: the agent may have crashed
   // before recording completion, and a second rotation would invalidate every
   // subscription issued from the first one.
-  if (request.commandId && state?.commandId === request.commandId && !state.pending && fs.existsSync(target)) {
+  // Both no-op branches also require Xray to be SERVING. A stopped service (or
+  // one that exhausted systemd's restart limit) still has its config file and
+  // its recorded state, and answering "nothing to do" there would leave the
+  // node down with every retry repeating the same answer.
+  const serving = (port: number) => port > 0 && deps.isListening(port);
+  if (request.commandId && state?.commandId === request.commandId && !state.pending && fs.existsSync(target)
+      && serving(state.listenPort || request.listenPort)) {
     return {
       listen: state.listen || '0.0.0.0',
       changed: false,
@@ -336,7 +342,8 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
   // `pending` means the recorded state may not describe what Xray is serving
   // (the process died between publishing the config and committing the state),
   // so the shortcut would answer with a port that is no longer deployed.
-  if (state?.hash === hash && !state.pending && !request.rotateKeys && fs.existsSync(target)) {
+  if (state?.hash === hash && !state.pending && !request.rotateKeys && fs.existsSync(target)
+      && serving(state.listenPort || request.listenPort)) {
     // Nothing to do — and doing it anyway would restart Xray, dropping every
     // live connection and every gRPC-provisioned user for no reason.
     return {

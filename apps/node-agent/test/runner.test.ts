@@ -63,7 +63,7 @@ test('后台恢复且离线批次已确认后重新启用 Direct 用户', async 
     xrayApiAddress: '127.0.0.1:10085',
     xrayInboundTag: 'test-in',
     databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
-    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'), restartToleranceMs: 2_000,
     sampleIntervalMs: 60_000,
     heartbeatIntervalMs: 60_000,
     offlineAllowanceBytes: 64n * 1024n * 1024n,
@@ -121,7 +121,7 @@ test('Shadow 心跳发现更高 revision 后刷新完整用户快照且不写 Xr
   const runner = new AgentRunner({
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
     xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
-    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'), restartToleranceMs: 2_000,
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 10, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray);
 
@@ -178,7 +178,7 @@ test('Direct 配置缩减时先从 Xray 清理已移除用户再替换本地快�
   const runner = new AgentRunner({
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
     xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
-    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'), restartToleranceMs: 2_000,
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray);
 
@@ -233,7 +233,7 @@ test('采样耗尽与配置刷新串行执行，最终 Xray 状态保持停用',
   const runner = new AgentRunner({
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
     xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
-    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'), restartToleranceMs: 2_000,
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray);
 
@@ -290,7 +290,7 @@ test('停用命令结果携带本机待上传批次序列水位', async () => {
   const runner = new AgentRunner({
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
     xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
-    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'), restartToleranceMs: 2_000,
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray);
   try {
@@ -334,7 +334,7 @@ test('Xray 重启后（无论谁触发）都会重新下发用户', async () => 
   store.applyConfigSnapshot({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [desired] });
   // Users added over gRPC live only in Xray's memory: a restart empties the
   // inbound while the agent still believes everyone is provisioned.
-  let uptime = 900;
+  let uptime = 1;
   let live: Array<{ email: string; uuid?: string }> = [{ email: desired.email, uuid: desired.uuid }];
   let ensured = 0;
   const api = {
@@ -359,7 +359,7 @@ test('Xray 重启后（无论谁触发）都会重新下发用户', async () => 
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
     xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
     databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
-    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'), restartToleranceMs: 2_000,
     sampleIntervalMs: 5, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray);
 
@@ -367,9 +367,11 @@ test('Xray 重启后（无论谁触发）都会重新下发用户', async () => 
     await runner.start();
     await waitFor(() => ensured >= 1);
     const before = ensured;
-    // Xray restarted underneath us and dropped its users.
+    // Xray restarted underneath us and dropped its users. Uptime is HIGHER than
+    // the previous sample (1s → restart → 3s), which a "did uptime fall?" check
+    // would miss entirely.
     live = [];
-    uptime = 2;
+    uptime = 3;
     await waitFor(() => ensured > before);
     assert.deepEqual(live.map((item) => item.email), [desired.email]);
   } finally {
@@ -415,7 +417,7 @@ test('本机残留他人节点的入站配置时，启动即清空而不是继�
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
     xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
     databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
-    inboundRequestDir: requestDir, inboundResultDir: resultDir,
+    inboundRequestDir: requestDir, inboundResultDir: resultDir, restartToleranceMs: 2_000,
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray, {
     apply: async () => { throw new Error('启动时不应部署入站'); },
@@ -468,7 +470,7 @@ test('失败的部署结果不算外来入站，重启不会白白清空配置',
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
     xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
     databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
-    inboundRequestDir: requestDir, inboundResultDir: resultDir,
+    inboundRequestDir: requestDir, inboundResultDir: resultDir, restartToleranceMs: 2_000,
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray, {
     apply: async () => { throw new Error('不应部署'); },
@@ -529,7 +531,7 @@ test('恢复下发失败后会继续重试，直到用户真的补齐', async ()
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
     xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
     databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
-    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'), restartToleranceMs: 2_000,
     sampleIntervalMs: 5, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray);
 
@@ -553,6 +555,68 @@ test('恢复下发失败后会继续重试，直到用户真的补齐', async ()
     failEnsure = false;
     await waitFor(() => ensured > succeeded);
     assert.deepEqual(live.map((item) => item.email), [desired.email]);
+  } finally {
+    await runner.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('重启后 uptime 反而更大时也能识别（按进程启动时刻，而非 uptime 是否回退）', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-fast-restart-'));
+  const store = new AgentStore(join(directory, 'agent.db'), {
+    nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
+  });
+  const desired = user();
+  store.applyConfigSnapshot({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [desired] });
+  // The fake reports a real, continuously growing uptime, so moving the virtual
+  // process start is the only thing that can betray a restart.
+  let virtualStart = Date.now() - 600;
+  let live: Array<{ email: string; uuid?: string }> = [{ email: desired.email, uuid: desired.uuid }];
+  let ensured = 0;
+  const uptimes: number[] = [];
+  const api = {
+    getConfig: async () => ({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [desired] }),
+    heartbeat: async () => ({ accepted: true, ackThrough: '0', configRevision: '1' }),
+    uploadBatch: async () => ({ accepted: true, duplicate: false, ackThrough: '1' }),
+    reportCommandResult: async () => undefined,
+    consumeEvents: async (_handler: unknown, signal: AbortSignal) => {
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    },
+  } as unknown as AgentApiClient;
+  const xray: XrayAdapter = {
+    health: async () => undefined,
+    uptimeSeconds: async () => { const value = (Date.now() - virtualStart) / 1_000; uptimes.push(value); return value; },
+    inboundLive: async () => true,
+    readAbsoluteCounters: async () => [],
+    listUsers: async () => live,
+    ensureUser: async (input) => { ensured += 1; live = [{ email: input.email, uuid: input.uuid }]; },
+    removeUser: async (email) => { live = live.filter((item) => item.email !== email); },
+  };
+  const runner = new AgentRunner({
+    agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
+    databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'),
+    restartToleranceMs: 200,
+    sampleIntervalMs: 1_500, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
+  }, store, api, xray);
+
+  try {
+    await runner.start();
+    await waitFor(() => ensured >= 1);
+    await waitFor(() => uptimes.length >= 1, 3_000);
+    const before = ensured;
+    const seenBefore = uptimes.length;
+    // Xray is replaced right after a sample. By the NEXT sample (1.5s later)
+    // the new process已经跑了 1.5s，比上次看到的 0.6s 还大——「uptime 是否
+    // 回退」完全看不出来，只有进程启动时刻前移暴露了它。
+    virtualStart = Date.now();
+    live = [];
+    await waitFor(() => ensured > before, 6_000);
+    assert.deepEqual(live.map((item) => item.email), [desired.email]);
+    const [previous, next] = [uptimes[seenBefore - 1], uptimes[seenBefore]];
+    assert.ok(next !== undefined && next >= previous, `重启后的 uptime 必须不小于此前观测值：${previous} → ${next}`);
   } finally {
     await runner.stop();
     store.close();

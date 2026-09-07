@@ -19,7 +19,8 @@ export class AgentRunner {
   private readonly timers = new Set<NodeJS.Timeout>();
   private stateMutationTail: Promise<void> = Promise.resolve();
   private eventsController?: AbortController;
-  private lastXrayUptime = 0;
+  /** Estimated wall-clock start of the running Xray process, from its uptime. */
+  private lastXrayStart = 0;
   /** Set when Xray was (re)started; cleared only once users are back in place. */
   private reconcilePending = false;
   private readonly inbound: InboundApplier;
@@ -57,6 +58,9 @@ export class AgentRunner {
       this.logError(new Error(`后台暂不可用，使用 revision ${this.currentConfig.revision} 的本地配置启动`));
     }
     await this.checkXrayAndRecover();
+    // Take the restart baseline before the first sampling interval, so a
+    // restart in that window is not invisible.
+    await this.detectXrayRestart().catch((error) => this.logError(error));
     await this.discardForeignInbound();
     this.schedule(() => this.sample(), this.config.sampleIntervalMs);
     this.schedule(() => this.flushBatches(), 1_000);
@@ -185,8 +189,17 @@ export class AgentRunner {
    */
   private async detectXrayRestart(): Promise<void> {
     const uptime = await this.xray.uptimeSeconds();
-    if (this.lastXrayUptime > 0 && uptime < this.lastXrayUptime) this.reconcilePending = true;
-    this.lastXrayUptime = uptime;
+    // Compare the process's ESTIMATED START, not whether uptime fell: a restart
+    // shortly after a sample leaves uptime higher than last time (1s, restart,
+    // then 3s), and the emptied user table would never be noticed. The estimate
+    // only moves forward when the process was replaced; the tolerance absorbs
+    // second-granularity uptime and scheduling jitter, and a false positive
+    // only costs one extra reconcile.
+    const startEstimate = Date.now() - uptime * 1_000;
+    if (this.lastXrayStart > 0 && startEstimate - this.lastXrayStart > this.config.restartToleranceMs) {
+      this.reconcilePending = true;
+    }
+    this.lastXrayStart = startEstimate;
     await this.flushPendingReconcile();
   }
 

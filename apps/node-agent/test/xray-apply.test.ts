@@ -415,3 +415,29 @@ test('reset 在发布空入站之前先落盘意图', () => {
     assert.equal(JSON.parse(readFileSync(target, 'utf8')).inbounds[0].port, 443);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('Xray 已停时，空转分支必须先把服务拉起来', () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'xray-apply-down-'));
+  try {
+    const applyDeps = deps(root);
+    const first = applyRequest(request({ commandId: 'command-down' }), applyDeps);
+    assert.equal(first.changed, true);
+
+    // The service is stopped (or exhausted systemd's restart limit): the config
+    // file and the recorded state are both still there, so answering "nothing
+    // to do" would leave the node down and every retry would repeat it.
+    let listening = false;
+    const recovering = deps(root, {
+      confDir: applyDeps.confDir, stateFile: applyDeps.stateFile,
+      isListening: () => listening,
+      restart: () => { listening = true; },
+    });
+    const repeated = applyRequest(request({ commandId: 'command-down' }), recovering);
+    assert.equal(repeated.restarted, true, '服务没在跑就必须重启，而不是报无事可做');
+    assert.equal(repeated.realityPublicKey, keys.publicKey, '恢复不得更换密钥');
+
+    // Once it is serving again, the same command really is a no-op.
+    const settled = applyRequest(request({ commandId: 'command-down' }), recovering);
+    assert.equal(settled.restarted, false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
