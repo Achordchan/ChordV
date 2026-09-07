@@ -15,7 +15,7 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
     "pretest": "corepack pnpm rebuild better-sqlite3",
-    "test": "tsx --test test/config.test.ts test/api-contract.test.ts test/store.test.ts test/boot-baseline.test.ts test/command-processor.test.ts test/runner.test.ts test/xray-adapter.test.ts test/deploy.test.ts"
+    "test": "tsx --test test/config.test.ts test/credentials.test.ts test/agent-version.test.ts test/api-contract.test.ts test/store.test.ts test/boot-baseline.test.ts test/command-processor.test.ts test/runner.test.ts test/xray-adapter.test.ts test/deploy.test.ts"
   },
   "dependencies": {
     "@remnawave/xtls-sdk": "0.16.0",

@@ -104,7 +104,7 @@ case "\$(uname -m)" in
 esac
 
 # The bundled native modules (better-sqlite3) and the systemd unit below both
-# require a Node 20.x runtime at a FIXED path: the service cannot resolve an
+# require a Node 20.19.x runtime at a FIXED path: the service cannot resolve an
 # nvm/wrapped interpreter, and 18/22 fail the native ABI. Probe each candidate's
 # VERSION before selecting it — a host with an old /usr/bin/node and a valid
 # Node 20 under /usr/local/bin must still install.
@@ -121,13 +121,13 @@ for candidate in /usr/bin/node /usr/local/bin/node; do
   candidate="\$(readlink -f "\$candidate" 2>/dev/null || true)"
   case "\$candidate" in /usr/*|/opt/*) ;; *) continue ;; esac
   candidate_version="\$(runuser -u "\$SERVICE_USER" -- "\$candidate" --version 2>/dev/null || true)"
-  if [[ "\$candidate_version" =~ ^v20\\. ]]; then
+  if [[ "\$candidate_version" =~ ^v20\\.19\\. ]]; then
     NODE_BIN="\$candidate"
     break
   fi
 done
 if [[ -z "\$NODE_BIN" ]]; then
-  echo "安装失败：未找到 Node.js 20.x（要求 20.x，可用 node --version 检查已安装版本）。请将 Node.js 20 安装到服务用户可访问的系统目录（/usr/bin 或 /usr/local/bin），不要使用 root 的 nvm 路径。" >&2
+  echo "安装失败：未找到 Node.js 20.19.x（要求 20.19.x，可用 node --version 检查已安装版本）。请将 Node.js 20.19.x 安装到服务用户可访问的系统目录（/usr/bin 或 /usr/local/bin），不要使用 root 的 nvm 路径。" >&2
   exit 1
 fi
 

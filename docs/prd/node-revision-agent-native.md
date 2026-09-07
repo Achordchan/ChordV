@@ -57,11 +57,12 @@ Agent 首次启动
 - `AgentRegisterToken` 表:tokenHash(不落明文)、tokenPrefix、nodeId、expiresAt、usedAt
 - agent 侧:启动时无凭据但有 `CHORDV_REGISTER_TOKEN` 环境变量 → 走 register → 先持久化客户端生成的待注册凭据，成功后将身份及凭据写入 AGENT_CREDENTIALS_PATH(JSON,权限 600)→ 后续启动直接用凭据
 - install 脚本注入注册 token 的方式:写入 `/etc/chordv/node-agent.env`
+- 请求前持久化是强制前置条件：待注册与正式凭据共用原子写入、0600权限和文件/目录链同步；落盘失败不得发送注册请求，已有不可读/损坏记录不得被当成缺失后重新生成密钥。首次凭据签发在事务内要求pending_register；匹配已用令牌重试仍返回原身份。注册与心跳版本从部署包package.json读取。
 
 R1 安全与恢复边界：
 
 - 创建的节点保持禁用；pending_register 不可启用或分配，agent_ready 还必须具备非占位地址、有效端口及完整 VLESS/Reality 参数。激活、订阅分配、客户端列表/探测/连接和用户下发共用该检查，R2 完成入站部署前不会向客户端提供 pending-agent:0。
-- 安装脚本仅探测 /usr/bin/node、/usr/local/bin/node，解析软链接后限定 /usr 或 /opt 系统路径，并以 chordv-agent 用户验证 Node 20.x 可执行；root nvm、ProtectHome 隐藏路径或仅 root 可执行的安装不被采用。
+- 安装脚本仅探测 /usr/bin/node、/usr/local/bin/node，解析软链接后限定 /usr 或 /opt 系统路径，并以 chordv-agent 用户验证 Node 20.19.x 可执行；root nvm、ProtectHome 隐藏路径或仅 root 可执行的安装不被采用。
 - 关闭弹窗会使当前会话及轮询失效，迟到创建结果仅刷新节点列表，不恢复旧弹窗。待注册节点提供“继续接入”，可重新签发令牌；无需保留明文旧命令或创建重复节点。R1 尚无注册完成的 SSE 事件，沿用3秒检查、故障退避至30秒，关闭/换会话/就绪/15分钟等待期结束时停止。
 
 ### 2.2 新增:入站配置下发(agent)

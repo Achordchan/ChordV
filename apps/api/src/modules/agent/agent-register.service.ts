@@ -211,6 +211,9 @@ export class AgentRegisterService {
             // regeneration is only offered for pending nodes.
             throw new UnauthorizedException("注册令牌已被使用");
           }
+          if (node.registrationStatus !== "pending_register") {
+            throw new UnauthorizedException("节点不处于待注册状态，不能签发 Agent 凭据");
+          }
           const agent = await tx.nodeAgent.create({
             data: {
               id: randomUUID(),

@@ -25,6 +25,9 @@ rm -f /usr/local/bin/node
   for (const [name, commands, expected] of [
     ["root-nvm", 'ln -s /root/.nvm/node /usr/local/bin/node', false],
     ["system-node", 'ln -s /opt/test-node/bin/node /usr/local/bin/node', true],
+    ["old-minor", "printf '#!/bin/sh\\necho v20.18.3\\n' > /opt/test-node/bin/node; ln -s /opt/test-node/bin/node /usr/local/bin/node", false],
+    ["new-minor", "printf '#!/bin/sh\\necho v20.20.0\\n' > /opt/test-node/bin/node; ln -s /opt/test-node/bin/node /usr/local/bin/node", false],
+    ["supported-patch", "printf '#!/bin/sh\\necho v20.19.9\\n' > /opt/test-node/bin/node; ln -s /opt/test-node/bin/node /usr/local/bin/node", true],
     ["root-only-system-dir", 'chmod 700 /opt/test-node; ln -s /opt/test-node/bin/node /usr/local/bin/node', false]
   ] as const) {
     const result = spawnSync("docker", ["run", "--rm", "--network", "none", "--entrypoint", "bash", "-v", `${root}:/test:ro`, "chordv-api:latest", "-c", setup + commands + '\nPATH=/root/.nvm:$PATH bash /test/probe.sh'], { encoding: "utf8" });

@@ -4,7 +4,7 @@ Node Agent 部署在 VLESS 节点 VPS 上，直接通过本机 Xray gRPC API 管
 
 ## 运行约束
 
-- Node.js 必须为 `20.19.x`。
+- Node.js 必须为 `20.19.x`。一键安装器与发布构建使用同一版本要求，20.18.x/20.20.x 不作为兼容版本接受。
 - Xray API 必须绑定 Unix Socket、`127.0.0.1` 或 `::1`；Agent 会拒绝公网地址。
 - Xray 必须启用 `StatsService`、`HandlerService`、`statsUserUplink` 和 `statsUserDownlink`。
 - `XRAY_INBOUND_TAG` 必须指向实际承载 ChordV VLESS 用户的入站。
@@ -43,3 +43,9 @@ systemd 环境中的 `AGENT_DATABASE_PATH` 必须设置为 `/var/lib/chordv-node
 在 Linux 源码工作区使用 `bash apps/node-agent/deploy/build-release.sh /opt/chordv-node-agent.release` 生成待切换目录。脚本会在 Node.js 20.19.x 下执行测试、类型检查和构建，并强制使用 pnpm 的 `package-import-method=copy`，保证 `better-sqlite3` 等原生模块不与 pnpm store 或其他构建目录共享 inode。
 
 禁止用默认硬链接产物覆盖正在运行的 Agent。重建共享的原生模块会改写运行中进程已经映射的文件，可能导致 `SIGBUS` 或 `SIGSEGV`；脚本会在构建前检查当前 systemd 服务并拒绝这种状态。
+
+### 原生注册凭据与版本
+
+首次注册前必须将客户端生成的持久密钥写入 `AGENT_CREDENTIALS_PATH.pending`：缺少父目录时创建权限0700的目录，文件使用0600，完成原子写入及文件/目录链同步后才发送注册请求。任何写入或同步失败都会中止启动，不消耗注册令牌；响应丢失或最终凭据保存失败时，下次启动重用同一密钥。已有凭据文件不可读或损坏时明确失败，不静默生成替代身份。
+
+注册成功后的正式凭据同样原子持久化；部署目录中的 `package.json` 是注册及心跳版本号的来源，直接由systemd执行Node也不依赖npm环境。首次注册只允许控制面节点处于pending_register，已注册身份的匹配重试不受此首次注册限制。此流程针对单个systemd Agent实例；测试中的故障注入不替代真实掉电恢复演练。

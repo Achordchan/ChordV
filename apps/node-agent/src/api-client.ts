@@ -11,8 +11,8 @@ import { randomBytes } from 'node:crypto';
 interface ApiClientOptions { baseUrl: string; token: string; agentId: string; nodeId: string }
 
 /** The pre-registration exchange: one-time token in, identity out. The agent
- *  generates its own persistent credential and only the server-side hash ever
- *  leaves the machine — replaying the exchange (lost response) is idempotent. */
+ *  generates its persistent credential locally and sends it over the protected
+ *  registration request; the server stores only its hash. Retries reuse that secret. */
 export interface AgentRegisterRequest {
   registerToken: string;
   agentToken: string;

@@ -65,7 +65,7 @@ async function main() {
   const tokens = new Map<string, TokenRow>();
   const createdAgents: Array<{ data: Record<string, unknown> }> = [];
   const updatedNodes: Array<{ where: Record<string, unknown>; data: Record<string, unknown> }> = [];
-  let nodeRow: Record<string, unknown> = { id: "node-1", registrationStatus: "agent_ready", nodeAgents: [] };
+  let nodeRow: Record<string, unknown> = { id: "node-1", registrationStatus: "pending_register", nodeAgents: [] };
   let liveAgentRow: Record<string, unknown> | null = null;
   const prisma = {
     agentRegisterToken: {
@@ -115,6 +115,14 @@ async function main() {
     expiresAt: new Date(Date.now() + 60_000), usedAt: null, createdAt: new Date()
   });
   const clientToken = "chordv_agent_" + "b".repeat(43);
+  for (const status of ["agent_ready", null]) {
+    nodeRow.registrationStatus = status;
+    await assert.rejects(() => service.register(input(token, clientToken)), /不处于待注册状态/);
+    assert.equal(createdAgents.length, 0);
+    assert.equal(tokens.get(hashAgentToken(token))?.usedAt, null);
+    assert.equal(updatedNodes.length, 0);
+  }
+  nodeRow.registrationStatus = "pending_register";
   const result = await service.register(input(token, clientToken));
   assert.equal(result.accepted, true);
   assert.equal(result.nodeId, "node-1");
@@ -188,7 +196,7 @@ async function main() {
   assert.ok(script.includes('API_BASE="https://v.example.com/api"'), "script must target the /api global prefix");
   assert.ok(!script.includes("command -v node") || script.includes("candidate_version"), "node probing must check each candidate's version");
   assert.ok(script.includes('CHORDV_API_BASE_URL=${API_BASE%/api}'), "agent env must carry the un-prefixed origin");
-  assert.ok(script.includes("^v20"), "script must pin the Node 20 major version check");
+  assert.ok(script.includes("^v20\\.19\\."), "script must enforce the same Node 20.19.x contract as release build");
   assert.ok(script.includes("ExecStart=${NODE_BIN@Q}"), "systemd unit must use the probed node binary");
   assert.ok(!script.includes("__CHORDV_API_BASE__"), "no placeholder may leak into rendered scripts");
   const bashCheck = spawnSync("bash", ["-n"], { input: script, encoding: "utf8" });
