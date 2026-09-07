@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs, { type PathLike } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -271,5 +272,40 @@ test('a corrupt reset journal stops startup instead of guessing', async () => {
   try {
     fs.writeFileSync(`${file}.reset-journal`, JSON.stringify({ stamp: 'not-a-number' }));
     await assert.rejects(resolveCredentials(config(file), async () => { assert.fail('must not register'); }), /重置日志损坏/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a state-only reset resumes as state-only and keeps the current credentials', async () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'agent-credential-state-reset-'));
+  const file = join(root, 'credentials.json');
+  const databasePath = join(root, 'agent.db');
+  const options = { ...config(file), databasePath, registerToken: 'chordv_register_state' };
+  try {
+    const saved = { agentId: 'agent-1', nodeId: 'node-1', token: 'chordv_agent_kept', registerTokenFingerprint: createHash('sha256').update('chordv_register_state').digest('hex') };
+    fs.writeFileSync(file, JSON.stringify(saved) + '\n');
+    fs.writeFileSync(databasePath, 'other node state');
+    // A crash inside archiveForeignState: the journal lists only the state
+    // files, and resuming it must not also archive the identity that reset
+    // deliberately kept — otherwise the resume would consume the register
+    // token again and re-register a host that is already registered.
+    const stamp = 1757250000000;
+    fs.writeFileSync(`${file}.reset-journal`, JSON.stringify({ stamp, files: [databasePath, `${databasePath}-wal`, `${databasePath}-shm`] }) + '\n');
+
+    const resumed = await resolveCredentials(options, async () => { assert.fail('must not register'); });
+    assert.deepEqual(resumed, { agentId: 'agent-1', nodeId: 'node-1', token: 'chordv_agent_kept' });
+    assert.equal(fs.readFileSync(`${databasePath}.replaced.${stamp}`, 'utf8'), 'other node state');
+    assert.equal(fs.existsSync(databasePath), false);
+    assert.equal(fs.existsSync(`${file}.replaced.${stamp}`), false, '仅状态重置不得归档凭据');
+    assert.equal(fs.existsSync(`${file}.reset-journal`), false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a reset journal naming unrelated files stops startup', async () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'agent-credential-journal-scope-'));
+  const file = join(root, 'credentials.json');
+  try {
+    fs.writeFileSync(`${file}.reset-journal`, JSON.stringify({ stamp: 1, files: [join(root, 'unrelated.conf')] }));
+    await assert.rejects(resolveCredentials(config(file), async () => { assert.fail('must not register'); }), /重置日志损坏/);
+    assert.equal(fs.existsSync(`${file}.reset-journal`), true, '损坏的日志留给人工确认');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

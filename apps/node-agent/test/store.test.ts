@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { AgentStore } from '../src/store.js';
+import { AgentStore, ForeignStateError, openStore } from '../src/store.js';
+import type { AgentConfig } from '../src/config.js';
 import type { DesiredUser } from '../src/types.js';
 
 const MIB = 1024n * 1024n;
@@ -190,5 +191,40 @@ test('状态库绑定节点身份，换身份打开必须先归档', () => {
     legacy.close();
     const reopened = new AgentStore(join(directory, 'legacy.db'), { ...options, nodeId: 'node-9' });
     reopened.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('换身份仅在显式重置时归档运行状态，凭据保持不动', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-foreign-'));
+  const config = {
+    credentialsPath: join(directory, 'credentials.json'),
+    databasePath: join(directory, 'agent.db'),
+    offlineAllowanceBytes: 64n * MIB,
+  } as AgentConfig;
+  const options = { nodeId: 'node-2', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * MIB };
+  try {
+    createStore(directory).close();
+    writeFileSync(config.credentialsPath, JSON.stringify({ agentId: 'a', nodeId: 'node-2', token: 't' }));
+
+    // Re-onboarding by removing only the credentials file leaves the old
+    // node's database behind: registration succeeds, so the identity reset can
+    // no longer trigger, and without the state recovery below the service is
+    // registered yet permanently unable to start.
+    assert.throws(() => openStore(config, options), ForeignStateError);
+    assert.equal(existsSync(config.databasePath), true, '未获授权时不得移动任何状态');
+
+    const recovered = openStore({ ...config, resetIdentity: true }, options);
+    try {
+      assert.equal(recovered.healthSnapshot().pendingBatches, 0);
+      const archived = readdirSync(directory).filter((name) => name.includes('.replaced.'));
+      assert.ok(archived.some((name) => name.startsWith('agent.db')), `旧状态库应改名保留：${archived.join('、')}`);
+      // The identity is current — only the state travels.
+      assert.equal(archived.some((name) => name.startsWith('credentials.json')), false);
+      assert.equal(existsSync(config.credentialsPath), true);
+      assert.equal(existsSync(`${config.credentialsPath}.reset-journal`), false, '归档完成后必须清除重置日志');
+    } finally { recovered.close(); }
+
+    // A second start finds its own database and needs no flag.
+    openStore(config, options).close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

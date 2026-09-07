@@ -71,18 +71,22 @@ const nonempty = (value: unknown): value is string => typeof value === 'string' 
  */
 const resetJournalPath = (config: AgentConfig) => `${config.credentialsPath}.reset-journal`;
 
-const archiveCandidates = (config: AgentConfig) => [
-  config.credentialsPath,
-  `${config.credentialsPath}.pending`,
+const stateCandidates = (config: AgentConfig) => [
   config.databasePath,
   `${config.databasePath}-wal`,
   `${config.databasePath}-shm`,
 ];
 
-function archiveWithStamp(config: AgentConfig, stamp: number): string[] {
+const archiveCandidates = (config: AgentConfig) => [
+  config.credentialsPath,
+  `${config.credentialsPath}.pending`,
+  ...stateCandidates(config),
+];
+
+function archiveWithStamp(config: AgentConfig, stamp: number, files: string[]): string[] {
   const archived: string[] = [];
   const directories = new Set<string>();
-  for (const file of archiveCandidates(config)) {
+  for (const file of files) {
     const source = resolve(file);
     if (!fs.existsSync(source)) continue;
     const target = `${source}.replaced.${stamp}`;
@@ -94,28 +98,50 @@ function archiveWithStamp(config: AgentConfig, stamp: number): string[] {
   return archived;
 }
 
-function archiveIdentity(config: AgentConfig): string[] {
+function archiveFiles(config: AgentConfig, files: string[]): string[] {
   const stamp = Date.now();
   // Journal BEFORE the first rename. A crash between renaming the credentials
   // and renaming the database would otherwise look like "no saved identity"
   // on the next boot — which skips the reset entirely and would register a new
   // identity on top of the old node's state. The journal makes the reset
   // resumable, and every file of one reset keeps the same timestamp.
-  writeSecret(resetJournalPath(config), { stamp, files: archiveCandidates(config) });
-  const archived = archiveWithStamp(config, stamp);
+  writeSecret(resetJournalPath(config), { stamp, files });
+  const archived = archiveWithStamp(config, stamp, files);
   fs.unlinkSync(resetJournalPath(config));
   syncDirectory(dirname(resolve(resetJournalPath(config))));
   return archived;
 }
 
+const archiveIdentity = (config: AgentConfig): string[] => archiveFiles(config, archiveCandidates(config));
+
+/**
+ * Archives ONLY the runtime state, keeping the current credentials. This is the
+ * recovery for a state database that belongs to another node while the identity
+ * itself is current — a restored backup, a hand-copied data directory, or a
+ * host re-onboarded by removing just the credentials file. The identity reset
+ * cannot help there (the saved identity already matches the register token), so
+ * without this the node would be registered yet unable to start.
+ */
+export const archiveForeignState = (config: AgentConfig): string[] =>
+  archiveFiles(config, stateCandidates(config));
+
 /** Completes an interrupted reset before any identity or state is used. */
 function finishInterruptedReset(config: AgentConfig): void {
   const journal = readSecret(resetJournalPath(config));
   if (!journal) return;
-  if (typeof journal.stamp !== 'number' || !Number.isSafeInteger(journal.stamp)) {
+  const known = archiveCandidates(config);
+  const files = journal.files;
+  if (
+    typeof journal.stamp !== 'number' ||
+    !Number.isSafeInteger(journal.stamp) ||
+    !Array.isArray(files) ||
+    !files.every((file) => typeof file === 'string' && known.includes(file))
+  ) {
     throw new Error('Agent 重置日志损坏，请人工确认归档状态后删除该文件');
   }
-  const archived = archiveWithStamp(config, journal.stamp);
+  // Resume exactly the files that reset was archiving: a state-only reset must
+  // not go on to archive the credentials it deliberately kept.
+  const archived = archiveWithStamp(config, journal.stamp, files as string[]);
   fs.unlinkSync(resetJournalPath(config));
   syncDirectory(dirname(resolve(resetJournalPath(config))));
   console.warn(
@@ -180,7 +206,8 @@ export async function resolveCredentials(config: AgentConfig, register = request
         throw new Error(
           `本机已存在其他注册令牌签发的 Agent 身份（${saved.agentId} / 节点 ${saved.nodeId}），拒绝用新的注册令牌静默复用。` +
             `若确认要把本机重新接入为新节点：先在后台撤销旧节点的 Agent 凭据，再以 CHORDV_AGENT_RESET_IDENTITY=1 启动一次（旧凭据会被改名保留为 ${config.credentialsPath}.replaced.<时间戳>），` +
-            `或停止服务后删除 ${config.credentialsPath} 与 ${config.credentialsPath}.pending 后重启`
+            `或停止服务后把 ${archiveCandidates(config).join('、')} 一并移走再重启` +
+            '（运行状态必须跟着身份一起移走：只删凭据会让新身份接管旧节点的状态库，导致注册成功却无法启动）'
         );
       }
       const archived = archiveIdentity(config);

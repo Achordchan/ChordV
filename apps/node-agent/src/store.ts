@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
+import { archiveForeignState } from './credentials.js';
+import type { AgentConfig } from './config.js';
 import type {
   AbsoluteCounter,
   AgentCommand,
@@ -41,6 +43,28 @@ export interface StoreOptions {
    * break the unprivileged service.
    */
   readonly?: boolean;
+}
+
+/** The database on disk belongs to another node; only an explicit reset may move it aside. */
+export class ForeignStateError extends Error {}
+
+/**
+ * Opens the service store, recovering from a foreign state database only when
+ * the operator asked for it. The identity reset cannot cover this case (the
+ * saved credentials already match the register token), so the same flag
+ * archives just the state and keeps the identity.
+ */
+export function openStore(config: AgentConfig, options: StoreOptions): AgentStore {
+  try {
+    return new AgentStore(config.databasePath, options);
+  } catch (error) {
+    if (!(error instanceof ForeignStateError) || !config.resetIdentity) throw error;
+    const archived = archiveForeignState(config);
+    console.warn(
+      `[node-agent] 已按 CHORDV_AGENT_RESET_IDENTITY 归档不属于本节点的运行状态（${archived.join('、')}）`,
+    );
+    return new AgentStore(config.databasePath, options);
+  }
 }
 
 export class AgentStore {
@@ -91,9 +115,9 @@ export class AgentStore {
   private assertOwnIdentity(nodeId: string): void {
     const recorded = this.getMeta('node_id');
     if (recorded && recorded !== nodeId) {
-      throw new Error(
+      throw new ForeignStateError(
         `本地状态库属于节点 ${recorded}，与当前身份 ${nodeId} 不一致：` +
-          '请先归档或迁移本机运行状态（停止服务后以 CHORDV_AGENT_RESET_IDENTITY=1 启动一次），再重新接入'
+          '请先归档或迁移本机运行状态（停止服务后以 CHORDV_AGENT_RESET_IDENTITY=1 启动一次，旧状态库会被改名保留），再重新接入'
       );
     }
     // Databases created before this check simply adopt their current identity.

@@ -3,7 +3,7 @@ import { AgentApiClient } from './api-client.js';
 import { loadConfig, type AgentConfig } from './config.js';
 import { readExistingCredentials, resolveCredentials } from './credentials.js';
 import { AgentRunner } from './runner.js';
-import { AgentStore } from './store.js';
+import { AgentStore, openStore } from './store.js';
 import { XtlsXrayAdapter } from './xray-adapter.js';
 
 const describe = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -46,7 +46,7 @@ async function main(): Promise<void> {
   if (process.argv.includes('--health')) return runHealthCheck(config);
   const credentials = await resolveCredentials(config);
   const bootId = randomUUID();
-  const store = new AgentStore(config.databasePath, {
+  const store = openStore(config, {
     nodeId: credentials.nodeId,
     bootId,
     defaultOfflineAllowanceBytes: config.offlineAllowanceBytes,
