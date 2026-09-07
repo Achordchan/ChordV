@@ -455,6 +455,9 @@ model Node {
   registrationStatus NodeRegistrationStatus?
   agentLastSeenAt  DateTime?
   agentConfigRevision BigInt       @default(0)
+  /// Revision of the ENSURE_INBOUND deployment whose parameters this row holds;
+  /// a late result carrying an older revision must not overwrite it.
+  inboundAppliedRevision BigInt @default(0)
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
   subscriptionAccesses SubscriptionNodeAccess[]

@@ -151,17 +151,23 @@ async function testWriteBackAndActivation() {
   // the gap R2 closes.
   assert.equal(isNodeOnboardingReady(node), false);
 
-  const runComplete = async (options: { result: unknown; newerJob?: boolean }) => {
+  const runComplete = async (options: { result: unknown; appliedRevision?: bigint }) => {
     const updates: Array<Record<string, unknown>> = [];
+    let applied = options.appliedRevision ?? 0n;
     const tx = {
       nodeCommandJob: {
-        findFirst: async ({ where }: { where: Record<string, unknown> }) =>
-          where.status === "completed"
-            ? (options.newerJob ? { id: "newer" } : null)
-            : { id: "command-1", commandType: "ENSURE_INBOUND", payload: spec, targetRevision: 5n },
+        findFirst: async () => ({ id: "command-1", commandType: "ENSURE_INBOUND", payload: spec, targetRevision: 5n }),
         update: async () => ({})
       },
-      node: { update: async ({ data }: { data: Record<string, unknown> }) => { updates.push(data); return data; } },
+      node: {
+        // Mirrors the conditional UPDATE: a stale writer matches no rows.
+        updateMany: async ({ where, data }: { where: Record<string, any>; data: Record<string, unknown> }) => {
+          if (applied >= (where.inboundAppliedRevision?.lt as bigint)) return { count: 0 };
+          applied = data.inboundAppliedRevision as bigint;
+          updates.push(data);
+          return { count: 1 };
+        }
+      },
       panelClientBinding: { updateMany: async () => ({ count: 0 }) }
     };
     const service = new AgentService(
@@ -174,6 +180,8 @@ async function testWriteBackAndActivation() {
   };
 
   const [written] = await runComplete({ result: goodReport() });
+  assert.equal(written?.inboundAppliedRevision, 5n, "写回必须同时推进已应用 revision");
+  delete written?.inboundAppliedRevision;
   assert.deepEqual(written, {
     serverHost: "203.0.113.7",
     serverPort: 443,
@@ -194,8 +202,45 @@ async function testWriteBackAndActivation() {
   // connection parameters look activatable and cannot connect.
   await assert.rejects(runComplete({ result: goodReport({ serverHost: "10.0.0.9" }) }), /公网地址不可用/);
 
-  // A delayed result must not overwrite a newer deployment.
-  assert.deepEqual(await runComplete({ result: goodReport(), newerJob: true }), []);
+  // A delayed result must not overwrite a newer deployment. The guard is the
+  // conditional update itself, so two concurrent completions cannot interleave.
+  assert.deepEqual(await runComplete({ result: goodReport(), appliedRevision: 9n }), []);
+}
+
+async function testDedupeScope() {
+  const created: Array<Record<string, unknown>> = [];
+  let outstanding: Record<string, unknown> | null = null;
+  const service = new AgentService(
+    {
+      nodeAgent: { findFirst: async () => ({ id: "agent-1", agentId: "agent-1", nodeId: "node-1" }) },
+      node: { update: async () => ({ agentConfigRevision: 7n }) },
+      nodeCommandJob: {
+        findFirst: async () => outstanding,
+        upsert: async ({ create }: { create: Record<string, unknown> }) => {
+          created.push(create);
+          return { ...create, status: "pending", createdAt: new Date(0), targetRevision: 7n, payload: create.payload };
+        }
+      }
+    } as never,
+    { publish() {} } as never,
+    { publishSubscriptionUpdated: async () => undefined } as never
+  );
+
+  await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
+  // An identical request while one is still outstanding is the double-click we
+  // collapse; a finished one must be repeatable, or a node could never go back
+  // to a port it used before.
+  outstanding = { id: "command-1", commandType: "ENSURE_INBOUND", targetRevision: 7n, payload: {}, createdAt: new Date(0) };
+  await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
+  assert.equal(created.length, 1, "未完成的同规格请求不应再排一条");
+
+  outstanding = null;
+  await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
+  assert.equal(created.length, 2, "已完成的部署必须可以再次下发");
+  assert.notEqual(created[0].dedupeKey, created[1].dedupeKey);
+  // The payload is normalized before it is persisted: the report is compared
+  // against exactly this row.
+  assert.deepEqual(created[1].payload, { ...INBOUND_DEFAULTS, serverNames: [...INBOUND_DEFAULTS.serverNames], rotateKeys: false });
 }
 
 function testInstallerAndDownloadRoute() {
@@ -219,7 +264,10 @@ function testInstallerAndDownloadRoute() {
   assert.match(section, /ReadOnlyPaths=\/etc\/chordv\/xray/);
   assert.match(section, /NoNewPrivileges=true/);
   // The agent unit keeps its hardening and now depends on Xray.
-  assert.match(script, /Requires=xray.service/);
+  // Ordering only: Requires= would stop the agent every time the helper
+  // restarts Xray, killing the very command that asked for the restart.
+  assert.match(script, /Wants=network-online.target xray.service/);
+  assert.equal(/^Requires=xray.service$/m.test(script), false);
   assert.match(script, /NoNewPrivileges=true/);
   // The installer's own staging cleanup must survive: the Xray section must not
   // install an EXIT trap of its own.
@@ -240,7 +288,7 @@ function main() {
   testPublicAddressPolicy();
   testReportValidation();
   testInstallerAndDownloadRoute();
-  return testWriteBackAndActivation();
+  return testWriteBackAndActivation().then(testDedupeScope);
 }
 
 main().then(() => console.log("agent inbound regression passed (命令声明齐全、规格与上报校验、写回与激活边界、安装脚本与分发路由)"));

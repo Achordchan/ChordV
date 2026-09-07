@@ -287,14 +287,14 @@ export class AgentService {
   ) {
     const spec = normalizeInboundSpec((job.payload ?? {}) as Record<string, unknown>);
     const fields = parseInboundReport(input.result, spec);
-    // A delayed or retried result must not overwrite a newer deployment. The
-    // completed job log is the applied-revision record; no extra column needed.
-    const newer = await tx.nodeCommandJob.findFirst({
-      where: { nodeId, commandType: "ENSURE_INBOUND", status: "completed", id: { not: job.id }, targetRevision: { gt: job.targetRevision } },
-      select: { id: true }
+    // A delayed or retried result must not overwrite a newer deployment. Reading
+    // the newest completed job and then writing would still race a concurrent
+    // completion — both transactions can see no newer row. One conditional
+    // statement decides it instead: a stale writer simply matches no rows.
+    await tx.node.updateMany({
+      where: { id: nodeId, inboundAppliedRevision: { lt: job.targetRevision } },
+      data: { ...fields, inboundAppliedRevision: job.targetRevision }
     });
-    if (newer) return;
-    await tx.node.update({ where: { id: nodeId }, data: fields });
   }
 
   async queueCommand(nodeId: string, input: QueueAgentCommandDto): Promise<AgentCommandDto> {
@@ -315,10 +315,20 @@ export class AgentService {
     const payload = input.type === "ENSURE_INBOUND"
       ? normalizeInboundSpec((input.payload ?? {}) as Record<string, unknown>)
       : input.payload;
-    const dedupeKey = input.dedupeKey
-      ?? (input.type === "ENSURE_INBOUND"
-        ? inboundSpecKey(nodeId, payload as NormalizedInboundSpec)
-        : `${nodeId}:${input.type}:${randomUUID()}`);
+    // Deduplicate RETRIES of an operation, not every historical occurrence of a
+    // spec: an outstanding identical request is the double-click we want to
+    // collapse, while a finished one must be repeatable (deploy 443 → 8443 →
+    // 443 again, or a second key rotation with the same payload).
+    let dedupeKey = input.dedupeKey;
+    if (!dedupeKey && input.type === "ENSURE_INBOUND") {
+      const outstanding = await this.prisma.nodeCommandJob.findFirst({
+        where: { nodeId, commandType: "ENSURE_INBOUND", status: { in: ["pending", "running"] }, dedupeKey: { startsWith: inboundSpecKey(nodeId, payload as NormalizedInboundSpec) } },
+        orderBy: { createdAt: "desc" }
+      });
+      if (outstanding) return serializeCommand(outstanding);
+      dedupeKey = `${inboundSpecKey(nodeId, payload as NormalizedInboundSpec)}:${randomUUID()}`;
+    }
+    dedupeKey ??= `${nodeId}:${input.type}:${randomUUID()}`;
     const job = await this.prisma.nodeCommandJob.upsert({
       where: { dedupeKey },
       update: {},

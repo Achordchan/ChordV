@@ -82,14 +82,19 @@ R1 安全与恢复边界：
 
 R2-A 落地细节:
 
-- 命令 `ENSURE_INBOUND` 的 payload 由控制面归一化后落库(`agent-inbound.ts` 的 `normalizeInboundSpec`,含默认端口 443 / dest / SNI),`dedupeKey` 取规格指纹,重复下发天然幂等。
+- 命令 `ENSURE_INBOUND` 的 payload 由控制面归一化后落库(`agent-inbound.ts` 的 `normalizeInboundSpec`,含默认端口 443 / dest / SNI),`dedupeKey` 由规格指纹加一次性后缀构成:同规格且仍未完成的请求会被折叠(双击),已完成的可再次下发。
 - agent 无权写 Xray 配置:它把请求写进自己目录下的 `pending.json`,systemd path 单元触发 **root 拥有的** `/usr/local/lib/chordv/xray-apply.js`(从发布目录复制出来,避免 agent 改写 root 会执行的脚本)。助手把 agent 视为不可信输入重新逐字段校验,并**自行渲染**入站结构,绝不搬运 agent 提供的 JSON。
 - 配置目录 `/etc/chordv/xray/conf.d/`:`00-base.json`(出站)、`10-api.json`(计量片段,root 所有且从不重新生成)、`50-inbound.json`(唯一生成文件,含 Reality 私钥,`root:chordv-xray 0640`)。发布前用完整候选目录跑 `xray run -test`,原子改名发布,重启失败回滚上一份并再次重启。
 - Reality 密钥对与 shortId 由助手在 VPS 上生成,私钥只进 root 文件;改端口/SNI 保留密钥(轮换会让已发出的订阅全部失效),仅 `rotateKeys: true` 才重新生成。
-- Xray 重启会清空 gRPC 下发的用户,因此任何触发重启的部署之后 agent 立即 reconcile;另外按 `getSysStats().uptime` 回退检测运维/升级/OOM 造成的重启。
+- Xray 重启会清空 gRPC 下发的用户,因此任何触发重启的部署之后 agent 立即 reconcile;另外按 `getSysStats().uptime` 回退检测运维/升级/OOM 造成的重启。agent 单元与 `xray.service` 只用 `Wants=`/`After=` 排序:`Requires=` 会在助手重启 Xray 时把 agent 一并停掉,正好停在它要 reconcile 与回报结果的那一刻。
+- `systemctl restart` 对 `Type=simple` 单元在进程绑定端口前就返回,因此助手在回滚窗口内等待端口真正进入 LISTEN(读 `/proc/net/tcp{,6}`)才算成功;端口被占用会回滚上一份配置并再次重启。回滚通过同一条写入路径复原(普通 copy 会留下 xray 用户读不到的 root 文件,把一次失败变成两次)。
+- 监听地址按主机 IPv6 栈决定(`bindv6only=1` 直接报错),并随结果回报;对外地址是 IPv6 而入站只监听 IPv4 时命令失败——这种节点能通过按 tag 的验活,却会把没有监听的端点发给每个客户端。
+- `x25519` 解析失败只报告识别到的标签,绝不回显原始输出:该错误会经 agent 可读的结果文件传到控制面,而输出里带着私钥。
+- 入队去重只折叠**未完成**的同规格请求(双击),已完成的可以再次下发;否则节点无法回到用过的端口,重复轮换也会失效。
+- 写回是一条带条件的 `UPDATE`(`inboundAppliedRevision < 本次 revision`):先读后写在并发完成时仍可能让旧结果覆盖新部署。
 - 部署成功的判据是**运行中的实例**:`getSysStats` 加按 tag 查询 `getInboundUsers` 都通过才算完成;助手失败、端口/SNI 与下发不符、验活失败一律让命令响亮失败,不写任何 Node 字段。
 - 节点对外地址来自 `GET /api/agent/v1/whoami`(控制面看到的来源地址,走已鉴权信道),`CHORDV_NODE_PUBLIC_HOST` 可覆盖。控制面独立校验为公网单播地址,并校验端口/SNI/flow 等与下发一致后才写回 `Node`。
-- 写回只让节点**可以被激活**(`isNodeOnboardingReady` 转真),`isActive` 仍由管理员决定;迟到的结果不会覆盖更新的部署(按已完成的 `ENSURE_INBOUND` job revision 判断)。
+- 写回只让节点**可以被激活**(`isNodeOnboardingReady` 转真),`isActive` 仍由管理员决定;迟到的结果不会覆盖更新的部署(按 `Node.inboundAppliedRevision` 的条件更新判断)。
 - 本机残留他人身份的入站配置(重装/还原备份/换身份)时,agent 启动即请求助手发布空入站,宁可不提供服务也不拿旧节点的密钥继续服务。
 - Xray 二进制走同源分发 `GET /api/agent-download/xray/:arch`(另有 `.sha256`),需要部署侧提供 `CHORDV_XRAY_DIST_DIR`;未配置即报错,不回退到其他下载源。
 

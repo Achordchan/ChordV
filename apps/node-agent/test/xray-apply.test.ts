@@ -11,6 +11,8 @@ import {
   parseX25519,
   renderInbound,
   requestHash,
+  isPortListening,
+  resolveListenAddress,
   type ApplyDeps,
   type InboundRequest,
 } from '../src/xray-apply.js';
@@ -70,7 +72,14 @@ test('x25519 输出跨版本标签都能解析，解析不出则带原文报错'
     { privateKey: 'a'.repeat(43), publicKey: 'b'.repeat(43) });
   assert.deepEqual(parseX25519(`PrivateKey: ${'c'.repeat(43)}\nPassword: ${'d'.repeat(43)}`),
     { privateKey: 'c'.repeat(43), publicKey: 'd'.repeat(43) });
-  assert.throws(() => parseX25519('Key: ???'), /无法解析 xray x25519 输出：Key: \?\?\?/);
+  // The output holds the PRIVATE key and this error reaches the agent-readable
+  // result file and the control plane, so it must never be echoed.
+  const leaky = `PrivateKey: ${'s'.repeat(43)}\nUnexpectedLabel: ${'d'.repeat(43)}`;
+  assert.throws(() => parseX25519(leaky), (error: Error) => {
+    assert.equal(error.message.includes('s'.repeat(43)), false, '私钥不得出现在错误里');
+    assert.match(error.message, /未识别的标签：.*UnexpectedLabel/);
+    return true;
+  });
 });
 
 function deps(root: string, overrides: Partial<ApplyDeps> = {}): ApplyDeps & { restarts: number } {
@@ -85,6 +94,8 @@ function deps(root: string, overrides: Partial<ApplyDeps> = {}): ApplyDeps & { r
     xrayBin: '/usr/bin/true',
     xrayUser: 'root',
     restart: () => { state.restarts += 1; },
+    isListening: () => true,
+    resolveListen: () => '::',
     generateKeys: () => keys,
     now: () => '2026-09-07T00:00:00.000Z',
     ...overrides,
@@ -204,4 +215,67 @@ test('助手不从 agent 可写的发布目录导入任何模块', () => {
   // The helper is copied out of the release and run as root: a sibling import
   // would resolve back inside the agent-writable release directory.
   assert.deepEqual(imports.filter((name) => !name.startsWith('node:')), []);
+});
+
+test('监听地址按主机的 IPv6 栈决定，并跟着状态一起记录', () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'xray-apply-listen-'));
+  try {
+    // A node whose public address is IPv6 but whose inbound listens on 0.0.0.0
+    // passes every tag check and hands clients an endpoint with no listener.
+    assert.equal(resolveListenAddress(() => '0\n'), '::');
+    assert.equal(resolveListenAddress(() => { throw new Error('ENOENT'); }), '0.0.0.0');
+    assert.throws(() => resolveListenAddress(() => '1\n'), /bindv6only/);
+
+    const applyDeps = deps(root, { resolveListen: () => '0.0.0.0' });
+    const outcome = applyRequest(request(), applyDeps);
+    assert.equal(outcome.listen, '0.0.0.0');
+    assert.equal(JSON.parse(readFileSync(join(applyDeps.confDir, '50-inbound.json'), 'utf8')).inbounds[0].listen, '0.0.0.0');
+    // A no-op repeat must still report the family it is actually serving.
+    assert.equal(applyRequest(request(), applyDeps).listen, '0.0.0.0');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('重启成功但端口没起来时回滚，且回滚后的配置仍可被 xray 用户读取', () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'xray-apply-ready-'));
+  try {
+    const applyDeps = deps(root);
+    applyRequest(request(), applyDeps);
+    const config = join(applyDeps.confDir, '50-inbound.json');
+    const before = readFileSync(config, 'utf8');
+    const beforeMode = fs.statSync(config).mode & 0o777;
+
+    // systemctl restart returns before a Type=simple unit binds: a port taken by
+    // nginx passes the config test, starts, and exits.
+    const notListening = deps(root, {
+      confDir: applyDeps.confDir, stateFile: applyDeps.stateFile, isListening: () => false,
+    });
+    assert.throws(() => applyRequest(request({ listenPort: 8443 }), notListening), /未能在端口 8443 上开始监听/);
+    assert.equal(readFileSync(config, 'utf8'), before, '未确认监听就必须回滚');
+    // A plain copy would restore a root-owned file the xray service cannot read,
+    // turning one failure into two.
+    assert.equal(fs.statSync(config).mode & 0o777, beforeMode);
+    assert.equal(notListening.restarts, 2, '回滚后要再重启一次');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('首次部署失败时不留下半成品配置', () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'xray-apply-first-'));
+  try {
+    const applyDeps = deps(root, { isListening: () => false });
+    assert.throws(() => applyRequest(request(), applyDeps), /开始监听/);
+    assert.equal(fs.existsSync(join(applyDeps.confDir, '50-inbound.json')), false);
+    assert.equal(fs.existsSync(applyDeps.stateFile), false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('监听探测识别 TCP_LISTEN 行', () => {
+  const table = [
+    '  sl  local_address rem_address   st',
+    '   0: 0100007F:1F90 00000000:0000 0A',
+    '   1: 00000000:01BB 00000000:0000 06',
+  ].join('\n');
+  assert.equal(isPortListening(8080, () => table), true);
+  // 443 appears, but in TIME_WAIT rather than LISTEN.
+  assert.equal(isPortListening(443, () => table), false);
+  assert.equal(isPortListening(9999, () => table), false);
 });

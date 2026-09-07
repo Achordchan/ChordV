@@ -98,6 +98,8 @@ export interface HelperResult {
   realityPublicKey: string;
   shortId: string;
   serverName: string;
+  /** Address family the inbound actually accepts ('::' or '0.0.0.0'). */
+  listen: string;
   listenPort: number;
   xrayVersion: string;
 }
@@ -107,7 +109,7 @@ export interface InboundApplier {
   reset(requestId: string): Promise<HelperResult>;
 }
 
-function parseHelperResult(raw: string, requestId: string): HelperResult | null {
+function parseHelperResult(raw: string, requestId: string, mode: 'ensure' | 'reset'): HelperResult | null {
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { throw new Error('Xray 配置助手返回的结果不是合法 JSON'); }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Xray 配置助手返回的结果格式错误');
@@ -119,6 +121,22 @@ function parseHelperResult(raw: string, requestId: string): HelperResult | null 
     const error = typeof value.error === 'string' ? value.error : '未提供原因';
     throw new Error(`Xray 入站部署失败（阶段 ${stage}）：${error}`);
   }
+  const base: HelperResult = {
+    requestId,
+    ok: true,
+    changed: value.changed === true,
+    restarted: value.restarted === true,
+    realityPublicKey: '',
+    shortId: '',
+    serverName: '',
+    listen: typeof value.listen === 'string' ? value.listen : '',
+    listenPort: 0,
+    xrayVersion: typeof value.xrayVersion === 'string' ? value.xrayVersion : '',
+  };
+  // A successful reset deliberately carries no keys, no serverName and port 0 —
+  // validating it as a deployment would reject every successful reset.
+  if (mode === 'reset') return base;
+
   const publicKey = typeof value.realityPublicKey === 'string' ? value.realityPublicKey : '';
   const shortId = typeof value.shortId === 'string' ? value.shortId : '';
   const serverName = typeof value.serverName === 'string' ? value.serverName : '';
@@ -126,17 +144,8 @@ function parseHelperResult(raw: string, requestId: string): HelperResult | null 
   if (!/^(?:[0-9a-f]{2}){1,8}$/.test(shortId)) throw new Error('Xray 配置助手返回的 shortId 格式错误');
   if (!serverName) throw new Error('Xray 配置助手未返回 serverName');
   if (!Number.isInteger(value.listenPort)) throw new Error('Xray 配置助手未返回有效端口');
-  return {
-    requestId,
-    ok: true,
-    changed: value.changed === true,
-    restarted: value.restarted === true,
-    realityPublicKey: publicKey,
-    shortId,
-    serverName,
-    listenPort: value.listenPort as number,
-    xrayVersion: typeof value.xrayVersion === 'string' ? value.xrayVersion : '',
-  };
+  if (base.listen !== '::' && base.listen !== '0.0.0.0') throw new Error('Xray 配置助手未返回监听地址');
+  return { ...base, realityPublicKey: publicKey, shortId, serverName, listenPort: value.listenPort as number };
 }
 
 /**
@@ -155,7 +164,7 @@ export class FileInboundApplier implements InboundApplier {
   ) {}
 
   apply(spec: InboundSpec, requestId: string): Promise<HelperResult> {
-    return this.request({ requestId, mode: 'ensure', ...spec });
+    return this.request({ requestId, mode: 'ensure', ...spec }, 'ensure');
   }
 
   /**
@@ -164,10 +173,10 @@ export class FileInboundApplier implements InboundApplier {
    * stranger's node with its keys is worse than serving nothing.
    */
   reset(requestId: string): Promise<HelperResult> {
-    return this.request({ requestId, mode: 'reset' });
+    return this.request({ requestId, mode: 'reset' }, 'reset');
   }
 
-  private async request(payload: Record<string, unknown>): Promise<HelperResult> {
+  private async request(payload: Record<string, unknown>, mode: 'ensure' | 'reset'): Promise<HelperResult> {
     const requestId = payload.requestId as string;
     writeSecretDurable(join(this.directory, 'pending.json'), payload);
     const deadline = Date.now() + this.timeoutMs;
@@ -184,7 +193,7 @@ export class FileInboundApplier implements InboundApplier {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
         throw error;
       }
-      const result = parseHelperResult(raw, requestId);
+      const result = parseHelperResult(raw, requestId, mode);
       if (result) return result;
     }
     throw new Error(`等待 Xray 配置助手超时（${Math.round(this.timeoutMs / 1000)} 秒），请检查 chordv-xray-apply 服务`);

@@ -76,10 +76,12 @@ test('助手失败、畸形与超大应答都变成明确的错误', async () =>
     await assert.rejects(attempt(JSON.stringify({ requestId: 'request-1', ok: false, stage: 'config-test', error: '端口冲突' })),
       /config-test.*端口冲突/);
     await assert.rejects(attempt('{not json'), /不是合法 JSON/);
-    await assert.rejects(attempt(JSON.stringify({ requestId: 'request-1', ok: true, realityPublicKey: 'short', shortId: 'aabb', serverName: 'a.example.com', listenPort: 443 })),
+    await assert.rejects(attempt(JSON.stringify({ requestId: 'request-1', ok: true, realityPublicKey: 'short', shortId: 'aabb', serverName: 'a.example.com', listen: '::', listenPort: 443 })),
       /公钥格式错误/);
-    await assert.rejects(attempt(JSON.stringify({ requestId: 'request-1', ok: true, realityPublicKey: 'k'.repeat(43), shortId: 'zz', serverName: 'a.example.com', listenPort: 443 })),
+    await assert.rejects(attempt(JSON.stringify({ requestId: 'request-1', ok: true, realityPublicKey: 'k'.repeat(43), shortId: 'zz', serverName: 'a.example.com', listen: '::', listenPort: 443 })),
       /shortId 格式错误/);
+    await assert.rejects(attempt(JSON.stringify({ requestId: 'request-1', ok: true, realityPublicKey: 'k'.repeat(43), shortId: 'aabb', serverName: 'a.example.com', listenPort: 443 })),
+      /未返回监听地址/);
     fs.writeFileSync(result, `{"requestId":"request-1","ok":true,"pad":"${'x'.repeat(20_000)}"}`);
     await assert.rejects(applier(root).apply(spec, 'request-1'), /结果过大/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
@@ -92,12 +94,33 @@ test('合法应答被完整解析', async () => {
     fs.writeFileSync(join(root, 'result.json'), JSON.stringify({
       requestId: 'request-2', ok: true, changed: true, restarted: true,
       realityPublicKey: 'k'.repeat(43), shortId: '0123456789abcdef',
-      serverName: 'www.microsoft.com', listenPort: 443, xrayVersion: 'Xray 1.8.24',
+      serverName: 'www.microsoft.com', listen: '::', listenPort: 443, xrayVersion: 'Xray 1.8.24',
     }));
     assert.deepEqual(await applier(root).apply(spec, 'request-2'), {
       requestId: 'request-2', ok: true, changed: true, restarted: true,
       realityPublicKey: 'k'.repeat(43), shortId: '0123456789abcdef',
-      serverName: 'www.microsoft.com', listenPort: 443, xrayVersion: 'Xray 1.8.24',
+      serverName: 'www.microsoft.com', listen: '::', listenPort: 443, xrayVersion: 'Xray 1.8.24',
     });
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('reset 的成功应答按 reset 规则解析，不会被当成部署结果拒绝', async () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'agent-inbound-reset-'));
+  try {
+    // A successful reset carries no keys and port 0 on purpose. Validating it as
+    // a deployment would reject it — and that error would surface during agent
+    // startup, after the foreign configuration had already been cleared.
+    fs.writeFileSync(join(root, 'result.json'), JSON.stringify({
+      requestId: 'reset-1', ok: true, changed: true, restarted: true,
+      realityPublicKey: '', shortId: '', serverName: '', listenPort: 0,
+    }));
+    const result = await applier(root).reset('reset-1');
+    assert.equal(result.ok, true);
+    assert.equal(result.restarted, true);
+    assert.equal(JSON.parse(fs.readFileSync(join(root, 'pending.json'), 'utf8')).mode, 'reset');
+
+    // A failed reset still fails loudly.
+    fs.writeFileSync(join(root, 'result.json'), JSON.stringify({ requestId: 'reset-2', ok: false, stage: 'apply', error: '磁盘只读' }));
+    await assert.rejects(applier(root).reset('reset-2'), /磁盘只读/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

@@ -279,9 +279,11 @@ ${renderXrayInstall()}
 cat > /etc/systemd/system/chordv-node-agent.service <<UNIT
 [Unit]
 Description=ChordV Node Agent
+# Ordering only. Requires= would stop this service whenever xray is stopped —
+# and every changed ENSURE_INBOUND restarts xray, which would kill the agent
+# mid-command, before it can reconcile users or report the result.
 After=network-online.target xray.service
-Wants=network-online.target
-Requires=xray.service
+Wants=network-online.target xray.service
 
 [Service]
 Type=simple

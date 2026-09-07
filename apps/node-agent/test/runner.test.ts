@@ -419,7 +419,7 @@ test('本机残留他人节点的入站配置时，启动即清空而不是继�
     apply: async () => { throw new Error('启动时不应部署入站'); },
     reset: async (requestId) => {
       resets.push(requestId);
-      return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listenPort: 0, xrayVersion: '' };
+      return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listen: '', listenPort: 0, xrayVersion: '' };
     },
   });
 
@@ -470,7 +470,7 @@ test('失败的部署结果不算外来入站，重启不会白白清空配置',
     apply: async () => { throw new Error('不应部署'); },
     reset: async (requestId) => {
       resets += 1;
-      return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listenPort: 0, xrayVersion: '' };
+      return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listen: '', listenPort: 0, xrayVersion: '' };
     },
   });
 

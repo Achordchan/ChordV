@@ -39,6 +39,14 @@ export interface ApplyDeps {
   xrayBin: string;
   xrayUser: string;
   restart(): void;
+  /**
+   * Whether Xray is actually serving the port. `systemctl restart` on a
+   * Type=simple unit returns before the process binds, so "the start job
+   * succeeded" says nothing: a port already taken by nginx passes the config
+   * test, starts, and exits. Readiness must be inside the rollback window.
+   */
+  isListening(port: number): boolean;
+  resolveListen(): string;
   generateKeys(): RealityKeys;
   now(): string;
 }
@@ -123,13 +131,32 @@ export function requestHash(request: InboundRequest): string {
   })).digest('hex');
 }
 
+/**
+ * Which address family the inbound will actually accept. A node whose public
+ * address is IPv6 but whose inbound listens on 0.0.0.0 passes every tag-based
+ * check and hands every client an endpoint with no listener, so this is decided
+ * explicitly and reported back rather than assumed.
+ */
+export function resolveListenAddress(readFile: (file: string) => string = (file) => fs.readFileSync(file, 'utf8')): string {
+  let bindV6Only: string;
+  try {
+    bindV6Only = readFile('/proc/sys/net/ipv6/bindv6only').trim();
+  } catch {
+    return '0.0.0.0'; // no IPv6 stack on this host
+  }
+  if (bindV6Only !== '0') {
+    throw new Error('net.ipv6.bindv6only=1 会让入站只接受 IPv6：请将其设为 0，或在无 IPv6 的主机上部署');
+  }
+  return '::';
+}
+
 /** Renders the inbound root will run. Built here from scratch, never copied. */
-export function renderInbound(request: InboundRequest, keys: RealityKeys): Record<string, unknown> {
+export function renderInbound(request: InboundRequest, keys: RealityKeys, listen = '0.0.0.0'): Record<string, unknown> {
   return {
     inbounds: [
       {
         tag: request.inboundTag,
-        listen: '0.0.0.0',
+        listen,
         port: request.listenPort,
         protocol: 'vless',
         // No clients: users are provisioned over the gRPC HandlerService by the
@@ -155,11 +182,19 @@ export function renderInbound(request: InboundRequest, keys: RealityKeys): Recor
 
 export function parseX25519(output: string): { privateKey: string; publicKey: string } {
   // The labels have drifted across Xray releases (Private key / PrivateKey,
-  // Public key / Password). Accept the known spellings and fail loudly with the
-  // raw output rather than guessing at an unknown one.
+  // Public key / Password). Accept the known spellings and fail loudly on an
+  // unknown one — but NEVER echo the output: it holds the private key, and this
+  // error travels to the agent-readable result file and on to the control
+  // plane. Report the shape of what was seen instead.
   const privateKey = /(?:private\s*key|privatekey)\s*:\s*([A-Za-z0-9_-]{43})/i.exec(output)?.[1];
   const publicKey = /(?:public\s*key|publickey|password)\s*:\s*([A-Za-z0-9_-]{43})/i.exec(output)?.[1];
-  if (!privateKey || !publicKey) throw new Error(`无法解析 xray x25519 输出：${output.trim().slice(0, 200)}`);
+  if (!privateKey || !publicKey) {
+    const labels = [...output.matchAll(/^\s*([A-Za-z][A-Za-z ]{0,30}?)\s*:/gm)].map((match) => match[1].trim());
+    throw new Error(
+      `无法解析 xray x25519 输出（未识别的标签：${labels.join('、') || '无'}），`
+        + '请确认 Xray 版本；为避免泄露私钥，此处不回显原始输出',
+    );
+  }
   return { privateKey, publicKey };
 }
 
@@ -179,7 +214,7 @@ function writeFileAtomic(file: string, contents: string, mode: number, owner?: {
   try { fs.fsyncSync(dirDescriptor); } finally { fs.closeSync(dirDescriptor); }
 }
 
-function readState(file: string): { hash: string; keys: RealityKeys; serverName: string; listenPort: number } | undefined {
+function readState(file: string): { hash: string; keys: RealityKeys; serverName: string; listen: string; listenPort: number } | undefined {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
     const keys = parsed.keys as RealityKeys | undefined;
@@ -188,12 +223,14 @@ function readState(file: string): { hash: string; keys: RealityKeys; serverName:
       hash: parsed.hash,
       keys,
       serverName: typeof parsed.serverName === 'string' ? parsed.serverName : '',
+      listen: typeof parsed.listen === 'string' ? parsed.listen : '',
       listenPort: typeof parsed.listenPort === 'number' ? parsed.listenPort : 0,
     };
   } catch { return undefined; }
 }
 
 export interface ApplyOutcome {
+  listen: string;
   changed: boolean;
   restarted: boolean;
   realityPublicKey: string;
@@ -233,7 +270,6 @@ function assertConfigValid(deps: ApplyDeps, candidate: string): void {
 
 export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOutcome {
   const target = join(deps.confDir, '50-inbound.json');
-  const previous = join(deps.confDir, '50-inbound.json.prev');
   const state = readState(deps.stateFile);
   // Only root can hand the file to the xray group; when this runs unprivileged
   // (tests, or a misconfigured unit) the file simply keeps its creator, and the
@@ -242,13 +278,13 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
 
   if (request.mode === 'reset') {
     if (!fs.existsSync(target) && !state) {
-      return { changed: false, restarted: false, realityPublicKey: '', shortId: '', serverName: '', listenPort: 0, xrayVersion: xrayVersion(deps.xrayBin) };
+      return { listen: '', changed: false, restarted: false, realityPublicKey: '', shortId: '', serverName: '', listenPort: 0, xrayVersion: xrayVersion(deps.xrayBin) };
     }
     const empty = JSON.stringify({ inbounds: [] }, null, 2) + '\n';
     assertConfigValid(deps, empty);
-    publishAndRestart(deps, target, previous, empty, owner);
+    publishAndRestart(deps, target, empty, owner, 0);
     try { fs.unlinkSync(deps.stateFile); } catch { /* already gone */ }
-    return { changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listenPort: 0, xrayVersion: xrayVersion(deps.xrayBin) };
+    return { listen: '', changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listenPort: 0, xrayVersion: xrayVersion(deps.xrayBin) };
   }
 
   const hash = requestHash(request);
@@ -257,6 +293,7 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
     // Nothing to do — and doing it anyway would restart Xray, dropping every
     // live connection and every gRPC-provisioned user for no reason.
     return {
+      listen: state.listen || '0.0.0.0',
       changed: false,
       restarted: false,
       realityPublicKey: state.keys.publicKey,
@@ -272,11 +309,13 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
   // explicit rotateKeys asks for that.
   const keys = reusable ?? deps.generateKeys();
   const serverName = request.serverNames[0];
-  const rendered = JSON.stringify(renderInbound(request, keys), null, 2) + '\n';
+  const listen = deps.resolveListen();
+  const rendered = JSON.stringify(renderInbound(request, keys, listen), null, 2) + '\n';
   assertConfigValid(deps, rendered);
-  publishAndRestart(deps, target, previous, rendered, owner);
-  writeFileAtomic(deps.stateFile, JSON.stringify({ hash, keys, serverName, listenPort: request.listenPort, appliedAt: deps.now() }, null, 2) + '\n', 0o600);
+  publishAndRestart(deps, target, rendered, owner, request.listenPort);
+  writeFileAtomic(deps.stateFile, JSON.stringify({ hash, keys, serverName, listen, listenPort: request.listenPort, appliedAt: deps.now() }, null, 2) + '\n', 0o600);
   return {
+    listen,
     changed: true,
     restarted: true,
     realityPublicKey: keys.publicKey,
@@ -287,19 +326,29 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
   };
 }
 
-/** Publishes atomically and rolls the previous config back if Xray will not start. */
-function publishAndRestart(deps: ApplyDeps, target: string, previous: string, contents: string, owner?: { uid: number; gid: number }): void {
-  const hadPrevious = fs.existsSync(target);
-  if (hadPrevious) fs.copyFileSync(target, previous);
+/**
+ * Publishes atomically, then keeps the rollback window open until Xray is
+ * actually serving. The previous configuration is restored through the same
+ * write path — a plain copy would come back root-owned and unreadable by the
+ * xray service, turning one failure into two.
+ */
+function publishAndRestart(deps: ApplyDeps, target: string, contents: string, owner: { uid: number; gid: number } | undefined, port: number): void {
+  const previous = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : undefined;
   writeFileAtomic(target, contents, 0o640, owner);
+  const rollback = (reason: string): never => {
+    if (previous === undefined) { try { fs.unlinkSync(target); } catch { /* nothing to remove */ } }
+    else writeFileAtomic(target, previous, 0o640, owner);
+    try { deps.restart(); } catch { /* report the original failure */ }
+    throw new Error(`${reason}，已回滚上一份配置`);
+  };
   try {
     deps.restart();
   } catch (error) {
-    if (hadPrevious) fs.renameSync(previous, target);
-    else fs.unlinkSync(target);
-    try { deps.restart(); } catch { /* report the original failure */ }
-    throw new Error(`重启 Xray 失败，已回滚上一份配置：${error instanceof Error ? error.message : String(error)}`);
+    rollback(`重启 Xray 失败：${error instanceof Error ? error.message : String(error)}`);
   }
+  // `systemctl restart` on a Type=simple unit returns before the process binds,
+  // so a taken port looks like a successful start and then exits.
+  if (port > 0 && !deps.isListening(port)) rollback(`Xray 未能在端口 ${port} 上开始监听`);
 }
 
 function resolveGid(user: string): number {
@@ -325,6 +374,34 @@ function resolveUid(user: string): number {
   return uid;
 }
 
+/**
+ * Reads the kernel's socket tables directly: no ss/netstat dependency, and it
+ * sees the listener regardless of which address family or interface it bound.
+ */
+export function isPortListening(port: number, readFile: (file: string) => string = (file) => fs.readFileSync(file, 'utf8')): boolean {
+  const hex = port.toString(16).toUpperCase().padStart(4, '0');
+  for (const table of ['/proc/net/tcp', '/proc/net/tcp6']) {
+    let contents: string;
+    try { contents = readFile(table); } catch { continue; }
+    for (const line of contents.split('\n').slice(1)) {
+      const columns = line.trim().split(/\s+/);
+      // st === 0A is TCP_LISTEN.
+      if (columns.length > 3 && columns[1]?.endsWith(`:${hex}`) && columns[3] === '0A') return true;
+    }
+  }
+  return false;
+}
+
+function waitForListener(port: number, attempts = 20, delayMs = 250): boolean {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (isPortListening(port)) return true;
+    // Sync sleep: this helper is a one-shot root script, and blocking here is
+    // what keeps the rollback window open until the answer is known.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
+  }
+  return isPortListening(port);
+}
+
 function main(): void {
   const requestDir = process.env.CHORDV_XRAY_REQUEST_DIR?.trim() || '/var/lib/chordv-node-agent/xray';
   const confDir = process.env.CHORDV_XRAY_CONF_DIR?.trim() || '/etc/chordv/xray/conf.d';
@@ -342,6 +419,8 @@ function main(): void {
       const [command, ...args] = restartCommand.split(/\s+/);
       execFileSync(command, args, { stdio: 'pipe' });
     },
+    isListening: (port) => waitForListener(port),
+    resolveListen: () => resolveListenAddress(),
     generateKeys: () => ({
       ...parseX25519(execFileSync(xrayBin, ['x25519'], { encoding: 'utf8' })),
       shortId: randomBytes(8).toString('hex'),

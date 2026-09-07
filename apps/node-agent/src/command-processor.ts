@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isIPv6 } from 'node:net';
 import { isNodeControlMode, type AgentCommand, type CommandResult, type DesiredUser, type InboundReport } from './types.js';
 import type { AgentStore } from './store.js';
 import type { XrayAdapter } from './xray-adapter.js';
@@ -154,13 +155,19 @@ export class CommandProcessor {
       throw new Error(`配置助手返回的 serverName ${applied.serverName} 不在下发列表中`);
     }
     await this.waitForInbound(this.inbound.verifyAttempts ?? 15, this.inbound.verifyDelayMs ?? 1_000);
+    const serverHost = await this.inbound.resolvePublicHost();
+    // An IPv6 address in front of an IPv4-only listener passes every tag-based
+    // check and hands every client an endpoint nothing is listening on.
+    if (isIPv6(serverHost) && applied.listen !== '::') {
+      throw new Error(`本机对外地址是 IPv6（${serverHost}），但入站只监听 ${applied.listen}：请启用 IPv6 或改用 IPv4 地址`);
+    }
     // A restart wipes users added over gRPC — they live only in Xray's memory.
     if (applied.restarted) await this.reconcile(this.store.listDesiredUsers());
 
     const report: InboundReport = {
       requestId,
       inboundTag: spec.inboundTag,
-      serverHost: await this.inbound.resolvePublicHost(),
+      serverHost,
       serverPort: spec.listenPort,
       realityPublicKey: applied.realityPublicKey,
       shortId: applied.shortId,

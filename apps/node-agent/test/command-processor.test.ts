@@ -212,12 +212,12 @@ class FakeApplier implements InboundApplier {
     return {
       requestId, ok: true, changed: true, restarted: true,
       realityPublicKey: 'k'.repeat(43), shortId: '0123456789abcdef',
-      serverName: spec.serverNames[0], listenPort: spec.listenPort, xrayVersion: 'Xray 1.8.24',
+      serverName: spec.serverNames[0], listen: '::', listenPort: spec.listenPort, xrayVersion: 'Xray 1.8.24',
       ...this.outcome,
     };
   }
   async reset(requestId: string): Promise<HelperResult> {
-    return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listenPort: 0, xrayVersion: '' };
+    return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listen: '', listenPort: 0, xrayVersion: '' };
   }
 }
 
@@ -296,4 +296,22 @@ test('非 direct 模式与不可用能力都拒绝部署入站', async () => {
     fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true });
     bare.store.close(); rmSync(bare.directory, { recursive: true, force: true });
   }
+});
+
+test('对外地址是 IPv6 但入站只监听 IPv4 时拒绝上报', async () => {
+  const fixture = setup();
+  const applier = new FakeApplier();
+  applier.outcome = { listen: '0.0.0.0' };
+  const processor = new CommandProcessor(fixture.store, fixture.xray, {
+    applier, inboundTag: 'vless-in', resolvePublicHost: async () => '2001:db8::1',
+    verifyAttempts: 3, verifyDelayMs: 1,
+  });
+  try {
+    // Such a node passes every tag-based check and hands each client an endpoint
+    // with nothing listening on it.
+    const result = await processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+    assert.equal(result.status, 'failed');
+    assert.match(result.error ?? '', /IPv6/);
+    assert.equal(fixture.store.getInboundState(), undefined);
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
 });
