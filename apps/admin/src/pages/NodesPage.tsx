@@ -372,6 +372,14 @@ export function PanelSyncQueueDrawer(props: {
         </Stack>
         <Stack gap="xs">
           <Text fw={600}>节点命令同步</Text>
+          {commandDetail?.failed ? (
+            // Rendered regardless of row count: a refresh failure with a
+            // nonempty retained list must still warn that the rows are stale,
+            // or completed commands would read as still pending.
+            <Text size="xs" c="red">
+              该对象的节点命令刷新失败，下方为上次成功加载的内容（可能已过期）。
+            </Text>
+          ) : null}
           {listedCommandTotal > (hasFilter ? filteredNodeCommandJobs.length : props.nodeCommandQueue.jobs.length) ? (
             <Text size="xs" c="dimmed">
               {hasFilter

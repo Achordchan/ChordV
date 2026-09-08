@@ -213,6 +213,11 @@ function testNodeCommandQueueShowsDirectProvisioning() {
   assert.match(nodesPageSource, /translateNodeCommandType\(job\.commandType\)/);
   assert.match(
     nodesPageSource,
+    /commandDetail\?\.failed \? \(\s*\/\/ Rendered regardless of row count[\s\S]*?该对象的节点命令刷新失败，下方为上次成功加载的内容（可能已过期）。/,
+    "刷新失败提示必须独立于行数渲染——非空的过期列表也要标明已过期"
+  );
+  assert.match(
+    nodesPageSource,
     /commandDetail\?\.failed \? \(\s*<Text c="red">该对象的节点命令加载失败/,
     "明细加载失败必须明示，不得静默显示空表或旧数据"
   );
