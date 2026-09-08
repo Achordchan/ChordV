@@ -603,27 +603,35 @@ export class RuntimeSessionService {
   @Cron("*/30 * * * * *")
   @DrainableJob()
   async retryPendingDirectProvisioning() {
-    const subscriptions = await this.prisma.panelClientBinding.findMany({
-      where: {
-        // "deleted" matters too: an expired subscription's bindings are marked
-        // deleted, and renewing before the removal watermarks settle fails in
-        // assertDirectTerminalWatermarksSettled — without deleted bindings in
-        // the scan that subscription would never be retried once settlement
-        // completes. The sync's eligibility checks still decide who actually
-        // gets provisioned.
-        status: { in: ["disabled", "deleted"] },
-        // The sync never provisions on an inactive node — prune here so
-        // bindings of disabled nodes cannot occupy retry slots.
-        node: { isActive: true },
-        ...(this.directProvisioningRetryCursor
-          ? { subscriptionId: { gt: this.directProvisioningRetryCursor } }
-          : {})
-      },
-      select: { subscriptionId: true },
-      distinct: ["subscriptionId"],
-      orderBy: { subscriptionId: "asc" },
-      take: DIRECT_PROVISIONING_RETRY_BATCH_SIZE
-    });
+    // Two candidate shapes, merged and rotated by the cursor:
+    // 1. Existing disabled/deleted bindings — restoration is owed (re-enable
+    //    or renewal raced an unsettled disable/remove).
+    // 2. Assigned nodes with NO binding at all — initial provisioning failed
+    //    before its transaction committed (nothing persisted to retry), so
+    //    the assignment itself is the only durable trace. The sync's
+    //    eligibility checks still decide who actually gets provisioned;
+    //    intentionally bare assignments (no active members yet) simply no-op
+    //    and rotate.
+    // Inactive nodes are pruned in both branches: the sync never provisions
+    // on them.
+    const subscriptions: Array<{ subscriptionId: string }> = await this.prisma.$queryRaw`
+      SELECT "subscriptionId" FROM (
+        SELECT DISTINCT b."subscriptionId"
+          FROM "PanelClientBinding" b
+          JOIN "Node" n ON n.id = b."nodeId" AND n."isActive"
+         WHERE b.status IN ('disabled', 'deleted')
+        UNION
+        SELECT DISTINCT na."subscriptionId"
+          FROM "SubscriptionNodeAccess" na
+          JOIN "Node" n ON n.id = na."nodeId" AND n."isActive"
+          LEFT JOIN "PanelClientBinding" b
+            ON b."subscriptionId" = na."subscriptionId" AND b."nodeId" = na."nodeId"
+         WHERE b.id IS NULL
+      ) candidates
+      WHERE "subscriptionId" > ${this.directProvisioningRetryCursor}
+      ORDER BY "subscriptionId"
+      LIMIT ${DIRECT_PROVISIONING_RETRY_BATCH_SIZE}
+    `;
     this.directProvisioningRetryCursor =
       subscriptions.length >= DIRECT_PROVISIONING_RETRY_BATCH_SIZE
         ? subscriptions[subscriptions.length - 1]!.subscriptionId

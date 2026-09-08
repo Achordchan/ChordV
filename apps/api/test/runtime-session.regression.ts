@@ -261,28 +261,27 @@ async function main() {
   //    retryPendingDirectProvisioning re-runs the per-subscription sync every
   //    tick until settlement lets the re-activation through. A one-shot warn
   //    would leave the node enabled with its users permanently disabled.
-  //    Retries must also be FAIR (cursor rotation, inactive nodes pruned),
-  //    cover DELETED bindings (renewal during removal settlement), skip
-  //    subscriptions whose direct traffic reset is in flight, and run the sync
-  //    under the SHARED subscription usage lock (cross-process serialization
-  //    against traffic resets). The local lock path needs no DATABASE_URL.
+  //    The candidate scan must cover BOTH shapes — existing disabled/deleted
+  //    bindings AND assigned nodes with no binding at all (initial
+  //    provisioning that failed before its transaction committed leaves
+  //    nothing behind but the assignment). Retries must also be FAIR (cursor
+  //    rotation) and skip subscriptions whose direct traffic reset is in
+  //    flight; the sync runs under the SHARED subscription usage lock. The
+  //    local lock path needs no DATABASE_URL.
   const previousDatabaseUrl = process.env.DATABASE_URL;
   delete process.env.DATABASE_URL;
-  const scannedWheres: Array<Record<string, unknown>> = [];
+  const scannedCursors: Array<string> = [];
   const synced: string[] = [];
   const subscriptionsPool = ["sub_1", "sub_2", "sub_3"];
   const cronService = Object.assign(Object.create(RuntimeSessionService.prototype), {
     directProvisioningRetryCursor: "",
     directTrafficResetsInFlight: new Map([["sub_2", 1]]),
     prisma: {
-      panelClientBinding: {
-        findMany: async (payload: { where: Record<string, unknown> }) => {
-          scannedWheres.push(payload.where);
-          const after = (payload.where.subscriptionId as { gt?: string } | undefined)?.gt;
-          return subscriptionsPool
-            .filter((id) => !after || id > after)
-            .map((subscriptionId) => ({ subscriptionId }));
-        }
+      $queryRaw: async (_template: TemplateStringsArray, cursor: string) => {
+        scannedCursors.push(cursor);
+        return subscriptionsPool
+          .filter((id) => id > cursor)
+          .map((subscriptionId) => ({ subscriptionId }));
       },
       $transaction: async (task: (tx: unknown) => Promise<unknown>) => task({})
     },
@@ -304,18 +303,14 @@ async function main() {
   assert.equal(cron.directProvisioningRetryCursor, "", "不满一批时游标回绕到起点");
   await cron.retryPendingDirectProvisioning();
   assert.deepEqual(synced, ["sub_1", "sub_3", "sub_1", "sub_3"], "周期重试持续进行");
-  assert.deepEqual(
-    scannedWheres[1],
-    { status: { in: ["disabled", "deleted"] }, node: { isActive: true } },
-    "查询必须覆盖 deleted 绑定（续费遇删除沉降失败的订阅才有人重试）并剪掉非活跃节点"
-  );
+  assert.equal(scannedCursors[1], "", "游标回绕后从头扫起");
 
   // Cursor advance: a full batch leaves the cursor at the last id, so a large
   // stuck population cannot starve subscriptions behind it.
   cron.directProvisioningRetryCursor = "sub_1";
   await cron.retryPendingDirectProvisioning();
   assert.deepEqual(
-    (scannedWheres[2].subscriptionId as { gt?: string })?.gt,
+    scannedCursors[2],
     "sub_1",
     "游标推进后只扫其后的订阅"
   );
@@ -361,6 +356,16 @@ async function main() {
     runtimeSessionSource,
     /if \(this\.directTrafficResetsInFlight\.has\(subscriptionId\)\) \{\s*\n\s*continue;\s*\n\s*\}/,
     "重试循环必须跳过重置进行中的订阅"
+  );
+  assert.match(
+    runtimeSessionSource,
+    /WHERE b\.status IN \('disabled', 'deleted'\)/,
+    "候选必须包含 disabled 与 deleted 绑定"
+  );
+  assert.match(
+    runtimeSessionSource,
+    /FROM "SubscriptionNodeAccess" na[\s\S]*?LEFT JOIN "PanelClientBinding" b[\s\S]*?WHERE b\.id IS NULL/,
+    "候选必须包含「已分配节点却完全没有绑定」——初次供给在事务提交前失败时只剩授权行是持久痕迹"
   );
   assert.match(
     runtimeSessionSource,
