@@ -114,9 +114,12 @@ for (const outcome of ["resolve", "reject"]) {
 // A macrotask hop flushes every microtask the async tick chain needs (the
 // completed branch awaits the outcome AND the node list before publishing).
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
-function outcomeFixture(outcome: unknown, records: Array<Record<string, unknown>>, runFirstScheduleOnly = true) {
+function outcomeFixture(outcome: unknown | Array<unknown>, records: Array<Record<string, unknown>>, runFirstScheduleOnly = true) {
   const f = fixture();
-  f.scope.fetchNodeCommandOutcome = async () => outcome;
+  // A sequence models per-call answers (the supersession re-read); the last
+  // entry repeats for any further calls.
+  const answers = Array.isArray(outcome) ? [...outcome] : [outcome];
+  f.scope.fetchNodeCommandOutcome = async () => answers.length > 1 ? answers.shift() : answers[0];
   f.scope.fetchAdminNodes = async () => records;
   f.scope.POLL_INTERVAL_MS = 3_000;
   f.scope.POLL_TIMEOUT_MS = 300_000;
@@ -159,6 +162,49 @@ function outcomeFixture(outcome: unknown, records: Array<Record<string, unknown>
   await flush();
   assert.equal(f.mutations.some(([name, value]) => name === "setStage" && value === "done"), false, "被取代不得报成功");
   assert.ok(f.mutations.some(([name, value]) => name === "setError" && String(value).includes("已被更新的部署取代")), "必须说明被取代且未生效");
+}
+{
+  // The completion race: the command completed BETWEEN the outcome read
+  // (pending) and the node-list read (higher revision), and a later
+  // deployment finished too. The re-read sees "completed" — the change DID
+  // take effect and must be reported as success, not supersession.
+  const f = outcomeFixture(
+    [{ status: "pending", lastError: null }, { status: "completed", lastError: null }],
+    [{ id: "node-1", inboundAppliedRevision: "13", name: "node" }]
+  );
+  callback("pollOutcome", f.scope)("node-1", "command-1", "12", 1);
+  await flush();
+  assert.ok(f.mutations.some(([name, value]) => name === "setStage" && value === "done"), "重读发现已完成必须报成功");
+  assert.equal(f.mutations.some(([name, value]) => name === "setError" && String(value).includes("已被更新的部署取代")), false, "不得误报未生效");
+  assert.equal(f.notified.length, 1);
+}
+{
+  // Backoff covers the WHOLE tick: a persistently failing node-list endpoint
+  // must double from the previous interval (3s→6s→12s→24s→30s cap), not reset
+  // to 3s after each successful outcome read.
+  const f = fixture();
+  f.scope.fetchNodeCommandOutcome = async () => ({ status: "pending", lastError: null });
+  f.scope.fetchAdminNodes = async () => { throw new Error("list down"); };
+  f.scope.POLL_INTERVAL_MS = 3_000;
+  f.scope.POLL_TIMEOUT_MS = 300_000;
+  f.scope.Date = Date; f.scope.BigInt = BigInt;
+  const delays: number[] = [];
+  let runs = 0;
+  f.scope.window = {
+    setTimeout: (fn: () => void, delay: number) => {
+      runs += 1;
+      if (runs <= 5) { delays.push(delay); fn(); }
+      return runs;
+    },
+    clearTimeout: () => undefined
+  };
+  callback("pollOutcome", f.scope)("node-1", "command-1", "12", 1);
+  await flush();
+  assert.deepEqual(
+    delays,
+    [3_000, 6_000, 12_000, 24_000, 30_000],
+    `节点列表持续失败必须整体退避到 30s：${JSON.stringify(delays)}`
+  );
 }
 {
   // Pending with the revision still at/below the target: keep waiting.

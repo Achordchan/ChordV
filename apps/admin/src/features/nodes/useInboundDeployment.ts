@@ -64,12 +64,17 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
     const fail = (message: string) => {
       stopPolling(); setStage("failed"); setError(message);
     };
+    const succeed = (record: { id: string; name?: string } | undefined) => {
+      stopPolling();
+      setStage("done"); setError(null);
+      if (record) changed.current(record as AdminNodeRecordDto);
+      notifications.show({ color: "teal", title: "入站部署完成", message: `节点「${record?.name ?? nodeId}」的 Reality 入站已部署，连接参数已回填。` });
+    };
     const tick = async () => {
       if (!valid()) return;
       try {
         const outcome = await fetchNodeCommandOutcome(nodeId, commandId);
         if (!valid()) return;
-        interval = POLL_INTERVAL_MS;
         if (outcome === null) {
           fail("命令记录不存在（可能已被清理），无法确认部署结果；请刷新节点查看当前参数。");
           return;
@@ -77,11 +82,7 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
         if (outcome.status === "completed") {
           const nodes = await fetchAdminNodes();
           if (!valid()) return;
-          stopPolling();
-          setStage("done"); setError(null);
-          const record = nodes.find(item => item.id === nodeId);
-          if (record) changed.current(record);
-          notifications.show({ color: "teal", title: "入站部署完成", message: `节点「${record?.name ?? nodeId}」的 Reality 入站已部署，连接参数已回填。` });
+          succeed(nodes.find(item => item.id === nodeId));
           return;
         }
         if (outcome.status === "failed" || outcome.status === "cancelled") {
@@ -98,9 +99,29 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
         if (!valid()) return;
         const record = nodes.find(item => item.id === nodeId);
         if (record && BigInt(record.inboundAppliedRevision ?? "0") > BigInt(targetRevision)) {
+          // The revision just seen can only exist because the LATER command
+          // committed, and the agent executes commands in order — so THIS
+          // command's outcome is already terminal. It may have completed
+          // between the two reads above: re-read it before claiming the
+          // change never happened (telling an operator a rotation did not
+          // happen when it did is the false negative this poll avoids).
+          const finalOutcome = await fetchNodeCommandOutcome(nodeId, commandId);
+          if (!valid()) return;
+          if (finalOutcome?.status === "completed") { succeed(record); return; }
+          if (finalOutcome?.status === "failed" || finalOutcome?.status === "cancelled") {
+            fail(finalOutcome.status === "cancelled"
+              ? "部署命令已被取消。"
+              : `部署失败：${finalOutcome.lastError ?? "Agent 未提供原因"}`);
+            return;
+          }
           fail(`本次下发已被更新的部署取代（revision ${record.inboundAppliedRevision ?? "0"} 越过本命令的 ${targetRevision}），未生效；请重新打开表单基于当前参数操作。`);
           return;
         }
+        // The WHOLE tick succeeded (outcome + node list): only now may a
+        // failing next round back off from the normal interval — resetting
+        // after the outcome alone made a failing node-list endpoint retry at
+        // 3s→6s→3s→6s forever instead of backing off to 30s.
+        interval = POLL_INTERVAL_MS;
       } catch {
         if (!valid()) return;
         interval = Math.min(interval * 2, 30_000);
