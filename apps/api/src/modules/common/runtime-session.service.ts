@@ -486,6 +486,19 @@ export class RuntimeSessionService {
     });
   }
 
+  /**
+   * Transaction-scoped variant: the binding activation, its traffic baseline,
+   * the node revision bump and the ENSURE_USER job must commit or roll back
+   * together. Marking a binding active without its command leaves the control
+   * plane believing the node has the user while the agent never got told.
+   */
+  async queueDirectSubscriptionAccessSyncTx(writer: any, subscriptionId: string) {
+    return this.syncSubscriptionPanelAccessLocked(subscriptionId, {
+      writer,
+      ensureOnly: true
+    });
+  }
+
   async quiesceDirectBindingsForTrafficReset(subscriptionId: string, userId?: string | null) {
     const outcome = await this.prisma.$transaction(async (writer) => {
       const bindings = await writer.panelClientBinding.findMany({

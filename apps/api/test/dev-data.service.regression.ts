@@ -6195,6 +6195,76 @@ async function testUpdateNodeAccessKeepsLocalSaveWhenPublishFails() {
   assert.deepEqual(result.nodeIds, ["node_1"]);
 }
 
+async function testNodeAccessEnsureQueuesDirectSyncInsideTransaction() {
+  let inTransaction = false;
+  let sawTransactionScopedSync = false;
+  let txSyncCalls = 0;
+  const node = {
+    id: "node_1",
+    name: "node",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: true,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => (payload.select ? [] : [{ nodeId: "node_1", node }]),
+        createMany: async () => undefined
+      },
+      node: {
+        findMany: async () => [node]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) => {
+        inTransaction = true;
+        try {
+          return await task({
+            subscriptionNodeAccess: {
+              createMany: async () => undefined
+            }
+          });
+        } finally {
+          inTransaction = false;
+        }
+      }
+    },
+    runtimeSessionService: {
+      queueDirectSubscriptionAccessSyncTx: async () => {
+        sawTransactionScopedSync = inTransaction;
+        txSyncCalls += 1;
+        return 0;
+      }
+    },
+    clientEventsPublisher: {
+      publishNodeAccessUpdated: async () => undefined
+    }
+  });
+
+  await service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_1"] });
+
+  assert.equal(txSyncCalls, 1, "供给必须走事务作用域的 direct 入口，不得退回根客户端调用");
+  assert.equal(
+    sawTransactionScopedSync,
+    true,
+    "绑定激活/基线/修订/ENSURE_USER 必须在同一事务内提交或回滚"
+  );
+}
+
 async function testNodeAccessRemovalMessagesDescribeQueuedRevocation() {
   const baseNode = {
     id: "node_keep",
@@ -17039,6 +17109,7 @@ async function main() {
   await testUpdateNodeAccessMapsUnknownLocalSaveFailure();
   await testUpdateNodeAccessMapsTransactionCommitFailure();
   await testUpdateNodeAccessKeepsLocalSaveWhenPublishFails();
+  await testNodeAccessEnsureQueuesDirectSyncInsideTransaction();
   await testNodeAccessRemovalMessagesDescribeQueuedRevocation();
   await testNodeAccessHttpMapsSubscriptionLookupFailureToServiceUnavailable();
   await testNodeAccessHttpMapsNodeListFailureToServiceUnavailable();

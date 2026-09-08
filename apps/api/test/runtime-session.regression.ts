@@ -196,6 +196,24 @@ async function main() {
   assert.equal(ledgerRows[0]?.usedTrafficBytes, 700n, "末次样本必须按基线差额计费，而不是从零起算");
   assert.equal(subscriptionUpdates[0]?.usedTrafficBytes, 700n, "订阅已用流量必须只增加差额");
 
+  // 5) The transaction-scoped entry point must actually use the caller's
+  //    writer: falling back to the root client would silently drop the
+  //    surrounding transaction and let half-applied provisioning commit.
+  const scopedService = Object.assign(Object.create(RuntimeSessionService.prototype), {
+    prisma: {
+      subscription: {
+        findUnique: async () => {
+          throw new Error("事务作用域入口不得使用根客户端");
+        }
+      }
+    }
+  }) as RuntimeSessionService;
+  const scopedCount = await scopedService.queueDirectSubscriptionAccessSyncTx(
+    { subscription: { findUnique: async () => null } } as never,
+    "sub_missing"
+  );
+  assert.equal(scopedCount, 0, "订阅不存在时事务作用域入口应返回 0");
+
   console.log("runtime session regression passed (connect 门不反转、供给资格共享判定、节点禁用联动绑定、删除绑定保留计量基线)");
 }
 
