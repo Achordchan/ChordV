@@ -661,6 +661,11 @@ model NodeCommandJob {
   userId          String?
   teamId          String?
   status          NodeAgentJobStatus   @default(pending)
+  // Set when a NEWER command for the same target (binding, or node for
+  // target-less commands) supersedes a retry-exhausted (cancelled) row: the
+  // new row tells the story from then on, so the old failure stops counting
+  // as unresolved in the admin queue.
+  resolvedAt      DateTime?
   attempts        Int                  @default(0)
   nextRunAt       DateTime             @default(now())
   lockedAt        DateTime?

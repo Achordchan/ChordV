@@ -1128,14 +1128,14 @@ export function App() {
       if (!canApplySectionResult(requestSeq, mutationSeqAtStart)) {
         return;
       }
-      if (leaseRevocationJobsResult.ok && nodeCommandQueueResult.ok) {
-        mergeSnapshot({
-          leaseRevocationJobs: leaseRevocationJobsResult.value,
-          nodeCommandQueue: nodeCommandQueueResult.value
-        });
-        return;
-      }
-      if (!options?.silent) {
+      // Merge each success independently: one request timing out must not
+      // discard the other's fresh data (a returned revocation failure would
+      // otherwise stay invisible until the next full reload).
+      mergeSnapshot({
+        ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.value } : {}),
+        ...(nodeCommandQueueResult.ok ? { nodeCommandQueue: nodeCommandQueueResult.value } : {})
+      });
+      if ((!leaseRevocationJobsResult.ok || !nodeCommandQueueResult.ok) && !options?.silent) {
         const failureReason = leaseRevocationJobsResult.ok
           ? (nodeCommandQueueResult.ok ? null : nodeCommandQueueResult.reason)
           : leaseRevocationJobsResult.reason;

@@ -27,6 +27,7 @@ import { RuntimeSessionService } from "../src/modules/common/runtime-session.ser
 import { DevDataService } from "../src/modules/common/dev-data.service";
 import { AdminSubscriptionService } from "../src/modules/common/admin-subscription.service";
 import { AdminNodeService } from "../src/modules/common/admin-node.service";
+import { createOrRefreshNodeCommandJob, resolveExhaustedCommands } from "../src/modules/common/node-command-job.utils";
 import { ClientAccessService } from "../src/modules/common/client-access.service";
 import { ReleaseCenterService } from "../src/modules/common/release-center.service";
 import { RuntimeComponentsService } from "../src/modules/common/runtime-components.service";
@@ -5909,7 +5910,10 @@ async function testListNodeCommandJobsAppliesTargetFilter() {
   await service.listNodeCommandJobs({ subscriptionId: "sub_1" });
   assert.deepEqual(
     receivedWhere,
-    { status: { in: ["pending", "running", "failed", "cancelled"] }, subscriptionId: "sub_1" },
+    {
+      OR: [{ status: { in: ["pending", "running", "failed"] } }, { status: "cancelled", resolvedAt: null }],
+      subscriptionId: "sub_1"
+    },
     "订阅过滤必须下推为服务端条件"
   );
 
@@ -5920,22 +5924,32 @@ async function testListNodeCommandJobsAppliesTargetFilter() {
   await service.listNodeCommandJobs({ subscriptionId: "sub_1", userId: "user_1", teamId: "team_1" });
   assert.deepEqual(
     receivedWhere,
-    { status: { in: ["pending", "running", "failed", "cancelled"] }, subscriptionId: "sub_1", userId: "user_1", teamId: "team_1" },
+    {
+      OR: [{ status: { in: ["pending", "running", "failed"] } }, { status: "cancelled", resolvedAt: null }],
+      subscriptionId: "sub_1",
+      userId: "user_1",
+      teamId: "team_1"
+    },
     "多目标过滤必须按 AND 交集，不得按 OR 并集"
   );
 
   await service.listNodeCommandJobs();
   assert.deepEqual(
     receivedWhere,
-    { status: { in: ["pending", "running", "failed", "cancelled"] } },
-    "无过滤时保持全局查询；cancelled（重试耗尽）必须保留在队列里——它是未解决的失败"
+    {
+      OR: [{ status: { in: ["pending", "running", "failed"] } }, { status: "cancelled", resolvedAt: null }]
+    },
+    "未解决的 cancelled（重试耗尽）保留在队列；已解决的（resolvedAt 置位）排除"
   );
 }
 
 // retryDueCommands marks retry-exhausted commands as cancelled without the
 // operation ever completing. That is an UNRESOLVED failure: the queue and the
 // per-target summaries must keep it visible (counted under failed) or the
-// node reads as synced while the user was never provisioned.
+// node reads as synced while the user was never provisioned. Once a newer
+// command for the same target takes over (resolvedAt set), the exhausted row
+// must drop out — otherwise it counts as a failure forever and historical
+// rows pile up in the capped detail list.
 async function testRetryExhaustedCommandsStayVisibleAsFailures() {
   const service = createAdminNodeService({
     logger: { warn: () => undefined },
@@ -5981,6 +5995,53 @@ async function testRetryExhaustedCommandsStayVisibleAsFailures() {
     [{ key: "sub_1", pending: 0, running: 0, failed: 1, total: 1, lastError: "Agent 命令重试次数已达到上限" }],
     "订阅视角的待处理徽章不得因重试耗尽而消失"
   );
+}
+
+// The queries themselves decide visibility by resolvedAt, so the write path
+// must set it: enqueueing a new command for a target resolves the exhausted
+// rows of that target (binding-scoped) or of that node+commandType
+// (target-less), and leaves unrelated exhausted rows alone.
+async function testOrderingNewCommandResolvesExhaustedFailures() {
+  const updates: Array<Record<string, unknown>> = [];
+  const writer = {
+    nodeCommandJob: {
+      updateMany: async (payload: Record<string, unknown>) => {
+        updates.push(payload);
+        return { count: 1 };
+      },
+      upsert: async () => ({ id: "job_new" })
+    }
+  };
+
+  await createOrRefreshNodeCommandJob(writer, "agent:ensure_user:binding_1:8", {
+    create: {
+      id: "job_new",
+      dedupeKey: "agent:ensure_user:binding_1:8",
+      nodeId: "node_1",
+      commandType: "ENSURE_USER",
+      bindingId: "binding_1",
+      subscriptionId: "sub_1",
+      userId: "user_1",
+      teamId: null
+    },
+    update: {}
+  });
+  assert.deepEqual(
+    updates[0]?.where,
+    { bindingId: "binding_1", status: "cancelled", resolvedAt: null },
+    "绑定作用域命令入队时必须解决该绑定上未解决的重试耗尽命令"
+  );
+  assert.ok(updates[0]?.data?.resolvedAt instanceof Date, "解决方式是置 resolvedAt");
+
+  await resolveExhaustedCommands(writer, { nodeId: "node_1", commandType: "ENSURE_INBOUND" });
+  assert.deepEqual(
+    updates[1]?.where,
+    { nodeId: "node_1", commandType: "ENSURE_INBOUND", status: "cancelled", resolvedAt: null },
+    "无绑定命令按节点+命令类型解决——重新下发入站必须解决旧的重试耗尽部署"
+  );
+
+  await resolveExhaustedCommands(writer, {});
+  assert.equal(updates.length, 2, "缺少定位信息时不得盲写");
 }
 
 async function testUpdateNodeMapsLocalReadFailure() {
@@ -17388,6 +17449,7 @@ async function main() {
   await testReEnableNodeRestoresBindingsViaDirectAccessSync();
   await testListNodeCommandJobsAppliesTargetFilter();
   await testRetryExhaustedCommandsStayVisibleAsFailures();
+  await testOrderingNewCommandResolvesExhaustedFailures();
   await testUpdateNodeMapsLocalReadFailure();
   await testRetryLeaseRevocationJobRequeuesWithoutKeepingBackoff();
   await testLeaseRevocationQueueFallsBackWhenNodeNameLookupFails();

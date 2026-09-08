@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { buildSnapshotKey } from "../common/runtime-session.utils";
 import { createOrRefreshLeaseRevocationJob } from "../common/lease-revocation-job.utils";
+import { resolveExhaustedCommands } from "../common/node-command-job.utils";
 import { trafficBytesToGbNumber, trafficGbNumberToBytes } from "../common/traffic-bytes.utils";
 import { AgentUsageBatchDto } from "./agent.dto";
 
@@ -288,6 +289,9 @@ export async function disableDirectBindingsForSubscriptions(
     if (!targetAgentId) continue;
     for (const binding of nodeBindings) {
       const state = disabledSubscriptions.get(binding.subscriptionId)!.state;
+      // Re-managing the binding resolves any exhausted (cancelled) command
+      // for it: the new DISABLE_USER tells the story from now on.
+      await resolveExhaustedCommands(tx, { bindingId: binding.id, nodeId: bindingNodeId, commandType: "DISABLE_USER" });
       await tx.nodeCommandJob.upsert({
         where: { dedupeKey: `auto-disable:${binding.id}:${nodeRevision.agentConfigRevision.toString()}` },
         update: {},

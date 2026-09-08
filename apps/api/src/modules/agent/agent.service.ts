@@ -14,6 +14,7 @@ import { AgentEventsService } from "./agent-events.service";
 import { inboundSpecKey, normalizeInboundSpec, parseInboundReport, type NormalizedInboundSpec } from "./agent-inbound";
 import { ClientEventsPublisher } from "../common/client-events.publisher";
 import { PrismaService } from "../common/prisma.service";
+import { resolveExhaustedCommands } from "../common/node-command-job.utils";
 import { trafficGbNumberToBytes } from "../common/traffic-bytes.utils";
 import { runWithNodeAndSubscriptionUsageLocks, runWithNodeUsageLock } from "../common/usage-lock.utils";
 import { applyDirectBatch, type SubscriptionTransition } from "./agent-direct-metering";
@@ -449,6 +450,10 @@ export class AgentService {
           }
         }
       }
+      // Target-less commands (ENSURE_INBOUND, RECONCILE_USERS, ...) resolve
+      // per node+commandType: a re-ordered deployment supersedes an exhausted
+      // one, which must stop counting as an unresolved failure.
+      await resolveExhaustedCommands(tx, { nodeId, commandType: input.type });
       return tx.nodeCommandJob.upsert({
         where: { dedupeKey },
         update: {},

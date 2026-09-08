@@ -252,16 +252,14 @@ function testQueueLoadsDoNotBlockMainSectionData() {
   );
 
   const secondaryBody = extractFunctionBody("loadSecondarySectionData");
-  assert.match(secondaryBody, /targetSection === "users" \|\| targetSection === "subscriptions"/);
-  assert.match(secondaryBody, /settleAdminLoad\(fetchAdminLeaseRevocationJobs\(\)\)/);
-  assert.match(secondaryBody, /settleAdminLoad\(fetchAdminNodeCommandJobs\(\)\)/);
+  const queueUsersBranch = extractBranchBody(secondaryBody, 'targetSection === "users" || targetSection === "subscriptions"');
+  assert.match(queueUsersBranch, /settleAdminLoad\(fetchAdminLeaseRevocationJobs\(\)\)/);
+  assert.match(queueUsersBranch, /settleAdminLoad\(fetchAdminNodeCommandJobs\(\)\)/);
   assert.match(
-    secondaryBody,
-    /mergeSnapshot\(\{\s*leaseRevocationJobs: leaseRevocationJobsResult\.value,\s*nodeCommandQueue: nodeCommandQueueResult\.value\s*\}\)/,
-    "订阅/用户视角的后台同步任务必须同时刷新连接撤销与节点命令"
+    queueUsersBranch,
+    /mergeSnapshot\(\{\s*\.\.\.\(leaseRevocationJobsResult\.ok \? \{ leaseRevocationJobs: leaseRevocationJobsResult\.value \} : \{\}\),\s*\.\.\.\(nodeCommandQueueResult\.ok \? \{ nodeCommandQueue: nodeCommandQueueResult\.value \} : \{\}\)\s*\}\)/,
+    "订阅/用户视角两个队列请求必须独立合并——一个超时不得丢弃另一个的新数据"
   );
-  assert.match(secondaryBody, /leaseRevocationJobsResult\.ok \? \{ leaseRevocationJobs: leaseRevocationJobsResult\.value \} : \{\}/);
-  assert.match(secondaryBody, /nodeCommandQueueResult\.ok \? \{ nodeCommandQueue: nodeCommandQueueResult\.value \} : \{\}/);
 }
 
 

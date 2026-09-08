@@ -138,10 +138,13 @@ export class AdminNodeService {
         where: {
           // "cancelled" here is RETRY-EXHAUSTED (retryDueCommands gave up
           // after 8 attempts): the requested operation never happened, so it
-          // stays listed as an unresolved failure until repaired or
-          // re-ordered. Superseded commands are excluded by their renamed
-          // dedupe keys instead of by status, so they do not reappear.
-          status: { in: ["pending", "running", "failed", "cancelled"] },
+          // stays listed as an unresolved failure until a newer command for
+          // the same target resolves it (resolvedAt) or it is re-ordered.
+          // Superseded commands are excluded by their renamed dedupe keys.
+          OR: [
+            { status: { in: ["pending", "running", "failed"] } },
+            { status: "cancelled", resolvedAt: null }
+          ],
           ...(hasFilter ? scoped : {})
         },
         orderBy: [{ status: "asc" }, { nextRunAt: "asc" }, { createdAt: "desc" }],
@@ -179,9 +182,14 @@ export class AdminNodeService {
       () => this.prisma.nodeCommandJob.groupBy({
         by: ["nodeId", "subscriptionId", "userId", "teamId", "status"],
         where: {
-          // Cancelled = retry-exhausted, an UNRESOLVED failure the operator
-          // must still see; superseded commands never carry this status.
-          status: { in: ["pending", "running", "failed", "cancelled"] }
+          // Cancelled = retry-exhausted and NOT yet resolved, an UNRESOLVED
+          // failure the operator must still see; resolved ones (a newer
+          // command took over the target) drop out. Superseded commands never
+          // carry the cancelled status.
+          OR: [
+            { status: { in: ["pending", "running", "failed"] } },
+            { status: "cancelled", resolvedAt: null }
+          ]
         },
         _count: { _all: true }
       }),
@@ -248,7 +256,13 @@ export class AdminNodeService {
     try {
       return await runAdminNodeLocalOperation(
         () => this.prisma.nodeCommandJob.findMany({
-          where: { status: { in: ["failed", "cancelled"] }, lastError: { not: null } },
+          where: {
+            OR: [
+              { status: { in: ["pending", "running", "failed"] } },
+              { status: "cancelled", resolvedAt: null }
+            ],
+            lastError: { not: null }
+          },
           orderBy: { createdAt: "desc" },
           take: NODE_COMMAND_ERROR_SAMPLE_SIZE,
           select: {
