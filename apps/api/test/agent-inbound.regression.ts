@@ -357,6 +357,24 @@ async function testDedupeScope() {
   assert.equal(store.rows.length, 3);
 }
 
+async function testGetCommandOutcome() {
+  // The admin deploy poll asks for the COMMAND's own terminal state: a higher
+  // node-level applied revision can belong to a later deployment while this
+  // command failed.
+  const found = new AgentService({
+    nodeCommandJob: { findFirst: async () => ({ status: "failed", lastError: "入站部署后未能确认生效" }) }
+  } as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
+  assert.deepEqual(
+    await found.getCommandOutcome("node-1", "command-1"),
+    { status: "failed", lastError: "入站部署后未能确认生效" }
+  );
+  // A missing row (history cleanup) is honestly null, not a guess.
+  const missing = new AgentService({
+    nodeCommandJob: { findFirst: async () => null }
+  } as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
+  assert.equal(await missing.getCommandOutcome("node-1", "gone"), null);
+}
+
 async function testInboundCasGuard() {
   // An idle open form never learns that another administrator's deployment
   // completed (no admin event, no polling) — the CLIENT-side revision gate
@@ -662,6 +680,7 @@ function main() {
     .then(testDedupeScope)
     .then(testDedupeInterveningDeployment)
     .then(testInboundCasGuard)
+    .then(testGetCommandOutcome)
     .then(testDedupeInterveningWhileRunning)
     .then(testDedupeInterleavedRequests)
     .then(testDedupeReleaseIsInboundOnly);

@@ -346,6 +346,20 @@ export class AgentService {
     return { spec: job.payload as Record<string, unknown> };
   }
 
+  /**
+   * The terminal outcome of a queued command, for the admin deploy flow's
+   * poll: a higher node-level applied revision alone does not prove THIS
+   * command succeeded — a later administrator's deployment can push the
+   * revision past a FAILED one. The command's own status is the truth.
+   */
+  async getCommandOutcome(nodeId: string, commandId: string): Promise<{ status: string; lastError: string | null } | null> {
+    const job = await this.prisma.nodeCommandJob.findFirst({
+      where: { id: commandId, nodeId },
+      select: { status: true, lastError: true }
+    });
+    return job ?? null;
+  }
+
   async queueCommand(nodeId: string, input: QueueAgentCommandDto): Promise<AgentCommandDto> {
     const agent = await this.prisma.nodeAgent.findFirst({
       where: { nodeId, revokedAt: null },

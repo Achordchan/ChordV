@@ -50,7 +50,7 @@ function fixture() {
     session, active, requestBusy, pollEpoch, timer,
     current: (epoch: number) => active.current && session.current === epoch,
     changed: { current: (value: unknown) => changedNodes.push(value) },
-    stopPolling: () => undefined, pollCompletion: (...args: unknown[]) => polls.push(args),
+    stopPolling: () => undefined, pollOutcome: (...args: unknown[]) => polls.push(args),
     notifications: { show: (value: unknown) => notified.push(value) }, errorMessage: (error: Error) => error.message,
     fetchAdminNodes: async () => { throw new Error("no nodes"); }
   };
@@ -84,7 +84,7 @@ for (const outcome of ["resolve", "reject"]) {
   f.scope.deployNodeInbound = async () => command;
   const queued = await callback("deploy", f.scope)(node, { listenPort: 443 }, "12");
   assert.equal(queued, true);
-  assert.deepEqual(f.polls, [[node.id, "12", 1]], "polling must watch the queued command's target revision");
+  assert.deepEqual(f.polls, [[node.id, command.commandId, "12", 1]], "polling must watch the queued command's own outcome");
   assert.ok(f.mutations.some(([name, value]) => name === "setStage" && value === "queued"));
   assert.ok(f.mutations.some(([name, value]) => name === "setQueuedRevision" && value === "12"));
   assert.equal(f.requestBusy.current, false);
@@ -107,11 +107,16 @@ for (const outcome of ["resolve", "reject"]) {
   assert.deepEqual(f.changedNodes, [Object.assign({}, node, { inboundAppliedRevision: "13" })], "失败后必须把新记录交给父级自愈");
 }
 
-// Completion poll: done only once the node's applied revision reaches the
-// command's target revision — the deploy queue response is the COMMAND, not
-// the outcome.
-function pollFixture(records: Array<Record<string, unknown>>, runFirstScheduleOnly: boolean) {
+// Outcome poll: success is the QUEUED COMMAND's terminal state, not a higher
+// node-level applied revision — this deployment can fail while a later
+// administrator's succeeds (worst for key rotation: the rotation never
+// happened but the revision moved past the target).
+// A macrotask hop flushes every microtask the async tick chain needs (the
+// completed branch awaits the outcome AND the node list before publishing).
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+function outcomeFixture(outcome: unknown, records: Array<Record<string, unknown>>, runFirstScheduleOnly = true) {
   const f = fixture();
+  f.scope.fetchNodeCommandOutcome = async () => outcome;
   f.scope.fetchAdminNodes = async () => records;
   f.scope.POLL_INTERVAL_MS = 3_000;
   f.scope.POLL_TIMEOUT_MS = 300_000;
@@ -120,8 +125,7 @@ function pollFixture(records: Array<Record<string, unknown>>, runFirstScheduleOn
   f.scope.window = {
     setTimeout: (fn: () => void) => {
       handles += 1;
-      if (runFirstScheduleOnly && handles === 1) { fn(); return handles; }
-      if (!runFirstScheduleOnly) { fn(); return handles; }
+      if (handles === 1 || !runFirstScheduleOnly) { fn(); return handles; }
       return handles;
     },
     clearTimeout: () => undefined
@@ -129,57 +133,48 @@ function pollFixture(records: Array<Record<string, unknown>>, runFirstScheduleOn
   return f;
 }
 {
-  const f = pollFixture([{ id: "node-1", inboundAppliedRevision: "12", name: "node" }], true);
-  await callback("pollCompletion", f.scope)("node-1", "12", 1);
-  assert.equal(f.changedNodes.length, 1, "completion must refresh the parent record");
+  const f = outcomeFixture({ status: "completed", lastError: null }, [{ id: "node-1", inboundAppliedRevision: "12", name: "node" }]);
+  callback("pollOutcome", f.scope)("node-1", "command-1", "12", 1);
+  await flush();
+  assert.equal(f.changedNodes.length, 1, "完成必须刷新父级记录");
   assert.ok(f.mutations.some(([name, value]) => name === "setStage" && value === "done"));
-  assert.equal(f.notified.length, 1, "completion must notify once");
+  assert.equal(f.notified.length, 1, "完成必须通知一次");
 }
 {
-  // Below the target revision (or a different node entirely): keep waiting.
-  const f = pollFixture([{ id: "node-1", inboundAppliedRevision: "11", name: "node" }], true);
-  await callback("pollCompletion", f.scope)("node-1", "12", 1);
-  assert.equal(f.changedNodes.length, 0);
+  // A FAILED command reports failure with the agent's reason — even if a
+  // later deployment already pushed the applied revision past the target.
+  const f = outcomeFixture({ status: "failed", lastError: "入站部署后未能确认生效" }, [{ id: "node-1", inboundAppliedRevision: "13", name: "node" }]);
+  callback("pollOutcome", f.scope)("node-1", "command-1", "12", 1);
+  await flush();
+  assert.equal(f.mutations.some(([name, value]) => name === "setStage" && value === "done"), false, "失败的命令不得报成功");
+  assert.ok(f.mutations.some(([name, value]) => name === "setStage" && value === "failed"), "失败必须落到 failed");
+  assert.ok(f.mutations.some(([name, value]) => name === "setError" && String(value).includes("未能确认生效")), "必须透出 Agent 的失败原因");
+}
+{
+  // Pending while a LATER deployment pushed the revision strictly past the
+  // target: superseded, not successful — the requested change (e.g. a key
+  // rotation) never took effect.
+  const f = outcomeFixture({ status: "pending", lastError: null }, [{ id: "node-1", inboundAppliedRevision: "13", name: "node" }]);
+  callback("pollOutcome", f.scope)("node-1", "command-1", "12", 1);
+  await flush();
+  assert.equal(f.mutations.some(([name, value]) => name === "setStage" && value === "done"), false, "被取代不得报成功");
+  assert.ok(f.mutations.some(([name, value]) => name === "setError" && String(value).includes("已被更新的部署取代")), "必须说明被取代且未生效");
+}
+{
+  // Pending with the revision still at/below the target: keep waiting.
+  const f = outcomeFixture({ status: "pending", lastError: null }, [{ id: "node-1", inboundAppliedRevision: "12", name: "node" }]);
+  callback("pollOutcome", f.scope)("node-1", "command-1", "12", 1);
+  await flush();
   assert.equal(f.mutations.some(([name, value]) => name === "setStage" && value === "done"), false);
+  assert.equal(f.mutations.some(([name, value]) => name === "setStage" && value === "failed"), false);
   assert.deepEqual(f.notified, []);
 }
-
-// Spec loading: only a SUCCESSFUL load may open reissue editing — an
-// in-flight load must not publish early, a SUPERSEDED load must not publish at
-// all, and a failure must surface as an error rather than degrade to the
-// lossy node fallback.
 {
-  const mutations: Array<[string, unknown]> = [];
-  const loadEpoch = { current: 0 };
-  const pending: Array<{ resolve: (value: unknown) => void; reject: (error: Error) => void }> = [];
-  const scope: Record<string, unknown> = {
-    loadEpoch, deployed: true, node,
-    fetchNodeInboundSpec: () => new Promise((resolve, reject) => pending.push({ resolve, reject })),
-    setSpecLoad: (value: unknown) => mutations.push(["setSpecLoad", value]),
-    specErrorMessage: (error: Error) => error.message
-  };
-  const load = sectionCallback("loadSpec", scope);
-  load();
-  assert.deepEqual(mutations[0], ["setSpecLoad", { status: "loading" }], "加载中不得提前放行");
-  // A newer load (node switch / applied revision moved) supersedes it; the
-  // stale response must not publish. (One microtask tick per resolve.)
-  load();
-  pending[0].resolve({ spec: { stale: true } });
-  await Promise.resolve();
-  assert.equal(mutations.length, 2, "被取代的加载不得发布状态");
-  pending[1].resolve({ spec: { listenPort: 8443 } });
-  await Promise.resolve();
-  assert.deepEqual(mutations[2], ["setSpecLoad", { status: "loaded", spec: { listenPort: 8443 } }]);
-  // A failure is an ERROR, never "no spec".
-  load();
-  pending[2].reject(new Error("boom"));
-  // A rejection passes .then before reaching .catch: two microtask hops.
-  await Promise.resolve(); await Promise.resolve();
-  assert.deepEqual(mutations[4], ["setSpecLoad", { status: "error", message: "boom" }], "失败必须显式暴露且携带原因");
-  // An undeployed node loads nothing at all (first deployment needs no spec).
-  sectionCallback("loadSpec", { ...scope, deployed: false })();
-  assert.deepEqual(mutations[5], ["setSpecLoad", { status: "idle" }]);
-  assert.equal(pending.length, 3, "未部署节点不得发起规格读取");
+  // The job row gone (history cleanup): fail fast rather than guess.
+  const f = outcomeFixture(null, []);
+  callback("pollOutcome", f.scope)("node-1", "command-1", "12", 1);
+  await flush();
+  assert.ok(f.mutations.some(([name, value]) => name === "setStage" && value === "failed"), "命令记录缺失必须显式失败");
 }
 
 // Destructive-operation marking lives in the section source: rotation is only

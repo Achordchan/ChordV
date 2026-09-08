@@ -95,6 +95,14 @@ export class AgentAdminController {
     return this.service.queueCommand(nodeId, body);
   }
 
+  // The terminal outcome of one queued command; the admin deploy poll
+  // distinguishes "this command succeeded" from "a later deployment moved the
+  // node past it".
+  @Get(":nodeId/agent-commands/:commandId/outcome")
+  getCommandOutcome(@Param("nodeId") nodeId: string, @Param("commandId") commandId: string) {
+    return this.service.getCommandOutcome(nodeId, commandId);
+  }
+
   @Post(":nodeId/control-mode")
   switchControlMode(@Param("nodeId") nodeId: string, @Body() body: SwitchNodeControlModeDto) {
     return this.controlModeService.switchMode(nodeId, body);

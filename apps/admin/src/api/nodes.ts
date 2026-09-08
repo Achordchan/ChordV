@@ -162,6 +162,15 @@ export function deployNodeInbound(nodeId: string, payload: Record<string, unknow
   });
 }
 
+// The terminal outcome of one queued command: the deploy poll needs THIS
+// command's status — a higher applied revision alone can belong to a later
+// deployment while this one failed.
+export function fetchNodeCommandOutcome(nodeId: string, commandId: string) {
+  return request<{ status: string; lastError: string | null } | null>(`/admin/nodes/${nodeId}/agent-commands/${commandId}/outcome`, {
+    timeoutMs: ADMIN_READ_TIMEOUT_MS
+  });
+}
+
 // The COMPLETE spec of the currently applied deployment (the last applied
 // ENSURE_INBOUND job's payload). The node record is a lossy projection of it,
 // and the reissue form prefills/preserves from the real thing.

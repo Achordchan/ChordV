@@ -1,7 +1,7 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { notifications } from "@mantine/notifications";
 import type { AdminNodeRecordDto } from "@chordv/shared";
-import { deployNodeInbound, fetchAdminNodes } from "../../api/nodes";
+import { deployNodeInbound, fetchAdminNodes, fetchNodeCommandOutcome } from "../../api/nodes";
 
 type Stage = "idle" | "queued" | "done" | "failed";
 const POLL_INTERVAL_MS = 3_000;
@@ -50,25 +50,55 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
 
   // Completion does not publish an admin event; poll the bounded status check
   // like registration does: normal 3s, failures back off to 30s, exit on
-  // close/node switch/completion/5m.
-  const pollCompletion = useCallback((nodeId: string, targetRevision: string, epoch: number) => {
+  // close/node switch/terminal outcome/5m. The QUEUED COMMAND's own outcome
+  // decides success — a higher node-level applied revision alone does not:
+  // this deployment can fail while a later administrator's succeeds, pushing
+  // the revision past this command's target (worst for key rotation: the
+  // rotation never happened but the revision moved).
+  const pollOutcome = useCallback((nodeId: string, commandId: string, targetRevision: string, epoch: number) => {
     stopPolling();
     const poll = pollEpoch.current;
     const deadline = Date.now() + POLL_TIMEOUT_MS;
     let interval = POLL_INTERVAL_MS;
     const valid = () => current(epoch) && pollEpoch.current === poll;
+    const fail = (message: string) => {
+      stopPolling(); setStage("failed"); setError(message);
+    };
     const tick = async () => {
       if (!valid()) return;
       try {
-        const nodes = await fetchAdminNodes();
+        const outcome = await fetchNodeCommandOutcome(nodeId, commandId);
         if (!valid()) return;
         interval = POLL_INTERVAL_MS;
-        const record = nodes.find(item => item.id === nodeId);
-        if (record && BigInt(record.inboundAppliedRevision ?? "0") >= BigInt(targetRevision)) {
+        if (outcome === null) {
+          fail("命令记录不存在（可能已被清理），无法确认部署结果；请刷新节点查看当前参数。");
+          return;
+        }
+        if (outcome.status === "completed") {
+          const nodes = await fetchAdminNodes();
+          if (!valid()) return;
           stopPolling();
           setStage("done"); setError(null);
-          changed.current(record);
-          notifications.show({ color: "teal", title: "入站部署完成", message: `节点「${record.name}」的 Reality 入站已部署，连接参数已回填。` });
+          const record = nodes.find(item => item.id === nodeId);
+          if (record) changed.current(record);
+          notifications.show({ color: "teal", title: "入站部署完成", message: `节点「${record?.name ?? nodeId}」的 Reality 入站已部署，连接参数已回填。` });
+          return;
+        }
+        if (outcome.status === "failed" || outcome.status === "cancelled") {
+          fail(outcome.status === "cancelled"
+            ? "部署命令已被取消。"
+            : `部署失败：${outcome.lastError ?? "Agent 未提供原因"}`);
+          return;
+        }
+        // Still pending/running: a STRICTLY higher applied revision means a
+        // LATER deployment finished first — this command's change (e.g. a key
+        // rotation) never took effect, and the agent's stale-revision guard
+        // will reject it if it ever runs. Supersession is not success.
+        const nodes = await fetchAdminNodes();
+        if (!valid()) return;
+        const record = nodes.find(item => item.id === nodeId);
+        if (record && BigInt(record.inboundAppliedRevision ?? "0") > BigInt(targetRevision)) {
+          fail(`本次下发已被更新的部署取代（revision ${record.inboundAppliedRevision ?? "0"} 越过本命令的 ${targetRevision}），未生效；请重新打开表单基于当前参数操作。`);
           return;
         }
       } catch {
@@ -77,8 +107,7 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
       }
       if (!valid()) return;
       if (Date.now() >= deadline) {
-        stopPolling(); setStage("failed");
-        setError("等待超时：5 分钟内未确认部署完成。命令仍在队列中，Agent 恢复后会继续执行；可稍后刷新查看结果。");
+        fail("等待超时：5 分钟内未确认部署完成。命令仍在队列中，Agent 恢复后会继续执行；可稍后刷新查看结果。");
         return;
       }
       timer.current = window.setTimeout(() => void tick(), Math.min(interval, deadline - Date.now()));
@@ -104,7 +133,7 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
       // nothing, poll nothing, notify nothing in the new session.
       if (!current(epoch)) return false;
       setQueuedRevision(command.targetRevision);
-      pollCompletion(node.id, command.targetRevision, epoch);
+      pollOutcome(node.id, command.commandId, command.targetRevision, epoch);
       return true;
     } catch (error) {
       if (!current(epoch)) return false;
@@ -124,7 +153,7 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
     } finally {
       if (current(epoch)) { requestBusy.current = false; setDeploying(false); }
     }
-  }, [current, pollCompletion]);
+  }, [current, pollOutcome]);
 
   return { stage, error, deploying, queuedRevision, deploy };
 }
