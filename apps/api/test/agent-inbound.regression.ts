@@ -266,6 +266,7 @@ function commandJobStore() {
   const rows: Array<Record<string, any>> = [];
   let clock = 0;
   let revision = 6n;
+  let applied = 12n;
   // Models the Node row lock: $transaction bodies run exclusively, so the
   // interleaved-request test can prove the service keeps its whole decision
   // inside the serialized section.
@@ -276,7 +277,9 @@ function commandJobStore() {
     /** One-shot pause for the next job INSERT, to interleave two requests. */
     gate: Promise<void> | null;
     gateHit: boolean;
-  } = { rows, prisma: null as unknown as Record<string, any>, gate: null, gateHit: false };
+    /** Simulates another administrator's deployment completing. */
+    applyDeployment: (value: bigint) => void;
+  } = { rows, prisma: null as unknown as Record<string, any>, gate: null, gateHit: false, applyDeployment: (value: bigint) => { applied = value; } };
   const prisma: Record<string, any> = {
     nodeAgent: { findFirst: async () => ({ id: "agent-1", agentId: "agent-1", nodeId: "node-1" }) },
     $queryRaw: async () => [],
@@ -291,7 +294,7 @@ function commandJobStore() {
         release();
       }
     },
-    node: { update: async () => ({ agentConfigRevision: ++revision }) },
+    node: { update: async () => ({ agentConfigRevision: ++revision, inboundAppliedRevision: applied }) },
     nodeCommandJob: {
       findUnique: async ({ where }: { where: { dedupeKey: string } }) =>
         rows.find((row) => row.dedupeKey === where.dedupeKey) ?? null,
@@ -352,6 +355,34 @@ async function testDedupeScope() {
   // A different spec is a different operation.
   await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: { listenPort: 8443 } } as never);
   assert.equal(store.rows.length, 3);
+}
+
+async function testInboundCasGuard() {
+  // An idle open form never learns that another administrator's deployment
+  // completed (no admin event, no polling) — the CLIENT-side revision gate
+  // cannot prevent that race. The enqueue must carry the form's expected
+  // applied revision and be rejected atomically when the node moved past it.
+  const store = commandJobStore();
+  const service = new AgentService(store.prisma as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
+
+  // Matching expectation: the command is created.
+  const fresh = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {}, expectedInboundAppliedRevision: "12" } as never);
+  assert.ok(fresh.commandId, "期望 revision 一致时正常入队");
+
+  // Stale expectation (another admin deployed to 13 meanwhile): rejected, and
+  // NOTHING is enqueued.
+  store.applyDeployment(13n);
+  const before = store.rows.length;
+  await assert.rejects(
+    () => service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: { listenPort: 8443 }, expectedInboundAppliedRevision: "12" } as never),
+    /节点部署已更新/,
+    "过期期望必须被拒绝"
+  );
+  assert.equal(store.rows.length, before, "被拒绝的提交不得创建任务");
+
+  // Absent expectation: no guard (backward compatible).
+  const unguarded = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
+  assert.ok(unguarded.commandId, "未携带期望值时不做 CAS 校验");
 }
 
 async function testDedupeInterveningDeployment() {
@@ -630,6 +661,7 @@ function main() {
     .then(testWriteBackAndActivation)
     .then(testDedupeScope)
     .then(testDedupeInterveningDeployment)
+    .then(testInboundCasGuard)
     .then(testDedupeInterveningWhileRunning)
     .then(testDedupeInterleavedRequests)
     .then(testDedupeReleaseIsInboundOnly);

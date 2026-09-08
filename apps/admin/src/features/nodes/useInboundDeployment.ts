@@ -94,12 +94,12 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
     // Node object refreshes (same id) must not invalidate an in-flight poll.
   }, [nodeId, invalidate]);
 
-  const deploy = useCallback(async (node: AdminNodeRecordDto, payload: Record<string, unknown>) => {
+  const deploy = useCallback(async (node: AdminNodeRecordDto, payload: Record<string, unknown>, expectedAppliedRevision: string) => {
     if (!active.current || requestBusy.current) return false;
     const epoch = session.current;
     requestBusy.current = true; setDeploying(true); setError(null); setStage("queued"); setQueuedRevision(null);
     try {
-      const command = await deployNodeInbound(node.id, payload);
+      const command = await deployNodeInbound(node.id, payload, expectedAppliedRevision);
       // Queuing may commit after the drawer closed or switched nodes: refresh
       // nothing, poll nothing, notify nothing in the new session.
       if (!current(epoch)) return false;
@@ -109,6 +109,17 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
     } catch (error) {
       if (!current(epoch)) return false;
       setStage("failed"); setError(errorMessage(error));
+      // A rejected enqueue often means the node moved underneath a STALE
+      // browser (another admin deployed; no admin event ever told us). Fetch
+      // the fresh record so the drawer re-renders on current truth — the open
+      // form's revision gate then blocks until the operator reviews it.
+      fetchAdminNodes()
+        .then((nodes) => {
+          if (!current(epoch)) return;
+          const record = nodes.find((item) => item.id === node.id);
+          if (record) changed.current(record);
+        })
+        .catch(() => undefined);
       return false;
     } finally {
       if (current(epoch)) { requestBusy.current = false; setDeploying(false); }

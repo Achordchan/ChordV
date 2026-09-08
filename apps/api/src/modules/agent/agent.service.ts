@@ -384,9 +384,20 @@ export class AgentService {
       const node = await tx.node.update({
         where: { id: nodeId },
         data: { agentConfigRevision: { increment: 1n } },
-        select: { agentConfigRevision: true }
+        select: { agentConfigRevision: true, inboundAppliedRevision: true }
       });
       const targetRevision = node.agentConfigRevision;
+      // Compare-and-swap for ENSURE_INBOUND: reject when the node's APPLIED
+      // revision moved past what the submitting form was built from. The check
+      // sits inside the same Node-row lock that serializes completions, so a
+      // deployment finishing concurrently cannot slip between the check and
+      // the enqueue; the transaction rollback also undoes the increment above.
+      if (input.type === "ENSURE_INBOUND" && input.expectedInboundAppliedRevision !== undefined
+        && input.expectedInboundAppliedRevision !== node.inboundAppliedRevision.toString()) {
+        throw new BadRequestException(
+          `节点部署已更新（当前部署 revision ${node.inboundAppliedRevision}，表单基于 ${input.expectedInboundAppliedRevision}），请刷新后重试`
+        );
+      }
       // Collapse an identical request only while the outstanding one is still
       // the NEWEST deployment for the node. When the operator went 443 → 8443
       // → 443 again with nothing completed yet, the outstanding 443 command

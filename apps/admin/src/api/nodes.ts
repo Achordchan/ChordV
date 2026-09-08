@@ -151,10 +151,13 @@ export function deleteNode(nodeId: string) {
 // agent. The response is the QUEUED command (with its targetRevision), not the
 // deployment outcome — completion is observed by polling the node record until
 // inboundAppliedRevision reaches that revision.
-export function deployNodeInbound(nodeId: string, payload: Record<string, unknown>) {
+export function deployNodeInbound(nodeId: string, payload: Record<string, unknown>, expectedAppliedRevision: string) {
   return request<AgentCommandDto>(`/admin/nodes/${nodeId}/agent-commands`, {
     method: "POST",
-    body: JSON.stringify({ type: "ENSURE_INBOUND", payload }),
+    // expectedInboundAppliedRevision is the compare-and-swap guard: the server
+    // rejects the enqueue when the node's applied revision moved past what
+    // this form was built from (another administrator deployed meanwhile).
+    body: JSON.stringify({ type: "ENSURE_INBOUND", payload, expectedInboundAppliedRevision: expectedAppliedRevision }),
     timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
   });
 }

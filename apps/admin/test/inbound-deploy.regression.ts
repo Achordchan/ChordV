@@ -51,7 +51,8 @@ function fixture() {
     current: (epoch: number) => active.current && session.current === epoch,
     changed: { current: (value: unknown) => changedNodes.push(value) },
     stopPolling: () => undefined, pollCompletion: (...args: unknown[]) => polls.push(args),
-    notifications: { show: (value: unknown) => notified.push(value) }, errorMessage: (error: Error) => error.message
+    notifications: { show: (value: unknown) => notified.push(value) }, errorMessage: (error: Error) => error.message,
+    fetchAdminNodes: async () => { throw new Error("no nodes"); }
   };
   for (const key of ["setStage", "setError", "setDeploying", "setQueuedRevision"]) {
     scope[key] = (value: unknown) => mutations.push([key, value]);
@@ -81,7 +82,7 @@ for (const outcome of ["resolve", "reject"]) {
 {
   const f = fixture();
   f.scope.deployNodeInbound = async () => command;
-  const queued = await callback("deploy", f.scope)(node, { listenPort: 443 });
+  const queued = await callback("deploy", f.scope)(node, { listenPort: 443 }, "12");
   assert.equal(queued, true);
   assert.deepEqual(f.polls, [[node.id, "12", 1]], "polling must watch the queued command's target revision");
   assert.ok(f.mutations.some(([name, value]) => name === "setStage" && value === "queued"));
@@ -89,16 +90,21 @@ for (const outcome of ["resolve", "reject"]) {
   assert.equal(f.requestBusy.current, false);
 }
 
-// In-session failure (e.g. the server rejected the spec): surfaces the
-// server's message, no polling.
+// In-session failure: surfaces the server's message, no polling — and, when
+// the fresh record is available, tells the parent so a STALE browser re-render
+// onto current truth (a CAS rejection means another admin deployed; no admin
+// event ever told this browser).
 {
   const f = fixture();
-  f.scope.deployNodeInbound = async () => { throw new Error(JSON.stringify({ message: "入站参数 listenPort 必须是 1-65535 的端口" })); };
-  const queued = await callback("deploy", f.scope)(node, { listenPort: 70000 });
+  f.scope.deployNodeInbound = async () => { throw new Error(JSON.stringify({ message: "节点部署已更新（当前部署 revision 13，表单基于 12），请刷新后重试" })); };
+  f.scope.fetchAdminNodes = async () => [Object.assign({}, node, { inboundAppliedRevision: "13" })];
+  const queued = await callback("deploy", f.scope)(node, { listenPort: 70000 }, "12");
   assert.equal(queued, false);
   assert.ok(f.mutations.some(([name, value]) => name === "setStage" && value === "failed"));
-  assert.ok(f.mutations.some(([name, value]) => name === "setError" && String(value).includes("listenPort")));
+  assert.ok(f.mutations.some(([name, value]) => name === "setError" && String(value).includes("节点部署已更新")));
   assert.deepEqual(f.polls, []);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(f.changedNodes, [Object.assign({}, node, { inboundAppliedRevision: "13" })], "失败后必须把新记录交给父级自愈");
 }
 
 // Completion poll: done only once the node's applied revision reaches the
@@ -220,6 +226,7 @@ assert.match(sectionSource, /setFormRevision\(node\.inboundAppliedRevision \?\? 
 assert.match(sectionSource, /const revisionChangedUnderneath = formRevision !== null && \(node\.inboundAppliedRevision \?\? "0"\) !== formRevision;/, "必须检测表单打开期间的 revision 变化");
 assert.match(sectionSource, /&& !revisionChangedUnderneath/, "revision 变化后提交必须被阻断");
 assert.match(sectionSource, /节点部署已在此表单打开期间发生变化/, "阻断时必须向操作员说明原因与恢复方式");
+assert.match(sectionSource, /\}\), formRevision \?\? node\.inboundAppliedRevision \?\? "0"\);/, "提交必须携带表单快照的 applied revision（服务端 CAS）");
 
 // The deploy completion callback must apply the polled record IMMEDIATELY:
 // discarding it for a full-list refetch leaves the drawer on the old revision

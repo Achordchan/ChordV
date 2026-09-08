@@ -181,6 +181,19 @@ export class QueueAgentCommandDto {
   @IsNotEmpty()
   @MaxLength(256)
   dedupeKey?: string;
+
+  /**
+   * Compare-and-swap guard for ENSURE_INBOUND: the applied revision the
+   * submitting form was built from. A client-side comparison cannot prevent
+   * the race — an idle open form never learns that another administrator's
+   * deployment completed — so the server rejects the enqueue when the node's
+   * applied revision has moved past it, atomically inside the same Node-row
+   * lock that serializes completions.
+   */
+  @IsOptional()
+  @IsString()
+  @Matches(DECIMAL_INTEGER)
+  expectedInboundAppliedRevision?: string;
 }
 
 export class SwitchNodeControlModeDto {

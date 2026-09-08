@@ -128,6 +128,9 @@ export function InboundDeploySection(props: SectionProps) {
     // applied job's spec so already-distributed client configurations keep
     // connecting. A FIRST deployment sends none of them and takes the
     // control-plane defaults.
+    // The compare-and-swap guard: the server rejects the enqueue when the
+    // node's applied revision moved past what THIS form was built from — the
+    // client-side gate alone cannot see a deployment that finished elsewhere.
     const queued = await deployment.deploy(node, buildInboundDeployPayload({
       ...form,
       preserve: deployed
@@ -138,7 +141,7 @@ export function InboundDeploySection(props: SectionProps) {
           inboundTag: stringField(currentSpec, "inboundTag")
         }
         : undefined
-    }));
+    }), formRevision ?? node.inboundAppliedRevision ?? "0");
     if (queued) setModalOpened(false);
   }
 
