@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { AdminLeaseRevocationJobDto } from "@chordv/shared";
-import { filterLeaseRevocationJobs } from "../src/utils/admin-queue-filters";
+import type { AdminLeaseRevocationJobDto, AdminNodeCommandJobDto } from "@chordv/shared";
+import { filterLeaseRevocationJobs, filterNodeCommandJobs } from "../src/utils/admin-queue-filters";
 
 const nodesPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/NodesPage.tsx"), "utf8");
 const usersPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/UsersPage.tsx"), "utf8");
@@ -144,6 +144,69 @@ function testLeaseRevocationQueueRetryButtonsExposeScopedBusyState() {
   );
 }
 
+// Direct provisioning is stored in NodeCommandJob, not the lease queue: the
+// pending inline status must lead to those commands, filtered by the same
+// subscription/user/node scope.
+function testNodeCommandQueueShowsDirectProvisioning() {
+  const commands: AdminNodeCommandJobDto[] = [
+    {
+      id: "cmd_ensure",
+      nodeId: "node_1",
+      nodeName: "东京",
+      commandType: "ENSURE_USER",
+      status: "pending",
+      attempts: 0,
+      targetRevision: "7",
+      subscriptionId: "subscription_1",
+      userId: "user_1",
+      lastError: null,
+      nextRunAt: "2026-01-01T00:00:05.000Z",
+      completedAt: null,
+      createdAt: "2026-01-01T00:00:00.000Z"
+    },
+    {
+      id: "cmd_other",
+      nodeId: "node_2",
+      nodeName: "大阪",
+      commandType: "REMOVE_USER",
+      status: "failed",
+      attempts: 3,
+      targetRevision: "9",
+      subscriptionId: "subscription_2",
+      userId: "user_2",
+      lastError: "agent offline",
+      nextRunAt: "2026-01-01T00:00:10.000Z",
+      completedAt: null,
+      createdAt: "2026-01-01T00:00:01.000Z"
+    }
+  ];
+
+  assert.deepEqual(
+    filterNodeCommandJobs(commands, { subscriptionId: "subscription_1" }).map((job) => job.id),
+    ["cmd_ensure"],
+    "订阅视角必须能看到属于它的 ENSURE_USER 命令"
+  );
+  assert.deepEqual(filterNodeCommandJobs(commands, { userId: "user_1" }).map((job) => job.id), ["cmd_ensure"]);
+  assert.deepEqual(filterNodeCommandJobs(commands, { nodeId: "node_2" }).map((job) => job.id), ["cmd_other"]);
+  assert.deepEqual(filterNodeCommandJobs(commands, { teamId: "team_1" }).map((job) => job.id), [
+    "cmd_ensure",
+    "cmd_other"
+  ], "团队视角不得隐藏不暴露 teamId 的命令");
+
+  assert.match(
+    nodesPageSource,
+    /filterNodeCommandJobs\(props\.nodeCommandJobs, props\.filter\)/,
+    "队列抽屉必须按当前过滤条件展示节点命令"
+  );
+  assert.match(nodesPageSource, /节点命令同步/, "队列抽屉必须包含节点命令分区");
+  assert.match(nodesPageSource, /translateNodeCommandType\(job\.commandType\)/);
+  assert.match(
+    appSource,
+    /<PanelSyncQueueDrawer[\s\S]*?nodeCommandJobs=\{snapshot\.nodeCommandJobs\}/,
+    "抽屉必须拿到快照里的节点命令"
+  );
+}
+
 function testNodeParentActionsAlwaysReleaseBusyState() {
   const expectations = [
     ["handleProbeNode", /finally\s*{[\s\S]*?setProbingNodeId\(null\);[\s\S]*?probingBusyRef\.current = false;[\s\S]*?}/],
@@ -167,6 +230,7 @@ testSpecificQueueFiltersStillApplyToLeaseRevocationJobs();
 testPendingAndFailedBackgroundJobsAreRetryable();
 testUserAndSubscriptionPendingPanelSyncUseYellowInlineStatus();
 testLeaseRevocationQueueRetryButtonsExposeScopedBusyState();
+testNodeCommandQueueShowsDirectProvisioning();
 testNodeParentActionsAlwaysReleaseBusyState();
 
 console.log("admin nodes page regression checks passed");

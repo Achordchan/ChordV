@@ -8,6 +8,7 @@ import {
 } from "@nestjs/common";
 import type {
   AdminLeaseRevocationJobDto,
+  AdminNodeCommandJobDto,
   AdminNodeRecordDto,
   UpdateNodeInputDto
 } from "@chordv/shared";
@@ -105,6 +106,63 @@ export class AdminNodeService {
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString()
     }));
+  }
+
+  /**
+   * Active agent commands — the direct track's replacement for the retired
+   * panel sync queue. ENSURE/DISABLE/REMOVE_USER carry a bindingId in their
+   * payload; resolving it back to the binding is what lets the admin UI filter
+   * the queue per subscription or per user.
+   */
+  async listNodeCommandJobs(): Promise<AdminNodeCommandJobDto[]> {
+    const rows = await runAdminNodeLocalOperation(
+      () => this.prisma.nodeCommandJob.findMany({
+        where: {
+          status: { in: ["pending", "running", "failed"] }
+        },
+        orderBy: [{ status: "asc" }, { nextRunAt: "asc" }, { createdAt: "desc" }],
+        take: 200,
+        include: { node: { select: { name: true } } }
+      }),
+      "节点命令队列读取失败，请刷新后重试。"
+    );
+    const bindingIds = Array.from(
+      new Set(rows.map((row) => readCommandBindingId(row.payload)).filter((bindingId): bindingId is string => Boolean(bindingId)))
+    );
+    let bindings: Array<{ id: string; subscriptionId: string; userId: string | null }> = [];
+    if (bindingIds.length > 0) {
+      try {
+        bindings = await runAdminNodeLocalOperation(
+          () => this.prisma.panelClientBinding.findMany({
+            where: { id: { in: bindingIds } },
+            select: { id: true, subscriptionId: true, userId: true }
+          }),
+          "节点命令队列绑定信息读取失败，请刷新后重试。"
+        );
+      } catch (error) {
+        this.logger.warn(`Node command queue loaded without binding targets: ${readAdminNodeErrorMessage(error)}`);
+      }
+    }
+    const bindingById = new Map(bindings.map((binding) => [binding.id, binding]));
+
+    return rows.map((row) => {
+      const binding = bindingById.get(readCommandBindingId(row.payload) ?? "");
+      return {
+        id: row.id,
+        nodeId: row.nodeId,
+        nodeName: row.node?.name ?? null,
+        commandType: row.commandType as AdminNodeCommandJobDto["commandType"],
+        status: row.status as AdminNodeCommandJobDto["status"],
+        attempts: row.attempts,
+        targetRevision: row.targetRevision.toString(),
+        subscriptionId: binding?.subscriptionId ?? null,
+        userId: binding?.userId ?? null,
+        lastError: row.lastError,
+        nextRunAt: row.nextRunAt.toISOString(),
+        completedAt: row.completedAt?.toISOString() ?? null,
+        createdAt: row.createdAt.toISOString()
+      };
+    });
   }
 
   async retryLeaseRevocationJob(jobId: string): Promise<AdminLeaseRevocationJobDto[]> {
@@ -589,6 +647,14 @@ async function runAdminNodeLocalOperation<T>(operation: () => Promise<T>, messag
   } catch (error) {
     throwLocalSaveAsServiceUnavailable(error, message);
   }
+}
+
+function readCommandBindingId(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return null;
+  }
+  const bindingId = Reflect.get(payload, "bindingId");
+  return typeof bindingId === "string" && bindingId.length > 0 ? bindingId : null;
 }
 
 function readPositiveIntegerEnv(name: string, fallback: number) {

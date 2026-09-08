@@ -528,7 +528,7 @@ export class DevDataService implements OnModuleInit {
   }
 
   async getAdminSnapshot(): Promise<AdminSnapshotDto> {
-    const [policy, users, plans, subscriptions, teams, nodes, leaseRevocationJobs, announcements, releases, ticketCounts] =
+    const [policy, users, plans, subscriptions, teams, nodes, leaseRevocationJobs, nodeCommandJobs, announcements, releases, ticketCounts] =
       await workLifecycle.all([
         this.getAdminPolicy(),
         this.safeAdminSnapshotList("users", () => this.listAdminUsers()),
@@ -537,6 +537,7 @@ export class DevDataService implements OnModuleInit {
         this.safeAdminSnapshotList("teams", () => this.listAdminTeams()),
         this.safeAdminSnapshotList("nodes", () => this.listAdminNodes()),
         this.safeAdminSnapshotList("lease revocation jobs", () => this.listAdminLeaseRevocationJobs()),
+        this.safeAdminSnapshotList("node command jobs", () => this.listAdminNodeCommandJobs()),
         this.safeAdminSnapshotList("announcements", () => this.listAdminAnnouncements()),
         this.safeAdminSnapshotList("releases", () => this.listAdminReleases()),
         this.safeAdminSnapshotValue("support ticket counts", () => this.getSupportTicketDashboardCounts(), {
@@ -564,6 +565,7 @@ export class DevDataService implements OnModuleInit {
       teams,
       nodes,
       leaseRevocationJobs,
+      nodeCommandJobs,
       announcements,
       policy,
       releases
@@ -2458,6 +2460,10 @@ export class DevDataService implements OnModuleInit {
 
   async listAdminLeaseRevocationJobs() {
     return this.adminNodeService.listLeaseRevocationJobs();
+  }
+
+  async listAdminNodeCommandJobs() {
+    return this.adminNodeService.listNodeCommandJobs();
   }
 
   async retryAdminLeaseRevocationJob(jobId: string) {

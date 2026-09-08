@@ -1,4 +1,4 @@
-import type { AdminLeaseRevocationJobDto } from "@chordv/shared";
+import type { AdminLeaseRevocationJobDto, AdminNodeCommandJobDto } from "@chordv/shared";
 
 export type LeaseRevocationQueueFilter = {
   title?: string;
@@ -13,6 +13,27 @@ export function hasLeaseRevocationQueueFilter(filter?: LeaseRevocationQueueFilte
 }
 
 export function filterLeaseRevocationJobs(jobs: AdminLeaseRevocationJobDto[], filter?: LeaseRevocationQueueFilter | null) {
+  if (!hasLeaseRevocationQueueFilter(filter)) {
+    return jobs;
+  }
+  return jobs.filter((job) => {
+    if (filter?.nodeId && job.nodeId !== filter.nodeId) {
+      return false;
+    }
+    if (filter?.subscriptionId && job.subscriptionId !== filter.subscriptionId) {
+      return false;
+    }
+    if (filter?.userId && job.userId !== filter.userId) {
+      return false;
+    }
+    return true;
+  });
+}
+
+// Direct provisioning (ENSURE/DISABLE/REMOVE_USER) lives in NodeCommandJob, so
+// a pending subscription/user must filter THAT list — the lease queue can only
+// ever show connection revocations.
+export function filterNodeCommandJobs(jobs: AdminNodeCommandJobDto[], filter?: LeaseRevocationQueueFilter | null) {
   if (!hasLeaseRevocationQueueFilter(filter)) {
     return jobs;
   }

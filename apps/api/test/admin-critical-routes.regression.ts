@@ -172,6 +172,7 @@ const devDataServiceStub = {
   getTeamUsage: async (teamId: string) => record("team-usage", teamId),
   listAdminNodes: async () => [record("nodes-list", "all")],
   listAdminLeaseRevocationJobs: async () => [record("lease-jobs-list", "all")],
+  listAdminNodeCommandJobs: async () => [record("node-command-jobs-list", "all")],
   retryAdminLeaseRevocationJob: async (jobId: string) => [record("lease-job-retry", jobId)],
   retryAdminLeaseRevocationJobsForNode: async (nodeId: string) => [record("lease-jobs-node-retry", nodeId)],
   updateNode: async (nodeId: string, body: unknown) => record("node-update", nodeId, body),
@@ -605,6 +606,7 @@ async function main() {
     assert.equal((await requestJson(baseUrl, "/api/admin/teams/team_1/usage", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/lease-revocation-jobs", { method: "GET" })).status, 200);
+    assert.equal((await requestJson(baseUrl, "/api/admin/nodes/node-command-jobs", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/lease-revocation-jobs/lease_job_1/retry")).status, 201);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/node_1/lease-revocation-jobs/retry")).status, 201);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/node_1", { method: "PATCH", body: { isActive: false } })).status, 200);
@@ -884,6 +886,7 @@ async function main() {
         { route: "team-usage", value: "team_1" },
         { route: "nodes-list", value: "all" },
         { route: "lease-jobs-list", value: "all" },
+        { route: "node-command-jobs-list", value: "all" },
         { route: "lease-job-retry", value: "lease_job_1" },
         { route: "lease-jobs-node-retry", value: "node_1" },
         { route: "node-update", value: "node_1", body: { isActive: false } },

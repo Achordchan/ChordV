@@ -135,6 +135,7 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 500) {
 function createDevDataService(overrides: Record<string, unknown> = {}) {
   return createInstance<DevDataService>(DevDataService.prototype, {
     listAdminLeaseRevocationJobs: async () => [],
+    listAdminNodeCommandJobs: async () => [],
     ...overrides
   });
 }
@@ -5694,6 +5695,85 @@ async function testListAdminNodesMapsLocalReadFailure() {
       !/HTTP 500/i.test(error.message),
     "node list local read failures must return a controlled 503 instead of HTTP 500"
   );
+}
+
+// The direct track's provisioning commands live in NodeCommandJob, so the
+// admin queue must resolve each command's payload bindingId back to its
+// subscription/user — otherwise a pending ENSURE_USER cannot be shown for the
+// subscription (or user) it belongs to.
+async function testListNodeCommandJobsResolvesBindingTargets() {
+  let bindingQuery: unknown = null;
+  const service = createAdminNodeService({
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      nodeCommandJob: {
+        findMany: async () => [
+          {
+            id: "cmd_user",
+            nodeId: "node_1",
+            commandType: "ENSURE_USER",
+            status: "pending",
+            attempts: 0,
+            targetRevision: 7n,
+            payload: { bindingId: "binding_1", email: "member@example.invalid" },
+            lastError: null,
+            nextRunAt: new Date("2026-01-01T00:00:05.000Z"),
+            completedAt: null,
+            createdAt: new Date("2026-01-01T00:00:00.000Z"),
+            node: { name: "东京" }
+          },
+          {
+            id: "cmd_inbound",
+            nodeId: "node_1",
+            commandType: "ENSURE_INBOUND",
+            status: "running",
+            attempts: 1,
+            targetRevision: 8n,
+            payload: { port: 443 },
+            lastError: "deploy failed",
+            nextRunAt: new Date("2026-01-01T00:00:10.000Z"),
+            completedAt: null,
+            createdAt: new Date("2026-01-01T00:00:01.000Z"),
+            node: { name: "东京" }
+          }
+        ]
+      },
+      panelClientBinding: {
+        findMany: async (query: unknown) => {
+          bindingQuery = query;
+          return [{ id: "binding_1", subscriptionId: "sub_1", userId: "user_1" }];
+        }
+      }
+    }
+  });
+
+  const jobs = await service.listNodeCommandJobs();
+
+  assert.deepEqual(
+    bindingQuery,
+    { where: { id: { in: ["binding_1"] } }, select: { id: true, subscriptionId: true, userId: true } },
+    "只应反查命令 payload 里出现过的绑定"
+  );
+  assert.deepEqual(jobs[0], {
+    id: "cmd_user",
+    nodeId: "node_1",
+    nodeName: "东京",
+    commandType: "ENSURE_USER",
+    status: "pending",
+    attempts: 0,
+    targetRevision: "7",
+    subscriptionId: "sub_1",
+    userId: "user_1",
+    lastError: null,
+    nextRunAt: "2026-01-01T00:00:05.000Z",
+    completedAt: null,
+    createdAt: "2026-01-01T00:00:00.000Z"
+  });
+  assert.equal(jobs[1]?.subscriptionId, null, "非绑定命令（部署入站）不得伪造订阅归属");
+  assert.equal(jobs[1]?.userId, null);
+  assert.equal(jobs[1]?.lastError, "deploy failed");
 }
 
 async function testUpdateNodeMapsLocalReadFailure() {
@@ -17096,6 +17176,7 @@ async function main() {
   await testResetSubscriptionTrafficMapsTeamMemberReadFailure();
   await testResetSubscriptionTrafficReturnsWhenSubscriptionPublishStalls();
   await testListAdminNodesMapsLocalReadFailure();
+  await testListNodeCommandJobsResolvesBindingTargets();
   await testUpdateNodeMapsLocalReadFailure();
   await testRetryLeaseRevocationJobRequeuesWithoutKeepingBackoff();
   await testLeaseRevocationQueueFallsBackWhenNodeNameLookupFails();

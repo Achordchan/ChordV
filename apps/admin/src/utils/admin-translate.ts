@@ -3,6 +3,8 @@ import type {
   AdminSubscriptionRecordDto,
   AnnouncementDisplayMode,
   AnnouncementLevel,
+  NodeAgentCommandType,
+  NodeAgentJobStatus,
   SubscriptionState,
   UserRole,
   UserStatus
@@ -106,4 +108,30 @@ export function translateDisplayMode(mode: AnnouncementDisplayMode, countdownSec
   if (mode === "modal_confirm") return "确认弹窗";
   if (mode === "modal_countdown") return `倒计时确认 · ${countdownSeconds}s`;
   return "普通公告";
+}
+
+export function translateNodeCommandType(commandType: NodeAgentCommandType) {
+  if (commandType === "ENSURE_USER") return "下发用户";
+  if (commandType === "ENABLE_USER") return "启用用户";
+  if (commandType === "DISABLE_USER") return "停用用户";
+  if (commandType === "REMOVE_USER") return "删除用户";
+  if (commandType === "RECONCILE_USERS") return "对账用户";
+  if (commandType === "REFRESH_QUOTA") return "刷新配额";
+  return "部署入站";
+}
+
+export function translateNodeCommandStatus(status: NodeAgentJobStatus) {
+  if (status === "pending") return "待执行";
+  if (status === "running") return "执行中";
+  if (status === "failed") return "失败";
+  if (status === "cancelled") return "已取消";
+  return "已完成";
+}
+
+export function nodeCommandStatusColor(status: NodeAgentJobStatus) {
+  if (status === "pending") return "yellow";
+  if (status === "running") return "blue";
+  if (status === "failed") return "red";
+  if (status === "cancelled") return "gray";
+  return "green";
 }

@@ -318,6 +318,11 @@ export class AdminController {
     return this.devDataService.listAdminLeaseRevocationJobs();
   }
 
+  @Get("nodes/node-command-jobs")
+  getNodeCommandJobs() {
+    return this.devDataService.listAdminNodeCommandJobs();
+  }
+
   @Post("nodes/lease-revocation-jobs/:jobId/retry")
   retryLeaseRevocationJob(@Param("jobId") jobId: string) {
     return this.devDataService.retryAdminLeaseRevocationJob(jobId);

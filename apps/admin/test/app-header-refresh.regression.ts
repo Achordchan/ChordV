@@ -254,8 +254,14 @@ function testQueueLoadsDoNotBlockMainSectionData() {
   const secondaryBody = extractFunctionBody("loadSecondarySectionData");
   assert.match(secondaryBody, /targetSection === "users" \|\| targetSection === "subscriptions"/);
   assert.match(secondaryBody, /settleAdminLoad\(fetchAdminLeaseRevocationJobs\(\)\)/);
-  assert.match(secondaryBody, /mergeSnapshot\(\{ leaseRevocationJobs: leaseRevocationJobsResult\.value \}\)/);
+  assert.match(secondaryBody, /settleAdminLoad\(fetchAdminNodeCommandJobs\(\)\)/);
+  assert.match(
+    secondaryBody,
+    /mergeSnapshot\(\{\s*leaseRevocationJobs: leaseRevocationJobsResult\.value,\s*nodeCommandJobs: nodeCommandJobsResult\.value\s*\}\)/,
+    "订阅/用户视角的后台同步任务必须同时刷新连接撤销与节点命令"
+  );
   assert.match(secondaryBody, /leaseRevocationJobsResult\.ok \? \{ leaseRevocationJobs: leaseRevocationJobsResult\.value \} : \{\}/);
+  assert.match(secondaryBody, /nodeCommandJobsResult\.ok \? \{ nodeCommandJobs: nodeCommandJobsResult\.value \} : \{\}/);
 }
 
 
@@ -285,7 +291,13 @@ function testSectionLoadingOwnershipSurvivesSilentRefresh() {
 function testPendingQueueRefreshKeepsNodeRefreshOnQueueFailure() {
   assert.match(refreshLeaseRevocationJobsAfterPendingBody, /fetchAdminNodes\(\)\.then\(/);
   assert.match(refreshLeaseRevocationJobsAfterPendingBody, /fetchAdminLeaseRevocationJobs\(\)\.then\(/);
+  assert.match(refreshLeaseRevocationJobsAfterPendingBody, /fetchAdminNodeCommandJobs\(\)\.then\(/);
   assert.match(refreshLeaseRevocationJobsAfterPendingBody, /mergeSnapshot\(\{[\s\S]*?nodesResult\.ok[\s\S]*?leaseRevocationJobsResult\.ok[\s\S]*?\}\);/);
+  assert.match(
+    refreshLeaseRevocationJobsAfterPendingBody,
+    /nodeCommandJobsResult\.ok \? \{ nodeCommandJobs: nodeCommandJobsResult\.nodeCommandJobs \} : \{\}/,
+    "同步队列刷新失败时也要带上节点命令队列"
+  );
 }
 
 function testGenericAdminRuntimeEventsRefreshCurrentSection() {

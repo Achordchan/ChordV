@@ -94,6 +94,7 @@ import {
   fetchAdminAnnouncements,
   fetchAdminDashboard,
   fetchAdminLeaseRevocationJobs,
+  fetchAdminNodeCommandJobs,
   fetchAdminNodes,
   fetchAdminPlans,
   fetchAdminPolicy,
@@ -821,6 +822,7 @@ export function App() {
         teams: [],
         nodes: [],
         leaseRevocationJobs: [],
+        nodeCommandJobs: [],
         announcements: [],
         policy: patch.policy as AdminPolicyRecordDto,
         releases: []
@@ -878,6 +880,7 @@ export function App() {
         { key: "teams", sections: ["users", "subscriptions"], task: fetchAdminTeams() },
         { key: "nodes", sections: ["overview", "nodes"], task: fetchAdminNodes() },
         { key: "leaseRevocationJobs", sections: ["users", "subscriptions", "nodes"], task: fetchAdminLeaseRevocationJobs() },
+        { key: "nodeCommandJobs", sections: ["users", "subscriptions", "nodes"], task: fetchAdminNodeCommandJobs() },
         { key: "announcements", sections: ["announcements"], task: fetchAdminAnnouncements() }
       ];
       const results = await Promise.allSettled(listEntries.map((item) => item.task));
@@ -1065,19 +1068,28 @@ export function App() {
     options?: { silent?: boolean }
   ) {
     if (targetSection === "users" || targetSection === "subscriptions") {
-      const leaseRevocationJobsResult = await settleAdminLoad(fetchAdminLeaseRevocationJobs());
+      const [leaseRevocationJobsResult, nodeCommandJobsResult] = await Promise.all([
+        settleAdminLoad(fetchAdminLeaseRevocationJobs()),
+        settleAdminLoad(fetchAdminNodeCommandJobs())
+      ]);
       if (!canApplySectionResult(requestSeq, mutationSeqAtStart)) {
         return;
       }
-      if (leaseRevocationJobsResult.ok) {
-        mergeSnapshot({ leaseRevocationJobs: leaseRevocationJobsResult.value });
+      if (leaseRevocationJobsResult.ok && nodeCommandJobsResult.ok) {
+        mergeSnapshot({
+          leaseRevocationJobs: leaseRevocationJobsResult.value,
+          nodeCommandJobs: nodeCommandJobsResult.value
+        });
         return;
       }
       if (!options?.silent) {
+        const failureReason = leaseRevocationJobsResult.ok
+          ? (nodeCommandJobsResult.ok ? null : nodeCommandJobsResult.reason)
+          : leaseRevocationJobsResult.reason;
         notifications.show({
           color: "yellow",
           title: targetSection === "users" ? "用户页部分数据加载失败" : "订阅页部分数据加载失败",
-          message: readError(leaseRevocationJobsResult.reason, "连接撤销队列加载失败")
+          message: readError(failureReason, "后台同步任务加载失败")
         });
       }
       return;
@@ -1087,18 +1099,25 @@ export function App() {
       return;
     }
 
-    const leaseRevocationJobsResult = await settleAdminLoad(fetchAdminLeaseRevocationJobs());
+    const [leaseRevocationJobsResult, nodeCommandJobsResult] = await Promise.all([
+      settleAdminLoad(fetchAdminLeaseRevocationJobs()),
+      settleAdminLoad(fetchAdminNodeCommandJobs())
+    ]);
     if (!canApplySectionResult(requestSeq, mutationSeqAtStart)) {
       return;
     }
     mergeSnapshot({
-      ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.value } : {})
+      ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.value } : {}),
+      ...(nodeCommandJobsResult.ok ? { nodeCommandJobs: nodeCommandJobsResult.value } : {})
     });
-    if (!leaseRevocationJobsResult.ok && !options?.silent) {
+    if ((!leaseRevocationJobsResult.ok || !nodeCommandJobsResult.ok) && !options?.silent) {
+      const failureReason = leaseRevocationJobsResult.ok
+        ? (nodeCommandJobsResult.ok ? null : nodeCommandJobsResult.reason)
+        : leaseRevocationJobsResult.reason;
       notifications.show({
         color: "yellow",
         title: "同步任务加载失败",
-        message: readError(leaseRevocationJobsResult.reason, "连接撤销队列加载失败")
+        message: readError(failureReason, "后台同步任务加载失败")
       });
     }
   }
@@ -1234,7 +1253,7 @@ export function App() {
   }
 
   async function refreshLeaseRevocationJobsAfterPending() {
-    const [nodesResult, leaseRevocationJobsResult] = await Promise.all([
+    const [nodesResult, leaseRevocationJobsResult, nodeCommandJobsResult] = await Promise.all([
       fetchAdminNodes().then(
         (nodes) => ({ ok: true as const, nodes }),
         (reason) => ({ ok: false as const, reason })
@@ -1242,17 +1261,23 @@ export function App() {
       fetchAdminLeaseRevocationJobs().then(
         (leaseRevocationJobs) => ({ ok: true as const, leaseRevocationJobs }),
         (reason) => ({ ok: false as const, reason })
+      ),
+      fetchAdminNodeCommandJobs().then(
+        (nodeCommandJobs) => ({ ok: true as const, nodeCommandJobs }),
+        (reason) => ({ ok: false as const, reason })
       )
     ]);
     mergeSnapshot({
       ...(nodesResult.ok ? { nodes: nodesResult.nodes } : {}),
-      ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.leaseRevocationJobs } : {})
+      ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.leaseRevocationJobs } : {}),
+      ...(nodeCommandJobsResult.ok ? { nodeCommandJobs: nodeCommandJobsResult.nodeCommandJobs } : {})
     });
-    if (!nodesResult.ok || !leaseRevocationJobsResult.ok) {
+    if (!nodesResult.ok || !leaseRevocationJobsResult.ok || !nodeCommandJobsResult.ok) {
       throw new Error(
         [
           nodesResult.ok ? null : readError(nodesResult.reason, "节点列表加载失败"),
-          leaseRevocationJobsResult.ok ? null : readError(leaseRevocationJobsResult.reason, "连接撤销队列加载失败")
+          leaseRevocationJobsResult.ok ? null : readError(leaseRevocationJobsResult.reason, "连接撤销队列加载失败"),
+          nodeCommandJobsResult.ok ? null : readError(nodeCommandJobsResult.reason, "节点命令队列加载失败")
         ]
           .filter(Boolean)
           .join("；")
@@ -2770,7 +2795,7 @@ export function App() {
     );
   }
 
-  const backgroundSyncQueueCount = snapshot.leaseRevocationJobs.length;
+  const backgroundSyncQueueCount = snapshot.leaseRevocationJobs.length + snapshot.nodeCommandJobs.length;
   const waitingAdminTicketCount = snapshot.dashboard.waitingAdminTickets;
   const agentNodeCount = snapshot.nodes.filter((item) => Boolean(item.agent || item.registrationStatus === "agent_ready")).length;
 
@@ -3282,6 +3307,7 @@ export function App() {
       <PanelSyncQueueDrawer
         opened={leaseRevocationQueue.opened}
         leaseRevocationJobs={snapshot.leaseRevocationJobs}
+        nodeCommandJobs={snapshot.nodeCommandJobs}
         leaseRetryBusyKey={leaseRevocationRetryBusyKey}
         filter={leaseRevocationQueue.filter}
         onClose={closeLeaseRevocationQueue}

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ActionIcon, Badge, Button, Drawer, Group, Stack, Table, Text } from "@mantine/core";
-import type { AdminLeaseRevocationJobDto, AdminNodeRecordDto } from "@chordv/shared";
+import type { AdminLeaseRevocationJobDto, AdminNodeCommandJobDto, AdminNodeRecordDto } from "@chordv/shared";
 import { IconBolt, IconListDetails, IconPencil, IconPlus, IconSettingsAutomation, IconTrash } from "@tabler/icons-react";
 import { CountryFlag } from "../components/CountryFlag";
 import { DataTable } from "../features/shared/DataTable";
@@ -12,11 +12,15 @@ import { formatDateTime } from "../utils/admin-format";
 import { summarizeAdminDiagnosticMessage } from "../utils/admin-filters";
 import {
   filterLeaseRevocationJobs,
+  filterNodeCommandJobs,
   hasLeaseRevocationQueueFilter,
   type LeaseRevocationQueueFilter
 } from "../utils/admin-queue-filters";
 import {
+  nodeCommandStatusColor,
   nodeProbeColor,
+  translateNodeCommandStatus,
+  translateNodeCommandType,
   translateProbeStatus
 } from "../utils/admin-translate";
 
@@ -237,6 +241,7 @@ function NodeSyncQueueCell(props: {
 export function PanelSyncQueueDrawer(props: {
   opened: boolean;
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
+  nodeCommandJobs: AdminNodeCommandJobDto[];
   leaseRetryBusyKey: string | null;
   filter?: LeaseRevocationQueueFilter | null;
   onClose: () => void;
@@ -245,6 +250,7 @@ export function PanelSyncQueueDrawer(props: {
   onRetryLeaseNode: (nodeId: string) => void;
 }) {
   const filteredLeaseRevocationJobs = filterLeaseRevocationJobs(props.leaseRevocationJobs, props.filter);
+  const filteredNodeCommandJobs = filterNodeCommandJobs(props.nodeCommandJobs, props.filter);
   const hasFilter = hasLeaseRevocationQueueFilter(props.filter);
   const drawerTitle = hasFilter ? props.filter?.title ?? "当前对象待处理任务" : "后台同步任务";
 
@@ -335,6 +341,49 @@ export function PanelSyncQueueDrawer(props: {
                   </Table.Tr>
                   );
                 })
+              )}
+            </Table.Tbody>
+          </DataTable>
+        </Stack>
+        <Stack gap="xs">
+          <Text fw={600}>节点命令同步</Text>
+          <DataTable>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>状态</Table.Th>
+                <Table.Th>节点</Table.Th>
+                <Table.Th>命令</Table.Th>
+                <Table.Th>次数</Table.Th>
+                <Table.Th>下次执行</Table.Th>
+                <Table.Th>错误</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {filteredNodeCommandJobs.length === 0 ? (
+                <Table.Tr>
+                  <Table.Td colSpan={6}>
+                    <Text c="dimmed">暂无待处理的节点命令</Text>
+                  </Table.Td>
+                </Table.Tr>
+              ) : (
+                filteredNodeCommandJobs.map((job) => (
+                  <Table.Tr key={job.id}>
+                    <Table.Td>
+                      <Badge color={nodeCommandStatusColor(job.status)} variant="light">
+                        {translateNodeCommandStatus(job.status)}
+                      </Badge>
+                    </Table.Td>
+                    <Table.Td>{job.nodeName ?? job.nodeId}</Table.Td>
+                    <Table.Td>{translateNodeCommandType(job.commandType)}</Table.Td>
+                    <Table.Td>{job.attempts}</Table.Td>
+                    <Table.Td>{formatDateTime(job.nextRunAt)}</Table.Td>
+                    <Table.Td>
+                      <Text size="sm" c="dimmed" lineClamp={2}>
+                        {summarizeAdminDiagnosticMessage(job.lastError, "节点命令执行失败，Agent 会自动重试，超过上限后取消。") ?? "-"}
+                      </Text>
+                    </Table.Td>
+                  </Table.Tr>
+                ))
               )}
             </Table.Tbody>
           </DataTable>

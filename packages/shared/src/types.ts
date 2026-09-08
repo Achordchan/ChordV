@@ -569,6 +569,25 @@ export interface AdminLeaseRevocationJobDto {
   updatedAt: string;
 }
 
+// Agent 命令队列：direct 轨的供给/禁用/删除命令（面板同步队列的替代）。
+// subscriptionId/userId 由命令 payload 的 bindingId 反查绑定得到，可能为空
+// （例如入站部署命令 ENSURE_INBOUND 不属于任何绑定）。
+export interface AdminNodeCommandJobDto {
+  id: string;
+  nodeId: string;
+  nodeName: string | null;
+  commandType: NodeAgentCommandType;
+  status: NodeAgentJobStatus;
+  attempts: number;
+  targetRevision: string;
+  subscriptionId: string | null;
+  userId: string | null;
+  lastError: string | null;
+  nextRunAt: string;
+  completedAt: string | null;
+  createdAt: string;
+}
+
 export interface AdminAnnouncementRecordDto {
   id: string;
   title: string;
@@ -695,6 +714,7 @@ export interface AdminSnapshotDto {
   teams: AdminTeamRecordDto[];
   nodes: AdminNodeRecordDto[];
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
+  nodeCommandJobs: AdminNodeCommandJobDto[];
   announcements: AdminAnnouncementRecordDto[];
   policy: AdminPolicyRecordDto;
   releases: AdminReleaseRecordDto[];

@@ -3228,7 +3228,7 @@ function buildPanelSyncResult(panelSync: PanelSyncBestEffortResult) {
   }
   return {
     panelSyncStatus: "pending" as const,
-    panelSyncMessage: `本地操作已保存，3x-ui 面板同步已进入后台队列：${panelSync.errorMessage}`
+    panelSyncMessage: `本地操作已保存，节点命令已进入后台队列：${panelSync.errorMessage}`
   };
 }
 
