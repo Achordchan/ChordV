@@ -109,9 +109,11 @@ const LEASE_REVOCATION_BATCH_SIZE = Number(process.env.CHORDV_LEASE_REVOCATION_B
 const DIRECT_PROVISIONING_RETRY_BATCH_SIZE = Number(process.env.CHORDV_DIRECT_PROVISIONING_RETRY_BATCH_SIZE ?? 50);
 // Per-chunk transaction budget and size for bulk provisioning: bounded atomic
 // chunks keep large teams progressing instead of one oversized transaction
-// that always times out.
-const DIRECT_PROVISIONING_TX_BATCH_SIZE = Number(process.env.CHORDV_DIRECT_PROVISIONING_TX_BATCH_SIZE ?? 25);
-const DIRECT_PROVISIONING_TX_TIMEOUT_MS = Number(process.env.CHORDV_DIRECT_PROVISIONING_TX_TIMEOUT_MS ?? 30_000);
+// that always times out. Both are validated as POSITIVE integers — a negative
+// or malformed batch size would make the chunk loop step backwards and spin
+// transactions forever while holding the provisioning lock.
+const DIRECT_PROVISIONING_TX_BATCH_SIZE = readPositiveIntegerEnv("CHORDV_DIRECT_PROVISIONING_TX_BATCH_SIZE", 25);
+const DIRECT_PROVISIONING_TX_TIMEOUT_MS = readPositiveIntegerEnv("CHORDV_DIRECT_PROVISIONING_TX_TIMEOUT_MS", 30_000);
 const DEFAULT_LEASE_REVOCATION_JOB_CONCURRENCY = 4;
 const DEFAULT_LEASE_REVOCATION_JOB_TIMEOUT_MS = 30_000;
 const LEASE_REVOCATION_RETRY_BASE_SECONDS = Number(process.env.CHORDV_LEASE_REVOCATION_RETRY_BASE_SECONDS ?? 15);

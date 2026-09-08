@@ -438,6 +438,11 @@ async function main() {
   );
   assert.match(
     runtimeSessionSource,
+    /const DIRECT_PROVISIONING_TX_BATCH_SIZE = readPositiveIntegerEnv\("CHORDV_DIRECT_PROVISIONING_TX_BATCH_SIZE", 25\);\s*\nconst DIRECT_PROVISIONING_TX_TIMEOUT_MS = readPositiveIntegerEnv\("CHORDV_DIRECT_PROVISIONING_TX_TIMEOUT_MS", 30_000\);/,
+    "分块大小与超时必须是校验过的正整数——负值 batch size 会让分块循环倒退、在供给锁内无限开事务"
+  );
+  assert.match(
+    runtimeSessionSource,
     /for \(const binding of unsettledBlockedBindings\) \{\s*\n\s*try \{\s*\n\s*await assertDirectTerminalWatermarksSettled\(writer, binding\);\s*\n\s*\} catch \{\s*\n\s*blockedPairKeys\.add\(`\$\{binding\.nodeId\}:\$\{binding\.userId\}`\);\s*\n\s*\}\s*\n\s*\}/,
     "未沉降的目标必须在分块前逐个识别并跳过——一个离线节点不得挡住其他健康节点的供给（队头阻塞）"
   );
