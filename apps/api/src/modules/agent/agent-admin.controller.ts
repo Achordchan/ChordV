@@ -65,6 +65,13 @@ export class AgentAdminController {
     return this.service.listAgents(nodeId);
   }
 
+  // The complete spec of the currently applied ENSURE_INBOUND deployment; the
+  // admin reissue flow preserves the fields its form does not edit from it.
+  @Get(":nodeId/inbound-spec")
+  getInboundSpec(@Param("nodeId") nodeId: string) {
+    return this.service.getInboundSpec(nodeId);
+  }
+
   // Agent-native onboarding: mint (or re-mint, while still pending) the
   // one-time registration token that the install command carries. The
   // plaintext token is returned exactly once and never stored.

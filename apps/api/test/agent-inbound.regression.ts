@@ -591,6 +591,27 @@ function testAdminNodeRecordInboundFields() {
   assert.equal(legacy.inboundAppliedRevision, "0");
 }
 
+async function testGetInboundSpec() {
+  // The reissue form preserves fields it does not edit from the COMPLETE
+  // deployed spec — the last APPLIED job's payload. The node record is a
+  // lossy projection (one serverName, no dest, no inboundTag).
+  const spec = { ...INBOUND_DEFAULTS, serverNames: [...INBOUND_DEFAULTS.serverNames], rotateKeys: false, listenPort: 8443, dest: "proxy.example.org:8443" };
+  const run = async (node: { inboundAppliedRevision: bigint } | null, job: unknown) => {
+    const service = new AgentService({
+      node: { findUnique: async () => node },
+      nodeCommandJob: { findFirst: async () => job }
+    } as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
+    return service.getInboundSpec("node-1");
+  };
+  assert.deepEqual(await run({ inboundAppliedRevision: 12n }, { payload: spec }), { spec });
+  // Nothing applied yet: revision 0 (or no node at all) has no spec.
+  assert.deepEqual(await run({ inboundAppliedRevision: 0n }, { payload: spec }), { spec: null });
+  assert.deepEqual(await run(null, { payload: spec }), { spec: null });
+  // An applied revision whose job row is gone (e.g. parameters predate
+  // agent-native deployments) is honestly null, not a guess.
+  assert.deepEqual(await run({ inboundAppliedRevision: 12n }, null), { spec: null });
+}
+
 function main() {
   testCommandTypeIsDeclaredEverywhere();
   testSpecNormalization();
@@ -598,6 +619,7 @@ function main() {
   testReportValidation();
   testInstallerAndDownloadRoute();
   testAdminNodeRecordInboundFields();
+  return testGetInboundSpec().then(() => {
   return testWhoamiAcrossProxyHops()
     .then(testWriteBackAndActivation)
     .then(testDedupeScope)
@@ -605,6 +627,7 @@ function main() {
     .then(testDedupeInterveningWhileRunning)
     .then(testDedupeInterleavedRequests)
     .then(testDedupeReleaseIsInboundOnly);
+  });
 }
 
 main().then(() => console.log("agent inbound regression passed (命令声明齐全、规格与上报校验、写回与激活边界、安装脚本与分发路由)"));

@@ -158,3 +158,12 @@ export function deployNodeInbound(nodeId: string, payload: Record<string, unknow
     timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
   });
 }
+
+// The COMPLETE spec of the currently applied deployment (the last applied
+// ENSURE_INBOUND job's payload). The node record is a lossy projection of it,
+// and the reissue form prefills/preserves from the real thing.
+export function fetchNodeInboundSpec(nodeId: string) {
+  return request<{ spec: Record<string, unknown> | null }>(`/admin/nodes/${nodeId}/inbound-spec`, {
+    timeoutMs: ADMIN_READ_TIMEOUT_MS
+  });
+}

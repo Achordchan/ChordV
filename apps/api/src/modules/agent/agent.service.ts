@@ -310,6 +310,34 @@ export class AgentService {
     });
   }
 
+  /**
+   * The COMPLETE specification of the currently applied deployment — the last
+   * applied ENSURE_INBOUND job's payload. The node record is a LOSSY
+   * projection of it (one serverName, no dest, no inboundTag), and the admin
+   * reissue flow needs the whole thing to preserve fields its form does not
+   * edit instead of silently resetting them to the control-plane defaults.
+   * Null when the node has no applied deployment (or its parameters predate
+   * agent-native deployments, e.g. imported from a subscription URL).
+   */
+  async getInboundSpec(nodeId: string): Promise<{ spec: Record<string, unknown> | null }> {
+    const node = await this.prisma.node.findUnique({
+      where: { id: nodeId },
+      select: { inboundAppliedRevision: true }
+    });
+    if (!node || node.inboundAppliedRevision === 0n) return { spec: null };
+    const job = await this.prisma.nodeCommandJob.findFirst({
+      where: {
+        nodeId,
+        commandType: "ENSURE_INBOUND",
+        status: "completed",
+        targetRevision: node.inboundAppliedRevision
+      },
+      orderBy: [{ targetRevision: "desc" }, { createdAt: "desc" }],
+      select: { payload: true }
+    });
+    return { spec: (job?.payload as Record<string, unknown> | undefined) ?? null };
+  }
+
   async queueCommand(nodeId: string, input: QueueAgentCommandDto): Promise<AgentCommandDto> {
     const agent = await this.prisma.nodeAgent.findFirst({
       where: { nodeId, revokedAt: null },

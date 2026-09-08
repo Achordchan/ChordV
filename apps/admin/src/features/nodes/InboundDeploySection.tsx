@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { Alert, Button, Checkbox, Group, Loader, Modal, NumberInput, Paper, SimpleGrid, Stack, Text, TextInput } from "@mantine/core";
 import { IconKey, IconRocket } from "@tabler/icons-react";
 import type { AdminNodeRecordDto } from "@chordv/shared";
-import { buildInboundDeployPayload, type InboundDeployFormState } from "../../utils/admin-node-payloads";
+import { fetchNodeInboundSpec } from "../../api/nodes";
+import { buildInboundDeployPayload, splitCsv, type InboundDeployFormState } from "../../utils/admin-node-payloads";
 import { useInboundDeployment } from "./useInboundDeployment";
 
 const DEFAULT_SNI = "www.microsoft.com";
@@ -11,6 +12,10 @@ type SectionProps = {
   node: AdminNodeRecordDto;
   onNodeChanged: (node: AdminNodeRecordDto) => void;
 };
+
+function stringField(spec: Record<string, unknown> | null, key: string): string | undefined {
+  return typeof spec?.[key] === "string" ? spec[key] as string : undefined;
+}
 
 /**
  * R2-B: the admin half of ENSURE_INBOUND. Shows the Reality parameters the
@@ -24,8 +29,13 @@ export function InboundDeploySection(props: SectionProps) {
   const { node } = props;
   const deployment = useInboundDeployment(node.id, props.onNodeChanged);
   const [modalOpened, setModalOpened] = useState(false);
-  const [form, setForm] = useState<InboundDeployFormState>({ listenPort: 443, serverName: DEFAULT_SNI, dest: "", rotateKeys: false });
+  const [form, setForm] = useState<InboundDeployFormState>({ listenPort: 443, serverNamesCsv: DEFAULT_SNI, dest: "", rotateKeys: false });
   const [confirmedRotation, setConfirmedRotation] = useState(false);
+  // The COMPLETE spec of the applied deployment (the node record is a lossy
+  // projection: one serverName, no dest, no inboundTag). The reissue form
+  // prefills and preserves from this; null when nothing was deployed through
+  // ENSURE_INBOUND (never deployed, or parameters imported from a panel).
+  const [currentSpec, setCurrentSpec] = useState<Record<string, unknown> | null>(null);
 
   const deployed = node.serverPort > 0 && Boolean(node.realityPublicKey?.trim());
   // First deployment has no keys to rotate; the option only exists where it
@@ -33,33 +43,54 @@ export function InboundDeploySection(props: SectionProps) {
   const canRotate = deployed;
 
   useEffect(() => {
+    let cancelled = false;
+    setCurrentSpec(null);
+    if (deployed) {
+      fetchNodeInboundSpec(node.id)
+        .then((result) => { if (!cancelled) setCurrentSpec(result.spec); })
+        .catch(() => undefined);
+    }
+    return () => { cancelled = true; };
+  }, [node.id, deployed]);
+
+  useEffect(() => {
     if (!modalOpened) return;
+    const specServerNames = Array.isArray(currentSpec?.serverNames) ? (currentSpec?.serverNames as unknown[]).filter((item): item is string => typeof item === "string") : [];
     setForm({
-      listenPort: deployed ? node.serverPort : 443,
-      serverName: node.serverName?.trim() || DEFAULT_SNI,
-      // Empty derives from the SNI at build time; the operator only fills it
-      // to pin a specific fallback target.
-      dest: "",
+      listenPort: typeof currentSpec?.listenPort === "number" ? currentSpec.listenPort : (deployed ? node.serverPort : 443),
+      // The COMPLETE deployed list: an untouched field reissues it unchanged
+      // instead of dropping every SNI past the first. Falls back to the node
+      // record's single serverName when no applied job exists.
+      serverNamesCsv: specServerNames.length > 0 ? specServerNames.join(", ") : (node.serverName?.trim() || DEFAULT_SNI),
+      // The deployed target verbatim (it may be a custom host/port); empty on
+      // first deploy, where the builder derives from the first SNI.
+      dest: stringField(currentSpec, "dest") ?? "",
       rotateKeys: false
     });
     setConfirmedRotation(false);
-    // Form defaults snapshot the node at open time; refreshes mid-modal must
-    // not overwrite what the operator is typing.
+    // Form defaults snapshot the node and the loaded spec at open time;
+    // refreshes mid-modal must not overwrite what the operator is typing.
   }, [modalOpened]);
 
-  const serverName = form.serverName.trim();
-  const canSubmit = serverName.length > 0 && (!form.rotateKeys || confirmedRotation);
+  const serverNames = splitCsv(form.serverNamesCsv);
+  const canSubmit = serverNames.length > 0 && (!form.rotateKeys || confirmedRotation);
 
   async function submitDeploy() {
     if (!canSubmit) return;
     // A reissue must not silently reset the fields this form does not edit:
-    // preserve the deployed flow/fingerprint/spiderX so already-distributed
-    // client configurations keep connecting. A FIRST deployment sends none of
-    // them and takes the control-plane defaults.
+    // preserve the deployed flow/fingerprint/spiderX/inboundTag from the
+    // applied job's spec so already-distributed client configurations keep
+    // connecting. A FIRST deployment sends none of them and takes the
+    // control-plane defaults.
     const queued = await deployment.deploy(node, buildInboundDeployPayload({
       ...form,
       preserve: deployed
-        ? { flow: node.flow ?? "", fingerprint: node.fingerprint ?? "", spiderX: node.spiderX ?? "" }
+        ? {
+          flow: stringField(currentSpec, "flow") ?? node.flow ?? "",
+          fingerprint: stringField(currentSpec, "fingerprint") ?? node.fingerprint ?? "",
+          spiderX: stringField(currentSpec, "spiderX") ?? node.spiderX ?? "",
+          inboundTag: stringField(currentSpec, "inboundTag")
+        }
         : undefined
     }));
     if (queued) setModalOpened(false);
@@ -127,22 +158,23 @@ export function InboundDeploySection(props: SectionProps) {
             onChange={(value) => setForm((current) => ({ ...current, listenPort: typeof value === "number" ? value : "" }))}
           />
           <TextInput
-            label="SNI 伪装域名"
-            value={form.serverName}
+            label="SNI 伪装域名（多个用逗号分隔）"
+            value={form.serverNamesCsv}
             placeholder={DEFAULT_SNI}
-            error={serverName.length === 0 ? "SNI 不能为空" : null}
-            onChange={(event) => setForm((current) => ({ ...current, serverName: event.currentTarget.value }))}
+            error={serverNames.length === 0 ? "SNI 不能为空" : null}
+            description="重新下发时保持完整列表：删除其中一个 SNI 会让用它连接的客户端立即失效。"
+            onChange={(event) => setForm((current) => ({ ...current, serverNamesCsv: event.currentTarget.value }))}
           />
           <TextInput
             label="回退目标（dest）"
             value={form.dest}
-            placeholder={`${serverName || DEFAULT_SNI}:443`}
-            description={`留空则自动使用「${serverName || DEFAULT_SNI}:443」：Reality 的回退目标必须能为所选 SNI 出示有效证书，SNI 与目标不配套时握手会失败。`}
+            placeholder={`${serverNames[0] || DEFAULT_SNI}:443`}
+            description={`留空则自动使用「${serverNames[0] || DEFAULT_SNI}:443」：Reality 的回退目标必须能为所选 SNI 出示有效证书，SNI 与目标不配套时握手会失败。`}
             onChange={(event) => setForm((current) => ({ ...current, dest: event.currentTarget.value }))}
           />
           {deployed ? (
             <Text size="xs" c="dimmed">
-              重新下发会保持当前部署的 flow / fingerprint / spiderX 不变；本次未改变端口与 SNI 时，助手按同规格处理、不会重启 Xray。
+              重新下发会保持当前部署的 flow / fingerprint / spiderX / inboundTag 不变；本次未改变端口、SNI 与目标时，助手按同规格处理、不会重启 Xray。
             </Text>
           ) : null}
           {canRotate ? (

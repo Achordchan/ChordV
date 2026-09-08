@@ -142,10 +142,16 @@ assert.match(apiClientSource, /\/agent-commands/, "部署走既有的 agent-comm
 const controlCenterSource = readFileSync(resolve(import.meta.dirname, "../src/features/nodes/NodeControlCenter.tsx"), "utf8");
 assert.match(controlCenterSource, /<InboundDeploySection key=\{node\.id\}/, "区块必须按 node.id 重新挂载");
 
-// A reissue must preserve the deployed flow/fingerprint/spiderX, and the
-// fallback target must follow the SNI when the operator leaves it empty.
-assert.match(sectionSource, /preserve: deployed/, "重下发必须保留当前部署的 flow/fingerprint/spiderX");
-assert.match(sectionSource, /dest: ""/, "表单 dest 默认留空（由构造器按 SNI 派生）");
+// A reissue preserves the COMPLETE deployed spec (serverNames list, dest,
+// flow/fingerprint/spiderX/inboundTag) — loaded from the applied job, not
+// reconstructed from the lossy node record — and the fallback target follows
+// the first SNI when the operator leaves it empty.
+assert.match(sectionSource, /preserve: deployed/, "重下发必须保留当前部署的字段");
+assert.match(sectionSource, /fetchNodeInboundSpec/, "必须从 applied 任务的完整规格加载，而不是从节点记录重建");
+assert.match(sectionSource, /serverNamesCsv: specServerNames\.length > 0 \? specServerNames\.join/, "SNI 预填必须用完整规格列表（多 SNI 不丢）");
+assert.doesNotMatch(sectionSource, /serverNames: \[form\.serverNamesCsv\]/, "SNI 不得退化为单项表单");
+assert.match(sectionSource, /dest: stringField\(currentSpec, "dest"\) \?\? ""/, "dest 预填部署原值（可能是自定义主机/端口）");
+assert.match(sectionSource, /inboundTag: stringField\(currentSpec, "inboundTag"\)/, "inboundTag 必须随规格保留");
 assert.match(sectionSource, /必须能为所选 SNI 出示有效证书/, "回退目标的说明必须写明与 SNI 配套的原因");
 
 console.log("inbound deploy regression passed (queue/poll session discipline, completion by applied revision, destructive rotation marking)");
