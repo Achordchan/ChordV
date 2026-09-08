@@ -209,6 +209,17 @@ function testNodeCommandQueueShowsDirectProvisioning() {
     /export function hasNodeCommandQueueFilter\(filter\?: LeaseRevocationQueueFilter \| null\) \{\s*return Boolean\(filter\?\.nodeId \|\| filter\?\.subscriptionId \|\| filter\?\.userId \|\| filter\?\.teamId\);/,
     "team-only 过滤对节点命令必须算已过滤，否则团队视图会退回全局列表"
   );
+  const translateSource = readFileSync(resolve(import.meta.dirname, "../src/utils/admin-translate.ts"), "utf8");
+  assert.match(
+    translateSource,
+    /if \(status === "cancelled"\) return "重试耗尽";/,
+    "重试耗尽的命令必须显示为「重试耗尽」而不是中性的「已取消」"
+  );
+  assert.match(
+    translateSource,
+    /if \(status === "cancelled"\) return "red";/,
+    "重试耗尽必须用红色（未解决的失败），不得用灰色"
+  );
   assert.match(nodesPageSource, /节点命令同步/, "队列抽屉必须包含节点命令分区");
   assert.match(nodesPageSource, /translateNodeCommandType\(job\.commandType\)/);
   assert.match(

@@ -136,7 +136,12 @@ export class AdminNodeService {
     const rows = await runAdminNodeLocalOperation(
       () => this.prisma.nodeCommandJob.findMany({
         where: {
-          status: { in: ["pending", "running", "failed"] },
+          // "cancelled" here is RETRY-EXHAUSTED (retryDueCommands gave up
+          // after 8 attempts): the requested operation never happened, so it
+          // stays listed as an unresolved failure until repaired or
+          // re-ordered. Superseded commands are excluded by their renamed
+          // dedupe keys instead of by status, so they do not reappear.
+          status: { in: ["pending", "running", "failed", "cancelled"] },
           ...(hasFilter ? scoped : {})
         },
         orderBy: [{ status: "asc" }, { nextRunAt: "asc" }, { createdAt: "desc" }],
@@ -174,7 +179,9 @@ export class AdminNodeService {
       () => this.prisma.nodeCommandJob.groupBy({
         by: ["nodeId", "subscriptionId", "userId", "teamId", "status"],
         where: {
-          status: { in: ["pending", "running", "failed"] }
+          // Cancelled = retry-exhausted, an UNRESOLVED failure the operator
+          // must still see; superseded commands never carry this status.
+          status: { in: ["pending", "running", "failed", "cancelled"] }
         },
         _count: { _all: true }
       }),
@@ -191,7 +198,9 @@ export class AdminNodeService {
         return;
       }
       const summary = map.get(key) ?? { pending: 0, running: 0, failed: 0, total: 0, lastError: null };
-      if (status === "failed") {
+      if (status === "failed" || status === "cancelled") {
+        // Cancelled = retry-exhausted: it never completed, so it reads as a
+        // failure the operator still needs to resolve.
         summary.failed += count;
       } else if (status === "running") {
         summary.running += count;
@@ -239,7 +248,7 @@ export class AdminNodeService {
     try {
       return await runAdminNodeLocalOperation(
         () => this.prisma.nodeCommandJob.findMany({
-          where: { status: "failed", lastError: { not: null } },
+          where: { status: { in: ["failed", "cancelled"] }, lastError: { not: null } },
           orderBy: { createdAt: "desc" },
           take: NODE_COMMAND_ERROR_SAMPLE_SIZE,
           select: {

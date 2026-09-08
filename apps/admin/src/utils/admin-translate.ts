@@ -124,7 +124,9 @@ export function translateNodeCommandStatus(status: NodeAgentJobStatus) {
   if (status === "pending") return "待执行";
   if (status === "running") return "执行中";
   if (status === "failed") return "失败";
-  if (status === "cancelled") return "已取消";
+  // Retry-exhausted: the operation never completed, so it is an unresolved
+  // failure (red), not a neutral "cancelled".
+  if (status === "cancelled") return "重试耗尽";
   return "已完成";
 }
 
@@ -132,6 +134,6 @@ export function nodeCommandStatusColor(status: NodeAgentJobStatus) {
   if (status === "pending") return "yellow";
   if (status === "running") return "blue";
   if (status === "failed") return "red";
-  if (status === "cancelled") return "gray";
+  if (status === "cancelled") return "red";
   return "green";
 }

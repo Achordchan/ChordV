@@ -5909,7 +5909,7 @@ async function testListNodeCommandJobsAppliesTargetFilter() {
   await service.listNodeCommandJobs({ subscriptionId: "sub_1" });
   assert.deepEqual(
     receivedWhere,
-    { status: { in: ["pending", "running", "failed"] }, subscriptionId: "sub_1" },
+    { status: { in: ["pending", "running", "failed", "cancelled"] }, subscriptionId: "sub_1" },
     "订阅过滤必须下推为服务端条件"
   );
 
@@ -5920,15 +5920,66 @@ async function testListNodeCommandJobsAppliesTargetFilter() {
   await service.listNodeCommandJobs({ subscriptionId: "sub_1", userId: "user_1", teamId: "team_1" });
   assert.deepEqual(
     receivedWhere,
-    { status: { in: ["pending", "running", "failed"] }, subscriptionId: "sub_1", userId: "user_1", teamId: "team_1" },
+    { status: { in: ["pending", "running", "failed", "cancelled"] }, subscriptionId: "sub_1", userId: "user_1", teamId: "team_1" },
     "多目标过滤必须按 AND 交集，不得按 OR 并集"
   );
 
   await service.listNodeCommandJobs();
   assert.deepEqual(
     receivedWhere,
-    { status: { in: ["pending", "running", "failed"] } },
-    "无过滤时保持全局查询"
+    { status: { in: ["pending", "running", "failed", "cancelled"] } },
+    "无过滤时保持全局查询；cancelled（重试耗尽）必须保留在队列里——它是未解决的失败"
+  );
+}
+
+// retryDueCommands marks retry-exhausted commands as cancelled without the
+// operation ever completing. That is an UNRESOLVED failure: the queue and the
+// per-target summaries must keep it visible (counted under failed) or the
+// node reads as synced while the user was never provisioned.
+async function testRetryExhaustedCommandsStayVisibleAsFailures() {
+  const service = createAdminNodeService({
+    logger: { warn: () => undefined },
+    prisma: {
+      nodeCommandJob: {
+        findMany: async () => [
+          {
+            id: "cmd_exhausted",
+            nodeId: "node_1",
+            commandType: "ENSURE_USER",
+            status: "cancelled",
+            attempts: 8,
+            targetRevision: 7n,
+            payload: { bindingId: "binding_1" },
+            subscriptionId: "sub_1",
+            userId: "user_1",
+            lastError: "Agent 命令重试次数已达到上限",
+            nextRunAt: new Date("2026-01-01T00:00:05.000Z"),
+            completedAt: null,
+            createdAt: new Date("2026-01-01T00:00:00.000Z"),
+            node: { name: "东京" }
+          }
+        ],
+        groupBy: async () => [
+          { nodeId: "node_1", subscriptionId: "sub_1", userId: "user_1", teamId: null, status: "cancelled", _count: { _all: 1 } }
+        ]
+      }
+    }
+  });
+
+  const jobs = await service.listNodeCommandJobs();
+  assert.equal(jobs.length, 1, "重试耗尽的命令必须保留在队列明细里");
+  assert.equal(jobs[0]?.status, "cancelled");
+
+  const summaries = await service.listNodeCommandSummaries();
+  assert.deepEqual(
+    summaries.nodes,
+    [{ key: "node_1", pending: 0, running: 0, failed: 1, total: 1, lastError: "Agent 命令重试次数已达到上限" }],
+    "重试耗尽必须计入 failed——节点不得因此显示已同步"
+  );
+  assert.deepEqual(
+    summaries.subscriptions,
+    [{ key: "sub_1", pending: 0, running: 0, failed: 1, total: 1, lastError: "Agent 命令重试次数已达到上限" }],
+    "订阅视角的待处理徽章不得因重试耗尽而消失"
   );
 }
 
@@ -17336,6 +17387,7 @@ async function main() {
   await testListNodeCommandSummariesAggregatePerTarget();
   await testReEnableNodeRestoresBindingsViaDirectAccessSync();
   await testListNodeCommandJobsAppliesTargetFilter();
+  await testRetryExhaustedCommandsStayVisibleAsFailures();
   await testUpdateNodeMapsLocalReadFailure();
   await testRetryLeaseRevocationJobRequeuesWithoutKeepingBackoff();
   await testLeaseRevocationQueueFallsBackWhenNodeNameLookupFails();
