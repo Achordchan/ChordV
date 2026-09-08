@@ -34,6 +34,7 @@ const request = (overrides: Partial<InboundRequest> = {}): InboundRequest => ({
   fingerprint: 'chrome',
   spiderX: '/',
   rotateKeys: false,
+  requireListen: '',
   ...overrides,
 });
 
@@ -512,5 +513,49 @@ test('拒绝占用其它配置片段已使用的入站 tag', () => {
     // A fragment we cannot parse could be hiding any tag, so fail closed.
     fs.writeFileSync(join(applyDeps.confDir, '20-extra.json'), '{not json');
     assert.throws(() => applyRequest(request({ listenPort: 8443 }), applyDeps), /无法解析/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('助手在发布之前就拒绝无法满足的监听族', () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'xray-apply-family-'));
+  try {
+    // The host has no IPv6 stack, but the node's public endpoint is IPv6:
+    // publishing first and failing afterwards would restart Xray onto a
+    // listener no client can reach.
+    const applyDeps = deps(root, { resolveListen: () => '0.0.0.0' });
+    assert.throws(() => applyRequest(request({ requireListen: '::' }), applyDeps), /无法满足节点对外地址所需的 ::/);
+    assert.equal(fs.existsSync(join(applyDeps.confDir, '50-inbound.json')), false);
+    assert.equal(applyDeps.restarts, 0);
+
+    // An IPv4 endpoint imposes nothing, and a matching requirement passes.
+    assert.equal(applyRequest(request(), applyDeps).changed, true);
+    assert.equal(applyRequest(request({ requireListen: '0.0.0.0', listenPort: 8443 }), applyDeps).changed, true);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('status 把「日志未提交」也算作可能已部署', () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'xray-apply-status-'));
+  try {
+    const applyDeps = deps(root);
+    const status = () => applyRequest(request({ mode: 'status' }), applyDeps);
+    assert.equal(status().deployed, false, '什么都没有时就是没有');
+
+    applyRequest(request(), applyDeps);
+    assert.equal(status().deployed, true);
+
+    // A helper that died after publishing and restarting but before committing
+    // leaves `pending` set while the inbound serves. Reading that as "nothing
+    // deployed" would let a re-onboarded host keep the previous identity's
+    // listener; the caller's only action is to publish an empty inbound, which
+    // is harmless if there really was nothing.
+    const state = JSON.parse(readFileSync(applyDeps.stateFile, 'utf8')) as Record<string, unknown>;
+    fs.writeFileSync(applyDeps.stateFile, JSON.stringify({ ...state, pending: true }));
+    assert.equal(status().deployed, true, '未提交的日志不能当作「没有部署」的证据');
+
+    // Only a config file with no state at all is still evidence.
+    fs.unlinkSync(applyDeps.stateFile);
+    assert.equal(status().deployed, true);
+    fs.unlinkSync(join(applyDeps.confDir, '50-inbound.json'));
+    assert.equal(status().deployed, false);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

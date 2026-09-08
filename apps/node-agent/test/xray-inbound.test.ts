@@ -60,7 +60,7 @@ test('助手应答按 requestId 关联，旧结果不算本次的答复', async 
   try {
     const spec = parseInboundSpec(payload(), 'vless-in');
     fs.writeFileSync(join(outDir(root), 'result.json'), JSON.stringify({ requestId: 'stale', ok: true }));
-    await assert.rejects(applier(root).apply(spec, 'fresh-request-id', 'command-7'), /超时/);
+    await assert.rejects(applier(root).apply(spec, 'fresh-request-id', 'command-7', ''), /超时/);
     // The stale answer must not have been consumed as this request's result.
     assert.equal(JSON.parse(fs.readFileSync(join(outDir(root), 'result.json'), 'utf8')).requestId, 'stale');
     // The request itself is written durably for the root helper to pick up.
@@ -80,7 +80,7 @@ test('助手失败、畸形与超大应答都变成明确的错误', async () =>
   try {
     const attempt = async (body: string) => {
       fs.writeFileSync(result, body);
-      return applier(root).apply(spec, 'request-1', 'command-1');
+      return applier(root).apply(spec, 'request-1', 'command-1', '');
     };
     await assert.rejects(attempt(JSON.stringify({ requestId: 'request-1', ok: false, stage: 'config-test', error: '端口冲突' })),
       /config-test.*端口冲突/);
@@ -92,7 +92,7 @@ test('助手失败、畸形与超大应答都变成明确的错误', async () =>
     await assert.rejects(attempt(JSON.stringify({ requestId: 'request-1', ok: true, realityPublicKey: 'k'.repeat(43), shortId: 'aabb', serverName: 'a.example.com', listenPort: 443 })),
       /未返回监听地址/);
     fs.writeFileSync(result, `{"requestId":"request-1","ok":true,"pad":"${'x'.repeat(20_000)}"}`);
-    await assert.rejects(applier(root).apply(spec, 'request-1', 'command-1'), /结果过大/);
+    await assert.rejects(applier(root).apply(spec, 'request-1', 'command-1', ''), /结果过大/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -105,7 +105,7 @@ test('合法应答被完整解析', async () => {
       realityPublicKey: 'k'.repeat(43), shortId: '0123456789abcdef',
       serverName: 'www.microsoft.com', listen: '::', deployed: true, listenPort: 443, xrayVersion: 'Xray 1.8.24',
     }));
-    assert.deepEqual(await applier(root).apply(spec, 'request-2', 'command-2'), {
+    assert.deepEqual(await applier(root).apply(spec, 'request-2', 'command-2', ''), {
       requestId: 'request-2', ok: true, changed: true, restarted: true,
       realityPublicKey: 'k'.repeat(43), shortId: '0123456789abcdef',
       serverName: 'www.microsoft.com', listen: '::', deployed: true, listenPort: 443, xrayVersion: 'Xray 1.8.24',

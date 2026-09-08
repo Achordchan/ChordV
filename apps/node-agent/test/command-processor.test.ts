@@ -211,13 +211,15 @@ test('非 direct 模式 RECONCILE 只更新本地状态，不写 Xray', async ()
 class FakeApplier implements InboundApplier {
   calls: InboundSpec[] = [];
   commandIds: string[] = [];
+  requiredListens: string[] = [];
   restarts = 0;
   outcome: Partial<HelperResult> = {};
   failure?: Error;
   private deployed?: string;
-  async apply(spec: InboundSpec, requestId: string, commandId: string): Promise<HelperResult> {
+  async apply(spec: InboundSpec, requestId: string, commandId: string, requireListen: string): Promise<HelperResult> {
     this.calls.push(spec);
     this.commandIds.push(commandId);
+    this.requiredListens.push(requireListen);
     if (this.failure) throw this.failure;
     const identity = JSON.stringify({ ...spec, rotateKeys: false });
     const changed = this.deployed !== identity || spec.rotateKeys;
@@ -348,26 +350,25 @@ test('对外地址是 IPv6 但入站只监听 IPv4 时拒绝上报', async () =>
 test('助手已改动但命令未完成时，重复下发旧规格必须重新部署', async () => {
   const fixture = setup();
   const applier = new FakeApplier();
-  let host = '203.0.113.7';
   const processor = new CommandProcessor(fixture.store, fixture.xray, {
     applier,
     inboundTag: 'vless-in',
-    resolvePublicHost: async () => { if (!host) throw new Error('控制面未能返回本机公网地址'); return host; },
+    resolvePublicHost: async () => '203.0.113.7',
     verifyAttempts: 3, verifyDelayMs: 1,
   });
   try {
     await processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
     assert.equal(applier.calls.length, 1);
 
-    // The helper deploys 8443, then the command fails afterwards: the machine
-    // now serves 8443 while the last COMPLETE state still says 443.
-    host = '';
+    // The helper deploys 8443, then verification fails: the machine now serves
+    // 8443 while the last COMPLETE state still says 443.
+    fixture.xray.live = false;
     const moved = await processor.execute(command('ENSURE_INBOUND', { ...inboundPayload, listenPort: 8443 }, 'command-2'), true);
     assert.equal(moved.status, 'failed');
     assert.equal(applier.calls.length, 2);
 
     // Re-issuing 443 must actually restore it, not answer from the cache.
-    host = '203.0.113.7';
+    fixture.xray.live = true;
     const restored = await processor.execute(command('ENSURE_INBOUND', inboundPayload, 'command-3'), true);
     assert.equal(restored.status, 'completed');
     assert.equal(applier.calls.length, 3, '状态与机器不一致时必须重新部署');
@@ -502,4 +503,49 @@ test('对外地址不是公网单播时命令直接失败，而不是让控制�
       assert.equal(result.status, 'completed', `${host} 应被接受`);
     } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
   }
+});
+
+test('对外地址在助手动手之前就解析并校验', async () => {
+  const fixture = setup();
+  const applier = new FakeApplier();
+  const processor = new CommandProcessor(fixture.store, fixture.xray, {
+    applier, inboundTag: 'vless-in',
+    resolvePublicHost: async () => { throw new Error('控制面未能返回本机公网地址'); },
+    verifyAttempts: 3, verifyDelayMs: 1,
+  });
+  try {
+    // Discovering this after the helper committed would leave clients dialling
+    // the old port and key while Xray serves the new ones.
+    const failed = await processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+    assert.equal(failed.status, 'failed');
+    assert.equal(applier.calls.length, 0, '地址不可用时不得让助手改动 Xray');
+    assert.equal(fixture.store.getInboundState(), undefined, '未动手就不该留下部署意图');
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+});
+
+test('IPv6 对外地址会把所需监听族随请求下发给助手', async () => {
+  const fixture = setup();
+  const applier = new FakeApplier();
+  const processor = new CommandProcessor(fixture.store, fixture.xray, {
+    applier, inboundTag: 'vless-in', resolvePublicHost: async () => '2001:db8::1',
+    verifyAttempts: 3, verifyDelayMs: 1,
+  });
+  try {
+    await processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+    // The helper refuses a family it cannot serve BEFORE publishing, so the
+    // requirement has to travel with the request.
+    assert.deepEqual(applier.requiredListens, ['::']);
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+
+  const v4 = setup();
+  const v4Applier = new FakeApplier();
+  const v4Processor = new CommandProcessor(v4.store, v4.xray, {
+    applier: v4Applier, inboundTag: 'vless-in', resolvePublicHost: async () => '203.0.113.7',
+    verifyAttempts: 3, verifyDelayMs: 1,
+  });
+  try {
+    await v4Processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+    // An IPv4 endpoint works on either listener, so it imposes nothing.
+    assert.deepEqual(v4Applier.requiredListens, ['']);
+  } finally { v4.store.close(); rmSync(v4.directory, { recursive: true, force: true }); }
 });

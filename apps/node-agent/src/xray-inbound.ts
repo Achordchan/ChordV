@@ -112,7 +112,7 @@ export interface InboundApplier {
    * redelivered command must not rotate keys or restart Xray a second time, and
    * the per-execution requestId cannot carry that — it is new every time.
    */
-  apply(spec: InboundSpec, requestId: string, commandId: string): Promise<HelperResult>;
+  apply(spec: InboundSpec, requestId: string, commandId: string, requireListen: string): Promise<HelperResult>;
   reset(requestId: string): Promise<HelperResult>;
   /** Read-only: does this host currently serve an inbound, per durable state? */
   status(requestId: string): Promise<HelperResult>;
@@ -181,8 +181,8 @@ export class FileInboundApplier implements InboundApplier {
     private readonly statusTimeoutMs = 5_000,
   ) {}
 
-  apply(spec: InboundSpec, requestId: string, commandId: string): Promise<HelperResult> {
-    return this.request({ requestId, commandId, mode: 'ensure', ...spec }, 'ensure');
+  apply(spec: InboundSpec, requestId: string, commandId: string, requireListen: string): Promise<HelperResult> {
+    return this.request({ requestId, commandId, requireListen, mode: 'ensure', ...spec }, 'ensure');
   }
 
   /**

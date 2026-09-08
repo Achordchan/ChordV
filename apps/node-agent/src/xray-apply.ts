@@ -26,6 +26,13 @@ export interface InboundRequest {
    * requestId cannot say that — it is new every time.
    */
   commandId: string;
+  /**
+   * Address family the node's public endpoint needs ('::' when it is IPv6).
+   * Checked BEFORE publishing: a host that cannot serve that family must fail
+   * while Xray is still untouched, not after it has been restarted onto a
+   * listener no client can reach.
+   */
+  requireListen: string;
   mode: 'ensure' | 'reset' | 'status';
   inboundTag: string;
   listenPort: number;
@@ -96,7 +103,11 @@ export function parseRequest(raw: string): InboundRequest {
   if (commandId && !/^[A-Za-z0-9_:-]{1,128}$/.test(commandId)) throw new Error(`commandId 不合法：${commandId}`);
   const mode = value.mode === 'reset' ? 'reset' : value.mode === 'status' ? 'status' : 'ensure';
   if (mode === 'reset' || mode === 'status') {
-    return { requestId, commandId, mode, inboundTag: '', listenPort: 0, dest: '', serverNames: [], flow: '', fingerprint: '', spiderX: '', rotateKeys: false };
+    return { requestId, commandId, mode, inboundTag: '', listenPort: 0, dest: '', serverNames: [], flow: '', fingerprint: '', spiderX: '', rotateKeys: false, requireListen: '' };
+  }
+  const requireListen = typeof value.requireListen === 'string' ? value.requireListen.trim() : '';
+  if (requireListen && requireListen !== '::' && requireListen !== '0.0.0.0') {
+    throw new Error(`requireListen 不合法：${requireListen}`);
   }
   const inboundTag = requireString(value.inboundTag, 'inboundTag');
   if (!/^[A-Za-z0-9_-]{1,32}$/.test(inboundTag)) throw new Error(`inboundTag 不合法：${inboundTag}`);
@@ -126,6 +137,7 @@ export function parseRequest(raw: string): InboundRequest {
     fingerprint,
     spiderX,
     rotateKeys: value.rotateKeys === true,
+    requireListen,
   };
 }
 
@@ -315,12 +327,19 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
   const owner = process.geteuid?.() === 0 ? { uid: 0, gid: resolveGid(deps.xrayUser) } : undefined;
 
   if (request.mode === 'status') {
-    // Read-only: whether THIS host currently serves an inbound, from durable
+    // Read-only: whether THIS host may currently serve an inbound, from durable
     // state rather than from whatever the last request happened to answer. A
     // failed deployment that rolled back leaves a failure result behind while
     // the previous inbound is still deployed.
+    //
+    // ANY evidence counts, an unfinished journal included: a helper that died
+    // after publishing and restarting but before committing leaves `pending`
+    // set while the inbound serves. Reading that as "nothing deployed" would
+    // let a re-onboarded host keep the previous identity's listener — and the
+    // caller's only action is to publish an empty inbound, which is harmless
+    // when there was nothing after all.
     return {
-      deployed: Boolean(state && !state.pending && fs.existsSync(target)),
+      deployed: Boolean(state) || fs.existsSync(target),
       listen: state?.listen || '',
       changed: false,
       restarted: false,
@@ -435,6 +454,12 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
   const keys = reusable ?? deps.generateKeys();
   const serverName = request.serverNames[0];
   const listen = deps.resolveListen();
+  // Refuse BEFORE publishing: a node whose public endpoint is IPv6 on a host
+  // that can only listen on IPv4 must fail with Xray untouched, rather than be
+  // restarted onto a listener no client can reach and only then report failure.
+  if (request.requireListen && request.requireListen !== listen) {
+    throw new Error(`本机入站只能监听 ${listen}，无法满足节点对外地址所需的 ${request.requireListen}`);
+  }
   const rendered = JSON.stringify(renderInbound(request, keys, listen), null, 2) + '\n';
   assertConfigValid(deps, rendered);
   // Journal BEFORE publishing. If the helper dies between publishing the config

@@ -144,6 +144,12 @@ export class CommandProcessor {
     // no-op from "someone restored an older config behind our back": a live tag
     // says nothing about which port or key is actually deployed. A true no-op
     // costs one request round trip and never restarts Xray.
+    // Resolve the address clients will dial BEFORE anything touches Xray. A
+    // broken override or an unreachable control plane must fail while the node
+    // still serves its previous inbound — discovering it after the helper has
+    // restarted Xray would leave clients dialling the old port and key while
+    // the machine serves the new ones.
+    const serverHost = await this.resolvePublicHost();
     const requestId = randomUUID();
     // Record the INTENT before handing off: once the helper has the request the
     // machine may change whether or not this process ever learns the outcome (a
@@ -151,7 +157,7 @@ export class CommandProcessor {
     // it completed" must therefore lead back through the helper rather than be
     // answered from memory.
     this.store.setInboundState({ hash, report: {}, appliedRevision: command.targetRevision, complete: false });
-    const applied = await this.inbound.applier.apply(spec, requestId, command.commandId);
+    const applied = await this.inbound.applier.apply(spec, requestId, command.commandId, requiredListen(serverHost));
     if (applied.listenPort !== spec.listenPort) {
       throw new Error(`配置助手部署的端口 ${applied.listenPort} 与下发的 ${spec.listenPort} 不一致`);
     }
@@ -159,7 +165,11 @@ export class CommandProcessor {
       throw new Error(`配置助手返回的 serverName ${applied.serverName} 不在下发列表中`);
     }
     await this.waitForInbound(this.inbound.verifyAttempts ?? 15, this.inbound.verifyDelayMs ?? 1_000);
-    const serverHost = await this.resolveVerifiedHost(applied.listen);
+    // The helper refuses a family it cannot serve before publishing, so this is
+    // a consistency check on its answer rather than a late failure path.
+    if (requiredListen(serverHost) && applied.listen !== requiredListen(serverHost)) {
+      throw new Error(`本机对外地址是 IPv6（${serverHost}），但入站监听 ${applied.listen || '未知地址'}`);
+    }
     // Users added over gRPC live only in Xray's memory, so a restart empties
     // them. Reconcile on EVERY apply, not only when this call restarted: a
     // previous attempt may have restarted and then failed before (or during)
@@ -205,24 +215,20 @@ export class CommandProcessor {
   }
 
   /**
-   * The address clients will dial, checked against the family the inbound
-   * actually accepts: an IPv6 endpoint in front of an IPv4-only listener passes
-   * every tag-based check and gives every client a port nothing listens on.
+   * The address clients will dial. Resolved and validated before Xray is
+   * touched: the control plane rejects a non-public address anyway, but a
+   * command that gets that far has already restarted Xray and then fails,
+   * leaving clients on the old endpoint while the machine serves the new one.
+   * The server remains the authority; this copy just fails early and names the
+   * value and the override that fixes it.
    */
-  private async resolveVerifiedHost(listen: string): Promise<string> {
+  private async resolvePublicHost(): Promise<string> {
     const serverHost = await this.inbound!.resolvePublicHost();
-    // The control plane rejects a non-public address, and rightly so — but a
-    // command that "succeeded" with one only fails much later, in an API error
-    // the operator has to correlate back. Fail here, naming the value and the
-    // override that fixes it. The server remains the authority.
     if (!isPublicUnicastAddress(serverHost)) {
       throw new Error(
         `本机对外地址 ${serverHost || '(空)'} 不是可用的公网单播地址：`
           + '请检查反向代理的来源地址，或用 CHORDV_NODE_PUBLIC_HOST 显式指定',
       );
-    }
-    if (isIPv6(serverHost) && listen !== '::') {
-      throw new Error(`本机对外地址是 IPv6（${serverHost}），但入站只监听 ${listen || '未知地址'}：请启用 IPv6 或改用 IPv4 地址`);
     }
     return serverHost;
   }
@@ -278,6 +284,16 @@ export class CommandProcessor {
     }
     for (const user of actual) if (!desiredByEmail.has(user.email)) await this.xray.removeUser(user.email);
   }
+}
+
+/**
+ * The listen address this node's public endpoint requires. An IPv6 endpoint in
+ * front of an IPv4-only listener passes every tag-based check and hands each
+ * client a port nothing listens on; an IPv4 endpoint works on either listener,
+ * so it imposes nothing.
+ */
+function requiredListen(serverHost: string): string {
+  return isIPv6(serverHost.trim().replace(/^\[|\]$/g, '')) ? '::' : '';
 }
 
 function isOlderRevision(candidate: string, current: string): boolean {
