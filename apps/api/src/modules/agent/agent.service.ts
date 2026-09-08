@@ -334,6 +334,39 @@ export class AgentService {
       ?? (input.type === "ENSURE_INBOUND"
         ? inboundSpecKey(nodeId, payload as NormalizedInboundSpec)
         : `${nodeId}:${input.type}:${randomUUID()}`);
+    // ...but only while it is still the NEWEST deployment for the node. When
+    // the operator went 443 → 8443 → 443 again with nothing completed yet, the
+    // outstanding 443 command carries an OLDER revision than the 8443 one:
+    // collapsing onto it would leave 8443 as the newest operation, and the
+    // agent's stale-revision guard would then reject the reused command — the
+    // operator's last request would never run. Release the key (the completion
+    // flow's own rename) and let the upsert below create a fresh command with
+    // the newly allocated revision instead.
+    if (input.type === "ENSURE_INBOUND" && !input.dedupeKey) {
+      const outstanding = await this.prisma.nodeCommandJob.findUnique({ where: { dedupeKey } });
+      if (outstanding) {
+        // "Newer" by targetRevision, not createdAt: every created job consumed
+        // its own increment of the node's monotonic counter, so revisions are
+        // strictly ordered where timestamps can tie.
+        const intervening = await this.prisma.nodeCommandJob.findFirst({
+          where: {
+            nodeId,
+            commandType: "ENSURE_INBOUND",
+            targetRevision: { gt: outstanding.targetRevision },
+          },
+          select: { id: true },
+        });
+        if (intervening) {
+          // updateMany so a job that completed concurrently (and already
+          // released the key its own way) is left alone; either way the base
+          // key is free for the fresh command.
+          await this.prisma.nodeCommandJob.updateMany({
+            where: { id: outstanding.id, status: "pending" },
+            data: { dedupeKey: `${dedupeKey}:superseded:${outstanding.id}` },
+          });
+        }
+      }
+    }
     const job = await this.prisma.nodeCommandJob.upsert({
       where: { dedupeKey },
       update: {},
