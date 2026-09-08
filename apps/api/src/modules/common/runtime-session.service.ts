@@ -106,6 +106,7 @@ type PanelSyncAction = "ensure_client" | "disable_client" | "delete_client" | "r
 
 const DEFAULT_PANEL_TRAFFIC_RESET_CONFIRM_MAX_BYTES = 16n * 1024n * 1024n;
 const LEASE_REVOCATION_BATCH_SIZE = Number(process.env.CHORDV_LEASE_REVOCATION_BATCH_SIZE ?? 50);
+const DIRECT_PROVISIONING_RETRY_BATCH_SIZE = Number(process.env.CHORDV_DIRECT_PROVISIONING_RETRY_BATCH_SIZE ?? 50);
 const DEFAULT_LEASE_REVOCATION_JOB_CONCURRENCY = 4;
 const DEFAULT_LEASE_REVOCATION_JOB_TIMEOUT_MS = 30_000;
 const LEASE_REVOCATION_RETRY_BASE_SECONDS = Number(process.env.CHORDV_LEASE_REVOCATION_RETRY_BASE_SECONDS ?? 15);
@@ -481,9 +482,16 @@ export class RuntimeSessionService {
   }
 
   async queueDirectSubscriptionAccessSync(subscriptionId: string) {
-    return this.syncSubscriptionPanelAccessLocked(subscriptionId, {
-      ensureOnly: true
-    });
+    // One transaction: binding activation, baseline, revision bump and the
+    // ENSURE_USER job must commit or roll back together. A binding marked
+    // active without its command leaves the control plane believing the node
+    // has the user while nothing retries the missing command.
+    return this.prisma.$transaction((tx) =>
+      this.syncSubscriptionPanelAccessLocked(subscriptionId, {
+        writer: tx,
+        ensureOnly: true
+      })
+    );
   }
 
   /**
@@ -505,6 +513,11 @@ export class RuntimeSessionService {
    * so re-enabling must queue the matching ENSURE_USER again — a config
    * refresh alone will not restore anything, because getConfig only serves
    * ACTIVE bindings.
+   *
+   * A subscription whose disable has not settled yet (watermarks unconfirmed
+   * or final batches unaccounted) throws here; retryPendingDirectProvisioning
+   * picks it up on its next tick — the binding's own "disabled" status is the
+   * durable retry marker, so an in-flight failure needs no extra task row.
    */
   async syncDirectAccessForNode(nodeId: string) {
     const subscriptions = await this.prisma.subscription.findMany({
@@ -520,12 +533,47 @@ export class RuntimeSessionService {
       try {
         await this.prisma.$transaction((tx) => this.queueDirectSubscriptionAccessSyncTx(tx, subscription.id));
       } catch (error) {
-        this.logger.warn(
-          `Node re-enable provisioning for ${subscription.id} failed (agent commands keep retrying): ${readRuntimeErrorMessage(error)}`
-        );
+        this.logDirectProvisioningRetry(subscription.id, error, "Node re-enable provisioning");
       }
     }
     return subscriptions.length;
+  }
+
+  private logDirectProvisioningRetry(subscriptionId: string, error: unknown, label: string) {
+    // Unsettled watermarks are the EXPECTED retry condition (the agent has
+    // not confirmed the disable yet), not an anomaly — keep them out of warn.
+    if (error instanceof ConflictException && /停用/.test(error.message)) {
+      this.logger.debug(`${label} for ${subscriptionId} waits for disable settlement: ${readRuntimeErrorMessage(error)}`);
+      return;
+    }
+    this.logger.warn(`${label} for ${subscriptionId} failed (will retry): ${readRuntimeErrorMessage(error)}`);
+  }
+
+  /**
+   * Durable retry for provisioning that could not run yet. A disabled binding
+   * under an ELIGIBLE subscription means restoration is still owed — most
+   * commonly a node re-enabled before its DISABLE_USER results and final
+   * usage batches settled (assertDirectTerminalWatermarksSettled rejects the
+   * re-activation until then). The sync itself decides eligibility, so this
+   * never provisions anything the subscription's current state does not call
+   * for; when it does, the ENSURE_USER retry worker takes over.
+   */
+  @Cron("*/30 * * * * *")
+  @DrainableJob()
+  async retryPendingDirectProvisioning() {
+    const subscriptions = await this.prisma.panelClientBinding.findMany({
+      where: { status: "disabled" },
+      select: { subscriptionId: true },
+      distinct: ["subscriptionId"],
+      take: DIRECT_PROVISIONING_RETRY_BATCH_SIZE
+    });
+    for (const { subscriptionId } of subscriptions) {
+      try {
+        await this.prisma.$transaction((tx) => this.queueDirectSubscriptionAccessSyncTx(tx, subscriptionId));
+      } catch (error) {
+        this.logDirectProvisioningRetry(subscriptionId, error, "Direct provisioning retry");
+      }
+    }
   }
 
   async quiesceDirectBindingsForTrafficReset(subscriptionId: string, userId?: string | null) {

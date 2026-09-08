@@ -5998,9 +5998,10 @@ async function testRetryExhaustedCommandsStayVisibleAsFailures() {
 }
 
 // The queries themselves decide visibility by resolvedAt, so the write path
-// must set it: enqueueing a new command for a target resolves the exhausted
-// rows of that target (binding-scoped) or of that node+commandType
-// (target-less), and leaves unrelated exhausted rows alone.
+// must set it: enqueueing a new command resolves the exhausted rows it truly
+// REPLACES — same commandType on the binding (REMOVE_USER teardown excepted),
+// or node+commandType for target-less commands — and leaves everything else
+// alone.
 async function testOrderingNewCommandResolvesExhaustedFailures() {
   const updates: Array<Record<string, unknown>> = [];
   const writer = {
@@ -6028,20 +6029,39 @@ async function testOrderingNewCommandResolvesExhaustedFailures() {
   });
   assert.deepEqual(
     updates[0]?.where,
-    { bindingId: "binding_1", status: "cancelled", resolvedAt: null },
-    "绑定作用域命令入队时必须解决该绑定上未解决的重试耗尽命令"
+    { bindingId: "binding_1", commandType: "ENSURE_USER", status: "cancelled", resolvedAt: null },
+    "绑定作用域命令只解决同命令类型的耗尽行"
   );
   assert.ok(updates[0]?.data?.resolvedAt instanceof Date, "解决方式是置 resolvedAt");
 
-  await resolveExhaustedCommands(writer, { nodeId: "node_1", commandType: "ENSURE_INBOUND" });
+  // A quota refresh touches the same binding but never installs the user in
+  // Xray — it must not clear a failed provisioning.
+  await resolveExhaustedCommands(writer, { bindingId: "binding_1", nodeId: "node_1", commandType: "REFRESH_QUOTA" });
   assert.deepEqual(
     updates[1]?.where,
+    { bindingId: "binding_1", commandType: "REFRESH_QUOTA", status: "cancelled", resolvedAt: null },
+    "REFRESH_QUOTA 只能解决 REFRESH_QUOTA 的耗尽行，不得隐藏供给失败"
+  );
+
+  // REMOVE_USER is teardown of the binding: every earlier failure for it is
+  // moot once the user is being removed.
+  await resolveExhaustedCommands(writer, { bindingId: "binding_1", nodeId: "node_1", commandType: "REMOVE_USER" });
+  assert.deepEqual(
+    updates[2]?.where,
+    { bindingId: "binding_1", status: "cancelled", resolvedAt: null },
+    "REMOVE_USER 解决该绑定全部类型的耗尽行（拆除后一切旧失败都无意义）"
+  );
+
+  await resolveExhaustedCommands(writer, { nodeId: "node_1", commandType: "ENSURE_INBOUND" });
+  assert.deepEqual(
+    updates[3]?.where,
     { nodeId: "node_1", commandType: "ENSURE_INBOUND", status: "cancelled", resolvedAt: null },
     "无绑定命令按节点+命令类型解决——重新下发入站必须解决旧的重试耗尽部署"
   );
 
   await resolveExhaustedCommands(writer, {});
-  assert.equal(updates.length, 2, "缺少定位信息时不得盲写");
+  await resolveExhaustedCommands(writer, { bindingId: "binding_1" });
+  assert.equal(updates.length, 4, "缺少定位信息时不得盲写");
 }
 
 async function testUpdateNodeMapsLocalReadFailure() {

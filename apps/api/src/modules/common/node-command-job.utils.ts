@@ -21,22 +21,33 @@ export async function createOrRefreshNodeCommandJob(
 }
 
 /**
- * A newer command for the same target supersedes a retry-exhausted (cancelled)
- * failure: the new row tells the story from now on, so the exhausted row must
- * stop counting as unresolved in the admin queue. Binding-scoped commands are
- * resolved by ANY newer command on the binding (its state was re-managed);
- * target-less commands (ENSURE_INBOUND, RECONCILE_USERS) resolve per
- * node+commandType.
+ * A newer command supersedes a retry-exhausted (cancelled) failure ONLY when
+ * it actually replaces that operation:
+ * - binding-scoped commands resolve exhausted rows of the SAME commandType on
+ *   that binding — a REFRESH_QUOTA updates quota but never installs the user,
+ *   so it must not clear a failed ENSURE_USER. REMOVE_USER is the exception:
+ *   teardown of the binding makes every earlier provisioning failure moot.
+ * - target-less commands (ENSURE_INBOUND, RECONCILE_USERS, ...) resolve per
+ *   node+commandType.
+ * Callers must only invoke this when a genuinely NEW command is being created
+ * (see the replay guards at the enqueue sites).
  */
 export async function resolveExhaustedCommands(
   writer: any,
   scope: { bindingId?: string | null; nodeId?: string | null; commandType?: string | null }
 ) {
-  const where = scope.bindingId
-    ? { bindingId: scope.bindingId, status: "cancelled" as const, resolvedAt: null }
-    : scope.nodeId && scope.commandType
-      ? { nodeId: scope.nodeId, commandType: scope.commandType, status: "cancelled" as const, resolvedAt: null }
-      : null;
+  let where: Record<string, unknown> | null = null;
+  if (scope.bindingId && scope.commandType) {
+    where = {
+      status: "cancelled" as const,
+      resolvedAt: null,
+      ...(scope.commandType === "REMOVE_USER"
+        ? { bindingId: scope.bindingId }
+        : { bindingId: scope.bindingId, commandType: scope.commandType })
+    };
+  } else if (scope.nodeId && scope.commandType) {
+    where = { nodeId: scope.nodeId, commandType: scope.commandType, status: "cancelled" as const, resolvedAt: null };
+  }
   if (!where) {
     return;
   }

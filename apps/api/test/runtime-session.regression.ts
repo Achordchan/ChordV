@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
+import { ConflictException } from "@nestjs/common";
 import { RuntimeSessionService } from "../src/modules/common/runtime-session.service";
 import { applyDirectBatch } from "../src/modules/agent/agent-direct-metering";
 import { buildSnapshotKey, shouldProvisionPanelClients } from "../src/modules/common/runtime-session.utils";
@@ -253,6 +254,44 @@ async function main() {
     directMeteringSource,
     /const replayed = await tx\.nodeCommandJob\.findUnique\(\{ where: \{ dedupeKey \} \}\);\s*\n\s*if \(replayed\) \{\s*\n\s*continue;\s*\n\s*\}\s*\n\s*\/\/ Re-managing the binding[\s\S]*?await resolveExhaustedCommands/,
     "自动停用的幂等重放同样不得解决耗尽行"
+  );
+
+  // 8) Re-enable provisioning that hits unsettled disable watermarks must be
+  //    RETRIED durably: the binding's own "disabled" status is the marker, so
+  //    retryPendingDirectProvisioning re-runs the per-subscription sync every
+  //    tick until settlement lets the re-activation through. A one-shot warn
+  //    would leave the node enabled with its users permanently disabled.
+  const cronService = Object.assign(Object.create(RuntimeSessionService.prototype), {
+    prisma: {
+      panelClientBinding: {
+        findMany: async () => [{ subscriptionId: "sub_1" }]
+      },
+      $transaction: async (task: (tx: unknown) => Promise<unknown>) => task({})
+    },
+    queueDirectSubscriptionAccessSyncTx: async () => {
+      throw new ConflictException("Direct 用户停用前流量批次尚未结清：binding_1");
+    },
+    logger: { debug: () => undefined, warn: () => undefined }
+  }) as RuntimeSessionService;
+  await (cronService as unknown as { retryPendingDirectProvisioning(): Promise<void> }).retryPendingDirectProvisioning();
+  assert.match(
+    runtimeSessionSource,
+    /async retryPendingDirectProvisioning\(\) \{[\s\S]*?distinct: \["subscriptionId"\][\s\S]*?queueDirectSubscriptionAccessSyncTx\(tx, subscriptionId\)/,
+    "重试 cron 必须扫 disabled 绑定所属的订阅并逐订阅重跑事务供给"
+  );
+  assert.match(
+    runtimeSessionSource,
+    /@Cron\("\*\/30 \* \* \* \* \*"\)\s*\n\s*@DrainableJob\(\)\s*\n\s*async retryPendingDirectProvisioning/,
+    "重试必须是周期任务（停用沉降是异步的，一次性重试不够）"
+  );
+
+  // 9) The PUBLIC provisioning entry point must be one transaction: a failure
+  //    after binding activation must not leave an active binding without its
+  //    ENSURE_USER command (nothing would retry the missing command).
+  assert.match(
+    runtimeSessionSource,
+    /async queueDirectSubscriptionAccessSync\(subscriptionId: string\) \{\s*\n\s*\/\/ One transaction[\s\S]*?return this\.prisma\.\$transaction\(\(tx\) =>\s*\n\s*this\.syncSubscriptionPanelAccessLocked\(subscriptionId, \{\s*\n\s*writer: tx,\s*\n\s*ensureOnly: true\s*\n\s*\}\)\s*\n\s*\);/,
+    "公共供给入口必须整体包在事务里"
   );
 
   console.log("runtime session regression passed (connect 门不反转、供给资格共享判定、节点禁用联动绑定、删除绑定保留计量基线)");
