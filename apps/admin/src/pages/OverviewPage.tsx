@@ -5,9 +5,8 @@ import { IconBell, IconListDetails, IconMapPin, IconMessageCircle, IconUser, Ico
 import { CountryFlag } from "../components/CountryFlag";
 import { StatusBadge } from "../features/shared/StatusBadge";
 import { formatDateTime } from "../utils/admin-format";
+import { compactNodeStatus } from "../utils/node-status";
 import {
-  agentStatusColor,
-  nodeProbeColor,
   subscriptionStateColor,
   translateAgentStatus,
   translateProbeStatus,
@@ -205,17 +204,4 @@ function CompactNodeList({ items }: { items: AdminNodeRecordDto[] }) {
       })}
     </Stack>
   );
-}
-
-function compactNodeStatus(item: AdminNodeRecordDto) {
-  if (item.isActive === false) {
-    return { color: "gray", label: "已禁用" };
-  }
-
-  const agentStatus = item.controlStatus ?? item.agent?.status;
-  if (agentStatus === "online" || agentStatus === "active") {
-    return { color: agentStatusColor(agentStatus), label: `Agent ${translateAgentStatus(agentStatus)}` };
-  }
-
-  return { color: nodeProbeColor(item.probeStatus), label: translateProbeStatus(item.probeStatus) };
 }

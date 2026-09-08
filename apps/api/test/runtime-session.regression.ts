@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
-import { shouldProvisionPanelClients } from "../src/modules/common/runtime-session.utils";
+import { RuntimeSessionService } from "../src/modules/common/runtime-session.service";
+import { applyDirectBatch } from "../src/modules/agent/agent-direct-metering";
+import { buildSnapshotKey, shouldProvisionPanelClients } from "../src/modules/common/runtime-session.utils";
 import { usesAgentControl } from "../src/modules/common/node-control-mode";
 import { isNodeOnboardingReady } from "../src/modules/common/node-onboarding-policy";
 
@@ -89,4 +91,115 @@ assert.equal(
   "agent_ready + 已部署参数的节点必须可连"
 );
 
-console.log("runtime session regression passed (connect 门不反转、供给资格共享判定、节点禁用联动绑定)");
+// 4) Deleting a binding must NOT drop its traffic snapshot. The snapshot is the
+//    accounting BASELINE, not panel residue: REMOVE_USER only queues the
+//    command, so the agent can still report usage up to its final removal
+//    sample afterwards. Without the baseline every late batch is billed as a
+//    full counter reading (from zero), inflating the subscription's usage.
+async function main() {
+  const snapshotKey = buildSnapshotKey("node_1", "sub_1", "user_1");
+  const snapshots = new Map<string, { snapshotKey: string; uplinkBytes: bigint; downlinkBytes: bigint; counterGeneration: string }>([
+    [snapshotKey, { snapshotKey, uplinkBytes: 1000n, downlinkBytes: 500n, counterGeneration: "gen-1" }]
+  ]);
+  const binding = {
+    id: "binding_1",
+    nodeId: "node_1",
+    subscriptionId: "sub_1",
+    userId: "user_1",
+    teamId: "team_1",
+    panelClientEmail: "member@example.invalid",
+    panelClientId: "11111111-1111-4111-8111-111111111111",
+    status: "active",
+    source: "direct",
+    directDisableWatermarks: null,
+    lastUplinkBytes: 1000n,
+    lastDownlinkBytes: 500n,
+    subscription: {
+      id: "sub_1",
+      state: "active",
+      expireAt: new Date(Date.now() + 86_400_000),
+      totalTrafficBytes: 10_000n,
+      totalTrafficGb: 0,
+      usedTrafficBytes: 0n,
+      usedTrafficGb: 0,
+      remainingTrafficGb: 100
+    }
+  };
+  const subscriptionUpdates: Array<{ usedTrafficBytes: bigint }> = [];
+  const ledgerRows: Array<{ usedTrafficBytes: bigint }> = [];
+  const writer = {
+    panelClientBinding: {
+      findMany: async () => [binding],
+      updateMany: async ({ data }: { data: { status: string } }) => {
+        binding.status = data.status;
+        return { count: 1 };
+      },
+      update: async ({ data }: { data: Record<string, unknown> }) => {
+        Object.assign(binding, data);
+        return binding;
+      }
+    },
+    trafficSnapshot: {
+      // The regression: queueing the delete must not touch the baseline.
+      deleteMany: async () => {
+        throw new Error("删除绑定不得删除计量基线（末次样本仍会到达）");
+      },
+      findMany: async ({ where }: { where: { snapshotKey: { in: string[] } } }) =>
+        [...snapshots.values()].filter((snapshot) => where.snapshotKey.in.includes(snapshot.snapshotKey)),
+      updateMany: async () => ({ count: 0 }),
+      upsert: async ({ where, create }: { where: { snapshotKey: string }; create: Record<string, unknown> }) => {
+        snapshots.set(where.snapshotKey, {
+          snapshotKey: where.snapshotKey,
+          uplinkBytes: create.uplinkBytes as bigint,
+          downlinkBytes: create.downlinkBytes as bigint,
+          counterGeneration: create.counterGeneration as string
+        });
+        return create;
+      }
+    },
+    subscription: {
+      update: async ({ data }: { data: { usedTrafficBytes: bigint } }) => {
+        subscriptionUpdates.push(data);
+        return data;
+      }
+    },
+    trafficLedger: {
+      createMany: async ({ data }: { data: Array<{ usedTrafficBytes: bigint }> }) => {
+        ledgerRows.push(...data);
+        return { count: data.length };
+      }
+    }
+  };
+  const service = Object.assign(Object.create(RuntimeSessionService.prototype), {
+    queueDirectBindingCommand: async () => undefined,
+    publishSyncQueueUpdatedBestEffort: () => undefined
+  }) as RuntimeSessionService;
+  const queued = await service.queuePanelDeleteJobsForSubscriptionTx(writer as never, "sub_1");
+  assert.equal(queued, 1, "删除应逐绑定排队 REMOVE_USER");
+  assert.equal(binding.status, "deleted", "排队后绑定应标记为 deleted");
+  assert.equal(snapshots.size, 1, "删除绑定不得删除计量基线");
+
+  // The agent's final sample arrives after the binding was marked deleted (the
+  // watermark is only reported with the command result, and may itself still be
+  // unacknowledged): it must be billed as a DELTA against the surviving baseline.
+  await applyDirectBatch(writer as never, "agent_1", "node_1", new Date(), "boot-1", 7n, [
+    {
+      bindingId: "binding_1",
+      counterGeneration: "gen-1",
+      uplinkBytes: "1500",
+      downlinkBytes: "700",
+      uplinkDeltaBytes: "500",
+      downlinkDeltaBytes: "200"
+    }
+  ]);
+  assert.equal(ledgerRows.length, 1, "末次样本必须入账");
+  assert.equal(ledgerRows[0]?.usedTrafficBytes, 700n, "末次样本必须按基线差额计费，而不是从零起算");
+  assert.equal(subscriptionUpdates[0]?.usedTrafficBytes, 700n, "订阅已用流量必须只增加差额");
+
+  console.log("runtime session regression passed (connect 门不反转、供给资格共享判定、节点禁用联动绑定、删除绑定保留计量基线)");
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

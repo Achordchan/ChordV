@@ -835,12 +835,12 @@ export class RuntimeSessionService {
         uuid: binding.panelClientId
       });
       queuedCount += 1;
-
-      await writer.trafficSnapshot.deleteMany({
-        where: {
-          snapshotKey: buildSnapshotKey(binding.nodeId, binding.subscriptionId, binding.userId)
-        }
-      });
+      // The traffic snapshot is the accounting BASELINE, not panel residue:
+      // REMOVE_USER only queues the command, and the agent can still report
+      // usage up to (and including) its final removal sample afterwards. With
+      // no baseline those batches are billed from zero as full counter
+      // readings. Keep it until the terminal watermarks settle — re-creating
+      // the binding replaces the baseline through ensureTrafficSnapshotBaseline.
     }
 
     await writer.panelClientBinding.updateMany({
