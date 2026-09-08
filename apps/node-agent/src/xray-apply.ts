@@ -181,6 +181,71 @@ export function resolveListenAddress(readFile: (file: string) => string = (file)
 }
 
 /**
+ * Parses a dotted-quad IPv4 literal into octets; anything else (including
+ * IPv6 and names) is null.
+ */
+function parseIPv4(value: string): number[] | null {
+  const parts = value.split('.');
+  if (parts.length !== 4 || parts.some((part) => !/^\d{1,3}$/.test(part) || Number(part) > 255)) return null;
+  return parts.map(Number);
+}
+
+/**
+ * Parses an IPv6 literal (with `::` compression and an embedded IPv4 tail)
+ * into 16 bytes. Text-level matching does not survive alternative spellings:
+ * `0:0:0:0:0:0:0:1` is loopback the long way and `::ffff:7f00:1` is
+ * 127.0.0.1 in hexadecimal — both must be judged by their BYTES.
+ */
+function parseIPv6(value: string): number[] | null {
+  const host = value.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (!host.includes(':')) return null;
+  const [head, tail] = host.split('::') as [string, string | undefined];
+  const expand = (part: string): number[] | null => {
+    if (!part) return [];
+    const groups: number[] = [];
+    for (const piece of part.split(':')) {
+      if (piece.includes('.')) {
+        const octets = parseIPv4(piece);
+        if (!octets) return null;
+        groups.push(...octets);
+        continue;
+      }
+      if (!/^[0-9a-f]{1,4}$/.test(piece)) return null;
+      const word = Number.parseInt(piece, 16);
+      groups.push(word >> 8, word & 0xff);
+    }
+    return groups;
+  };
+  const front = expand(head);
+  const back = tail === undefined ? [] : expand(tail);
+  if (front === null || back === null) return null;
+  const missing = 16 - front.length - back.length;
+  if (missing < 0 || (tail === undefined && missing !== 0)) return null;
+  return [...front, ...new Array(missing).fill(0), ...back];
+}
+
+function isInternalIPv4(octets: number[]): boolean {
+  const [a, b] = octets;
+  return a === 0 || a === 10 || a === 127 || a >= 224
+    || (a === 100 && b >= 64 && b <= 127)
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168);
+}
+
+function isInternalIPv6(bytes: number[]): boolean {
+  // An IPv4-mapped address is an IPv4 address; judge the embedded one.
+  if (bytes.slice(0, 10).every((byte) => byte === 0) && bytes[10] === 0xff && bytes[11] === 0xff) {
+    return isInternalIPv4(bytes.slice(12));
+  }
+  if (bytes.every((byte) => byte === 0)) return true;                                // :: unspecified
+  if (bytes[15] === 1 && bytes.slice(0, 15).every((byte) => byte === 0)) return true; // ::1 loopback
+  if ((bytes[0] & 0xfe) === 0xfc) return true;                                        // fc00::/7 unique-local
+  if (bytes[0] === 0xfe && (bytes[1] & 0xc0) === 0x80) return true;                   // fe80::/10 link-local
+  return bytes[0] === 0xff;                                                           // ff00::/8 multicast
+}
+
+/**
  * Whether an address would point the Reality fallback at this machine or its
  * private perimeter. The fallback forwards whatever a NON-Reality client sends
  * — from the public internet, unauthenticated — so a dest like 127.0.0.1:10085
@@ -189,49 +254,46 @@ export function resolveListenAddress(readFile: (file: string) => string = (file)
  */
 export function isInternalDestAddress(address: string): boolean {
   const trimmed = address.trim().replace(/^\[|\]$/g, '');
-  // An IPv4-mapped IPv6 address is an IPv4 address; judge the embedded one.
-  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(trimmed);
-  const value = mapped ? mapped[1] : trimmed;
-  const octets = value.split('.');
-  if (octets.length === 4 && octets.every((octet) => /^\d+$/.test(octet) && Number(octet) <= 255)) {
-    const [a, b] = octets.map(Number);
-    return a === 0 || a === 10 || a === 127 || a >= 224
-      || (a === 100 && b >= 64 && b <= 127)
-      || (a === 169 && b === 254)
-      || (a === 172 && b >= 16 && b <= 31)
-      || (a === 192 && b === 168);
-  }
-  // Resolver-canonical IPv6 (input literals cannot contain ':' — the dest
-  // grammar forbids it), so prefix matching on the compressed form is exact
-  // for the ranges that matter.
-  const v6 = value.toLowerCase();
-  return v6 === '::' || v6 === '::1'
-    || /^f[cd]/.test(v6)      // fc00::/7 unique-local
-    || /^fe[89ab]/.test(v6)   // fe80::/10 link-local
-    || /^ff/.test(v6);        // ff00::/8 multicast
+  const v6 = parseIPv6(trimmed);
+  if (v6) return isInternalIPv6(v6);
+  const v4 = parseIPv4(trimmed);
+  if (v4) return isInternalIPv4(v4);
+  // A NAME is not an address; it is judged by resolution in assertPublicDest.
+  return false;
 }
 
 /**
- * Address policy for the Reality fallback target. Syntax was checked in
- * parseRequest; this is the boundary that decides WHERE the public listener
- * may forward to, and it runs before anything is published so a refused dest
- * costs nothing. A name is judged by EVERY address it resolves to — a mixed
- * answer (one public, one loopback) is a rebinding attempt, not a pass.
+ * The address the config will actually carry. Reality re-resolves a DOMAIN
+ * dest on every fallback connection, so a name that was public at deploy time
+ * can be rebound to the loopback afterwards — the agent may control the
+ * domain. The validated address is therefore PINNED into the config: what was
+ * checked is exactly what runs, for the lifetime of the deployment.
+ *
+ * Returns the pinned literal for the dest (bracketed for IPv6, which Xray's
+ * host:port grammar requires). A name is judged by EVERY address it resolves
+ * to — a mixed answer (one public, one loopback) is a rebinding attempt, and
+ * an unparsable or empty answer is not evidence of safety either.
  */
-export function assertPublicDest(dest: string, resolveHost: (host: string) => string[]): void {
+export function assertPublicDest(dest: string, resolveHost: (host: string) => string[]): string {
   const separator = dest.lastIndexOf(':');
   const host = dest.slice(0, separator);
+  const portPart = dest.slice(separator + 1);
   if (host.toLowerCase() === 'localhost') {
     throw new Error(`fallback 目标 ${dest} 指向本机回环地址，拒绝部署`);
   }
-  if (isInternalDestAddress(host)) {
+  if (parseIPv4(host) || parseIPv6(host)) {
+    if (!isInternalDestAddress(host)) return parseIPv6(host) ? `[${host}]:${portPart}` : dest;
     throw new Error(`fallback 目标 ${dest} 是回环/内网/保留地址，拒绝部署`);
   }
-  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)) return;
-  const addresses = resolveHost(host);
-  if (addresses.length === 0 || addresses.some((address) => isInternalDestAddress(address))) {
+  const addresses = resolveHost(host).map((address) => address.trim()).filter(Boolean);
+  const parsable = addresses.filter((address) => parseIPv4(address) || parseIPv6(address));
+  if (parsable.length !== addresses.length || parsable.length === 0 || parsable.some((address) => isInternalDestAddress(address))) {
     throw new Error(`fallback 目标域名 ${host} 解析到回环/内网/保留地址（或无法解析），拒绝部署`);
   }
+  // Prefer IPv4 when the name has one: the fallback dials the pinned address
+  // directly, and a v4 target is reachable regardless of the host's IPv6 story.
+  const pinned = parsable.find((address) => parseIPv4(address)) ?? parsable[0];
+  return parseIPv6(pinned) && !parseIPv4(pinned) ? `[${pinned}]:${portPart}` : `${pinned}:${portPart}`;
 }
 
 /**
@@ -323,7 +385,7 @@ function writeFileAtomic(file: string, contents: string, mode: number, owner?: {
   try { fs.fsyncSync(dirDescriptor); } finally { fs.closeSync(dirDescriptor); }
 }
 
-function readState(file: string): { hash: string; keys: RealityKeys; serverName: string; listen: string; listenPort: number; pending: boolean; commandId: string } | undefined {
+function readState(file: string): { hash: string; keys: RealityKeys; serverName: string; listen: string; listenPort: number; pending: boolean; commandId: string; pinnedDest: string } | undefined {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
     const keys = parsed.keys as RealityKeys | undefined;
@@ -334,6 +396,9 @@ function readState(file: string): { hash: string; keys: RealityKeys; serverName:
       serverName: typeof parsed.serverName === 'string' ? parsed.serverName : '',
       listen: typeof parsed.listen === 'string' ? parsed.listen : '',
       listenPort: typeof parsed.listenPort === 'number' ? parsed.listenPort : 0,
+      // The validated address the deployed config carries (empty for states
+      // written before pinning existed — their config holds the name).
+      pinnedDest: typeof parsed.pinnedDest === 'string' ? parsed.pinnedDest : '',
       // Written before the config is published and cleared after: a crash in
       // between leaves this set, and the no-op branch must then refuse.
       pending: parsed.pending === true,
@@ -472,8 +537,10 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
   // private perimeter exposes whatever listens there (the loopback Xray gRPC
   // API, cloud metadata), and the agent supplies this string, so the address
   // policy lives HERE, in root, ahead of every branch that could publish or
-  // declare a no-op.
-  assertPublicDest(request.dest, deps.resolveDest);
+  // declare a no-op. The returned PINNED address is what the config carries:
+  // Xray re-resolves a domain dest per fallback connection, so keeping the
+  // name would leave a rebinding window open after deployment.
+  const pinnedDest = assertPublicDest(request.dest, deps.resolveDest);
 
   const hash = requestHash(request);
   // A redelivered command must not rotate again: the agent may have crashed
@@ -491,10 +558,17 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
    * would both still look fine, and the helper would report a public key Xray
    * is no longer using — connection parameters that cannot work.
    */
-  const configMatches = (recorded: { keys: RealityKeys; listen: string; listenPort: number }) => {
+  const configMatches = (recorded: { keys: RealityKeys; listen: string; listenPort: number; pinnedDest?: string }) => {
     try {
       const expected = JSON.stringify(
-        renderInbound({ ...request, listenPort: recorded.listenPort || request.listenPort }, recorded.keys, recorded.listen || '0.0.0.0'),
+        renderInbound({
+          ...request,
+          listenPort: recorded.listenPort || request.listenPort,
+          // The deployed config carries the PINNED address, so the expected
+          // rendering must too — a state without one predates pinning and its
+          // config still holds the name.
+          dest: recorded.pinnedDest || request.dest,
+        }, recorded.keys, recorded.listen || '0.0.0.0'),
         null,
         2,
       ) + '\n';
@@ -560,14 +634,14 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
   if (request.requireListen && request.requireListen !== listen) {
     throw new Error(`本机入站只能监听 ${listen}，无法满足节点对外地址所需的 ${request.requireListen}`);
   }
-  const rendered = JSON.stringify(renderInbound(request, keys, listen), null, 2) + '\n';
+  const rendered = JSON.stringify(renderInbound({ ...request, dest: pinnedDest }, keys, listen), null, 2) + '\n';
   assertConfigValid(deps, rendered);
   // Journal BEFORE publishing. If the helper dies between publishing the config
   // and recording it, Xray serves the new inbound while the state file still
   // describes the old one — and re-issuing the OLD spec would then take the
   // no-op branch and report a port nothing serves. The pending record makes
   // that window recoverable: it is never answered with, only re-applied from.
-  const record = { hash, keys, serverName, listen, listenPort: request.listenPort, commandId: request.commandId, appliedAt: deps.now() };
+  const record = { hash, keys, serverName, listen, listenPort: request.listenPort, pinnedDest, commandId: request.commandId, appliedAt: deps.now() };
   const committed = fs.existsSync(deps.stateFile) ? fs.readFileSync(deps.stateFile, 'utf8') : undefined;
   writeFileAtomic(deps.stateFile, JSON.stringify({ ...record, pending: true }, null, 2) + '\n', 0o600);
   try {

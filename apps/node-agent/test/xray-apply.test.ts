@@ -121,23 +121,26 @@ test('fallback 目标指向本机或内网时拒绝部署，DNS 重绑定也算'
   // The fallback forwards what a NON-Reality client sends — unauthenticated,
   // from the public internet — so these addresses would tunnel into the
   // machine: 127.0.0.1:10085 is the unauthenticated Xray gRPC API,
-  // 169.254.169.254 is cloud metadata.
+  // 169.254.169.254 is cloud metadata. Judgment is on parsed BYTES: text
+  // matching missed `::ffff:7f00:1` (127.0.0.1 in hexadecimal) and
+  // `0:0:0:0:0:0:0:1` (loopback the long way).
   for (const address of [
     '127.0.0.1', '10.0.0.1', '172.16.0.1', '172.31.255.255', '192.168.1.1',
     '169.254.169.254', '100.64.0.1', '0.0.0.0', '224.0.0.1', '240.0.0.1', '255.255.255.255',
     '::', '::1', 'fc00::1', 'fd12:3456::1', 'fe80::1', 'ff02::1',
     '::ffff:127.0.0.1', '::ffff:10.0.0.1', '[fe80::1]',
+    '::ffff:7f00:1', '::ffff:a00:1', '::ffff:0:0', '0:0:0:0:0:0:0:1',
   ]) {
     assert.equal(isInternalDestAddress(address), true, `${address} 应视为内部地址`);
   }
-  for (const address of ['8.8.8.8', '203.0.113.7', '172.32.0.1', '172.15.255.255', '100.128.0.1', '2001:db8::1', '::ffff:8.8.8.8']) {
+  for (const address of ['8.8.8.8', '203.0.113.7', '172.32.0.1', '172.15.255.255', '100.128.0.1', '2001:db8::1', '::ffff:8.8.8.8', '::ffff:808:808', '2001:DB8::1']) {
     assert.equal(isInternalDestAddress(address), false, `${address} 不应视为内部地址`);
   }
 
   const root = fs.mkdtempSync(join(tmpdir(), 'xray-apply-dest-'));
   try {
     const applyDeps = deps(root);
-    for (const dest of ['127.0.0.1:10085', 'localhost:10085', '10.0.0.5:443', '169.254.169.254:80']) {
+    for (const dest of ['127.0.0.1:10085', 'localhost:10085', '10.0.0.5:443', '169.254.169.254:80', '[::1]:443']) {
       assert.throws(() => applyRequest(request({ dest }), applyDeps), /回环|内网/, `应拒绝：${dest}`);
     }
     // Refused before anything is touched: no config, no state, no restart.
@@ -146,10 +149,13 @@ test('fallback 目标指向本机或内网时拒绝部署，DNS 重绑定也算'
     assert.equal(fs.existsSync(applyDeps.stateFile), false);
 
     // A name is judged by every address it resolves to. One public record
-    // plus one loopback record is a rebinding attempt, not a pass.
+    // plus one loopback record is a rebinding attempt, not a pass — and an
+    // answer that is not an address at all fails closed too.
     for (const [label, records] of [
       ['mixed records', ['203.0.113.5', '127.0.0.1']],
       ['private AAAA', ['2001:db8::1', 'fd00::1']],
+      ['hex-mapped answer', ['::ffff:7f00:1']],
+      ['garbage answer', ['203.0.113.5', 'not-an-address']],
       ['unresolvable', []],
     ] as const) {
       const rebinding = deps(root, { resolveDest: () => [...records] });
@@ -158,6 +164,54 @@ test('fallback 目标指向本机或内网时拒绝部署，DNS 重绑定也算'
     // The same name with only public records deploys.
     const clean = deps(root, { resolveDest: () => ['203.0.113.5', '2001:db8::1'] });
     assert.equal(applyRequest(request({ dest: 'camouflage.example:443' }), clean).changed, true);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('解析出的地址固化进配置：部署后重绑定改不了它，DNS 轮换也不重启', () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'xray-apply-pin-'));
+  try {
+    let records = ['203.0.113.5'];
+    const applyDeps = deps(root, { resolveDest: () => records });
+    const target = join(applyDeps.confDir, '50-inbound.json');
+
+    applyRequest(request({ dest: 'camouflage.example:443' }), applyDeps);
+    // The config carries the PINNED address, not the name: Xray re-resolves a
+    // domain dest on every fallback connection, so keeping the name would
+    // leave the checked-at-deploy-time guarantee open to later rebinding.
+    const deployed = JSON.parse(readFileSync(target, 'utf8')) as { inbounds: Array<{ streamSettings: { realitySettings: { dest: string } } }> };
+    assert.equal(deployed.inbounds[0].streamSettings.realitySettings.dest, '203.0.113.5:443');
+    assert.equal((JSON.parse(readFileSync(applyDeps.stateFile, 'utf8')) as { pinnedDest: string }).pinnedDest, '203.0.113.5:443');
+    const before = readFileSync(target, 'utf8');
+
+    // The domain rebinds to the loopback AFTER deployment. A re-ensure fails
+    // loudly, and the serving config keeps the pinned public address — the
+    // rebound name never reaches Xray.
+    records = ['127.0.0.1'];
+    assert.throws(() => applyRequest(request({ dest: 'camouflage.example:443' }), applyDeps), /解析到/);
+    assert.equal(readFileSync(target, 'utf8'), before, '拒绝重发不得改动生效中的配置');
+
+    // A legitimate DNS rotation must not restart Xray: the pin travels with
+    // the deployment, and re-issuing the same spec is a no-op.
+    records = ['198.51.100.7'];
+    const rotated = applyRequest(request({ dest: 'camouflage.example:443' }), applyDeps);
+    assert.deepEqual({ changed: rotated.changed, restarted: rotated.restarted }, { changed: false, restarted: false });
+    assert.equal(readFileSync(target, 'utf8'), before);
+    assert.equal(applyDeps.restarts, 1);
+
+    // A literal dest pins itself; an IPv6-only name pins bracketed (Xray's
+    // host:port grammar requires it).
+    const literal = deps(root);
+    applyRequest(request({ dest: '93.184.216.34:443' }), literal);
+    assert.equal(
+      (JSON.parse(readFileSync(join(literal.confDir, '50-inbound.json'), 'utf8')) as { inbounds: Array<{ streamSettings: { realitySettings: { dest: string } } }> }).inbounds[0].streamSettings.realitySettings.dest,
+      '93.184.216.34:443',
+    );
+    const v6only = deps(root, { resolveDest: () => ['2001:db8::1'] });
+    applyRequest(request({ dest: 'v6only.example:443' }), v6only);
+    assert.equal(
+      (JSON.parse(readFileSync(join(v6only.confDir, '50-inbound.json'), 'utf8')) as { inbounds: Array<{ streamSettings: { realitySettings: { dest: string } } }> }).inbounds[0].streamSettings.realitySettings.dest,
+      '[2001:db8::1]:443',
+    );
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
