@@ -490,3 +490,27 @@ test('磁盘配置被换成别的密钥时，空转分支必须重新部署', ()
     assert.equal(applyRequest(spec, applyDeps).restarted, false);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('拒绝占用其它配置片段已使用的入站 tag', () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'xray-apply-tag-'));
+  try {
+    const applyDeps = deps(root);
+    // Xray's confdir merge is BY TAG: deploying under `api-in` would replace the
+    // metering inbound the agent talks to — and the agent is untrusted here, so
+    // its own tag check cannot be relied on.
+    fs.writeFileSync(join(applyDeps.confDir, '10-api.json'), JSON.stringify({
+      api: { tag: 'api' },
+      inbounds: [{ tag: 'api-in', listen: '127.0.0.1', port: 10085, protocol: 'dokodemo-door' }],
+    }));
+    assert.throws(() => applyRequest(request({ inboundTag: 'api-in' }), applyDeps), /已被其它配置片段占用/);
+    assert.equal(fs.existsSync(join(applyDeps.confDir, '50-inbound.json')), false);
+    assert.equal(applyDeps.restarts, 0);
+
+    // The node's own tag is of course fine.
+    assert.equal(applyRequest(request(), applyDeps).changed, true);
+
+    // A fragment we cannot parse could be hiding any tag, so fail closed.
+    fs.writeFileSync(join(applyDeps.confDir, '20-extra.json'), '{not json');
+    assert.throws(() => applyRequest(request({ listenPort: 8443 }), applyDeps), /无法解析/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

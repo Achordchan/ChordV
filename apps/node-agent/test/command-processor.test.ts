@@ -225,12 +225,17 @@ class FakeApplier implements InboundApplier {
     return {
       requestId, ok: true, changed, restarted: changed,
       realityPublicKey: 'k'.repeat(43), shortId: '0123456789abcdef',
-      serverName: spec.serverNames[0], listen: '::', listenPort: spec.listenPort, xrayVersion: 'Xray 1.8.24',
+      serverName: spec.serverNames[0], listen: '::', deployed: true, listenPort: spec.listenPort, xrayVersion: 'Xray 1.8.24',
       ...this.outcome,
     };
   }
   async reset(requestId: string): Promise<HelperResult> {
-    return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listen: '', listenPort: 0, xrayVersion: '' };
+    this.deployed = undefined;
+    return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: false, listenPort: 0, xrayVersion: '' };
+  }
+
+  async status(requestId: string): Promise<HelperResult> {
+    return { requestId, ok: true, changed: false, restarted: false, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: this.deployed !== undefined, listenPort: 0, xrayVersion: '' };
   }
 }
 

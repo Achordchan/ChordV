@@ -103,12 +103,12 @@ test('合法应答被完整解析', async () => {
     fs.writeFileSync(join(outDir(root), 'result.json'), JSON.stringify({
       requestId: 'request-2', ok: true, changed: true, restarted: true,
       realityPublicKey: 'k'.repeat(43), shortId: '0123456789abcdef',
-      serverName: 'www.microsoft.com', listen: '::', listenPort: 443, xrayVersion: 'Xray 1.8.24',
+      serverName: 'www.microsoft.com', listen: '::', deployed: true, listenPort: 443, xrayVersion: 'Xray 1.8.24',
     }));
     assert.deepEqual(await applier(root).apply(spec, 'request-2', 'command-2'), {
       requestId: 'request-2', ok: true, changed: true, restarted: true,
       realityPublicKey: 'k'.repeat(43), shortId: '0123456789abcdef',
-      serverName: 'www.microsoft.com', listen: '::', listenPort: 443, xrayVersion: 'Xray 1.8.24',
+      serverName: 'www.microsoft.com', listen: '::', deployed: true, listenPort: 443, xrayVersion: 'Xray 1.8.24',
     });
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

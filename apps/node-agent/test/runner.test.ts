@@ -334,7 +334,8 @@ test('Xray 重启后（无论谁触发）都会重新下发用户', async () => 
   store.applyConfigSnapshot({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [desired] });
   // Users added over gRPC live only in Xray's memory: a restart empties the
   // inbound while the agent still believes everyone is provisioned.
-  let uptime = 1;
+  let uptime = 900;
+  let uptimeReads = 0;
   let live: Array<{ email: string; uuid?: string }> = [{ email: desired.email, uuid: desired.uuid }];
   let ensured = 0;
   const api = {
@@ -348,7 +349,7 @@ test('Xray 重启后（无论谁触发）都会重新下发用户', async () => 
   } as unknown as AgentApiClient;
   const xray: XrayAdapter = {
     health: async () => undefined,
-    uptimeSeconds: async () => uptime,
+    uptimeSeconds: async () => { uptimeReads += 1; return uptime; },
     inboundLive: async () => true,
     readAbsoluteCounters: async () => [],
     listUsers: async () => live,
@@ -366,12 +367,15 @@ test('Xray 重启后（无论谁触发）都会重新下发用户', async () => 
   try {
     await runner.start();
     await waitFor(() => ensured >= 1);
+    // The sampler must take a baseline before a restart can be seen at all.
+    const baselineReads = uptimeReads;
+    await waitFor(() => uptimeReads > baselineReads);
     const before = ensured;
-    // Xray restarted underneath us and dropped its users. Uptime is HIGHER than
-    // the previous sample (1s → restart → 3s), which a "did uptime fall?" check
-    // would miss entirely.
+    // Xray restarted underneath us and dropped its users. (The subtler case —
+    // an uptime that is HIGHER after the restart — is covered by the
+    // virtual-start test below, which needs real elapsed time to construct.)
     live = [];
-    uptime = 3;
+    uptime = 2;
     await waitFor(() => ensured > before);
     assert.deepEqual(live.map((item) => item.email), [desired.email]);
   } finally {
@@ -393,7 +397,7 @@ test('本机残留他人节点的入站配置时，启动即清空而不是继�
   // The state database travels with the identity; /etc/chordv/xray does not. A
   // helper result with no matching state means the deployed keys and port
   // belong to a node this agent is not.
-  writeFileSync(join(resultDir, 'result.json'), JSON.stringify({ requestId: 'old', ok: true, listenPort: 443 }));
+  // The evidence is the helper's durable state, not this file.
   const resets: string[] = [];
   const api = {
     getConfig: async () => ({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [] }),
@@ -421,9 +425,10 @@ test('本机残留他人节点的入站配置时，启动即清空而不是继�
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray, {
     apply: async () => { throw new Error('启动时不应部署入站'); },
+    status: async (requestId) => ({ requestId, ok: true, changed: false, restarted: false, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: true, listenPort: 443, xrayVersion: '' }),
     reset: async (requestId) => {
       resets.push(requestId);
-      return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listen: '', listenPort: 0, xrayVersion: '' };
+      return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: false, listenPort: 0, xrayVersion: '' };
     },
   });
 
@@ -437,7 +442,7 @@ test('本机残留他人节点的入站配置时，启动即清空而不是继�
   }
 });
 
-test('失败的部署结果不算外来入站，重启不会白白清空配置', async () => {
+test('助手报告没有部署时不做清空，失败结果本身不是证据', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-failed-inbound-'));
   const store = new AgentStore(join(directory, 'agent.db'), {
     nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
@@ -446,7 +451,8 @@ test('失败的部署结果不算外来入站，重启不会白白清空配置',
   const resultDir = join(directory, 'xray-out');
   mkdirSync(requestDir, { recursive: true });
   mkdirSync(resultDir, { recursive: true });
-  writeFileSync(join(resultDir, 'result.json'), JSON.stringify({ requestId: 'old', ok: false, stage: 'apply', error: '端口冲突' }));
+  // A failed deployment that rolled back leaves ok:false behind — which says
+  // nothing about whether the PREVIOUS inbound is still deployed.
   const api = {
     getConfig: async () => ({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [] }),
     heartbeat: async () => ({ accepted: true, ackThrough: '0', configRevision: '1' }),
@@ -474,9 +480,12 @@ test('失败的部署结果不算外来入站，重启不会白白清空配置',
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray, {
     apply: async () => { throw new Error('不应部署'); },
+    // The helper's durable state says nothing is deployed — a failed, rolled
+    // back deployment left only a failure result behind.
+    status: async (requestId) => ({ requestId, ok: true, changed: false, restarted: false, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: false, listenPort: 0, xrayVersion: '' }),
     reset: async (requestId) => {
       resets += 1;
-      return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listen: '', listenPort: 0, xrayVersion: '' };
+      return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: false, listenPort: 0, xrayVersion: '' };
     },
   });
 
@@ -617,6 +626,62 @@ test('重启后 uptime 反而更大时也能识别（按进程启动时刻，而
     assert.deepEqual(live.map((item) => item.email), [desired.email]);
     const [previous, next] = [uptimes[seenBefore - 1], uptimes[seenBefore]];
     assert.ok(next !== undefined && next >= previous, `重启后的 uptime 必须不小于此前观测值：${previous} → ${next}`);
+  } finally {
+    await runner.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('探测不到助手状态时不做破坏性清理', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-status-unknown-'));
+  const store = new AgentStore(join(directory, 'agent.db'), {
+    nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
+  });
+  store.applyConfigSnapshot({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [] });
+  const requestDir = join(directory, 'xray');
+  const resultDir = join(directory, 'xray-out');
+  mkdirSync(requestDir, { recursive: true });
+  mkdirSync(resultDir, { recursive: true });
+  const api = {
+    getConfig: async () => ({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [] }),
+    heartbeat: async () => ({ accepted: true, ackThrough: '0', configRevision: '1' }),
+    uploadBatch: async () => ({ accepted: true, duplicate: false, ackThrough: '1' }),
+    reportCommandResult: async () => undefined,
+    consumeEvents: async (_handler: unknown, signal: AbortSignal) => {
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    },
+  } as unknown as AgentApiClient;
+  const xray: XrayAdapter = {
+    health: async () => undefined,
+    uptimeSeconds: async () => 1,
+    inboundLive: async () => true,
+    readAbsoluteCounters: async () => [],
+    listUsers: async () => [],
+    ensureUser: async () => undefined,
+    removeUser: async () => undefined,
+  };
+  let resets = 0;
+  const runner = new AgentRunner({
+    agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
+    databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: requestDir, inboundResultDir: resultDir, restartToleranceMs: 2_000,
+    sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
+  }, store, api, xray, {
+    apply: async () => { throw new Error('不应部署'); },
+    // No answer is not evidence of a foreign inbound — and wiping the config on
+    // a guess would take a healthy node offline.
+    status: async () => { throw new Error('等待 Xray 配置助手超时（5 秒）'); },
+    reset: async (requestId) => {
+      resets += 1;
+      return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: false, listenPort: 0, xrayVersion: '' };
+    },
+  });
+
+  try {
+    await runner.start();
+    assert.equal(resets, 0, '探测失败不得触发清空');
   } finally {
     await runner.stop();
     store.close();

@@ -26,7 +26,7 @@ export interface InboundRequest {
    * requestId cannot say that — it is new every time.
    */
   commandId: string;
-  mode: 'ensure' | 'reset';
+  mode: 'ensure' | 'reset' | 'status';
   inboundTag: string;
   listenPort: number;
   dest: string;
@@ -94,8 +94,8 @@ export function parseRequest(raw: string): InboundRequest {
   if (!/^[A-Za-z0-9-]{8,64}$/.test(requestId)) throw new Error(`requestId 不合法：${requestId}`);
   const commandId = typeof value.commandId === 'string' ? value.commandId.trim() : '';
   if (commandId && !/^[A-Za-z0-9_:-]{1,128}$/.test(commandId)) throw new Error(`commandId 不合法：${commandId}`);
-  const mode = value.mode === 'reset' ? 'reset' : 'ensure';
-  if (mode === 'reset') {
+  const mode = value.mode === 'reset' ? 'reset' : value.mode === 'status' ? 'status' : 'ensure';
+  if (mode === 'reset' || mode === 'status') {
     return { requestId, commandId, mode, inboundTag: '', listenPort: 0, dest: '', serverNames: [], flow: '', fingerprint: '', spiderX: '', rotateKeys: false };
   }
   const inboundTag = requireString(value.inboundTag, 'inboundTag');
@@ -247,6 +247,8 @@ function readState(file: string): { hash: string; keys: RealityKeys; serverName:
 }
 
 export interface ApplyOutcome {
+  /** Whether an inbound is configured right now, from durable state. */
+  deployed: boolean;
   listen: string;
   changed: boolean;
   restarted: boolean;
@@ -285,6 +287,25 @@ function assertConfigValid(deps: ApplyDeps, candidate: string): void {
   } finally { fs.rmSync(staging, { recursive: true, force: true }); }
 }
 
+/**
+ * Inbound tags declared by the OTHER fragments in the directory. An unreadable
+ * fragment fails closed: the whole point is protecting inbounds we cannot see.
+ */
+export function reservedInboundTags(confDir: string): Set<string> {
+  const tags = new Set<string>();
+  for (const name of fs.readdirSync(confDir)) {
+    if (!name.endsWith('.json') || name === '50-inbound.json') continue;
+    let parsed: { inbounds?: Array<{ tag?: unknown }> };
+    try {
+      parsed = JSON.parse(fs.readFileSync(join(confDir, name), 'utf8')) as { inbounds?: Array<{ tag?: unknown }> };
+    } catch {
+      throw new Error(`配置片段 ${name} 无法解析，无法确认入站 tag 是否冲突，拒绝部署`);
+    }
+    for (const inbound of parsed.inbounds ?? []) if (typeof inbound.tag === 'string') tags.add(inbound.tag);
+  }
+  return tags;
+}
+
 export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOutcome {
   const target = join(deps.confDir, '50-inbound.json');
   const state = readState(deps.stateFile);
@@ -293,9 +314,27 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
   // config test below is what decides whether it is usable at all.
   const owner = process.geteuid?.() === 0 ? { uid: 0, gid: resolveGid(deps.xrayUser) } : undefined;
 
+  if (request.mode === 'status') {
+    // Read-only: whether THIS host currently serves an inbound, from durable
+    // state rather than from whatever the last request happened to answer. A
+    // failed deployment that rolled back leaves a failure result behind while
+    // the previous inbound is still deployed.
+    return {
+      deployed: Boolean(state && !state.pending && fs.existsSync(target)),
+      listen: state?.listen || '',
+      changed: false,
+      restarted: false,
+      realityPublicKey: state?.keys.publicKey ?? '',
+      shortId: state?.keys.shortId ?? '',
+      serverName: state?.serverName ?? '',
+      listenPort: state?.listenPort ?? 0,
+      xrayVersion: xrayVersion(deps.xrayBin),
+    };
+  }
+
   if (request.mode === 'reset') {
     if (!fs.existsSync(target) && !state) {
-      return { listen: '', changed: false, restarted: false, realityPublicKey: '', shortId: '', serverName: '', listenPort: 0, xrayVersion: xrayVersion(deps.xrayBin) };
+      return { deployed: false, listen: '', changed: false, restarted: false, realityPublicKey: '', shortId: '', serverName: '', listenPort: 0, xrayVersion: xrayVersion(deps.xrayBin) };
     }
     const empty = JSON.stringify({ inbounds: [] }, null, 2) + '\n';
     assertConfigValid(deps, empty);
@@ -313,7 +352,16 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
       throw error;
     }
     try { fs.unlinkSync(deps.stateFile); } catch { /* already gone */ }
-    return { listen: '', changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listenPort: 0, xrayVersion: xrayVersion(deps.xrayBin) };
+    return { deployed: false, listen: '', changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listenPort: 0, xrayVersion: xrayVersion(deps.xrayBin) };
+  }
+
+  // Xray's confdir merge is BY TAG: an inbound declared here under a tag another
+  // fragment already uses replaces that one. A request for `api-in` would take
+  // out the metering listener the agent talks to — and the agent is untrusted,
+  // so this cannot be left to its own tag check.
+  const reserved = reservedInboundTags(deps.confDir);
+  if (reserved.has(request.inboundTag)) {
+    throw new Error(`入站 tag ${request.inboundTag} 已被其它配置片段占用，拒绝部署（它会顶掉那个入站）`);
   }
 
   const hash = requestHash(request);
@@ -345,6 +393,7 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
   if (request.commandId && state?.commandId === request.commandId && !state.pending && configMatches(state)
       && serving(state.listenPort || request.listenPort)) {
     return {
+      deployed: true,
       listen: state.listen || '0.0.0.0',
       changed: false,
       restarted: false,
@@ -368,6 +417,7 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
     // Nothing to do — and doing it anyway would restart Xray, dropping every
     // live connection and every gRPC-provisioned user for no reason.
     return {
+      deployed: true,
       listen: state.listen || '0.0.0.0',
       changed: false,
       restarted: false,
@@ -407,6 +457,7 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
   }
   writeFileAtomic(deps.stateFile, JSON.stringify({ ...record, pending: false }, null, 2) + '\n', 0o600);
   return {
+    deployed: true,
     listen,
     changed: true,
     restarted: true,

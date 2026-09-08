@@ -1,6 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { AGENT_VERSION } from './agent-version.js';
 import type { AgentConfig } from './config.js';
 import type { AgentApiClient } from './api-client.js';
@@ -142,23 +141,29 @@ export class AgentRunner {
     // that is allowed to write Xray at all may do it.
     if (this.currentConfig.controlMode !== 'direct_primary') return;
     if (this.store.getInboundState()) return;
-    if (!this.helperHasDeployedInbound()) return;
+    // The installer creates the result directory; without it there is no helper
+    // on this host, so there is nothing it could have deployed — and probing
+    // would just stall startup waiting for an answer nobody will write.
+    if (!existsSync(this.config.inboundResultDir)) return;
+    // Ask the helper what is actually deployed. The last result file is not
+    // evidence: a deployment that failed and rolled back leaves ok:false behind
+    // while the PREVIOUS inbound is still serving, and a helper that crashed
+    // leaves no result at all.
+    let status: Awaited<ReturnType<InboundApplier['status']>>;
+    try {
+      status = await this.inbound.status(randomUUID());
+    } catch (error) {
+      // No answer is not evidence either — and the cleanup is destructive, so
+      // guessing would take a healthy node offline. Report and leave it alone;
+      // the state database's identity binding still prevents this agent from
+      // adopting the other node's users.
+      this.logError(new Error(`无法确认本机是否残留他人入站配置：${error instanceof Error ? error.message : String(error)}`));
+      return;
+    }
+    if (!status.deployed) return;
     await this.inbound.reset(randomUUID());
     await this.commands.reconcile(this.store.listDesiredUsers());
     console.warn('[node-agent] 已清除不属于本节点身份的 Xray 入站配置');
-  }
-
-  /**
-   * A helper result only proves a deployment if it succeeded and named a port —
-   * a failed attempt leaves a result file too, and treating that as a foreign
-   * inbound would restart Xray on every boot for nothing.
-   */
-  private helperHasDeployedInbound(): boolean {
-    try {
-      const raw = readFileSync(join(this.config.inboundResultDir, 'result.json'), 'utf8');
-      const parsed = JSON.parse(raw) as { ok?: unknown; listenPort?: unknown };
-      return parsed.ok === true && typeof parsed.listenPort === 'number' && parsed.listenPort > 0;
-    } catch { return false; }
   }
 
   private async checkXrayAndRecover(): Promise<void> {

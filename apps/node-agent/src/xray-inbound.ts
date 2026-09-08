@@ -100,6 +100,8 @@ export interface HelperResult {
   serverName: string;
   /** Address family the inbound actually accepts ('::' or '0.0.0.0'). */
   listen: string;
+  /** status only: whether the helper currently has an inbound deployed. */
+  deployed: boolean;
   listenPort: number;
   xrayVersion: string;
 }
@@ -112,6 +114,8 @@ export interface InboundApplier {
    */
   apply(spec: InboundSpec, requestId: string, commandId: string): Promise<HelperResult>;
   reset(requestId: string): Promise<HelperResult>;
+  /** Read-only: does this host currently serve an inbound, per durable state? */
+  status(requestId: string): Promise<HelperResult>;
 }
 
 function parseHelperResult(raw: string, requestId: string, mode: 'ensure' | 'reset'): HelperResult | null {
@@ -135,7 +139,8 @@ function parseHelperResult(raw: string, requestId: string, mode: 'ensure' | 'res
     shortId: '',
     serverName: '',
     listen: typeof value.listen === 'string' ? value.listen : '',
-    listenPort: 0,
+    deployed: value.deployed === true,
+    listenPort: typeof value.listenPort === 'number' ? value.listenPort : 0,
     xrayVersion: typeof value.xrayVersion === 'string' ? value.xrayVersion : '',
   };
   // A successful reset deliberately carries no keys, no serverName and port 0 —
@@ -168,6 +173,12 @@ export class FileInboundApplier implements InboundApplier {
     private readonly timeoutMs = 120_000,
     private readonly pollIntervalMs = 250,
     private readonly sleep: (ms: number) => Promise<void> = (ms) => new Promise((done) => setTimeout(done, ms)),
+    /**
+     * The status probe runs on the startup path, so it gets a short deadline of
+     * its own: a host without the helper installed must not spend the deploy
+     * timeout before the agent can serve anything.
+     */
+    private readonly statusTimeoutMs = 5_000,
   ) {}
 
   apply(spec: InboundSpec, requestId: string, commandId: string): Promise<HelperResult> {
@@ -183,10 +194,18 @@ export class FileInboundApplier implements InboundApplier {
     return this.request({ requestId, mode: 'reset' }, 'reset');
   }
 
-  private async request(payload: Record<string, unknown>, mode: 'ensure' | 'reset'): Promise<HelperResult> {
+  status(requestId: string): Promise<HelperResult> {
+    return this.request({ requestId, mode: 'status' }, 'reset', this.statusTimeoutMs);
+  }
+
+  private async request(
+    payload: Record<string, unknown>,
+    mode: 'ensure' | 'reset',
+    timeoutMs = this.timeoutMs,
+  ): Promise<HelperResult> {
     const requestId = payload.requestId as string;
     writeSecretDurable(join(this.directory, 'pending.json'), payload);
-    const deadline = Date.now() + this.timeoutMs;
+    const deadline = Date.now() + timeoutMs;
     const resultPath = join(this.resultDirectory, 'result.json');
     while (Date.now() < deadline) {
       await this.sleep(this.pollIntervalMs);
@@ -203,6 +222,6 @@ export class FileInboundApplier implements InboundApplier {
       const result = parseHelperResult(raw, requestId, mode);
       if (result) return result;
     }
-    throw new Error(`等待 Xray 配置助手超时（${Math.round(this.timeoutMs / 1000)} 秒），请检查 chordv-xray-apply 服务`);
+    throw new Error(`等待 Xray 配置助手超时（${Math.round(timeoutMs / 1000)} 秒），请检查 chordv-xray-apply 服务`);
   }
 }
