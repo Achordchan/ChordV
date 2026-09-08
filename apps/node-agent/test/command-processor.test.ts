@@ -469,3 +469,32 @@ test('flow 变更对 revision 更高的用户同样落地', async () => {
     assert.equal(persisted.revision, ahead.revision, '不得压低用户自身的 revision');
   } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
 });
+
+test('对外地址不是公网单播时命令直接失败，而不是让控制面在稍后拒绝', async () => {
+  for (const host of ['10.0.0.7', '127.0.0.1', 'node.example.com', '::ffff:192.168.1.1', '']) {
+    const fixture = setup();
+    const applier = new FakeApplier();
+    const processor = new CommandProcessor(fixture.store, fixture.xray, {
+      applier, inboundTag: 'vless-in', resolvePublicHost: async () => host,
+      verifyAttempts: 3, verifyDelayMs: 1,
+    });
+    try {
+      const result = await processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+      assert.equal(result.status, 'failed', `${host} 不应被当作可用对外地址`);
+      assert.match(result.error ?? '', /公网单播|CHORDV_NODE_PUBLIC_HOST/);
+    } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+  }
+
+  // The public ones still go through, IPv4-mapped included.
+  for (const host of ['203.0.113.7', '::ffff:203.0.113.7']) {
+    const fixture = setup();
+    const processor = new CommandProcessor(fixture.store, fixture.xray, {
+      applier: new FakeApplier(), inboundTag: 'vless-in', resolvePublicHost: async () => host,
+      verifyAttempts: 3, verifyDelayMs: 1,
+    });
+    try {
+      const result = await processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+      assert.equal(result.status, 'completed', `${host} 应被接受`);
+    } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+  }
+});

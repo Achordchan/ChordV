@@ -325,7 +325,24 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
   // its recorded state, and answering "nothing to do" there would leave the
   // node down with every retry repeating the same answer.
   const serving = (port: number) => port > 0 && deps.isListening(port);
-  if (request.commandId && state?.commandId === request.commandId && !state.pending && fs.existsSync(target)
+  /**
+   * The file on disk must be exactly what the recorded state implies. An
+   * operator can restore an older 50-inbound.json (same port, different Reality
+   * key) without restoring inbound-state.json: existence and a listening port
+   * would both still look fine, and the helper would report a public key Xray
+   * is no longer using — connection parameters that cannot work.
+   */
+  const configMatches = (recorded: { keys: RealityKeys; listen: string; listenPort: number }) => {
+    try {
+      const expected = JSON.stringify(
+        renderInbound({ ...request, listenPort: recorded.listenPort || request.listenPort }, recorded.keys, recorded.listen || '0.0.0.0'),
+        null,
+        2,
+      ) + '\n';
+      return fs.readFileSync(target, 'utf8') === expected;
+    } catch { return false; }
+  };
+  if (request.commandId && state?.commandId === request.commandId && !state.pending && configMatches(state)
       && serving(state.listenPort || request.listenPort)) {
     return {
       listen: state.listen || '0.0.0.0',
@@ -346,7 +363,7 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
   // `pending` means the recorded state may not describe what Xray is serving
   // (the process died between publishing the config and committing the state),
   // so the shortcut would answer with a port that is no longer deployed.
-  if (state?.hash === hash && !state.pending && !request.rotateKeys && fs.existsSync(target)
+  if (state?.hash === hash && !state.pending && !request.rotateKeys && configMatches(state)
       && serving(state.listenPort || request.listenPort)) {
     // Nothing to do — and doing it anyway would restart Xray, dropping every
     // live connection and every gRPC-provisioned user for no reason.

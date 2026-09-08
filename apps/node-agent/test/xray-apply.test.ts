@@ -466,3 +466,27 @@ test('重投的轮换命令即使 Xray 已停也不再生成新密钥', () => {
     assert.equal(redelivered.restarted, true, '服务没在跑就要拉起来');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('磁盘配置被换成别的密钥时，空转分支必须重新部署', () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'xray-apply-drift-'));
+  try {
+    const applyDeps = deps(root);
+    const spec = request({ commandId: 'command-drift' });
+    applyRequest(spec, applyDeps);
+    const target = join(applyDeps.confDir, '50-inbound.json');
+
+    // An operator restores an older 50-inbound.json — same port, different
+    // Reality key — without restoring inbound-state.json. Existence and a
+    // listening port both still look fine, so only comparing the CONTENT can
+    // notice that Xray no longer serves the key we would report.
+    const older = JSON.parse(readFileSync(target, 'utf8')) as { inbounds: Array<Record<string, any>> };
+    older.inbounds[0].streamSettings.realitySettings.privateKey = 'z'.repeat(43);
+    fs.writeFileSync(target, JSON.stringify(older, null, 2) + '\n');
+
+    const repeated = applyRequest(spec, applyDeps);
+    assert.equal(repeated.restarted, true, '磁盘配置与记录不符必须重新部署');
+    assert.equal(readFileSync(target, 'utf8').includes(keys.privateKey), true, '重新部署必须写回记录中的密钥');
+    // Once the file matches the record again, the same command really is a no-op.
+    assert.equal(applyRequest(spec, applyDeps).restarted, false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

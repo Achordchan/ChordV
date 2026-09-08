@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { isIPv6 } from 'node:net';
+import { isPublicUnicastAddress } from './public-address.js';
 import { isNodeControlMode, type AgentCommand, type CommandResult, type DesiredUser, type InboundReport } from './types.js';
 import type { AgentStore } from './store.js';
 import type { XrayAdapter } from './xray-adapter.js';
@@ -210,6 +211,16 @@ export class CommandProcessor {
    */
   private async resolveVerifiedHost(listen: string): Promise<string> {
     const serverHost = await this.inbound!.resolvePublicHost();
+    // The control plane rejects a non-public address, and rightly so — but a
+    // command that "succeeded" with one only fails much later, in an API error
+    // the operator has to correlate back. Fail here, naming the value and the
+    // override that fixes it. The server remains the authority.
+    if (!isPublicUnicastAddress(serverHost)) {
+      throw new Error(
+        `本机对外地址 ${serverHost || '(空)'} 不是可用的公网单播地址：`
+          + '请检查反向代理的来源地址，或用 CHORDV_NODE_PUBLIC_HOST 显式指定',
+      );
+    }
     if (isIPv6(serverHost) && listen !== '::') {
       throw new Error(`本机对外地址是 IPv6（${serverHost}），但入站只监听 ${listen || '未知地址'}：请启用 IPv6 或改用 IPv4 地址`);
     }
