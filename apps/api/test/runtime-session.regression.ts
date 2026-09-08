@@ -276,7 +276,7 @@ async function main() {
   const previousDatabaseUrl = process.env.DATABASE_URL;
   delete process.env.DATABASE_URL;
   const scannedCursors: Array<string> = [];
-  const synced: string[] = [];
+  const synced: Array<{ subscriptionId: string; skipActiveTargets: boolean | undefined }> = [];
   const subscriptionsPool = ["sub_1", "sub_2", "sub_3"];
   const cronService = Object.assign(Object.create(RuntimeSessionService.prototype), {
     directProvisioningRetryCursor: "",
@@ -290,8 +290,12 @@ async function main() {
       },
       $transaction: async (task: (tx: unknown) => Promise<unknown>) => task({})
     },
-    queueDirectSubscriptionAccessSyncTx: async (_tx: unknown, subscriptionId: string) => {
-      synced.push(subscriptionId);
+    queueDirectSubscriptionAccessSyncTx: async (
+      _tx: unknown,
+      subscriptionId: string,
+      options?: { skipActiveTargets?: boolean }
+    ) => {
+      synced.push({ subscriptionId, skipActiveTargets: options?.skipActiveTargets });
     },
     logDirectProvisioningRetry: () => undefined
   }) as RuntimeSessionService;
@@ -302,12 +306,15 @@ async function main() {
   await cron.retryPendingDirectProvisioning();
   assert.deepEqual(
     synced,
-    ["sub_1", "sub_3"],
-    "重置进行中的订阅必须跳过（其余订阅照常重试）"
+    [
+      { subscriptionId: "sub_1", skipActiveTargets: true },
+      { subscriptionId: "sub_3", skipActiveTargets: true }
+    ],
+    "重置进行中的订阅必须跳过（其余订阅照常重试），且恢复模式不得重确保已活跃绑定"
   );
   assert.equal(cron.directProvisioningRetryCursor, "", "不满一批时游标回绕到起点");
   await cron.retryPendingDirectProvisioning();
-  assert.deepEqual(synced, ["sub_1", "sub_3", "sub_1", "sub_3"], "周期重试持续进行");
+  assert.equal(synced.length, 4, "周期重试持续进行");
   assert.equal(scannedCursors[1], "", "游标回绕后从头扫起");
 
   // Cursor advance: a full batch leaves the cursor at the last id, so a large
@@ -375,6 +382,16 @@ async function main() {
   const cronSqlBranches = cronSqlMatch[1]!.split("UNION");
   assert.equal(cronSqlBranches.length, 3, "三个候选分支：绑定 + 个人缺口 + 团队缺口");
   assert.match(
+    cronSqlBranches[0]!,
+    /JOIN "SubscriptionNodeAccess" na ON na\."subscriptionId" = b\."subscriptionId" AND na\."nodeId" = b\."nodeId"/,
+    "既有绑定分支只认仍分配给订阅的节点——已撤销节点的禁用绑定不得让订阅永久留在轮换里"
+  );
+  assert.match(
+    cronSqlBranches[0]!,
+    /AND \(\s*\n\s*\(s\."userId" IS NOT NULL AND s\."userId" = b\."userId"[\s\S]*?OR \(s\."teamId" IS NOT NULL AND b\."userId" IS NOT NULL[\s\S]*?tm\."userId" = b\."userId"/,
+    "既有绑定分支只认属主仍活跃（个人用户或团队成员）——被移除成员的绑定不得永久留在轮换里"
+  );
+  assert.match(
     cronSqlBranches[1]!,
     /s\."userId" IS NOT NULL[\s\S]*?b\."userId" = s\."userId"\s*\n\s*WHERE b\.id IS NULL/,
     "个人订阅的缺口必须按用户比对且只选无绑定的——已供给的订阅不得每轮重供给"
@@ -386,8 +403,18 @@ async function main() {
   );
   assert.match(
     runtimeSessionSource,
-    /private async runDirectSubscriptionAccessSyncLocked\(subscriptionId: string\) \{\s*\n\s*return runWithSubscriptionUsageLock\(subscriptionId, \(\) =>\s*\n\s*this\.prisma\.\$transaction\(\(tx\) => this\.queueDirectSubscriptionAccessSyncTx\(tx, subscriptionId\)\)\s*\n\s*\);/,
-    "重试与重启用供给必须持共享订阅 usage lock（跨进程与流量重置串行）"
+    /const activeBindingKeys = new Set<string>\(\s*\n\s*options\?\.skipActiveTargets/,
+    "恢复模式的 sync 必须先取活跃绑定集合"
+  );
+  assert.match(
+    runtimeSessionSource,
+    /if \(activeBindingKeys\.has\(`\$\{access\.node\.id\}:\$\{target\.userId\}`\)\) \{\s*\n\s*continue;\s*\n\s*\}/,
+    "恢复模式必须跳过已有活跃绑定的目标——不得每轮重确保（revision 与命令会无限增长）"
+  );
+  assert.match(
+    runtimeSessionSource,
+    /private async runDirectSubscriptionAccessSyncLocked\(subscriptionId: string\) \{\s*\n\s*return runWithSubscriptionUsageLock\(subscriptionId, \(\) =>\s*\n\s*this\.prisma\.\$transaction\(\(tx\) =>\s*\n\s*this\.queueDirectSubscriptionAccessSyncTx\(tx, subscriptionId, \{ skipActiveTargets: true \}\)\s*\n\s*\)\s*\n\s*\);/,
+    "重试与重启用供给必须持共享订阅 usage lock，且以恢复模式运行（跳过活跃绑定）"
   );
   assert.match(
     runtimeSessionSource,

@@ -504,11 +504,22 @@ export class RuntimeSessionService {
    * the node revision bump and the ENSURE_USER job must commit or roll back
    * together. Marking a binding active without its command leaves the control
    * plane believing the node has the user while the agent never got told.
+   *
+   * skipActiveTargets: only provision targets whose binding is missing or
+   * restorable (disabled/deleted) — used by the retry reconciler, which must
+   * not re-ensure already-active bindings every sweep (each ensure allocates a
+   * revision and a command). Admin flows keep the full ensure so quota and
+   * expiry stay fresh.
    */
-  async queueDirectSubscriptionAccessSyncTx(writer: any, subscriptionId: string) {
+  async queueDirectSubscriptionAccessSyncTx(
+    writer: any,
+    subscriptionId: string,
+    options?: { skipActiveTargets?: boolean }
+  ) {
     return this.syncSubscriptionPanelAccessLocked(subscriptionId, {
       writer,
-      ensureOnly: true
+      ensureOnly: true,
+      ...(options?.skipActiveTargets ? { skipActiveTargets: true } : {})
     });
   }
 
@@ -552,7 +563,9 @@ export class RuntimeSessionService {
    */
   private async runDirectSubscriptionAccessSyncLocked(subscriptionId: string) {
     return runWithSubscriptionUsageLock(subscriptionId, () =>
-      this.prisma.$transaction((tx) => this.queueDirectSubscriptionAccessSyncTx(tx, subscriptionId))
+      this.prisma.$transaction((tx) =>
+        this.queueDirectSubscriptionAccessSyncTx(tx, subscriptionId, { skipActiveTargets: true })
+      )
     );
   }
 
@@ -622,7 +635,19 @@ export class RuntimeSessionService {
         SELECT DISTINCT b."subscriptionId"
           FROM "PanelClientBinding" b
           JOIN "Node" n ON n.id = b."nodeId" AND n."isActive"
+          JOIN "SubscriptionNodeAccess" na ON na."subscriptionId" = b."subscriptionId" AND na."nodeId" = b."nodeId"
+          JOIN "Subscription" s ON s.id = b."subscriptionId"
          WHERE b.status IN ('disabled', 'deleted')
+           AND (
+             (s."userId" IS NOT NULL AND s."userId" = b."userId"
+               AND EXISTS (SELECT 1 FROM "User" u WHERE u.id = s."userId" AND u.status = 'active'))
+             OR (s."teamId" IS NOT NULL AND b."userId" IS NOT NULL
+               AND EXISTS (
+                 SELECT 1 FROM "TeamMember" tm
+                   JOIN "User" u ON u.id = tm."userId" AND u.status = 'active'
+                  WHERE tm."teamId" = s."teamId" AND tm."userId" = b."userId"
+               ))
+           )
         UNION
         SELECT DISTINCT na."subscriptionId"
           FROM "SubscriptionNodeAccess" na
@@ -696,6 +721,8 @@ export class RuntimeSessionService {
     options?: {
       writer?: any;
       ensureOnly?: boolean;
+      /** Provision only missing/restorable targets; skip already-active bindings. */
+      skipActiveTargets?: boolean;
     }
   ) {
     const writer = options?.writer ?? this.prisma;
@@ -818,9 +845,24 @@ export class RuntimeSessionService {
             ]
           : [];
 
+    // Restoration mode skips targets that already have an ACTIVE binding:
+    // re-ensuring them would allocate a fresh revision and ENSURE_USER on
+    // every reconciler sweep even though nothing is missing.
+    const activeBindingKeys = new Set<string>(
+      options?.skipActiveTargets
+        ? (await writer.panelClientBinding.findMany({
+            where: { subscriptionId, status: "active" },
+            select: { nodeId: true, userId: true }
+          })).map((row: { nodeId: string; userId: string | null }) => `${row.nodeId}:${row.userId}`)
+        : []
+    );
+
     for (const target of targets) {
       for (const access of subscription.nodeAccesses) {
         if (!access.node.isActive || !isNodeOnboardingReady(access.node)) {
+          continue;
+        }
+        if (activeBindingKeys.has(`${access.node.id}:${target.userId}`)) {
           continue;
         }
         const binding = await this.ensurePanelClientBinding(writer, {
