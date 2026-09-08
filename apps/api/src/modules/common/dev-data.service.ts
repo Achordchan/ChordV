@@ -2471,13 +2471,13 @@ export class DevDataService implements OnModuleInit {
     return this.adminNodeService.listLeaseRevocationJobs();
   }
 
-  async listAdminNodeCommandJobs() {
-    return this.adminNodeService.listNodeCommandJobs();
+  async listAdminNodeCommandJobs(filter?: { nodeId?: string; subscriptionId?: string; userId?: string; teamId?: string }) {
+    return this.adminNodeService.listNodeCommandJobs(filter);
   }
 
-  async getAdminNodeCommandQueue(): Promise<AdminNodeCommandQueueDto> {
+  async getAdminNodeCommandQueue(filter?: { nodeId?: string; subscriptionId?: string; userId?: string; teamId?: string }) {
     const [jobs, summaries] = await workLifecycle.all([
-      this.adminNodeService.listNodeCommandJobs(),
+      this.adminNodeService.listNodeCommandJobs(filter),
       this.adminNodeService.listNodeCommandSummaries()
     ]);
     return { jobs, summaries };

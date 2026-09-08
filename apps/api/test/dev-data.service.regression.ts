@@ -5815,6 +5815,119 @@ async function testListNodeCommandSummariesAggregatePerTarget() {
   ]);
 }
 
+// Re-enabling a disabled node must queue direct access sync: the disable path
+// took the bindings down with DISABLE_USER, and getConfig only serves ACTIVE
+// bindings — without a re-provision the node comes back with no users.
+async function testReEnableNodeRestoresBindingsViaDirectAccessSync() {
+  const calls: string[] = [];
+  let savedIsActive: boolean | null = null;
+  const baseNode = {
+    id: "node_1",
+    name: "node",
+    countryCode: "US",
+    region: "US",
+    provider: "test",
+    tags: [],
+    isActive: false,
+    recommended: false,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality",
+    registrationStatus: "agent_ready",
+    serverName: "www.microsoft.com",
+    serverHost: "203.0.113.7",
+    serverPort: 443,
+    uuid: "11111111-1111-4111-8111-111111111111",
+    realityPublicKey: "k".repeat(43),
+    fingerprint: "chrome",
+    statsLastSyncedAt: null,
+    controlMode: "direct_primary",
+    controlStatus: "online",
+    agentLastSeenAt: null,
+    agentConfigRevision: 1n,
+    shortId: "abcd1234",
+    spiderX: "/",
+    inboundAppliedRevision: 1n,
+    mldsa65Verify: null,
+    probeStatus: "healthy",
+    probeCheckedAt: null,
+    probeError: null,
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-01-01T00:00:00.000Z")
+  };
+  const service = createAdminNodeService({
+    logger: { warn: () => undefined },
+    prisma: {
+      node: {
+        findUnique: async () => ({ ...baseNode }),
+        update: async (payload: Record<string, any>) => {
+          savedIsActive = payload.data.isActive ?? null;
+          return { ...baseNode, ...payload.data };
+        }
+      }
+    },
+    runtimeSessionService: {
+      syncDirectAccessForNode: async (nodeId: string) => {
+        calls.push(`sync:${nodeId}`);
+        return 1;
+      },
+      markPanelBindingsDisabledForNode: async () => {
+        calls.push("disable");
+        return 1;
+      },
+      queueLeaseRevocationJobForNode: async () => undefined
+    },
+    clientEventsPublisher: {
+      resolveUserIdsForNodeAccess: async () => [],
+      publishNodeAccessUpdatedToUsers: () => undefined
+    }
+  });
+
+  await service.updateNode("node_1", { isActive: true });
+
+  assert.equal(savedIsActive, true, "节点应被保存为启用");
+  assert.deepEqual(calls, ["sync:node_1"], "重新启用必须触发该节点的 direct 供给（恢复绑定）");
+}
+
+// The queue endpoint must filter SERVER-SIDE by target: the cached global list
+// is capped at 200, so a busy target whose commands fall off that page must
+// still be inspectable through its own filtered query.
+async function testListNodeCommandJobsAppliesTargetFilter() {
+  let receivedWhere: unknown = null;
+  const service = createAdminNodeService({
+    prisma: {
+      nodeCommandJob: {
+        findMany: async (payload: Record<string, any>) => {
+          receivedWhere = payload.where;
+          return [];
+        }
+      }
+    }
+  });
+
+  await service.listNodeCommandJobs({ subscriptionId: "sub_1" });
+  assert.deepEqual(
+    receivedWhere,
+    { status: { in: ["pending", "running", "failed"] }, OR: [{ subscriptionId: "sub_1" }] },
+    "订阅过滤必须下推为服务端 OR 条件"
+  );
+
+  await service.listNodeCommandJobs({ nodeId: "node_1", userId: "user_1" });
+  assert.deepEqual(
+    (receivedWhere as Record<string, unknown>).OR,
+    [{ nodeId: "node_1" }, { userId: "user_1" }],
+    "多目标过滤按 OR 组合"
+  );
+
+  await service.listNodeCommandJobs();
+  assert.deepEqual(
+    receivedWhere,
+    { status: { in: ["pending", "running", "failed"] } },
+    "无过滤时保持全局查询"
+  );
+}
+
 async function testUpdateNodeMapsLocalReadFailure() {
   const service = createAdminNodeService({
     prisma: {
@@ -17217,6 +17330,8 @@ async function main() {
   await testListAdminNodesMapsLocalReadFailure();
   await testListNodeCommandJobsReadsBindingTargets();
   await testListNodeCommandSummariesAggregatePerTarget();
+  await testReEnableNodeRestoresBindingsViaDirectAccessSync();
+  await testListNodeCommandJobsAppliesTargetFilter();
   await testUpdateNodeMapsLocalReadFailure();
   await testRetryLeaseRevocationJobRequeuesWithoutKeepingBackoff();
   await testLeaseRevocationQueueFallsBackWhenNodeNameLookupFails();

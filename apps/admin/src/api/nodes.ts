@@ -24,8 +24,21 @@ export function fetchAdminLeaseRevocationJobs() {
   });
 }
 
-export function fetchAdminNodeCommandJobs() {
-  return request<AdminNodeCommandQueueDto>("/admin/nodes/node-command-jobs", {
+export type NodeCommandQueueFilter = {
+  nodeId?: string;
+  subscriptionId?: string;
+  userId?: string;
+  teamId?: string;
+};
+
+export function fetchAdminNodeCommandJobs(filter?: NodeCommandQueueFilter) {
+  const params = new URLSearchParams();
+  if (filter?.nodeId) params.set("nodeId", filter.nodeId);
+  if (filter?.subscriptionId) params.set("subscriptionId", filter.subscriptionId);
+  if (filter?.userId) params.set("userId", filter.userId);
+  if (filter?.teamId) params.set("teamId", filter.teamId);
+  const query = params.size > 0 ? `?${params.toString()}` : "";
+  return request<AdminNodeCommandQueueDto>(`/admin/nodes/node-command-jobs${query}`, {
     timeoutMs: ADMIN_READ_TIMEOUT_MS
   });
 }

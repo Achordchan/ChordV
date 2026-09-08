@@ -319,8 +319,17 @@ export class AdminController {
   }
 
   @Get("nodes/node-command-jobs")
-  getNodeCommandJobs() {
-    return this.devDataService.getAdminNodeCommandQueue();
+  getNodeCommandJobs(
+    @Query("nodeId") nodeId?: string,
+    @Query("subscriptionId") subscriptionId?: string,
+    @Query("userId") userId?: string,
+    @Query("teamId") teamId?: string
+  ) {
+    return this.devDataService.getAdminNodeCommandQueue(
+      nodeId || subscriptionId || userId || teamId
+        ? { nodeId, subscriptionId, userId, teamId }
+        : undefined
+    );
   }
 
   @Post("nodes/lease-revocation-jobs/:jobId/retry")

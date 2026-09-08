@@ -25,6 +25,7 @@ import {
 import { notifications } from "@mantine/notifications";
 import type {
   AdminAnnouncementRecordDto,
+  AdminNodeCommandQueueDto,
   AdminNodeRecordDto,
   AdminPlanRecordDto,
   AdminPolicyRecordDto,
@@ -457,9 +458,28 @@ export function App() {
   const nodeAccessSavingRef = useRef(false);
   const nodeAccessRequestSeqRef = useRef(0);
   const [leaseRevocationQueue, setLeaseRevocationQueue] = useState<LeaseRevocationQueueState>({ opened: false, filter: null });
+  const [nodeCommandQueueDetail, setNodeCommandQueueDetail] = useState<AdminNodeCommandQueueDto | null>(null);
+  const nodeCommandDetailSeqRef = useRef(0);
 
   const openLeaseRevocationQueue = (filter?: LeaseRevocationQueueFilter) => {
     setLeaseRevocationQueue({ opened: true, filter: filter ?? null });
+    // The globally cached detail list is capped; a filtered view must fetch
+    // the target's own commands from the server, or a busy target whose
+    // commands fell off the first page would show an empty queue.
+    const detailFilter = filter?.nodeId || filter?.subscriptionId || filter?.userId || filter?.teamId
+      ? { nodeId: filter?.nodeId, subscriptionId: filter?.subscriptionId, userId: filter?.userId, teamId: filter?.teamId }
+      : undefined;
+    if (detailFilter) {
+      const requestSeq = nodeCommandDetailSeqRef.current + 1;
+      nodeCommandDetailSeqRef.current = requestSeq;
+      void fetchAdminNodeCommandJobs(detailFilter)
+        .then((queue) => {
+          if (nodeCommandDetailSeqRef.current === requestSeq) {
+            setNodeCommandQueueDetail(queue);
+          }
+        })
+        .catch(() => undefined);
+    }
   };
 
   const closeLeaseRevocationQueue = () => {
@@ -3316,6 +3336,7 @@ export function App() {
         opened={leaseRevocationQueue.opened}
         leaseRevocationJobs={snapshot.leaseRevocationJobs}
         nodeCommandQueue={snapshot.nodeCommandQueue}
+        nodeCommandQueueDetail={nodeCommandQueueDetail}
         leaseRetryBusyKey={leaseRevocationRetryBusyKey}
         filter={leaseRevocationQueue.filter}
         onClose={closeLeaseRevocationQueue}

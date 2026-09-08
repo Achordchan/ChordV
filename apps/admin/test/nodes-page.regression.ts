@@ -200,8 +200,8 @@ function testNodeCommandQueueShowsDirectProvisioning() {
 
   assert.match(
     nodesPageSource,
-    /filterNodeCommandJobs\(props\.nodeCommandQueue\.jobs, props\.filter\)/,
-    "队列抽屉必须按当前过滤条件展示节点命令"
+    /hasLeaseRevocationQueueFilter\(props\.filter\)\s*\?\s*props\.nodeCommandQueueDetail\?\.jobs \?\? \[\]\s*:\s*props\.nodeCommandQueue\.jobs/,
+    "队列抽屉过滤视图必须用服务端按目标取回的命令明细，而不是被截断的全局列表"
   );
   assert.match(nodesPageSource, /节点命令同步/, "队列抽屉必须包含节点命令分区");
   assert.match(nodesPageSource, /translateNodeCommandType\(job\.commandType\)/);

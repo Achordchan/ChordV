@@ -13,7 +13,6 @@ import { findNodeCommandSummary, sumNodeCommandSummaries } from "../utils/node-c
 import { summarizeAdminDiagnosticMessage } from "../utils/admin-filters";
 import {
   filterLeaseRevocationJobs,
-  filterNodeCommandJobs,
   hasLeaseRevocationQueueFilter,
   type LeaseRevocationQueueFilter
 } from "../utils/admin-queue-filters";
@@ -259,6 +258,9 @@ export function PanelSyncQueueDrawer(props: {
   opened: boolean;
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
   nodeCommandQueue: AdminNodeCommandQueueDto;
+  // Server-side filtered detail for the CURRENT target: the cached list above
+  // is capped, so a busy target's commands may fall outside it entirely.
+  nodeCommandQueueDetail?: AdminNodeCommandQueueDto | null;
   leaseRetryBusyKey: string | null;
   filter?: LeaseRevocationQueueFilter | null;
   onClose: () => void;
@@ -267,7 +269,9 @@ export function PanelSyncQueueDrawer(props: {
   onRetryLeaseNode: (nodeId: string) => void;
 }) {
   const filteredLeaseRevocationJobs = filterLeaseRevocationJobs(props.leaseRevocationJobs, props.filter);
-  const filteredNodeCommandJobs = filterNodeCommandJobs(props.nodeCommandQueue.jobs, props.filter);
+  const filteredNodeCommandJobs = hasLeaseRevocationQueueFilter(props.filter)
+    ? props.nodeCommandQueueDetail?.jobs ?? []
+    : props.nodeCommandQueue.jobs;
   const listedCommandTotal = sumNodeCommandSummaries(props.nodeCommandQueue.summaries, "nodes");
   const hasFilter = hasLeaseRevocationQueueFilter(props.filter);
   const drawerTitle = hasFilter ? props.filter?.title ?? "当前对象待处理任务" : "后台同步任务";
@@ -365,9 +369,11 @@ export function PanelSyncQueueDrawer(props: {
         </Stack>
         <Stack gap="xs">
           <Text fw={600}>节点命令同步</Text>
-          {!hasFilter && listedCommandTotal > props.nodeCommandQueue.jobs.length ? (
+          {listedCommandTotal > (hasFilter ? filteredNodeCommandJobs.length : props.nodeCommandQueue.jobs.length) ? (
             <Text size="xs" c="dimmed">
-              {`仅显示最近 ${props.nodeCommandQueue.jobs.length} 条，共 ${listedCommandTotal} 条待处理；节点状态列显示的是完整计数。`}
+              {hasFilter
+                ? `仅显示该对象最近 ${filteredNodeCommandJobs.length} 条命令。`
+                : `仅显示最近 ${props.nodeCommandQueue.jobs.length} 条，共 ${listedCommandTotal} 条待处理；节点状态列显示的是完整计数。`}
             </Text>
           ) : null}
           <DataTable>

@@ -116,13 +116,27 @@ export class AdminNodeService {
    * Active agent commands — the direct track's replacement for the retired
    * panel sync queue. User commands carry their binding target as columns
    * (denormalized at enqueue), so the queue can be filtered and aggregated per
-   * subscription/user/team without reading the payload JSON.
+   * subscription/user/team without reading the payload JSON. The detail list
+   * is capped; when a target filter is given it applies SERVER-SIDE so an
+   * administrator can always inspect a known-busy target whose commands fall
+   * outside the global first page.
    */
-  async listNodeCommandJobs(): Promise<AdminNodeCommandJobDto[]> {
+  async listNodeCommandJobs(filter?: { nodeId?: string; subscriptionId?: string; userId?: string; teamId?: string }) {
+    const hasFilter = Boolean(filter?.nodeId || filter?.subscriptionId || filter?.userId || filter?.teamId);
     const rows = await runAdminNodeLocalOperation(
       () => this.prisma.nodeCommandJob.findMany({
         where: {
-          status: { in: ["pending", "running", "failed"] }
+          status: { in: ["pending", "running", "failed"] },
+          ...(hasFilter
+            ? {
+                OR: [
+                  ...(filter?.nodeId ? [{ nodeId: filter.nodeId }] : []),
+                  ...(filter?.subscriptionId ? [{ subscriptionId: filter.subscriptionId }] : []),
+                  ...(filter?.userId ? [{ userId: filter.userId }] : []),
+                  ...(filter?.teamId ? [{ teamId: filter.teamId }] : [])
+                ]
+              }
+            : {})
         },
         orderBy: [{ status: "asc" }, { nextRunAt: "asc" }, { createdAt: "desc" }],
         take: NODE_COMMAND_JOB_PAGE_SIZE,
@@ -354,6 +368,13 @@ export class AdminNodeService {
       // working outside the managed client's lease handling.
       await this.tryRunAfterLocalNodeSave("queue binding disable after node disable", () =>
         this.runtimeSessionService.markPanelBindingsDisabledForNode(nodeId)
+      );
+    } else if (!current.isActive && input.isActive === true) {
+      // Re-enabling must restore the bindings the disable path took down:
+      // getConfig only serves ACTIVE bindings, so a config refresh alone
+      // never brings the old credentials back.
+      await this.tryRunAfterLocalNodeSave("queue direct access sync after node re-enable", () =>
+        this.runtimeSessionService.syncDirectAccessForNode(nodeId)
       );
     }
     const shouldPublishNodeUpdated =

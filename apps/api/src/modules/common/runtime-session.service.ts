@@ -499,6 +499,35 @@ export class RuntimeSessionService {
     });
   }
 
+  /**
+   * Re-provisions eligible bindings on one node after it was re-enabled (or
+   * otherwise becomes servable again). The disable path queues DISABLE_USER,
+   * so re-enabling must queue the matching ENSURE_USER again — a config
+   * refresh alone will not restore anything, because getConfig only serves
+   * ACTIVE bindings.
+   */
+  async syncDirectAccessForNode(nodeId: string) {
+    const subscriptions = await this.prisma.subscription.findMany({
+      where: {
+        OR: [
+          { nodeAccesses: { some: { nodeId } } },
+          { panelClientBindings: { some: { nodeId, status: { in: ["active", "disabled", "deleted"] } } } }
+        ]
+      },
+      select: { id: true }
+    });
+    for (const subscription of subscriptions) {
+      try {
+        await this.prisma.$transaction((tx) => this.queueDirectSubscriptionAccessSyncTx(tx, subscription.id));
+      } catch (error) {
+        this.logger.warn(
+          `Node re-enable provisioning for ${subscription.id} failed (agent commands keep retrying): ${readRuntimeErrorMessage(error)}`
+        );
+      }
+    }
+    return subscriptions.length;
+  }
+
   async quiesceDirectBindingsForTrafficReset(subscriptionId: string, userId?: string | null) {
     const outcome = await this.prisma.$transaction(async (writer) => {
       const bindings = await writer.panelClientBinding.findMany({
