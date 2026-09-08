@@ -450,23 +450,40 @@ export class AgentService {
           }
         }
       }
+      // An existing key means an idempotent REPLAY of an outstanding request
+      // (the upsert's update was empty): nothing new is ordered, so it must
+      // not resolve any exhausted failure — a replayed older command clearing
+      // a newer retry-exhausted row would hide an unresolved failure. The
+      // unique index still arbitrates concurrent same-key requests: the
+      // loser of the create race re-reads the winner's row.
+      const replayed = await tx.nodeCommandJob.findUnique({ where: { dedupeKey } });
+      if (replayed) {
+        return replayed;
+      }
       // Target-less commands (ENSURE_INBOUND, RECONCILE_USERS, ...) resolve
       // per node+commandType: a re-ordered deployment supersedes an exhausted
-      // one, which must stop counting as an unresolved failure.
+      // one, which must stop counting as an unresolved failure. Only rows
+      // older than this new order can be resolved, which is structural here —
+      // the replacement is being created now.
       await resolveExhaustedCommands(tx, { nodeId, commandType: input.type });
-      return tx.nodeCommandJob.upsert({
-        where: { dedupeKey },
-        update: {},
-        create: {
-          id: randomUUID(),
-          dedupeKey,
-          nodeId,
-          agentId: agent.id,
-          commandType: input.type,
-          targetRevision,
-          payload: payload as Prisma.InputJsonValue
+      try {
+        return await tx.nodeCommandJob.create({
+          data: {
+            id: randomUUID(),
+            dedupeKey,
+            nodeId,
+            agentId: agent.id,
+            commandType: input.type,
+            targetRevision,
+            payload: payload as Prisma.InputJsonValue
+          }
+        });
+      } catch (error) {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+          return tx.nodeCommandJob.findUniqueOrThrow({ where: { dedupeKey } });
         }
-      });
+        throw error;
+      }
     });
     const command = serializeCommand(job);
     this.events.publish(agent.id, command);

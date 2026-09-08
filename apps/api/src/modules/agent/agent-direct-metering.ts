@@ -289,15 +289,20 @@ export async function disableDirectBindingsForSubscriptions(
     if (!targetAgentId) continue;
     for (const binding of nodeBindings) {
       const state = disabledSubscriptions.get(binding.subscriptionId)!.state;
+      const dedupeKey = `auto-disable:${binding.id}:${nodeRevision.agentConfigRevision.toString()}`;
+      // An existing key is an idempotent replay (empty update): nothing new
+      // is ordered, so it must not resolve exhausted failures either.
+      const replayed = await tx.nodeCommandJob.findUnique({ where: { dedupeKey } });
+      if (replayed) {
+        continue;
+      }
       // Re-managing the binding resolves any exhausted (cancelled) command
       // for it: the new DISABLE_USER tells the story from now on.
       await resolveExhaustedCommands(tx, { bindingId: binding.id, nodeId: bindingNodeId, commandType: "DISABLE_USER" });
-      await tx.nodeCommandJob.upsert({
-        where: { dedupeKey: `auto-disable:${binding.id}:${nodeRevision.agentConfigRevision.toString()}` },
-        update: {},
-        create: {
+      await tx.nodeCommandJob.create({
+        data: {
           id: randomUUID(),
-          dedupeKey: `auto-disable:${binding.id}:${nodeRevision.agentConfigRevision.toString()}`,
+          dedupeKey,
           nodeId: bindingNodeId,
           agentId: targetAgentId,
           commandType: "DISABLE_USER",

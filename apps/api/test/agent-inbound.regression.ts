@@ -322,6 +322,22 @@ function commandJobStore() {
         rows.push(row);
         return row;
       },
+      create: async ({ data }: { data: Record<string, any> }) => {
+        if (store.gate) {
+          const gate = store.gate;
+          store.gate = null;
+          store.gateHit = true;
+          await gate;
+        }
+        const row = { ...data, status: "pending", attempts: 0, createdAt: new Date(Date.UTC(2026, 0, 1) + ++clock * 60_000) };
+        rows.push(row);
+        return row;
+      },
+      findUniqueOrThrow: async ({ where }: { where: { dedupeKey: string } }) => {
+        const row = rows.find((item) => item.dedupeKey === where.dedupeKey);
+        if (!row) throw new Error("模拟唯一键冲突后未找到已提交的命令");
+        return row;
+      },
     },
   };
   store.prisma = prisma;

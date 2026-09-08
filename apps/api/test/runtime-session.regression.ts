@@ -226,6 +226,25 @@ async function main() {
   );
   assert.match(directMeteringSource, bindingColumns, "自动停用命令也必须写入绑定的订阅/用户/团队列");
 
+  // 7) Resolving exhausted (cancelled) commands must only happen when a
+  //    GENUINELY NEW command is ordered. An idempotent replay hitting an
+  //    existing dedupe key orders nothing — resolving then would clear a
+  //    newer retry-exhausted failure with no replacement in flight.
+  const agentServiceSource = readFileSync(
+    path.resolve(__dirname, "../src/modules/agent/agent.service.ts"),
+    "utf8"
+  );
+  assert.match(
+    agentServiceSource,
+    /const replayed = await tx\.nodeCommandJob\.findUnique\(\{ where: \{ dedupeKey \} \}\);\s*\n\s*if \(replayed\) \{\s*\n\s*return replayed;\s*\n\s*\}\s*\n\s*\/\/ Target-less commands[\s\S]*?await resolveExhaustedCommands\(tx, \{ nodeId, commandType: input\.type \}\);/,
+    "已存在 dedupe key 的幂等重放必须直接返回旧命令，不得触碰 resolveExhaustedCommands"
+  );
+  assert.match(
+    directMeteringSource,
+    /const replayed = await tx\.nodeCommandJob\.findUnique\(\{ where: \{ dedupeKey \} \}\);\s*\n\s*if \(replayed\) \{\s*\n\s*continue;\s*\n\s*\}\s*\n\s*\/\/ Re-managing the binding[\s\S]*?await resolveExhaustedCommands/,
+    "自动停用的幂等重放同样不得解决耗尽行"
+  );
+
   console.log("runtime session regression passed (connect 门不反转、供给资格共享判定、节点禁用联动绑定、删除绑定保留计量基线)");
 }
 
