@@ -950,14 +950,28 @@ export class RuntimeSessionService {
                 where: { id: subscriptionId },
                 include: {
                   user: true,
-                  team: { include: { members: { include: { user: true } } } }
+                  team: { include: { members: { include: { user: true } } } },
+                  nodeAccesses: { include: { node: true } }
                 }
               });
               if (!fresh || !shouldProvisionPanelClients(fresh)) {
                 return 0;
               }
+              // Node activity and assignment are re-read here too: an
+              // administrator may disable the node or revoke its assignment
+              // between chunks, and the pair was captured against the OLD
+              // state — restoring credentials for a revoked node must not
+              // happen just because its disable watermarks settled.
+              const freshServableNodeIds = new Set(
+                fresh.nodeAccesses
+                  .filter((item: any) => item.node.isActive && isNodeOnboardingReady(item.node))
+                  .map((item: any) => item.nodeId)
+              );
               let count = 0;
               for (const pair of chunk) {
+                if (!freshServableNodeIds.has(pair.access.node.id)) {
+                  continue;
+                }
                 const targetStillEligible = fresh.teamId
                   ? fresh.team?.members.some(
                       (member: any) => member.userId === pair.target.userId && member.user.status === "active"

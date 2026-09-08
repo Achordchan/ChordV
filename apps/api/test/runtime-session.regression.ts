@@ -461,6 +461,16 @@ async function main() {
     /const targetStillEligible = fresh\.teamId[\s\S]*?if \(!targetStillEligible\) \{\s*\n\s*continue;\s*\n\s*\}/,
     "每块事务内必须逐目标重检（团队成员仍在/个人用户仍活跃）"
   );
+  assert.match(
+    runtimeSessionSource,
+    /nodeAccesses: \{ include: \{ node: true \} \}/,
+    "块内重读必须带节点授权与节点状态"
+  );
+  assert.match(
+    runtimeSessionSource,
+    /const freshServableNodeIds = new Set\([\s\S]*?if \(!freshServableNodeIds\.has\(pair\.access\.node\.id\)\) \{\s*\n\s*continue;\s*\n\s*\}/,
+    "每块事务内必须重检节点仍活跃、仍分配——块间被撤销的节点不得恢复凭据"
+  );
   // 10) The traffic reset excludes provisioning with the PROVISIONING lock for
   //     its whole span but takes the USAGE lock only around the final counter
   //     transaction: settlement needs the agent's final batches accounted,
