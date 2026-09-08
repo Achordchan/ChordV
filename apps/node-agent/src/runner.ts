@@ -25,12 +25,17 @@ export class AgentRunner {
   /**
    * True while this host has no inbound to provision users into: Xray cannot
    * add a user to a tag that does not exist, so every reconcile would throw.
-   * Read from the DURABLE intent at the top of start() — the flag must survive
-   * a process restart between the foreign-inbound cleanup and the
-   * ENSURE_INBOUND that recreates the tag — and cleared only when a deployment
-   * completes.
+   * Established at the top of start() — from the durable intent AND from the
+   * helper probe, so it survives a restart whose own probe fails — and cleared
+   * only when a deployment completes.
    */
   private awaitingInbound = false;
+  /**
+   * Set by the startup probe when the helper serves an inbound this identity
+   * has no record of; consumed by discardForeignInbound once the refreshed
+   * snapshot has said which mode may write Xray at all.
+   */
+  private foreignInbound = false;
   private readonly inbound: InboundApplier;
 
   constructor(
@@ -60,15 +65,14 @@ export class AgentRunner {
   async start(): Promise<void> {
     // Establish the missing-inbound state BEFORE any startup reconciliation:
     // everything below (refreshConfig, recovery, restart detection) provisions
-    // users, and Xray rejects adding a user to a tag that does not exist. The
-    // durable intent is what survives a restart between the foreign-inbound
-    // cleanup and the ENSURE_INBOUND that restores service — without it every
-    // subsequent start() would throw before the events loop can receive that
-    // command, and the agent could never recover itself. It is deliberately NOT
-    // derived from "no deployment record": hosts whose inbound predates inbound
-    // deployment (operator-managed tags) have no record either, and their users
-    // must keep flowing.
+    // users, and Xray rejects adding a user to a tag that does not exist — a
+    // start() that throws keeps the ENSURE_INBOUND that recovers the node from
+    // ever arriving. The durable intent survives a restart whose own probe
+    // fails; the probe below re-establishes it for helper-managed hosts where
+    // no inbound is deployed at all (a fresh VPS an existing node with users
+    // was reinstalled onto).
     this.awaitingInbound = this.store.isInboundAwaiting();
+    await this.probeInbound();
     try {
       await this.refreshConfig();
     } catch (error) {
@@ -76,11 +80,11 @@ export class AgentRunner {
       if (this.currentConfig.revision === '0') throw error;
       this.logError(new Error(`后台暂不可用，使用 revision ${this.currentConfig.revision} 的本地配置启动`));
     }
+    await this.discardForeignInbound();
     await this.checkXrayAndRecover();
     // Take the restart baseline before the first sampling interval, so a
     // restart in that window is not invisible.
     await this.detectXrayRestart().catch((error) => this.logError(error));
-    await this.discardForeignInbound();
     this.schedule(() => this.sample(), this.config.sampleIntervalMs);
     this.schedule(() => this.flushBatches(), 1_000);
     this.schedule(() => this.sendHeartbeat(), this.config.heartbeatIntervalMs);
@@ -164,51 +168,85 @@ export class AgentRunner {
   }
 
   /**
-   * This host may carry an inbound deployed for a DIFFERENT node identity — a
-   * repurposed VPS, a restored image, a hand-copied data directory. The state
-   * database travels with the identity, the Xray config does not, so "the
-   * helper has applied an inbound but this identity never asked for one" means
-   * the keys and port belong to a stranger. Publish an empty inbound instead of
-   * serving them.
+   * The READ-ONLY half of inbound hygiene, run BEFORE any startup
+   * reconciliation: it asks the helper what is actually deployed and records
+   * what follows from the answer —
+   *
+   * - a helper-managed host with NOTHING deployed has no tag to provision
+   *   users into. A fresh VPS that an existing node with users was reinstalled
+   *   onto starts with base and metering fragments only, and reconciling users
+   *   into the absent tag would throw out of start() before the redeploying
+   *   ENSURE_INBOUND can arrive;
+   * - a deployed inbound this identity has no record of belongs to a DIFFERENT
+   *   node (repurposed VPS, restored image, hand-copied data directory — the
+   *   state database travels with the identity, the Xray config does not).
+   *
+   * Both defer user provisioning; the destructive clearing happens later, in
+   * discardForeignInbound, once the refreshed snapshot has said which mode may
+   * write Xray at all.
    */
-  private async discardForeignInbound(): Promise<void> {
-    // Destructive: it restarts Xray and rewrites the user table. Only the mode
-    // that is allowed to write Xray at all may do it.
-    if (this.currentConfig.controlMode !== 'direct_primary') return;
-    if (this.store.getInboundState()) return;
+  private async probeInbound(): Promise<void> {
+    this.foreignInbound = false;
     // The installer creates the result directory; without it there is no helper
-    // on this host, so there is nothing it could have deployed — and probing
-    // would just stall startup waiting for an answer nobody will write.
+    // on this host — nothing it could have deployed, and probing would just
+    // stall startup waiting for an answer nobody will write. Hosts without the
+    // helper also keep OPERATOR-managed inbounds (the pre-R2 population):
+    // those have no deployment record either, and their users must keep
+    // flowing, so no deferral is derived here.
     if (!existsSync(this.config.inboundResultDir)) return;
-    // Ask the helper what is actually deployed. The last result file is not
-    // evidence: a deployment that failed and rolled back leaves ok:false behind
-    // while the PREVIOUS inbound is still serving, and a helper that crashed
-    // leaves no result at all.
+    // The last result file is not evidence: a deployment that failed and rolled
+    // back leaves ok:false behind while the PREVIOUS inbound is still serving,
+    // and a helper that crashed leaves no result at all.
     let status: Awaited<ReturnType<InboundApplier['status']>>;
     try {
       status = await this.inbound.status(randomUUID());
     } catch (error) {
-      // No answer is not evidence either — and the cleanup is destructive, so
-      // guessing would take a healthy node offline. Report and leave it alone;
-      // the state database's identity binding still prevents this agent from
-      // adopting the other node's users.
+      // No answer is not evidence either — and the clearing that might follow
+      // is destructive, so guessing would take a healthy node offline. Report
+      // and leave it alone; the state database's identity binding still
+      // prevents this agent from adopting the other node's users, and the
+      // durable intent (if any) holds from the top of start().
       this.logError(new Error(`无法确认本机是否残留他人入站配置：${error instanceof Error ? error.message : String(error)}`));
       return;
     }
-    if (!status.deployed) return;
-    // Record the intent DURABLY before resetting: a crash between the two
-    // would otherwise lose the "tag is gone" fact with the process, and the
-    // next start() would throw at the missing tag before it can receive the
-    // redeployment.
+    if (!status.deployed) {
+      // A helper-managed host only ever gets its tag through a deployment, so
+      // user provisioning has nothing to target until ENSURE_INBOUND arrives.
+      // Durable, so a restart whose own probe fails reaches the same
+      // conclusion. Deliberately NOT gated on the control mode: a fresh
+      // reinstall's local mode is still the shadow default while the backend
+      // snapshot that flips it to direct_primary carries the users.
+      this.store.setInboundAwaiting(true);
+      this.awaitingInbound = true;
+      return;
+    }
+    if (this.store.getInboundState()) return; // ours
+    // The helper serves an inbound this identity never asked for: the keys and
+    // port belong to a stranger. Defer provisioning NOW — durably, so a crash
+    // before the clearing must not lose the "tag is gone" fact with the
+    // process — and leave the clearing itself to the mode gate below.
+    this.foreignInbound = true;
     this.store.setInboundAwaiting(true);
     this.awaitingInbound = true;
+  }
+
+  /**
+   * The destructive half: publishes an EMPTY inbound for a foreign deployment,
+   * so this host does not keep serving a stranger's node with its keys. Only
+   * the mode that is allowed to write Xray at all may do it, and the mode
+   * comes from the refreshed snapshot — a fresh VPS's local default is shadow
+   * while the backend's answer is the actual decision.
+   */
+  private async discardForeignInbound(): Promise<void> {
+    if (!this.foreignInbound) return;
+    if (this.currentConfig.controlMode !== 'direct_primary') return;
+    if (this.store.getInboundState()) return;
     await this.inbound.reset(randomUUID());
-    // The tag is gone with the configuration, so the users this identity wants
-    // have nowhere to go. Provisioning them now would throw out of start() —
-    // and take down the very process that must stay up to receive the
-    // ENSURE_INBOUND that recreates the inbound. Record the re-provisioning
-    // intent and let the deployment carry it out (ensureInbound reconciles on
-    // every apply).
+    // awaitingInbound was already set (durably) by the probe that saw the
+    // foreign inbound: the tag is gone and the users this identity wants have
+    // nowhere to go until the ENSURE_INBOUND that recreates it. Record the
+    // re-provisioning intent and let the deployment carry it out
+    // (ensureInbound reconciles on every apply).
     this.reconcilePending = true;
     console.warn('[node-agent] 已清除不属于本节点身份的 Xray 入站配置，等待控制面重新下发入站后再恢复用户');
   }
