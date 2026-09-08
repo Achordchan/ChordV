@@ -11,6 +11,7 @@ import { NodeAgent, Prisma } from "@prisma/client";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { AgentCommandResultDto, AgentHeartbeatDto, AgentUsageBatchDto, QueueAgentCommandDto } from "./agent.dto";
 import { AgentEventsService } from "./agent-events.service";
+import { inboundSpecKey, normalizeInboundSpec, parseInboundReport, type NormalizedInboundSpec } from "./agent-inbound";
 import { ClientEventsPublisher } from "../common/client-events.publisher";
 import { PrismaService } from "../common/prisma.service";
 import { trafficGbNumberToBytes } from "../common/traffic-bytes.utils";
@@ -239,7 +240,7 @@ export class AgentService {
     const updated = await this.prisma.$transaction(async (tx) => {
       const job = await tx.nodeCommandJob.findFirst({
         where: { id: commandId, nodeId: agent.nodeId, agentId: agent.id, status: { in: ["pending", "running", "failed"] } },
-        select: { id: true, commandType: true, payload: true }
+        select: { id: true, commandType: true, payload: true, targetRevision: true, dedupeKey: true }
       });
       if (!job) return false;
       await tx.nodeCommandJob.update({
@@ -249,9 +250,20 @@ export class AgentService {
           result: (input.result ?? {}) as Prisma.InputJsonValue,
           lastError: input.status === "completed" ? null : input.error ?? "Agent 执行失败",
           completedAt: input.status === "completed" ? new Date() : null,
-          nextRunAt: input.status === "completed" ? new Date() : new Date(Date.now() + 30_000)
+          nextRunAt: input.status === "completed" ? new Date() : new Date(Date.now() + 30_000),
+          // ENSURE_INBOUND alone uses its dedupe key as an OUTSTANDING-operation
+          // lock, so completing it releases the key and the same deployment can
+          // be ordered again. Every other command type keeps the caller's
+          // explicit key as an idempotency contract — releasing it would let a
+          // delayed ENABLE_USER retry re-enable a user disabled since.
+          ...(input.status === "completed" && job.commandType === "ENSURE_INBOUND"
+            ? { dedupeKey: `${job.dedupeKey}:done:${job.id}` }
+            : {})
         }
       });
+      if (input.status === "completed" && job.commandType === "ENSURE_INBOUND") {
+        await this.applyInboundReport(tx, agent.nodeId, job, input);
+      }
       if (input.status === "completed" && (job.commandType === "DISABLE_USER" || job.commandType === "REMOVE_USER")) {
         const payload = job.payload as Record<string, unknown>;
         const bindingId = typeof payload.bindingId === "string" ? payload.bindingId : null;
@@ -269,6 +281,30 @@ export class AgentService {
     return { accepted: true };
   }
 
+  /**
+   * Writes the connection parameters an agent reported for a deployed inbound.
+   * The node stays inactive: this only makes activation POSSIBLE (the shared
+   * onboarding invariant starts passing), because shipping users to an inbound
+   * nobody has smoke-tested is the operator's call, not ours.
+   */
+  private async applyInboundReport(
+    tx: Prisma.TransactionClient,
+    nodeId: string,
+    job: { id: string; payload: Prisma.JsonValue; targetRevision: bigint },
+    input: AgentCommandResultDto
+  ) {
+    const spec = normalizeInboundSpec((job.payload ?? {}) as Record<string, unknown>);
+    const fields = parseInboundReport(input.result, spec);
+    // A delayed or retried result must not overwrite a newer deployment. Reading
+    // the newest completed job and then writing would still race a concurrent
+    // completion — both transactions can see no newer row. One conditional
+    // statement decides it instead: a stale writer simply matches no rows.
+    await tx.node.updateMany({
+      where: { id: nodeId, inboundAppliedRevision: { lt: job.targetRevision } },
+      data: { ...fields, inboundAppliedRevision: job.targetRevision }
+    });
+  }
+
   async queueCommand(nodeId: string, input: QueueAgentCommandDto): Promise<AgentCommandDto> {
     const agent = await this.prisma.nodeAgent.findFirst({
       where: { nodeId, revokedAt: null },
@@ -281,7 +317,23 @@ export class AgentService {
       select: { agentConfigRevision: true }
     });
     const targetRevision = node.agentConfigRevision;
-    const dedupeKey = input.dedupeKey ?? `${nodeId}:${input.type}:${randomUUID()}`;
+    // The inbound spec is the one payload the server must understand: it is
+    // what the agent's report is later compared against field by field, and a
+    // command dispatched with an unvalidated spec could never be verified.
+    const payload = input.type === "ENSURE_INBOUND"
+      ? normalizeInboundSpec((input.payload ?? {}) as Record<string, unknown>)
+      : input.payload;
+    // Deduplicate RETRIES of an operation, not every historical occurrence of a
+    // spec: an outstanding identical request is the double-click we want to
+    // collapse, while a finished one must be repeatable (deploy 443 → 8443 →
+    // 443 again, or a second key rotation with the same payload). The key is
+    // therefore stable only while the operation is outstanding — completeCommand
+    // releases it — so the unique index, not a read-then-write, is what makes
+    // two concurrent identical requests collapse into one job.
+    const dedupeKey = input.dedupeKey
+      ?? (input.type === "ENSURE_INBOUND"
+        ? inboundSpecKey(nodeId, payload as NormalizedInboundSpec)
+        : `${nodeId}:${input.type}:${randomUUID()}`);
     const job = await this.prisma.nodeCommandJob.upsert({
       where: { dedupeKey },
       update: {},
@@ -292,7 +344,7 @@ export class AgentService {
         agentId: agent.id,
         commandType: input.type,
         targetRevision,
-        payload: input.payload as Prisma.InputJsonValue
+        payload: payload as Prisma.InputJsonValue
       }
     });
     const command = serializeCommand(job);

@@ -269,17 +269,23 @@ CHORDV_REGISTER_TOKEN=\$REGISTER_TOKEN
 AGENT_DATABASE_PATH=/var/lib/chordv-node-agent/agent.db
 AGENT_CREDENTIALS_PATH=/var/lib/chordv-node-agent/credentials.json
 CHORDV_AGENT_NODE_BIN=\${NODE_BIN@Q}
+CHORDV_XRAY_REQUEST_DIR=/var/lib/chordv-xray/requests
+CHORDV_XRAY_RESULT_DIR=/var/lib/chordv-xray/results
 EOF
 # systemd reads EnvironmentFile as root before dropping privileges; the group
 # grant only lets the service user read it, never write it.
 chown root:"\$SERVICE_USER" "\$ENV_FILE"
 chmod 0640 "\$ENV_FILE"
 
+${renderXrayInstall()}
 cat > /etc/systemd/system/chordv-node-agent.service <<UNIT
 [Unit]
 Description=ChordV Node Agent
-After=network-online.target
-Wants=network-online.target
+# Ordering only. Requires= would stop this service whenever xray is stopped —
+# and every changed ENSURE_INBOUND restarts xray, which would kill the agent
+# mid-command, before it can reconcile users or report the result.
+After=network-online.target xray.service
+Wants=network-online.target xray.service
 
 [Service]
 Type=simple
@@ -296,13 +302,19 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/chordv-node-agent
+# The handoff request directory only; results are root's and stay read-only here.
+ReadWritePaths=/var/lib/chordv-xray/requests
 
 [Install]
 WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable chordv-node-agent.service
+systemctl enable xray.service chordv-xray-apply.path chordv-node-agent.service
+# Xray comes up with base + metering fragment only; the inbound arrives later
+# as an ENSURE_INBOUND command, so a fresh host is healthy but serves nobody.
+systemctl restart xray.service
+systemctl start chordv-xray-apply.path
 
 echo "==> 启动 Agent（首次启动将使用注册令牌完成接入）…"
 systemctl restart chordv-node-agent.service
@@ -313,5 +325,181 @@ else
   echo "警告：Agent 服务未进入 active 状态，请查看日志：journalctl -u chordv-node-agent -n 50" >&2
   exit 1
 fi
+`;
+}
+
+/**
+ * Installs Xray and the root half of inbound deployment. Rendered separately so
+ * a regression can run exactly this section in a container, and placed after
+ * the agent release is published so a failure here cannot strand a half-staged
+ * agent. The binary comes from THIS origin — the same trust anchor as the agent
+ * tarball — rather than a second host the installer would also have to trust.
+ */
+export function renderXrayInstall(): string {
+  return `# --- chordv:xray-install:begin ---
+XRAY_MARKER="# chordv-managed: xray"
+XRAY_UNIT=/etc/systemd/system/xray.service
+# This host may already run Xray for something else — an operator's own
+# deployment, or a leftover from before. Replacing that unit would point it at a
+# config directory holding no user-facing inbound and restart it, silently
+# taking the existing service offline. Only a unit this installer wrote may be
+# replaced; anything else requires a deliberate migration.
+refuse_takeover() {
+  echo "安装失败：本机已存在不是由本安装脚本管理的 Xray 服务（\$1）。" >&2
+  echo "如需交给 ChordV 托管：先备份现有 Xray 配置与单元、停止并禁用该服务，再重跑本命令；" >&2
+  echo "否则本次安装会用只含计量片段的配置目录替换它，现有代理服务将立即中断。" >&2
+  exit 1
+}
+# A vendor package puts its unit under /usr/lib or /lib, where writing ours into
+# /etc would silently override it — so ask systemd which file it actually
+# resolves, and fall back to the known paths when systemd is unavailable.
+XRAY_FRAGMENT="\$(systemctl show -p FragmentPath --value xray.service 2>/dev/null || true)"
+XRAY_DROPINS="\$(systemctl show -p DropInPaths --value xray.service 2>/dev/null || true)"
+if [[ -n "\$XRAY_FRAGMENT" ]]; then
+  if [[ -e "\$XRAY_FRAGMENT" ]] && ! grep -qF "\$XRAY_MARKER" "\$XRAY_FRAGMENT"; then refuse_takeover "\$XRAY_FRAGMENT"; fi
+else
+  for candidate in "\$XRAY_UNIT" /usr/lib/systemd/system/xray.service /lib/systemd/system/xray.service; do
+    if [[ -e "\$candidate" ]] && ! grep -qF "\$XRAY_MARKER" "\$candidate"; then refuse_takeover "\$candidate"; fi
+  done
+fi
+if [[ -n "\$XRAY_DROPINS" ]]; then refuse_takeover "\$XRAY_DROPINS"; fi
+for dropin in /etc/systemd/system/xray.service.d /usr/lib/systemd/system/xray.service.d /lib/systemd/system/xray.service.d; do
+  if [[ -e "\$dropin" ]]; then refuse_takeover "\$dropin"; fi
+done
+
+XRAY_USER="chordv-xray"
+XRAY_BIN=/usr/local/bin/xray
+XRAY_CONF_DIR=/etc/chordv/xray/conf.d
+HELPER_DIR=/usr/local/lib/chordv
+# Both handoff directories live under a ROOT-owned parent. Putting the request
+# directory inside the agent's own data directory would let a compromised agent
+# replace it with a symlink; "install -d -o chordv-agent" follows an existing
+# directory symlink and would hand that target's ownership to the agent — the
+# helper directory included, and with it the script root executes next.
+XRAY_HANDOFF_DIR=/var/lib/chordv-xray
+REQUEST_DIR="\$XRAY_HANDOFF_DIR/requests"
+RESULT_DIR="\$XRAY_HANDOFF_DIR/results"
+
+if ! id "\$XRAY_USER" >/dev/null 2>&1; then
+  useradd --system --home /var/lib/chordv-xray --shell /usr/sbin/nologin "\$XRAY_USER"
+fi
+
+# Staged inside the installer's own staging directory so the existing EXIT
+# cleanup removes it too — replacing that trap here would drop the agent
+# staging cleanup along with it.
+XRAY_STAGING="$(mktemp -d "\$STAGING_DIR/xray.XXXXXX")"
+curl -fsSL --connect-timeout 15 --max-time 600 \\
+  "\$API_BASE/agent-download/xray/\$ARCH" -o "\$XRAY_STAGING/xray.tar.gz"
+curl -fsSL --connect-timeout 15 --max-time 60 \\
+  "\$API_BASE/agent-download/xray/\$ARCH.sha256" -o "\$XRAY_STAGING/xray.sha256"
+# The digest is served from the same origin, so it proves integrity (a truncated
+# or swapped-mid-publish artifact), not authorship — authorship is the TLS origin.
+( cd "\$XRAY_STAGING" && printf '%s  xray.tar.gz\\n' "$(cut -d' ' -f1 < xray.sha256)" | sha256sum -c - )
+tar --no-same-owner --no-same-permissions -xzf "\$XRAY_STAGING/xray.tar.gz" -C "\$XRAY_STAGING"
+[[ -f "\$XRAY_STAGING/xray" ]] || { echo "安装失败：Xray 包中缺少 xray 可执行文件。" >&2; exit 1; }
+install -m 0755 -o root -g root "\$XRAY_STAGING/xray" "\$XRAY_BIN"
+"\$XRAY_BIN" version >/dev/null
+
+# Xray's configuration belongs to root. The agent must never be able to write
+# what root then runs, and must never be able to read the Reality private key.
+install -d -m 0755 -o root -g root /etc/chordv/xray "\$XRAY_CONF_DIR"
+# Everything root will execute or load is taken from the archive ROOT
+# downloaded, extracted by root into a root-only directory. The release tree is
+# briefly extracted by the service user, so copying from it would let a
+# compromised agent substitute the script root then runs — making the
+# destination root-owned would only preserve the attacker's file.
+TRUSTED_DIR="\$XRAY_STAGING/trusted"
+install -d -m 0700 -o root -g root "\$TRUSTED_DIR"
+tar --no-same-owner --no-same-permissions -xzf "\$ARCHIVE" -C "\$TRUSTED_DIR" \
+  ./deploy/xray-base.json ./deploy/xray-api.fragment.json ./dist/src/xray-apply.js
+for required in deploy/xray-base.json deploy/xray-api.fragment.json dist/src/xray-apply.js; do
+  [[ -f "\$TRUSTED_DIR/\$required" ]] || { echo "安装失败：Agent 包缺少 \$required。" >&2; exit 1; }
+done
+"\$NODE_BIN" --check "\$TRUSTED_DIR/dist/src/xray-apply.js"
+
+# Seed these only when absent. An operator may have tuned the API port, routing
+# or stats policy and pointed the agent at it; overwriting on every reinstall
+# would take metering down at the next restart. Differences are reported, not
+# silently reconciled.
+for fragment in 00-base.json:xray-base.json 10-api.json:xray-api.fragment.json; do
+  target="\$XRAY_CONF_DIR/\${fragment%%:*}"
+  source="\$TRUSTED_DIR/deploy/\${fragment##*:}"
+  if [[ -e "\$target" ]]; then
+    cmp -s "\$target" "\$source" || echo "提示：保留了本机已有的 \$target（与本次发布自带的版本不同，如需更新请人工比对）。" >&2
+  else
+    install -m 0644 -o root -g root "\$source" "\$target"
+  fi
+done
+
+install -d -m 0755 -o root -g root "\$HELPER_DIR"
+install -m 0755 -o root -g root "\$TRUSTED_DIR/dist/src/xray-apply.js" "\$HELPER_DIR/xray-apply.js"
+# The parent is root-owned (as is /var/lib), so the agent cannot replace either
+# child directory — which is what makes the ownership grant below safe. A
+# symlink here could only have been planted by root, so refuse rather than
+# follow it.
+for handoff in "\$XRAY_HANDOFF_DIR" "\$REQUEST_DIR" "\$RESULT_DIR"; do
+  if [[ -L "\$handoff" ]]; then
+    echo "安装失败：\$handoff 是符号链接，拒绝在其上设置属主。" >&2
+    exit 1
+  fi
+done
+install -d -m 0755 -o root -g root "\$XRAY_HANDOFF_DIR"
+# The agent owns only the request directory (it must create pending.json there);
+# results are root-owned, so nothing root writes can be redirected by the agent.
+install -d -m 0700 -o "\$SERVICE_USER" -g "\$SERVICE_USER" "\$REQUEST_DIR"
+install -d -m 0755 -o root -g root "\$RESULT_DIR"
+
+cat > "\$XRAY_UNIT" <<XRAYUNIT
+\$XRAY_MARKER
+[Unit]
+Description=Xray Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=\$XRAY_USER
+ExecStart=\$XRAY_BIN run -confdir \$XRAY_CONF_DIR
+Restart=on-failure
+RestartSec=3
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/etc/chordv/xray
+
+[Install]
+WantedBy=multi-user.target
+XRAYUNIT
+
+cat > /etc/systemd/system/chordv-xray-apply.service <<APPLYUNIT
+[Unit]
+Description=Apply ChordV Xray inbound configuration
+# Deliberately NOT ordered after xray.service: this oneshot synchronously runs
+# "systemctl restart xray", and an ordering dependency lets systemd hold that
+# restart until this start job finishes — which is waiting on the restart.
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=\${NODE_BIN@Q} \$HELPER_DIR/xray-apply.js
+PrivateTmp=true
+APPLYUNIT
+
+cat > /etc/systemd/system/chordv-xray-apply.path <<APPLYPATH
+[Unit]
+Description=Watch for ChordV inbound apply requests
+
+[Path]
+PathChanged=\$REQUEST_DIR/pending.json
+Unit=chordv-xray-apply.service
+
+[Install]
+WantedBy=multi-user.target
+APPLYPATH
+
+rm -rf -- "\$XRAY_STAGING"
+# --- chordv:xray-install:end ---
 `;
 }

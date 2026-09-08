@@ -5,40 +5,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { generateAgentToken, requestRegister } from './api-client.js';
 import { AGENT_VERSION } from './agent-version.js';
 import type { AgentCredentials, AgentConfig } from './config.js';
-
-function syncDirectory(directory: string): void {
-  const descriptor = fs.openSync(directory, 'r');
-  try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
-}
+import { syncDirectory, writeSecretDurable } from './durable-write.js';
 
 /** Both retry and final credentials use the same owner-only, durable write path. */
-function writeSecret(file: string, value: unknown): void {
-  file = resolve(file);
-  const directory = dirname(file);
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const temporary = `${file}.tmp.${process.pid}.${randomUUID()}`;
-  try {
-    const descriptor = fs.openSync(temporary, 'wx', 0o600);
-    try {
-      fs.writeFileSync(descriptor, JSON.stringify(value) + '\n');
-      fs.fchmodSync(descriptor, 0o600);
-      fs.fsyncSync(descriptor);
-    } finally { fs.closeSync(descriptor); }
-    fs.renameSync(temporary, file);
-    // Sync the whole path on every attempt. A parent created by an earlier failed
-    // attempt may already be visible without its directory entry being durable.
-    let current = directory;
-    while (true) {
-      syncDirectory(current);
-      const parent = dirname(current);
-      if (parent === current) break;
-      current = parent;
-    }
-  } catch (error) {
-    try { fs.unlinkSync(temporary); } catch { /* may already have been renamed */ }
-    throw error;
-  }
-}
+const writeSecret = writeSecretDurable;
 
 function readSecret(file: string): Record<string, unknown> | null {
   let raw: string;

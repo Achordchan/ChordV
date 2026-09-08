@@ -218,6 +218,55 @@ export class AgentStore {
 
   getConfigRevision(): string { return this.getMeta('config_revision') || '0'; }
 
+  /**
+   * The inbound this node currently serves, as last applied. Kept in meta_v2 so
+   * it is bound to the node identity like every other piece of state: a
+   * repurposed host that archives its identity also loses its memory of the old
+   * node's inbound, and the startup self-heal then refuses to keep serving it.
+   */
+  getInboundState(): { hash: string; report: Record<string, unknown>; appliedRevision: string; complete: boolean } | undefined {
+    const raw = this.getMeta('inbound_state');
+    if (!raw) return undefined;
+    try {
+      const parsed = JSON.parse(raw) as { hash?: unknown; report?: unknown; appliedRevision?: unknown };
+      if (typeof parsed.hash !== 'string' || !parsed.report || typeof parsed.report !== 'object') return undefined;
+      return {
+        hash: parsed.hash,
+        report: parsed.report as Record<string, unknown>,
+        appliedRevision: typeof parsed.appliedRevision === 'string' ? parsed.appliedRevision : '0',
+        // A state written between the helper's apply and a successful
+        // verification describes what the MACHINE now runs, not a usable
+        // deployment: it may be reused to detect change, never to answer with.
+        complete: (parsed as { complete?: unknown }).complete === true,
+      };
+    } catch { return undefined; }
+  }
+
+  setInboundState(state: { hash: string; report: Record<string, unknown>; appliedRevision: string; complete: boolean }): void {
+    this.setMeta('inbound_state', JSON.stringify(state));
+  }
+
+  clearInboundState(): void {
+    this.db.prepare('DELETE FROM meta_v2 WHERE key = ?').run('inbound_state');
+  }
+
+  /**
+   * Durable "the tag is gone; defer user provisioning" intent. The
+   * foreign-inbound cleanup clears the only tag users could be provisioned
+   * into, and the in-memory flag dies with the process that ran the cleanup —
+   * a restart before the redeploying ENSURE_INBOUND arrives must land on the
+   * same conclusion, or its first reconcile throws out of start() and the
+   * command can never be received. Cleared when a deployment completes.
+   */
+  isInboundAwaiting(): boolean {
+    return this.getMeta('inbound_awaiting') === '1';
+  }
+
+  setInboundAwaiting(awaiting: boolean): void {
+    if (awaiting) this.setMeta('inbound_awaiting', '1');
+    else this.db.prepare('DELETE FROM meta_v2 WHERE key = ?').run('inbound_awaiting');
+  }
+
   advanceConfigRevision(revision: string): void {
     const next = decimal(revision);
     if (BigInt(next) > BigInt(this.getConfigRevision())) this.setMeta('config_revision', next);
@@ -257,6 +306,17 @@ export class AgentStore {
       for (const row of existing) if (!keep.has(row.binding_id)) remove.run(row.binding_id);
       this.setMeta('config_revision', decimal(revision));
     })();
+  }
+
+  /**
+   * Changes only the flow of an existing user. The inbound deployment is not a
+   * user-config change, so it must not carry a revision: a user whose revision
+   * is already higher (a newer user command) would have the write rejected,
+   * leaving Xray on the new flow and the store on the old one — and the next
+   * restart would put the old, now-incompatible flow back.
+   */
+  setUserFlow(bindingId: string, flow: DesiredUser['flow']): void {
+    this.db.prepare('UPDATE desired_users_v2 SET flow = ? WHERE binding_id = ?').run(flow || '', bindingId);
   }
 
   upsertDesiredUser(user: DesiredUser): void {

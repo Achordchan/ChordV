@@ -7,11 +7,17 @@ import { CommandProcessor } from '../src/command-processor.js';
 import { AgentStore } from '../src/store.js';
 import type { AbsoluteCounter, AgentCommand, DesiredUser } from '../src/types.js';
 import type { XrayAdapter } from '../src/xray-adapter.js';
+import type { HelperResult, InboundApplier } from '../src/xray-inbound.js';
+import type { InboundSpec } from '../src/types.js';
 
 class FakeXray implements XrayAdapter {
   users = new Map<string, string>();
   ensureCalls = 0;
+  uptime = 1;
+  live = true;
   async health(): Promise<void> {}
+  async uptimeSeconds(): Promise<number> { return this.uptime; }
+  async inboundLive(): Promise<boolean> { return this.live; }
   async readAbsoluteCounters(): Promise<AbsoluteCounter[]> { return []; }
   async listUsers(): Promise<Array<{ email: string; uuid?: string }>> { return [...this.users].map(([email, uuid]) => ({ email, uuid })); }
   async ensureUser(user: DesiredUser): Promise<void> {
@@ -194,4 +200,352 @@ test('非 direct 模式 RECONCILE 只更新本地状态，不写 Xray', async ()
       assert.deepEqual([...fixture.xray.users], [['untouched@example.com', 'existing']]);
     } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
   }
+});
+
+/**
+ * Models the real helper closely enough to be worth asserting against: it keeps
+ * the deployed spec, so re-issuing the same one is a genuine no-op (no restart)
+ * while a different one redeploys. The AGENT no longer decides that — the
+ * helper is the only side that can see what is actually deployed.
+ */
+class FakeApplier implements InboundApplier {
+  calls: InboundSpec[] = [];
+  commandIds: string[] = [];
+  requiredListens: string[] = [];
+  restarts = 0;
+  outcome: Partial<HelperResult> = {};
+  failure?: Error;
+  private deployed?: string;
+  async apply(spec: InboundSpec, requestId: string, commandId: string, requireListen: string): Promise<HelperResult> {
+    this.calls.push(spec);
+    this.commandIds.push(commandId);
+    this.requiredListens.push(requireListen);
+    if (this.failure) throw this.failure;
+    const identity = JSON.stringify({ ...spec, rotateKeys: false });
+    const changed = this.deployed !== identity || spec.rotateKeys;
+    if (changed) { this.deployed = identity; this.restarts += 1; }
+    return {
+      requestId, ok: true, changed, restarted: changed,
+      realityPublicKey: 'k'.repeat(43), shortId: '0123456789abcdef',
+      serverName: spec.serverNames[0], listen: '::', deployed: true, listenPort: spec.listenPort, xrayVersion: 'Xray 1.8.24',
+      ...this.outcome,
+    };
+  }
+  async reset(requestId: string): Promise<HelperResult> {
+    this.deployed = undefined;
+    return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: false, listenPort: 0, xrayVersion: '' };
+  }
+
+  async status(requestId: string): Promise<HelperResult> {
+    return { requestId, ok: true, changed: false, restarted: false, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: this.deployed !== undefined, listenPort: 0, xrayVersion: '' };
+  }
+}
+
+function inboundSetup() {
+  const fixture = setup();
+  const applier = new FakeApplier();
+  const processor = new CommandProcessor(fixture.store, fixture.xray, {
+    applier, inboundTag: 'vless-in', resolvePublicHost: async () => '203.0.113.7',
+    verifyAttempts: 3, verifyDelayMs: 1,
+  });
+  return { ...fixture, applier, processor };
+}
+
+const inboundPayload = {
+  inboundTag: 'vless-in', listenPort: 443, dest: 'www.microsoft.com:443',
+  serverNames: ['www.microsoft.com'], flow: 'xtls-rprx-vision', fingerprint: 'chrome', spiderX: '/',
+};
+
+test('ENSURE_INBOUND 上报可用连接参数，重复下发不再重启 Xray', async () => {
+  const fixture = inboundSetup();
+  fixture.store.replaceDesiredUsers([desired()], '1');
+  try {
+    const result = await fixture.processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+    assert.equal(result.status, 'completed');
+    const inbound = result.result?.inbound as Record<string, unknown>;
+    assert.equal(result.result?.appliedRevision, '900719925474099312345');
+    assert.equal(inbound.serverHost, '203.0.113.7');
+    assert.equal(inbound.serverPort, 443);
+    assert.equal(inbound.serverName, 'www.microsoft.com');
+    assert.equal(inbound.flow, 'xtls-rprx-vision');
+    assert.equal(inbound.changed, true);
+    // A restart empties Xray's in-memory user table, so the users must be
+    // re-pushed before the command reports success.
+    assert.equal(fixture.xray.users.get(desired().email), desired().uuid);
+
+    const repeat = await fixture.processor.execute(command('ENSURE_INBOUND', inboundPayload, 'command-2'), true);
+    // The request still goes to the helper — only it can tell a real no-op from
+    // "someone restored an older config" — but nothing restarts.
+    assert.equal(fixture.applier.restarts, 1, '同一规格不得再次重启 Xray');
+    // The helper needs the command identity to recognise a redelivery.
+    assert.deepEqual(fixture.applier.commandIds, ['command-1', 'command-2']);
+    assert.equal((repeat.result?.inbound as Record<string, unknown>).changed, false);
+    assert.equal((repeat.result?.inbound as Record<string, unknown>).realityPublicKey, 'k'.repeat(43));
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+});
+
+test('入站部署失败必须响亮失败，且不留下已部署状态', async () => {
+  const fixture = inboundSetup();
+  try {
+    fixture.applier.failure = new Error('Xray 入站部署失败（阶段 config-test）：端口冲突');
+    const failed = await fixture.processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+    assert.equal(failed.status, 'failed');
+    assert.match(failed.error ?? '', /端口冲突/);
+    // The intent is recorded before the hand-off — once the helper has the
+    // request the machine may change regardless of what this process learns —
+    // but never as a complete deployment, so it can only be re-applied from.
+    assert.equal(fixture.store.getInboundState()?.complete, false);
+
+    // Live verification is part of success: a helper that claims to have
+    // applied while the tag never appears must not report completed.
+    const other = inboundSetup();
+    try {
+      other.xray.live = false;
+      const unverified = await other.processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+      assert.equal(unverified.status, 'failed');
+      assert.match(unverified.error ?? '', /未能确认生效/);
+      // The helper DID change the machine before verification failed, so the
+      // spec is recorded — but marked incomplete, so it can never be answered
+      // with and a repeat re-deploys.
+      assert.equal(other.store.getInboundState()?.complete, false);
+    } finally { other.store.close(); rmSync(other.directory, { recursive: true, force: true }); }
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+});
+
+test('非 direct 模式与不可用能力都拒绝部署入站', async () => {
+  const fixture = inboundSetup();
+  const bare = setup();
+  try {
+    const gated = await fixture.processor.execute(command('ENSURE_INBOUND', inboundPayload), false);
+    assert.equal(gated.status, 'failed');
+    assert.equal(fixture.applier.calls.length, 0);
+
+    const missing = await bare.processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+    assert.equal(missing.status, 'failed');
+    assert.match(missing.error ?? '', /配置助手/);
+  } finally {
+    fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true });
+    bare.store.close(); rmSync(bare.directory, { recursive: true, force: true });
+  }
+});
+
+test('对外地址是 IPv6 但入站只监听 IPv4 时拒绝上报', async () => {
+  const fixture = setup();
+  const applier = new FakeApplier();
+  applier.outcome = { listen: '0.0.0.0' };
+  const processor = new CommandProcessor(fixture.store, fixture.xray, {
+    applier, inboundTag: 'vless-in', resolvePublicHost: async () => '2001:db8::1',
+    verifyAttempts: 3, verifyDelayMs: 1,
+  });
+  try {
+    // Such a node passes every tag-based check and hands each client an endpoint
+    // with nothing listening on it.
+    const result = await processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+    assert.equal(result.status, 'failed');
+    assert.match(result.error ?? '', /IPv6/);
+    assert.equal(fixture.store.getInboundState()?.complete, false, '未完成的部署不得被当作可用状态');
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+});
+
+test('助手已改动但命令未完成时，重复下发旧规格必须重新部署', async () => {
+  const fixture = setup();
+  const applier = new FakeApplier();
+  const processor = new CommandProcessor(fixture.store, fixture.xray, {
+    applier,
+    inboundTag: 'vless-in',
+    resolvePublicHost: async () => '203.0.113.7',
+    verifyAttempts: 3, verifyDelayMs: 1,
+  });
+  try {
+    await processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+    assert.equal(applier.calls.length, 1);
+
+    // The helper deploys 8443, then verification fails: the machine now serves
+    // 8443 while the last COMPLETE state still says 443.
+    fixture.xray.live = false;
+    const moved = await processor.execute(command('ENSURE_INBOUND', { ...inboundPayload, listenPort: 8443 }, 'command-2'), true);
+    assert.equal(moved.status, 'failed');
+    assert.equal(applier.calls.length, 2);
+
+    // Re-issuing 443 must actually restore it, not answer from the cache.
+    fixture.xray.live = true;
+    const restored = await processor.execute(command('ENSURE_INBOUND', inboundPayload, 'command-3'), true);
+    assert.equal(restored.status, 'completed');
+    assert.equal(applier.calls.length, 3, '状态与机器不一致时必须重新部署');
+    assert.equal((restored.result?.inbound as Record<string, unknown>).serverPort, 443);
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+});
+
+test('无需改动 Xray 时也要刷新对外地址', async () => {
+  const fixture = setup();
+  const applier = new FakeApplier();
+  let host = '203.0.113.7';
+  const processor = new CommandProcessor(fixture.store, fixture.xray, {
+    applier, inboundTag: 'vless-in', resolvePublicHost: async () => host,
+    verifyAttempts: 3, verifyDelayMs: 1,
+  });
+  try {
+    await processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+    // The VPS address changed (or the operator corrected the override). Xray
+    // needs no change, but the control plane must stop handing out the old one.
+    host = '198.51.100.9';
+    const repeat = await processor.execute(command('ENSURE_INBOUND', inboundPayload, 'command-2'), true);
+    const inbound = repeat.result?.inbound as Record<string, unknown>;
+    assert.equal(inbound.serverHost, '198.51.100.9');
+    assert.equal(inbound.changed, false);
+    assert.equal(applier.restarts, 1, '仅地址变化不该重启 Xray');
+
+    // The family check still applies on the shortcut path.
+    host = '2001:db8::1';
+    applier.outcome = { listen: '0.0.0.0' };
+    const other = setup();
+    try {
+      const v4Only = new CommandProcessor(other.store, other.xray, {
+        applier, inboundTag: 'vless-in', resolvePublicHost: async () => '2001:db8::1',
+        verifyAttempts: 3, verifyDelayMs: 1,
+      });
+      await v4Only.execute(command('ENSURE_INBOUND', inboundPayload), true);
+      const failed = await v4Only.execute(command('ENSURE_INBOUND', inboundPayload, 'command-3'), true);
+      assert.equal(failed.status, 'failed');
+      assert.match(failed.error ?? '', /IPv6/);
+    } finally { other.store.close(); rmSync(other.directory, { recursive: true, force: true }); }
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+});
+
+test('每次真正部署都重新下发用户，并把新的 flow 应用到已有用户', async () => {
+  const fixture = inboundSetup();
+  fixture.store.replaceDesiredUsers([desired()], '1');
+  try {
+    await fixture.processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+    assert.equal(fixture.xray.users.get(desired().email), desired().uuid);
+
+    // A repeat that the helper answers with restarted:false still reconciles:
+    // an earlier attempt may have restarted Xray and then failed before (or
+    // during) its own reconcile, leaving users missing.
+    fixture.applier.outcome = { changed: true, restarted: false };
+    fixture.xray.users.clear();
+    await fixture.processor.execute(command('ENSURE_INBOUND', { ...inboundPayload, listenPort: 8443 }, 'command-2'), true);
+    assert.equal(fixture.xray.users.get(desired().email), desired().uuid, '未重启也必须补齐用户');
+
+    // Changing the ordered flow rewrites Node.flow for every client config, so
+    // the users installed in Xray must be reinstalled with that flow too.
+    const before = fixture.xray.ensureCalls;
+    await fixture.processor.execute(command('ENSURE_INBOUND', { ...inboundPayload, flow: '' }, 'command-3'), true);
+    assert.equal(fixture.store.listDesiredUsers()[0].flow, '');
+    assert.ok(fixture.xray.ensureCalls > before, 'flow 变更必须重新安装用户');
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+});
+
+test('助手请求超时后，旧规格也必须重新走助手而不是读缓存', async () => {
+  const fixture = setup();
+  const applier = new FakeApplier();
+  const processor = new CommandProcessor(fixture.store, fixture.xray, {
+    applier, inboundTag: 'vless-in', resolvePublicHost: async () => '203.0.113.7',
+    verifyAttempts: 3, verifyDelayMs: 1,
+  });
+  try {
+    await processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+
+    // The helper takes the request and may well deploy 8443; this process only
+    // learns that the wait timed out. What the machine runs is now unknown.
+    applier.failure = new Error('等待 Xray 配置助手超时（120 秒）');
+    const timedOut = await processor.execute(command('ENSURE_INBOUND', { ...inboundPayload, listenPort: 8443 }, 'command-2'), true);
+    assert.equal(timedOut.status, 'failed');
+
+    applier.failure = undefined;
+    const restored = await processor.execute(command('ENSURE_INBOUND', inboundPayload, 'command-3'), true);
+    assert.equal(restored.status, 'completed');
+    assert.equal(applier.calls.length, 3, '每次部署都必须经过助手确认实际部署内容');
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+});
+
+test('flow 变更对 revision 更高的用户同样落地', async () => {
+  const fixture = inboundSetup();
+  // A newer user command has already been applied: its revision is higher than
+  // this (older) deployment's, so a revision-carrying write would be rejected —
+  // and Xray would end up on a flow the store does not know about, which the
+  // next restart would silently undo.
+  const ahead = { ...desired(), revision: '900719925474099399999', flow: 'xtls-rprx-vision' as const };
+  fixture.store.replaceDesiredUsers([ahead], ahead.revision);
+  try {
+    const result = await fixture.processor.execute(command('ENSURE_INBOUND', { ...inboundPayload, flow: '' }), true);
+    assert.equal(result.status, 'completed');
+    const persisted = fixture.store.listDesiredUsers()[0];
+    assert.equal(persisted.flow, '', '持久化的 flow 必须与下发一致');
+    assert.equal(persisted.revision, ahead.revision, '不得压低用户自身的 revision');
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+});
+
+test('对外地址不是公网单播时命令直接失败，而不是让控制面在稍后拒绝', async () => {
+  for (const host of ['10.0.0.7', '127.0.0.1', 'node.example.com', '::ffff:192.168.1.1', '']) {
+    const fixture = setup();
+    const applier = new FakeApplier();
+    const processor = new CommandProcessor(fixture.store, fixture.xray, {
+      applier, inboundTag: 'vless-in', resolvePublicHost: async () => host,
+      verifyAttempts: 3, verifyDelayMs: 1,
+    });
+    try {
+      const result = await processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+      assert.equal(result.status, 'failed', `${host} 不应被当作可用对外地址`);
+      assert.match(result.error ?? '', /公网单播|CHORDV_NODE_PUBLIC_HOST/);
+    } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+  }
+
+  // The public ones still go through, IPv4-mapped included.
+  for (const host of ['203.0.113.7', '::ffff:203.0.113.7']) {
+    const fixture = setup();
+    const processor = new CommandProcessor(fixture.store, fixture.xray, {
+      applier: new FakeApplier(), inboundTag: 'vless-in', resolvePublicHost: async () => host,
+      verifyAttempts: 3, verifyDelayMs: 1,
+    });
+    try {
+      const result = await processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+      assert.equal(result.status, 'completed', `${host} 应被接受`);
+    } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+  }
+});
+
+test('对外地址在助手动手之前就解析并校验', async () => {
+  const fixture = setup();
+  const applier = new FakeApplier();
+  const processor = new CommandProcessor(fixture.store, fixture.xray, {
+    applier, inboundTag: 'vless-in',
+    resolvePublicHost: async () => { throw new Error('控制面未能返回本机公网地址'); },
+    verifyAttempts: 3, verifyDelayMs: 1,
+  });
+  try {
+    // Discovering this after the helper committed would leave clients dialling
+    // the old port and key while Xray serves the new ones.
+    const failed = await processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+    assert.equal(failed.status, 'failed');
+    assert.equal(applier.calls.length, 0, '地址不可用时不得让助手改动 Xray');
+    assert.equal(fixture.store.getInboundState(), undefined, '未动手就不该留下部署意图');
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+});
+
+test('IPv6 对外地址会把所需监听族随请求下发给助手', async () => {
+  const fixture = setup();
+  const applier = new FakeApplier();
+  const processor = new CommandProcessor(fixture.store, fixture.xray, {
+    applier, inboundTag: 'vless-in', resolvePublicHost: async () => '2001:db8::1',
+    verifyAttempts: 3, verifyDelayMs: 1,
+  });
+  try {
+    await processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+    // The helper refuses a family it cannot serve BEFORE publishing, so the
+    // requirement has to travel with the request.
+    assert.deepEqual(applier.requiredListens, ['::']);
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+
+  const v4 = setup();
+  const v4Applier = new FakeApplier();
+  const v4Processor = new CommandProcessor(v4.store, v4.xray, {
+    applier: v4Applier, inboundTag: 'vless-in', resolvePublicHost: async () => '203.0.113.7',
+    verifyAttempts: 3, verifyDelayMs: 1,
+  });
+  try {
+    await v4Processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+    // An IPv4 endpoint works on either listener, so it imposes nothing.
+    assert.deepEqual(v4Applier.requiredListens, ['']);
+  } finally { v4.store.close(); rmSync(v4.directory, { recursive: true, force: true }); }
 });

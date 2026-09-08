@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -45,6 +45,8 @@ test('后台恢复且离线批次已确认后重新启用 Direct 用户', async 
   } as unknown as AgentApiClient;
   const xray: XrayAdapter = {
     health: async () => undefined,
+    uptimeSeconds: async () => 1,
+    inboundLive: async () => true,
     readAbsoluteCounters: async () => [],
     listUsers: async () => users,
     ensureUser: async (input) => {
@@ -61,6 +63,7 @@ test('后台恢复且离线批次已确认后重新启用 Direct 用户', async 
     xrayApiAddress: '127.0.0.1:10085',
     xrayInboundTag: 'test-in',
     databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'), restartToleranceMs: 2_000,
     sampleIntervalMs: 60_000,
     heartbeatIntervalMs: 60_000,
     offlineAllowanceBytes: 64n * 1024n * 1024n,
@@ -108,6 +111,8 @@ test('Shadow 心跳发现更高 revision 后刷新完整用户快照且不写 Xr
   } as unknown as AgentApiClient;
   const xray: XrayAdapter = {
     health: async () => undefined,
+    uptimeSeconds: async () => 1,
+    inboundLive: async () => true,
     readAbsoluteCounters: async () => [],
     listUsers: async () => [],
     ensureUser: async () => { xrayWrites += 1; },
@@ -116,6 +121,7 @@ test('Shadow 心跳发现更高 revision 后刷新完整用户快照且不写 Xr
   const runner = new AgentRunner({
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
     xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'), restartToleranceMs: 2_000,
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 10, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray);
 
@@ -157,6 +163,8 @@ test('Direct 配置缩减时先从 Xray 清理已移除用户再替换本地快�
   } as unknown as AgentApiClient;
   const xray: XrayAdapter = {
     health: async () => undefined,
+    uptimeSeconds: async () => 1,
+    inboundLive: async () => true,
     readAbsoluteCounters: async () => [
       { email: kept.email, uplinkBytes: '100', downlinkBytes: '0' },
       { email: removed.email, uplinkBytes: '75', downlinkBytes: '0' },
@@ -170,6 +178,7 @@ test('Direct 配置缩减时先从 Xray 清理已移除用户再替换本地快�
   const runner = new AgentRunner({
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
     xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'), restartToleranceMs: 2_000,
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray);
 
@@ -210,6 +219,8 @@ test('采样耗尽与配置刷新串行执行，最终 Xray 状态保持停用',
   } as unknown as AgentApiClient;
   const xray: XrayAdapter = {
     health: async () => undefined,
+    uptimeSeconds: async () => 1,
+    inboundLive: async () => true,
     readAbsoluteCounters: async () => [{ email: desired.email, uplinkBytes: '100', downlinkBytes: '0' }],
     listUsers: async () => {
       listUsersStarted = true;
@@ -222,6 +233,7 @@ test('采样耗尽与配置刷新串行执行，最终 Xray 状态保持停用',
   const runner = new AgentRunner({
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
     xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'), restartToleranceMs: 2_000,
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray);
 
@@ -268,6 +280,8 @@ test('停用命令结果携带本机待上传批次序列水位', async () => {
   let users = [{ email: desired.email, uuid: desired.uuid }];
   const xray: XrayAdapter = {
     health: async () => undefined,
+    uptimeSeconds: async () => 1,
+    inboundLive: async () => true,
     readAbsoluteCounters: async () => [{ email: desired.email, uplinkBytes: '100', downlinkBytes: '0' }],
     listUsers: async () => users,
     ensureUser: async () => undefined,
@@ -276,6 +290,7 @@ test('停用命令结果携带本机待上传批次序列水位', async () => {
   const runner = new AgentRunner({
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
     xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'), restartToleranceMs: 2_000,
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray);
   try {
@@ -309,3 +324,747 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<voi
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
+
+test('Xray 重启后（无论谁触发）都会重新下发用户', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-xray-restart-'));
+  const store = new AgentStore(join(directory, 'agent.db'), {
+    nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
+  });
+  const desired = user();
+  store.applyConfigSnapshot({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [desired] });
+  // Users added over gRPC live only in Xray's memory: a restart empties the
+  // inbound while the agent still believes everyone is provisioned.
+  let uptime = 900;
+  let uptimeReads = 0;
+  let live: Array<{ email: string; uuid?: string }> = [{ email: desired.email, uuid: desired.uuid }];
+  let ensured = 0;
+  const api = {
+    getConfig: async () => ({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [desired] }),
+    heartbeat: async () => ({ accepted: true, ackThrough: '0', configRevision: '1' }),
+    uploadBatch: async () => ({ accepted: true, duplicate: false, ackThrough: '1' }),
+    reportCommandResult: async () => undefined,
+    consumeEvents: async (_handler: unknown, signal: AbortSignal) => {
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    },
+  } as unknown as AgentApiClient;
+  const xray: XrayAdapter = {
+    health: async () => undefined,
+    uptimeSeconds: async () => { uptimeReads += 1; return uptime; },
+    inboundLive: async () => true,
+    readAbsoluteCounters: async () => [],
+    listUsers: async () => live,
+    ensureUser: async (input) => { ensured += 1; live = [{ email: input.email, uuid: input.uuid }]; },
+    removeUser: async (email) => { live = live.filter((item) => item.email !== email); },
+  };
+  const runner = new AgentRunner({
+    agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
+    databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'), restartToleranceMs: 2_000,
+    sampleIntervalMs: 5, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
+  }, store, api, xray);
+
+  try {
+    await runner.start();
+    await waitFor(() => ensured >= 1);
+    // The sampler must take a baseline before a restart can be seen at all.
+    const baselineReads = uptimeReads;
+    await waitFor(() => uptimeReads > baselineReads);
+    const before = ensured;
+    // Xray restarted underneath us and dropped its users. (The subtler case —
+    // an uptime that is HIGHER after the restart — is covered by the
+    // virtual-start test below, which needs real elapsed time to construct.)
+    live = [];
+    uptime = 2;
+    await waitFor(() => ensured > before);
+    assert.deepEqual(live.map((item) => item.email), [desired.email]);
+  } finally {
+    await runner.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('本机残留他人节点的入站配置时，启动即清空而不是继续服务', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-foreign-inbound-'));
+  const store = new AgentStore(join(directory, 'agent.db'), {
+    nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
+  });
+  const requestDir = join(directory, 'xray');
+  const resultDir = join(directory, 'xray-out');
+  mkdirSync(requestDir, { recursive: true });
+  mkdirSync(resultDir, { recursive: true });
+  // The state database travels with the identity; /etc/chordv/xray does not. A
+  // helper result with no matching state means the deployed keys and port
+  // belong to a node this agent is not.
+  // The evidence is the helper's durable state, not this file.
+  const resets: string[] = [];
+  const api = {
+    getConfig: async () => ({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [] }),
+    heartbeat: async () => ({ accepted: true, ackThrough: '0', configRevision: '1' }),
+    uploadBatch: async () => ({ accepted: true, duplicate: false, ackThrough: '1' }),
+    reportCommandResult: async () => undefined,
+    consumeEvents: async (_handler: unknown, signal: AbortSignal) => {
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    },
+  } as unknown as AgentApiClient;
+  const xray: XrayAdapter = {
+    health: async () => undefined,
+    uptimeSeconds: async () => 1,
+    inboundLive: async () => true,
+    readAbsoluteCounters: async () => [],
+    listUsers: async () => [],
+    ensureUser: async () => undefined,
+    removeUser: async () => undefined,
+  };
+  const runner = new AgentRunner({
+    agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
+    databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: requestDir, inboundResultDir: resultDir, restartToleranceMs: 2_000,
+    sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
+  }, store, api, xray, {
+    apply: async () => { throw new Error('启动时不应部署入站'); },
+    status: async (requestId) => ({ requestId, ok: true, changed: false, restarted: false, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: true, listenPort: 443, xrayVersion: '' }),
+    reset: async (requestId) => {
+      resets.push(requestId);
+      return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: false, listenPort: 0, xrayVersion: '' };
+    },
+  });
+
+  try {
+    await runner.start();
+    assert.equal(resets.length, 1, '必须请求清空外来入站');
+  } finally {
+    await runner.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('助手报告没有部署时不做清空，失败结果本身不是证据', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-failed-inbound-'));
+  const store = new AgentStore(join(directory, 'agent.db'), {
+    nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
+  });
+  const requestDir = join(directory, 'xray');
+  const resultDir = join(directory, 'xray-out');
+  mkdirSync(requestDir, { recursive: true });
+  mkdirSync(resultDir, { recursive: true });
+  // A failed deployment that rolled back leaves ok:false behind — which says
+  // nothing about whether the PREVIOUS inbound is still deployed.
+  const api = {
+    getConfig: async () => ({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [] }),
+    heartbeat: async () => ({ accepted: true, ackThrough: '0', configRevision: '1' }),
+    uploadBatch: async () => ({ accepted: true, duplicate: false, ackThrough: '1' }),
+    reportCommandResult: async () => undefined,
+    consumeEvents: async (_handler: unknown, signal: AbortSignal) => {
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    },
+  } as unknown as AgentApiClient;
+  const xray: XrayAdapter = {
+    health: async () => undefined,
+    uptimeSeconds: async () => 1,
+    inboundLive: async () => true,
+    readAbsoluteCounters: async () => [],
+    listUsers: async () => [],
+    ensureUser: async () => undefined,
+    removeUser: async () => undefined,
+  };
+  let resets = 0;
+  const runner = new AgentRunner({
+    agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
+    databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: requestDir, inboundResultDir: resultDir, restartToleranceMs: 2_000,
+    sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
+  }, store, api, xray, {
+    apply: async () => { throw new Error('不应部署'); },
+    // The helper's durable state says nothing is deployed — a failed, rolled
+    // back deployment left only a failure result behind.
+    status: async (requestId) => ({ requestId, ok: true, changed: false, restarted: false, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: false, listenPort: 0, xrayVersion: '' }),
+    reset: async (requestId) => {
+      resets += 1;
+      return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: false, listenPort: 0, xrayVersion: '' };
+    },
+  });
+
+  try {
+    await runner.start();
+    assert.equal(resets, 0, '失败结果不得触发清空');
+  } finally {
+    await runner.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('恢复下发失败后会继续重试，直到用户真的补齐', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-reconcile-retry-'));
+  const store = new AgentStore(join(directory, 'agent.db'), {
+    nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
+  });
+  const desired = user();
+  store.applyConfigSnapshot({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [desired] });
+  let uptime = 900;
+  let live: Array<{ email: string; uuid?: string }> = [{ email: desired.email, uuid: desired.uuid }];
+  let failEnsure = false;
+  let ensured = 0;
+  let attempts = 0;
+  let uptimeReads = 0;
+  const api = {
+    getConfig: async () => ({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [desired] }),
+    heartbeat: async () => ({ accepted: true, ackThrough: '0', configRevision: '1' }),
+    uploadBatch: async () => ({ accepted: true, duplicate: false, ackThrough: '1' }),
+    reportCommandResult: async () => undefined,
+    consumeEvents: async (_handler: unknown, signal: AbortSignal) => {
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    },
+  } as unknown as AgentApiClient;
+  const xray: XrayAdapter = {
+    health: async () => undefined,
+    uptimeSeconds: async () => { uptimeReads += 1; return uptime; },
+    inboundLive: async () => true,
+    readAbsoluteCounters: async () => [],
+    listUsers: async () => live,
+    ensureUser: async (input) => {
+      attempts += 1;
+      // Xray is still initialising: the first attempt after the restart fails.
+      if (failEnsure) throw new Error('HandlerService 尚未就绪');
+      ensured += 1;
+      live = [{ email: input.email, uuid: input.uuid }];
+    },
+    removeUser: async (email) => { live = live.filter((item) => item.email !== email); },
+  };
+  const runner = new AgentRunner({
+    agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
+    databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'), restartToleranceMs: 2_000,
+    sampleIntervalMs: 5, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
+  }, store, api, xray);
+
+  try {
+    await runner.start();
+    await waitFor(() => ensured >= 1);
+    // The periodic sampler must have taken a baseline before the drop can read
+    // as a restart (start() itself does not sample).
+    await waitFor(() => uptimeReads >= 1);
+    // Xray restarted and dropped its users; the first recovery attempt fails.
+    const attemptsBefore = attempts;
+    failEnsure = true;
+    live = [];
+    uptime = 2;
+    // Wait until the failing recovery has actually been attempted.
+    await waitFor(() => attempts > attemptsBefore);
+    const succeeded = ensured;
+    // Uptime now climbs again and health was already reported true, so only a
+    // pending-recovery flag can bring the users back.
+    uptime = 30;
+    failEnsure = false;
+    await waitFor(() => ensured > succeeded);
+    assert.deepEqual(live.map((item) => item.email), [desired.email]);
+  } finally {
+    await runner.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('重启后 uptime 反而更大时也能识别（按进程启动时刻，而非 uptime 是否回退）', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-fast-restart-'));
+  const store = new AgentStore(join(directory, 'agent.db'), {
+    nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
+  });
+  const desired = user();
+  store.applyConfigSnapshot({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [desired] });
+  // The fake reports a real, continuously growing uptime, so moving the virtual
+  // process start is the only thing that can betray a restart.
+  let virtualStart = Date.now() - 600;
+  let live: Array<{ email: string; uuid?: string }> = [{ email: desired.email, uuid: desired.uuid }];
+  let ensured = 0;
+  const uptimes: number[] = [];
+  const api = {
+    getConfig: async () => ({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [desired] }),
+    heartbeat: async () => ({ accepted: true, ackThrough: '0', configRevision: '1' }),
+    uploadBatch: async () => ({ accepted: true, duplicate: false, ackThrough: '1' }),
+    reportCommandResult: async () => undefined,
+    consumeEvents: async (_handler: unknown, signal: AbortSignal) => {
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    },
+  } as unknown as AgentApiClient;
+  const xray: XrayAdapter = {
+    health: async () => undefined,
+    uptimeSeconds: async () => { const value = (Date.now() - virtualStart) / 1_000; uptimes.push(value); return value; },
+    inboundLive: async () => true,
+    readAbsoluteCounters: async () => [],
+    listUsers: async () => live,
+    ensureUser: async (input) => { ensured += 1; live = [{ email: input.email, uuid: input.uuid }]; },
+    removeUser: async (email) => { live = live.filter((item) => item.email !== email); },
+  };
+  const runner = new AgentRunner({
+    agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
+    databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'),
+    restartToleranceMs: 200,
+    sampleIntervalMs: 1_500, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
+  }, store, api, xray);
+
+  try {
+    await runner.start();
+    await waitFor(() => ensured >= 1);
+    await waitFor(() => uptimes.length >= 1, 3_000);
+    const before = ensured;
+    const seenBefore = uptimes.length;
+    // Xray is replaced right after a sample. By the NEXT sample (1.5s later)
+    // the new process已经跑了 1.5s，比上次看到的 0.6s 还大——「uptime 是否
+    // 回退」完全看不出来，只有进程启动时刻前移暴露了它。
+    virtualStart = Date.now();
+    live = [];
+    await waitFor(() => ensured > before, 6_000);
+    assert.deepEqual(live.map((item) => item.email), [desired.email]);
+    const [previous, next] = [uptimes[seenBefore - 1], uptimes[seenBefore]];
+    assert.ok(next !== undefined && next >= previous, `重启后的 uptime 必须不小于此前观测值：${previous} → ${next}`);
+  } finally {
+    await runner.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('探测不到助手状态时不做破坏性清理', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-status-unknown-'));
+  const store = new AgentStore(join(directory, 'agent.db'), {
+    nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
+  });
+  store.applyConfigSnapshot({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [] });
+  const requestDir = join(directory, 'xray');
+  const resultDir = join(directory, 'xray-out');
+  mkdirSync(requestDir, { recursive: true });
+  mkdirSync(resultDir, { recursive: true });
+  const api = {
+    getConfig: async () => ({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [] }),
+    heartbeat: async () => ({ accepted: true, ackThrough: '0', configRevision: '1' }),
+    uploadBatch: async () => ({ accepted: true, duplicate: false, ackThrough: '1' }),
+    reportCommandResult: async () => undefined,
+    consumeEvents: async (_handler: unknown, signal: AbortSignal) => {
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    },
+  } as unknown as AgentApiClient;
+  const xray: XrayAdapter = {
+    health: async () => undefined,
+    uptimeSeconds: async () => 1,
+    inboundLive: async () => true,
+    readAbsoluteCounters: async () => [],
+    listUsers: async () => [],
+    ensureUser: async () => undefined,
+    removeUser: async () => undefined,
+  };
+  let resets = 0;
+  const runner = new AgentRunner({
+    agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
+    databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: requestDir, inboundResultDir: resultDir, restartToleranceMs: 2_000,
+    sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
+  }, store, api, xray, {
+    apply: async () => { throw new Error('不应部署'); },
+    // No answer is not evidence of a foreign inbound — and wiping the config on
+    // a guess would take a healthy node offline.
+    status: async () => { throw new Error('等待 Xray 配置助手超时（5 秒）'); },
+    reset: async (requestId) => {
+      resets += 1;
+      return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: false, listenPort: 0, xrayVersion: '' };
+    },
+  });
+
+  try {
+    await runner.start();
+    assert.equal(resets, 0, '探测失败不得触发清空');
+  } finally {
+    await runner.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('清空外来入站后仍能启动，用户等到入站重新部署才补齐', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-foreign-users-'));
+  const store = new AgentStore(join(directory, 'agent.db'), {
+    nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
+  });
+  const desired = user();
+  const snapshot: AgentConfigSnapshot = { nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [desired] };
+  store.applyConfigSnapshot(snapshot);
+  const requestDir = join(directory, 'xray');
+  const resultDir = join(directory, 'xray-out');
+  mkdirSync(requestDir, { recursive: true });
+  mkdirSync(resultDir, { recursive: true });
+  // Cleaning up the stranger's inbound removes the TAG: Xray cannot add users
+  // to a tag that no longer exists, so any provisioning attempt now fails.
+  let tagExists = true;
+  let live: Array<{ email: string; uuid?: string }> = [];
+  const results: Array<{ status: string; error?: string }> = [];
+  const command = {
+    commandId: 'command-inbound-1',
+    type: 'ENSURE_INBOUND',
+    targetRevision: '2',
+    payload: {
+      inboundTag: 'test-in', listenPort: 443, dest: 'www.microsoft.com:443',
+      serverNames: ['www.microsoft.com'], flow: 'xtls-rprx-vision', fingerprint: 'chrome', spiderX: '/',
+    },
+  };
+  let delivered = false;
+  const api = {
+    getConfig: async () => snapshot,
+    whoami: async () => ({ observedIp: '203.0.113.9' }),
+    heartbeat: async () => ({ accepted: true, ackThrough: '0', configRevision: '1' }),
+    uploadBatch: async () => ({ accepted: true, duplicate: false, ackThrough: '1' }),
+    reportCommandResult: async (result: { status: string; error?: string }) => { results.push(result); },
+    consumeEvents: async (handler: (command: unknown) => Promise<void>, signal: AbortSignal) => {
+      if (!delivered) {
+        delivered = true;
+        await handler(command);
+      }
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    },
+  } as unknown as AgentApiClient;
+  const xray: XrayAdapter = {
+    health: async () => undefined,
+    uptimeSeconds: async () => 1,
+    inboundLive: async () => tagExists,
+    readAbsoluteCounters: async () => [],
+    listUsers: async () => live,
+    ensureUser: async (target) => {
+      if (!tagExists) throw new Error('入站 test-in 不存在');
+      live = [...live.filter((item) => item.email !== target.email), { email: target.email, uuid: target.uuid }];
+    },
+    removeUser: async (email) => { live = live.filter((item) => item.email !== email); },
+  };
+  let resets = 0;
+  const runner = new AgentRunner({
+    agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
+    databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: requestDir, inboundResultDir: resultDir, restartToleranceMs: 2_000,
+    sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
+  }, store, api, xray, {
+    status: async (requestId) => ({ requestId, ok: true, changed: false, restarted: false, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: true, listenPort: 443, xrayVersion: '' }),
+    reset: async (requestId) => {
+      resets += 1;
+      tagExists = false;
+      live = [];
+      return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: false, listenPort: 0, xrayVersion: '' };
+    },
+    apply: async (_spec, requestId) => {
+      tagExists = true;
+      return {
+        requestId, ok: true, changed: true, restarted: true,
+        realityPublicKey: 'k'.repeat(43), shortId: '0123456789abcdef', serverName: 'www.microsoft.com',
+        listen: '0.0.0.0', deployed: true, listenPort: 443, xrayVersion: 'Xray 1.8.24',
+      };
+    },
+  });
+
+  try {
+    // The cleanup must not take the process down with it: this very process is
+    // the one that has to receive the ENSURE_INBOUND that restores service.
+    await runner.start();
+    assert.equal(resets, 1, '必须清空外来入站');
+    assert.equal(live.length, 0, '入站不存在期间不应尝试下发用户');
+    await waitFor(() => results.length > 0, 5_000);
+    assert.equal(results[0]?.status, 'completed', `部署应成功：${results[0]?.error ?? ''}`);
+    assert.deepEqual(live.map((item) => item.email), [desired.email], '入站部署完成后用户必须补齐');
+  } finally {
+    await runner.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('清空外来入站后、重新部署前进程重启，重启后的启动不得向已删除的 tag 下发用户', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-foreign-restart-'));
+  const store = new AgentStore(join(directory, 'agent.db'), {
+    nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
+  });
+  const desired = user();
+  const snapshot: AgentConfigSnapshot = { nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [desired] };
+  store.applyConfigSnapshot(snapshot);
+  const requestDir = join(directory, 'xray');
+  const resultDir = join(directory, 'xray-out');
+  mkdirSync(requestDir, { recursive: true });
+  mkdirSync(resultDir, { recursive: true });
+  // The restart lands BETWEEN the cleanup and the redeployment: the tag died
+  // with the foreign inbound, and the in-memory "waiting for an inbound" flag
+  // died with the first process. The new process must reach the same
+  // conclusion from durable state alone — otherwise its first reconcile hits
+  // a tag that does not exist, start() throws, and the ENSURE_INBOUND that
+  // restores service can never arrive (systemd just keeps restarting).
+  let tagExists = true;
+  let helperDeployed = true;
+  let live: Array<{ email: string; uuid?: string }> = [];
+  let missingTagAttempts = 0;
+  const results: Array<{ status: string; error?: string }> = [];
+  const command = {
+    commandId: 'command-inbound-2',
+    type: 'ENSURE_INBOUND',
+    targetRevision: '2',
+    payload: {
+      inboundTag: 'test-in', listenPort: 443, dest: 'www.microsoft.com:443',
+      serverNames: ['www.microsoft.com'], flow: 'xtls-rprx-vision', fingerprint: 'chrome', spiderX: '/',
+    },
+  };
+  const config: AgentConfig = {
+    agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
+    databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: requestDir, inboundResultDir: resultDir, restartToleranceMs: 2_000,
+    sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
+  };
+  const xray: XrayAdapter = {
+    health: async () => undefined,
+    uptimeSeconds: async () => 1,
+    inboundLive: async () => tagExists,
+    readAbsoluteCounters: async () => [],
+    listUsers: async () => live,
+    ensureUser: async (target) => {
+      if (!tagExists) {
+        missingTagAttempts += 1;
+        throw new Error('入站 test-in 不存在');
+      }
+      live = [...live.filter((item) => item.email !== target.email), { email: target.email, uuid: target.uuid }];
+    },
+    removeUser: async (email) => { live = live.filter((item) => item.email !== email); },
+  };
+  const applier = {
+    status: async (requestId: string) => ({ requestId, ok: true, changed: false, restarted: false, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: helperDeployed, listenPort: 443, xrayVersion: '' }),
+    reset: async (requestId: string) => {
+      helperDeployed = false;
+      tagExists = false;
+      live = [];
+      return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: false, listenPort: 0, xrayVersion: '' };
+    },
+    apply: async (_spec: unknown, requestId: string) => {
+      helperDeployed = true;
+      tagExists = true;
+      return {
+        requestId, ok: true, changed: true, restarted: true,
+        realityPublicKey: 'k'.repeat(43), shortId: '0123456789abcdef', serverName: 'www.microsoft.com',
+        listen: '0.0.0.0', deployed: true, listenPort: 443, xrayVersion: 'Xray 1.8.24',
+      };
+    },
+  };
+
+  try {
+    // First process: clears the foreign inbound, then "goes down".
+    const first = new AgentRunner(config, store, {
+      getConfig: async () => snapshot,
+      heartbeat: async () => ({ accepted: true, ackThrough: '0', configRevision: '1' }),
+      uploadBatch: async () => ({ accepted: true, duplicate: false, ackThrough: '1' }),
+      reportCommandResult: async () => undefined,
+      consumeEvents: async (_handler: unknown, signal: AbortSignal) => {
+        await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+      },
+    } as unknown as AgentApiClient, xray, applier);
+    await first.start();
+    assert.equal(tagExists, false, '第一个进程应已清空外来入站');
+    await first.stop();
+
+    // Second process over the same durable state: the helper confirms nothing
+    // is deployed. Startup must defer user provisioning until the inbound is
+    // redeployed instead of throwing at the missing tag.
+    let delivered = false;
+    const second = new AgentRunner(config, store, {
+      getConfig: async () => snapshot,
+      whoami: async () => ({ observedIp: '203.0.113.9' }),
+      heartbeat: async () => ({ accepted: true, ackThrough: '0', configRevision: '1' }),
+      uploadBatch: async () => ({ accepted: true, duplicate: false, ackThrough: '1' }),
+      reportCommandResult: async (result: { status: string; error?: string }) => { results.push(result); },
+      consumeEvents: async (handler: (command: unknown) => Promise<void>, signal: AbortSignal) => {
+        if (!delivered) {
+          delivered = true;
+          await handler(command);
+        }
+        await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+      },
+    } as unknown as AgentApiClient, xray, applier);
+    await second.start();
+    await waitFor(() => results.length > 0, 5_000);
+    assert.equal(results[0]?.status, 'completed', `部署应成功：${results[0]?.error ?? ''}`);
+    assert.equal(missingTagAttempts, 0, '重启后不得向已删除的 tag 下发用户');
+    assert.deepEqual(live.map((item) => item.email), [desired.email], '入站部署完成后用户必须补齐');
+    await second.stop();
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('既有节点重装到全新 VPS：tag 一开始就不存在，启动不下发用户、等部署完成再补齐', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-fresh-vps-'));
+  // The state database is FRESH (the VPS is new) — the node's users live only
+  // in the backend snapshot, which also flips the mode to direct_primary.
+  const store = new AgentStore(join(directory, 'agent.db'), {
+    nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
+  });
+  const desired = user();
+  const snapshot: AgentConfigSnapshot = { nodeId: 'node-1', revision: '5', controlMode: 'direct_primary', users: [desired] };
+  const requestDir = join(directory, 'xray');
+  const resultDir = join(directory, 'xray-out');
+  // The installer DID install the helper (both handoff directories exist), but
+  // Xray runs with base and metering fragments only — the inbound arrives as
+  // an ENSURE_INBOUND, which has not happened on this machine yet.
+  mkdirSync(requestDir, { recursive: true });
+  mkdirSync(resultDir, { recursive: true });
+  let tagExists = false;
+  let live: Array<{ email: string; uuid?: string }> = [];
+  let missingTagAttempts = 0;
+  const results: Array<{ status: string; error?: string }> = [];
+  const command = {
+    commandId: 'command-inbound-3',
+    type: 'ENSURE_INBOUND',
+    targetRevision: '6',
+    payload: {
+      inboundTag: 'test-in', listenPort: 443, dest: 'www.microsoft.com:443',
+      serverNames: ['www.microsoft.com'], flow: 'xtls-rprx-vision', fingerprint: 'chrome', spiderX: '/',
+    },
+  };
+  let delivered = false;
+  const api = {
+    getConfig: async () => snapshot,
+    whoami: async () => ({ observedIp: '203.0.113.9' }),
+    heartbeat: async () => ({ accepted: true, ackThrough: '0', configRevision: '5' }),
+    uploadBatch: async () => ({ accepted: true, duplicate: false, ackThrough: '1' }),
+    reportCommandResult: async (result: { status: string; error?: string }) => { results.push(result); },
+    consumeEvents: async (handler: (command: unknown) => Promise<void>, signal: AbortSignal) => {
+      if (!delivered) {
+        delivered = true;
+        await handler(command);
+      }
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    },
+  } as unknown as AgentApiClient;
+  const xray: XrayAdapter = {
+    health: async () => undefined,
+    uptimeSeconds: async () => 1,
+    inboundLive: async () => tagExists,
+    readAbsoluteCounters: async () => [],
+    listUsers: async () => live,
+    ensureUser: async (target) => {
+      if (!tagExists) {
+        missingTagAttempts += 1;
+        throw new Error('入站 test-in 不存在');
+      }
+      live = [...live.filter((item) => item.email !== target.email), { email: target.email, uuid: target.uuid }];
+    },
+    removeUser: async (email) => { live = live.filter((item) => item.email !== email); },
+  };
+  const runner = new AgentRunner({
+    agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
+    databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: requestDir, inboundResultDir: resultDir, restartToleranceMs: 2_000,
+    sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
+  }, store, api, xray, {
+    // The helper is installed and answers: nothing is deployed on this host.
+    status: async (requestId) => ({ requestId, ok: true, changed: false, restarted: false, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: false, listenPort: 0, xrayVersion: '' }),
+    reset: async () => { throw new Error('没有残留入站，不应清空'); },
+    apply: async (_spec: unknown, requestId: string) => {
+      tagExists = true;
+      return {
+        requestId, ok: true, changed: true, restarted: true,
+        realityPublicKey: 'k'.repeat(43), shortId: '0123456789abcdef', serverName: 'www.microsoft.com',
+        listen: '0.0.0.0', deployed: true, listenPort: 443, xrayVersion: 'Xray 1.8.24',
+      };
+    },
+  });
+
+  try {
+    // Without the detection this throws out of start() (refreshConfig's
+    // reconcile, or checkXrayAndRecover's) and the events loop — the only
+    // route for the recovering ENSURE_INBOUND — never starts.
+    await runner.start();
+    assert.equal(store.isInboundAwaiting(), true, '受管入站缺失时应记录等待意图');
+    await waitFor(() => results.length > 0, 5_000);
+    assert.equal(results[0]?.status, 'completed', `部署应成功：${results[0]?.error ?? ''}`);
+    assert.equal(missingTagAttempts, 0, '入站不存在期间不得向缺失的 tag 下发用户');
+    assert.deepEqual(live.map((item) => item.email), [desired.email], '入站部署完成后用户必须补齐');
+    assert.equal(store.isInboundAwaiting(), false, '部署完成后必须清除等待意图');
+  } finally {
+    await runner.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('两次重启间隔小于容差时，靠活跃用户表补救而不是只靠启动时刻估算', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-tight-restart-'));
+  const store = new AgentStore(join(directory, 'agent.db'), {
+    nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
+  });
+  const desired = user();
+  const snapshot: AgentConfigSnapshot = { nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [desired] };
+  store.applyConfigSnapshot(snapshot);
+  // Process A started 600ms ago and already carries the reconciled user. It is
+  // replaced ~1s after ITS OWN start — entirely between samples, and the
+  // estimated-start advance (~0.6s) stays inside the DEFAULT 2s tolerance, so
+  // only the live user table can notice the emptied inbound.
+  let virtualStart = Date.now() - 600;
+  let live: Array<{ email: string; uuid?: string }> = [{ email: desired.email, uuid: desired.uuid }];
+  let ensured = 0;
+  const observations: Array<{ at: number; uptime: number }> = [];
+  const api = {
+    getConfig: async () => snapshot,
+    heartbeat: async () => ({ accepted: true, ackThrough: '0', configRevision: '1' }),
+    uploadBatch: async () => ({ accepted: true, duplicate: false, ackThrough: '1' }),
+    reportCommandResult: async () => undefined,
+    consumeEvents: async (_handler: unknown, signal: AbortSignal) => {
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    },
+  } as unknown as AgentApiClient;
+  const xray: XrayAdapter = {
+    health: async () => undefined,
+    uptimeSeconds: async () => {
+      const uptime = (Date.now() - virtualStart) / 1_000;
+      observations.push({ at: Date.now(), uptime });
+      return uptime;
+    },
+    inboundLive: async () => true,
+    readAbsoluteCounters: async () => [],
+    listUsers: async () => live,
+    ensureUser: async (input) => { ensured += 1; live = [{ email: input.email, uuid: input.uuid }]; },
+    removeUser: async (email) => { live = live.filter((item) => item.email !== email); },
+  };
+  const runner = new AgentRunner({
+    agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
+    databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'),
+    restartToleranceMs: 2_000, sampleIntervalMs: 50, heartbeatIntervalMs: 60_000,
+    offlineAllowanceBytes: 64n * 1024n * 1024n,
+  }, store, api, xray);
+
+  try {
+    await runner.start();
+    await waitFor(() => ensured >= 1);
+    await waitFor(() => observations.length >= 1);
+    const before = ensured;
+    const seen = observations.length;
+    virtualStart = Date.now();
+    live = [];
+    await waitFor(() => ensured > before, 6_000);
+    assert.deepEqual(live.map((item) => item.email), [desired.email], '容差内的重启也必须补齐用户');
+    // The recovery was NOT the tolerance: the estimated start advanced by less
+    // than it across the swap.
+    const previous = observations[seen - 1];
+    const next = observations[seen];
+    assert.ok(previous && next, '必须观察到跨越重启的两次采样');
+    const advance = (next.at - next.uptime * 1_000) - (previous.at - previous.uptime * 1_000);
+    assert.ok(advance <= 2_000, `估算启动时刻的推进(${advance}ms)应在容差内，触发补救的只能是活跃用户表`);
+  } finally {
+    await runner.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

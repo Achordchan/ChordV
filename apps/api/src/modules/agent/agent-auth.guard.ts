@@ -5,6 +5,8 @@ import { AgentService } from "./agent.service";
 export type AgentAuthenticatedRequest = {
   headers: { authorization?: string; "x-chordv-agent-id"?: string; "x-chordv-node-id"?: string };
   agent?: NodeAgent;
+  /** Express's resolved client address (`trust proxy` is enabled in main.ts). */
+  ip?: string;
 };
 
 @Injectable()

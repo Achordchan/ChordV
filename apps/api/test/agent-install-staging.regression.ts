@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { renderInstallScript } from "../src/modules/agent/agent-install.controller";
+import { renderInstallScript, renderXrayInstall } from "../src/modules/agent/agent-install.controller";
 
 const root = mkdtempSync(path.join(tmpdir(), "agent-install-staging-"));
 try {
@@ -21,9 +21,14 @@ try {
   }
   writeFileSync(path.join(root, "corrupt.tgz"), "not an archive");
   writeFileSync(path.join(root, "curl"), `#!/bin/bash
+url=""
 while [[ $# -gt 0 ]]; do
-  if [[ "$1" == -o ]]; then output="$2"; shift 2; else shift; fi
+  if [[ "$1" == -o ]]; then output="$2"; shift 2;
+  else [[ "$1" == http* ]] && url="$1"; shift; fi
 done
+# The Xray section fetches the artifact and its digest from the same origin, so
+# the stub has to answer both.
+if [[ "$url" == *.sha256 ]]; then cp "\${TEST_SHA:-/dev/null}" "$output"; exit 0; fi
 if [[ "\${TEST_PARTIAL:-false}" == true ]]; then head -c 64 "$TEST_PAYLOAD" > "$output"; exit 18; fi
 cp "$TEST_PAYLOAD" "$output"
 `, { mode: 0o755 });
@@ -96,5 +101,108 @@ grep -q valid "$first/dist/src/main.js"
 [[ -z "$(find /opt/chordv-node-agent/releases -maxdepth 1 -name '.staging.*' -print)" ]]
 `], { encoding: "utf8" });
   assert.equal(success.status, 0, `${success.stdout}\n${success.stderr}`);
-  console.log("agent install staging passed (interrupted/corrupt/incomplete preserved, two atomic switches retained old releases, legacy env identity refused before download, health check rejects non-root/writable env file and drops to the state database owner)");
+
+  // The Xray section runs as root on a fresh host: verify what it actually
+  // creates, not just what the rendered text says.
+  writeFileSync(path.join(root, "xray.sh"), `#!/bin/bash
+set -euo pipefail
+API_BASE='https://example.com/api'
+ARCH=linux-x64
+SERVICE_USER=chordv-agent
+NODE_BIN=/usr/local/bin/node
+STAGING_DIR="$(mktemp -d)"
+ARCHIVE=/tmp/agent.tgz
+CURRENT_LINK=/opt/chordv-node-agent/current
+${renderXrayInstall()}
+`);
+  const xrayInstall = spawnSync("docker", ["run", "--rm", "--network", "none", "--entrypoint", "bash", "-v", `${root}:/test:ro`, "chordv-api:latest", "-ec", `
+mkdir -p /test-bin /release/deploy /release/dist/src
+cp /test/curl /test-bin/curl
+export PATH=/test-bin:$PATH
+id chordv-agent >/dev/null 2>&1 || useradd --system chordv-agent
+printf '{"log":{}}' > /release/deploy/xray-base.json
+printf '{"api":{}}' > /release/deploy/xray-api.fragment.json
+printf 'console.log("helper");' > /release/dist/src/xray-apply.js
+# The section installs root-executed files from the ARCHIVE root downloaded,
+# never through the release tree the service user extracts.
+tar -czf /tmp/agent.tgz -C /release ./deploy/xray-base.json ./deploy/xray-api.fragment.json ./dist/src/xray-apply.js
+mkdir -p /opt/chordv-node-agent && ln -sfn /release /opt/chordv-node-agent/current
+mkdir -p /payload && printf '#!/bin/sh\necho stub-xray\n' > /payload/xray && chmod 0755 /payload/xray
+tar -czf /tmp/xray.tgz -C /payload xray
+sha256sum /tmp/xray.tgz | cut -d' ' -f1 > /tmp/xray.sha256
+
+# An Xray unit this installer did not write must not be replaced: doing so
+# would point an operator's own service at a config directory with no
+# user-facing inbound and restart it.
+mkdir -p /etc/systemd/system
+printf '[Unit]\\nDescription=Someone else Xray\\n' > /etc/systemd/system/xray.service
+TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh 2>/tmp/takeover.err && exit 96
+grep -q '不是由本安装脚本管理的 Xray 服务' /tmp/takeover.err
+grep -q 'Someone else Xray' /etc/systemd/system/xray.service
+[[ ! -e /usr/local/bin/xray ]]
+rm -f /etc/systemd/system/xray.service
+
+# A vendor unit lives under /usr/lib; writing ours into /etc would override it
+# without ever touching the file the guard used to check.
+mkdir -p /usr/lib/systemd/system
+printf '[Unit]\\nDescription=Vendor Xray\\n' > /usr/lib/systemd/system/xray.service
+TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh 2>/tmp/vendor.err && exit 95
+grep -q '/usr/lib/systemd/system/xray.service' /tmp/vendor.err
+[[ ! -e /etc/systemd/system/xray.service ]]
+rm -f /usr/lib/systemd/system/xray.service
+
+# A drop-in is someone's deliberate customization of that service too.
+mkdir -p /etc/systemd/system/xray.service.d
+TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh 2>/tmp/dropin.err && exit 94
+grep -q 'xray.service.d' /tmp/dropin.err
+rmdir /etc/systemd/system/xray.service.d
+
+# A digest that does not match must abort before anything is installed.
+TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/dev/null bash /test/xray.sh 2>/tmp/xray.err && exit 99
+# Fail for the RIGHT reason: the digest check, not a missing tool upstream of it.
+grep -qi 'sha256sum' /tmp/xray.err
+[[ ! -e /usr/local/bin/xray ]]
+[[ ! -e /etc/chordv/xray/conf.d/00-base.json ]]
+
+TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh
+[[ "$(stat -c '%U:%G:%a' /etc/chordv/xray/conf.d/00-base.json)" == root:root:644 ]]
+[[ "$(stat -c '%U:%G:%a' /etc/chordv/xray/conf.d/10-api.json)" == root:root:644 ]]
+[[ ! -e /etc/chordv/xray/conf.d/50-inbound.json ]]
+[[ "$(stat -c '%U:%G:%a' /usr/local/lib/chordv/xray-apply.js)" == root:root:755 ]]
+# Both handoff directories hang off a ROOT-owned parent: the agent must never
+# own a directory that root walks, or a symlink swapped in there would redirect
+# what root writes — and, on reinstall, what "install -d -o chordv-agent"
+# chowns (that is how the helper script itself could be handed to the agent).
+[[ "$(stat -c '%U:%G:%a' /var/lib/chordv-xray)" == root:root:755 ]]
+[[ "$(stat -c '%U:%a' /var/lib/chordv-xray/requests)" == chordv-agent:700 ]]
+# Root's results must land outside anything the agent can write or replace.
+[[ "$(stat -c '%U:%G:%a' /var/lib/chordv-xray/results)" == root:root:755 ]]
+# A planted symlink must be refused, not followed and chowned.
+rm -rf /var/lib/chordv-xray/requests
+ln -s /usr/local/lib/chordv /var/lib/chordv-xray/requests
+TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh 2>/tmp/symlink.err && exit 98
+grep -q '符号链接' /tmp/symlink.err
+[[ "$(stat -c '%U:%G' /usr/local/lib/chordv)" == root:root ]]
+rm -f /var/lib/chordv-xray/requests
+TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh
+[[ "$(stat -c '%U:%a' /var/lib/chordv-xray/requests)" == chordv-agent:700 ]]
+[[ "$(stat -c '%a' /usr/local/bin/xray)" == 755 ]]
+grep -q 'ReadOnlyPaths=/etc/chordv/xray' /etc/systemd/system/xray.service
+grep -q 'PathChanged=/var/lib/chordv-xray/requests/pending.json' /etc/systemd/system/chordv-xray-apply.path
+grep -q '/usr/local/lib/chordv/xray-apply.js' /etc/systemd/system/chordv-xray-apply.service
+grep -q 'chordv-managed: xray' /etc/systemd/system/xray.service
+# What root runs must come from the archive, not from the release tree: replace
+# the release copy with a marker and confirm it never reaches the helper path.
+printf 'ATTACKER' > /release/dist/src/xray-apply.js
+TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh
+! grep -q ATTACKER /usr/local/lib/chordv/xray-apply.js
+# Re-running the installer over its OWN unit is a normal upgrade — but it must
+# not overwrite a metering fragment the operator has tuned.
+printf '{"api":{"tag":"api"},"operator":true}' > /etc/chordv/xray/conf.d/10-api.json
+TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh 2>/tmp/upgrade.err
+grep -q operator /etc/chordv/xray/conf.d/10-api.json
+grep -q '保留了本机已有' /tmp/upgrade.err
+`], { encoding: "utf8" });
+  assert.equal(xrayInstall.status, 0, `xray install: ${xrayInstall.stdout}\n${xrayInstall.stderr}`);
+  console.log("agent install staging passed (interrupted/corrupt/incomplete preserved, two atomic switches retained old releases, legacy env identity refused before download, health check rejects non-root/writable env file and drops to the state database owner, xray install verifies its digest, refuses to take over a foreign xray unit, keeps config root-owned)");
 } finally { rmSync(root, { recursive: true, force: true }); }

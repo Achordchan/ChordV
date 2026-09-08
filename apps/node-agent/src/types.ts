@@ -5,6 +5,7 @@ export const AGENT_COMMAND_TYPES = [
   'REMOVE_USER',
   'RECONCILE_USERS',
   'REFRESH_QUOTA',
+  'ENSURE_INBOUND',
 ] as const;
 
 export type AgentCommandType = (typeof AGENT_COMMAND_TYPES)[number];
@@ -81,6 +82,40 @@ export interface AgentHeartbeat {
   configRevision: string;
   queueDepth: number;
   xrayStatus: 'unknown' | 'healthy' | 'degraded' | 'offline';
+}
+
+/**
+ * The inbound the control plane wants deployed. Policy only — the Reality key
+ * pair and shortId are generated on the VPS and never travel in this direction.
+ */
+export interface InboundSpec {
+  inboundTag: string;
+  listenPort: number;
+  dest: string;
+  serverNames: string[];
+  flow: 'xtls-rprx-vision' | '';
+  fingerprint: string;
+  spiderX: string;
+  rotateKeys: boolean;
+}
+
+/** What the agent reports back once the inbound is live. Public parts only. */
+export interface InboundReport {
+  requestId: string;
+  inboundTag: string;
+  serverHost: string;
+  serverPort: number;
+  realityPublicKey: string;
+  shortId: string;
+  serverName: string;
+  flow: string;
+  fingerprint: string;
+  spiderX: string;
+  /** Address family the inbound accepts, so a repeat can re-check the endpoint. */
+  listen: string;
+  xrayVersion: string;
+  changed: boolean;
+  liveVerifiedAt: string;
 }
 
 export interface SampleResult {
