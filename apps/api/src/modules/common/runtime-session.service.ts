@@ -121,6 +121,8 @@ export class RuntimeSessionService {
   private activeRuntime?: GeneratedRuntimeConfigDto;
   private activeRuntimeUsageContext?: ActiveRuntimeUsageContext;
   private readonly userLeaseLocks = new Map<string, Promise<void>>();
+  private readonly directTrafficResetsInFlight = new Map<string, number>();
+  private directProvisioningRetryCursor = "";
 
   constructor(
     private readonly prisma: PrismaService,
@@ -550,6 +552,26 @@ export class RuntimeSessionService {
   }
 
   /**
+   * Marks a subscription's direct traffic reset as in flight so the
+   * provisioning reconciler below leaves its quiesced bindings alone until
+   * the reset finishes (the reset re-provisions on its own afterwards).
+   */
+  async withDirectTrafficResetInFlight<T>(subscriptionId: string, task: () => Promise<T>): Promise<T> {
+    const current = this.directTrafficResetsInFlight.get(subscriptionId) ?? 0;
+    this.directTrafficResetsInFlight.set(subscriptionId, current + 1);
+    try {
+      return await task();
+    } finally {
+      const remaining = (this.directTrafficResetsInFlight.get(subscriptionId) ?? 1) - 1;
+      if (remaining <= 0) {
+        this.directTrafficResetsInFlight.delete(subscriptionId);
+      } else {
+        this.directTrafficResetsInFlight.set(subscriptionId, remaining);
+      }
+    }
+  }
+
+  /**
    * Durable retry for provisioning that could not run yet. A disabled binding
    * under an ELIGIBLE subscription means restoration is still owed — most
    * commonly a node re-enabled before its DISABLE_USER results and final
@@ -557,17 +579,38 @@ export class RuntimeSessionService {
    * re-activation until then). The sync itself decides eligibility, so this
    * never provisions anything the subscription's current state does not call
    * for; when it does, the ENSURE_USER retry worker takes over.
+   *
+   * Fairness: an advancing cursor rotates through subscriptions in id order,
+   * so a large population of stuck-ineligible subscriptions (paused, disabled
+   * team, ...) cannot occupy every batch slot and starve an eligible one.
+   * Inactive nodes are pruned in the query itself.
    */
   @Cron("*/30 * * * * *")
   @DrainableJob()
   async retryPendingDirectProvisioning() {
     const subscriptions = await this.prisma.panelClientBinding.findMany({
-      where: { status: "disabled" },
+      where: {
+        status: "disabled",
+        // The sync never provisions on an inactive node — prune here so
+        // bindings of disabled nodes cannot occupy retry slots.
+        node: { isActive: true },
+        ...(this.directProvisioningRetryCursor
+          ? { subscriptionId: { gt: this.directProvisioningRetryCursor } }
+          : {})
+      },
       select: { subscriptionId: true },
       distinct: ["subscriptionId"],
+      orderBy: { subscriptionId: "asc" },
       take: DIRECT_PROVISIONING_RETRY_BATCH_SIZE
     });
+    this.directProvisioningRetryCursor =
+      subscriptions.length >= DIRECT_PROVISIONING_RETRY_BATCH_SIZE
+        ? subscriptions[subscriptions.length - 1]!.subscriptionId
+        : "";
     for (const { subscriptionId } of subscriptions) {
+      if (this.directTrafficResetsInFlight.has(subscriptionId)) {
+        continue;
+      }
       try {
         await this.prisma.$transaction((tx) => this.queueDirectSubscriptionAccessSyncTx(tx, subscriptionId));
       } catch (error) {

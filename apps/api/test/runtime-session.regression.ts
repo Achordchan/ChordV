@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
-import { ConflictException } from "@nestjs/common";
 import { RuntimeSessionService } from "../src/modules/common/runtime-session.service";
 import { applyDirectBatch } from "../src/modules/agent/agent-direct-metering";
 import { buildSnapshotKey, shouldProvisionPanelClients } from "../src/modules/common/runtime-session.utils";
@@ -261,28 +260,100 @@ async function main() {
   //    retryPendingDirectProvisioning re-runs the per-subscription sync every
   //    tick until settlement lets the re-activation through. A one-shot warn
   //    would leave the node enabled with its users permanently disabled.
+  //    Retries must also be FAIR (cursor rotation, inactive nodes pruned) and
+  //    must skip subscriptions whose direct traffic reset is in flight.
+  const scannedWheres: Array<Record<string, unknown>> = [];
+  const synced: string[] = [];
+  const subscriptionsPool = ["sub_1", "sub_2", "sub_3"];
   const cronService = Object.assign(Object.create(RuntimeSessionService.prototype), {
+    directProvisioningRetryCursor: "",
+    directTrafficResetsInFlight: new Map([["sub_2", 1]]),
     prisma: {
       panelClientBinding: {
-        findMany: async () => [{ subscriptionId: "sub_1" }]
+        findMany: async (payload: { where: Record<string, unknown> }) => {
+          scannedWheres.push(payload.where);
+          const after = (payload.where.subscriptionId as { gt?: string } | undefined)?.gt;
+          return subscriptionsPool
+            .filter((id) => !after || id > after)
+            .map((subscriptionId) => ({ subscriptionId }));
+        }
       },
       $transaction: async (task: (tx: unknown) => Promise<unknown>) => task({})
     },
-    queueDirectSubscriptionAccessSyncTx: async () => {
-      throw new ConflictException("Direct 用户停用前流量批次尚未结清：binding_1");
+    queueDirectSubscriptionAccessSyncTx: async (_tx: unknown, subscriptionId: string) => {
+      synced.push(subscriptionId);
     },
-    logger: { debug: () => undefined, warn: () => undefined }
+    logDirectProvisioningRetry: () => undefined
   }) as RuntimeSessionService;
-  await (cronService as unknown as { retryPendingDirectProvisioning(): Promise<void> }).retryPendingDirectProvisioning();
-  assert.match(
-    runtimeSessionSource,
-    /async retryPendingDirectProvisioning\(\) \{[\s\S]*?distinct: \["subscriptionId"\][\s\S]*?queueDirectSubscriptionAccessSyncTx\(tx, subscriptionId\)/,
-    "重试 cron 必须扫 disabled 绑定所属的订阅并逐订阅重跑事务供给"
+  const cron = cronService as unknown as {
+    retryPendingDirectProvisioning(): Promise<void>;
+    directProvisioningRetryCursor: string;
+  };
+  await cron.retryPendingDirectProvisioning();
+  assert.deepEqual(
+    synced,
+    ["sub_1", "sub_3"],
+    "重置进行中的订阅必须跳过（其余订阅照常重试）"
+  );
+  assert.equal(cron.directProvisioningRetryCursor, "", "不满一批时游标回绕到起点");
+  await cron.retryPendingDirectProvisioning();
+  assert.deepEqual(synced, ["sub_1", "sub_3", "sub_1", "sub_3"], "周期重试持续进行");
+  assert.deepEqual(
+    scannedWheres[1],
+    { status: "disabled", node: { isActive: true } },
+    "查询必须剪掉非活跃节点的绑定，且游标回绕后从头扫起"
+  );
+
+  // Cursor advance: a full batch leaves the cursor at the last id, so a large
+  // stuck population cannot starve subscriptions behind it.
+  cron.directProvisioningRetryCursor = "sub_1";
+  await cron.retryPendingDirectProvisioning();
+  assert.deepEqual(
+    (scannedWheres[2].subscriptionId as { gt?: string })?.gt,
+    "sub_1",
+    "游标推进后只扫其后的订阅"
+  );
+
+  // A reset's in-flight marker is released when the reset finishes, so the
+  // reconciler picks the subscription up on a later tick.
+  const releaseService = Object.assign(Object.create(RuntimeSessionService.prototype), {
+    directTrafficResetsInFlight: new Map<string, number>()
+  }) as unknown as {
+    withDirectTrafficResetInFlight<T>(subscriptionId: string, task: () => Promise<T>): Promise<T>;
+    directTrafficResetsInFlight: Map<string, number>;
+  };
+  let releaseObserved = 0;
+  await releaseService.withDirectTrafficResetInFlight("sub_9", async () => {
+    await releaseService.withDirectTrafficResetInFlight("sub_9", async () => {
+      assert.equal(releaseService.directTrafficResetsInFlight.get("sub_9"), 2, "嵌套重入要计数");
+    });
+    assert.equal(
+      releaseService.directTrafficResetsInFlight.has("sub_9"),
+      true,
+      "内层释放后外层仍在进行中"
+    );
+    releaseObserved = 1;
+  });
+  assert.equal(releaseObserved, 1);
+  assert.equal(
+    releaseService.directTrafficResetsInFlight.has("sub_9"),
+    false,
+    "重置结束后标记必须释放（可重入计数归零即删）"
   );
   assert.match(
     runtimeSessionSource,
     /@Cron\("\*\/30 \* \* \* \* \*"\)\s*\n\s*@DrainableJob\(\)\s*\n\s*async retryPendingDirectProvisioning/,
     "重试必须是周期任务（停用沉降是异步的，一次性重试不够）"
+  );
+  assert.match(
+    runtimeSessionSource,
+    /this\.directProvisioningRetryCursor =\s*\n\s*subscriptions\.length >= DIRECT_PROVISIONING_RETRY_BATCH_SIZE/,
+    "游标必须按批推进并在不满一批时回绕"
+  );
+  assert.match(
+    runtimeSessionSource,
+    /if \(this\.directTrafficResetsInFlight\.has\(subscriptionId\)\) \{\s*\n\s*continue;\s*\n\s*\}/,
+    "重试循环必须跳过重置进行中的订阅"
   );
 
   // 9) The PUBLIC provisioning entry point must be one transaction: a failure

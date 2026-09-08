@@ -1754,13 +1754,20 @@ export class AdminSubscriptionService {
       targetUserId = subscription.userId;
     }
 
-    await this.quiesceAndSettleDirectTrafficReset(subscription.id, targetUserId);
-
     let clearedBindingCount = 0;
     let updatedSubscription: AdminSubscriptionEntity | null = null;
     let panelSync: PanelSyncBestEffortResult = { ok: true };
 
-    await runWithSubscriptionUsageLock(subscription.id, async () => {
+    // The whole quiesce → settle → counters span must exclude the automatic
+    // provisioning reconciler: mid-reset the subscription is still eligible,
+    // so retryPendingDirectProvisioning would reactivate the quiesced
+    // bindings and break the reset's settlement boundary. The marker is
+    // in-memory like the reset itself — a restart aborts the reset, and the
+    // reconciler then restoring service is the intended recovery.
+    await this.runtimeSessionService.withDirectTrafficResetInFlight(subscription.id, async () => {
+      await this.quiesceAndSettleDirectTrafficReset(subscription.id, targetUserId);
+
+      await runWithSubscriptionUsageLock(subscription.id, async () => {
       const resetSampledAt = new Date();
 
       try {
@@ -1860,6 +1867,7 @@ export class AdminSubscriptionService {
       } catch (error) {
         throw toAdminLocalSaveHttpError(error, "订阅流量重置保存失败，请刷新订阅列表后重试。");
       }
+      });
     });
 
     if (!updatedSubscription) {
