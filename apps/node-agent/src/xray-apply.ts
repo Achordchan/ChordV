@@ -17,6 +17,21 @@ import { fileURLToPath } from 'node:url';
 
 const MAX_REQUEST_BYTES = 8 * 1024;
 const HOSTNAME = /^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
+/** The exact bytes a reset publishes: the one fragment that means "no inbound". */
+const EMPTY_INBOUND_FRAGMENT = JSON.stringify({ inbounds: [] }, null, 2) + '\n';
+
+/**
+ * Whether the on-disk fragment is exactly the committed empty one. The file a
+ * successful reset leaves behind serves nobody, and reading it as "deployed"
+ * makes every agent restart classify it as a foreign inbound and reset again —
+ * restarting Xray each time until a new deployment succeeds. An empty written
+ * DIFFERENTLY (hand-formatted, reordered) is not recognized: the helper cannot
+ * prove what it declares, and the caller's only action would be to publish the
+ * empty fragment, which is harmless if the inbound really is gone.
+ */
+function isEmptyFragment(target: string): boolean {
+  try { return fs.readFileSync(target, 'utf8') === EMPTY_INBOUND_FRAGMENT; } catch { return false; }
+}
 
 export interface InboundRequest {
   requestId: string;
@@ -488,7 +503,7 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
     // caller's only action is to publish an empty inbound, which is harmless
     // when there was nothing after all.
     return {
-      deployed: Boolean(state) || fs.existsSync(target),
+      deployed: Boolean(state) || (fs.existsSync(target) && !isEmptyFragment(target)),
       listen: state?.listen || '',
       changed: false,
       restarted: false,
@@ -501,10 +516,13 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
   }
 
   if (request.mode === 'reset') {
-    if (!fs.existsSync(target) && !state) {
+    // Nothing to clear: no state, and either no fragment at all or already the
+    // committed EMPTY one (a previous reset) — no inbound loads either way, and
+    // republishing would restart Xray for nothing on every agent restart.
+    if (!state && (!fs.existsSync(target) || isEmptyFragment(target))) {
       return { deployed: false, listen: '', changed: false, restarted: false, realityPublicKey: '', shortId: '', serverName: '', listenPort: 0, xrayVersion: xrayVersion(deps.xrayBin) };
     }
-    const empty = JSON.stringify({ inbounds: [] }, null, 2) + '\n';
+    const empty = EMPTY_INBOUND_FRAGMENT;
     assertConfigValid(deps, empty);
     // Journal the reset first. Dying between publishing the empty inbound and
     // dropping the state would leave the old hash and keys next to an empty

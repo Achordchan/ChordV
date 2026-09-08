@@ -997,3 +997,74 @@ test('既有节点重装到全新 VPS：tag 一开始就不存在，启动不下
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('两次重启间隔小于容差时，靠活跃用户表补救而不是只靠启动时刻估算', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-tight-restart-'));
+  const store = new AgentStore(join(directory, 'agent.db'), {
+    nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
+  });
+  const desired = user();
+  const snapshot: AgentConfigSnapshot = { nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [desired] };
+  store.applyConfigSnapshot(snapshot);
+  // Process A started 600ms ago and already carries the reconciled user. It is
+  // replaced ~1s after ITS OWN start — entirely between samples, and the
+  // estimated-start advance (~0.6s) stays inside the DEFAULT 2s tolerance, so
+  // only the live user table can notice the emptied inbound.
+  let virtualStart = Date.now() - 600;
+  let live: Array<{ email: string; uuid?: string }> = [{ email: desired.email, uuid: desired.uuid }];
+  let ensured = 0;
+  const observations: Array<{ at: number; uptime: number }> = [];
+  const api = {
+    getConfig: async () => snapshot,
+    heartbeat: async () => ({ accepted: true, ackThrough: '0', configRevision: '1' }),
+    uploadBatch: async () => ({ accepted: true, duplicate: false, ackThrough: '1' }),
+    reportCommandResult: async () => undefined,
+    consumeEvents: async (_handler: unknown, signal: AbortSignal) => {
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    },
+  } as unknown as AgentApiClient;
+  const xray: XrayAdapter = {
+    health: async () => undefined,
+    uptimeSeconds: async () => {
+      const uptime = (Date.now() - virtualStart) / 1_000;
+      observations.push({ at: Date.now(), uptime });
+      return uptime;
+    },
+    inboundLive: async () => true,
+    readAbsoluteCounters: async () => [],
+    listUsers: async () => live,
+    ensureUser: async (input) => { ensured += 1; live = [{ email: input.email, uuid: input.uuid }]; },
+    removeUser: async (email) => { live = live.filter((item) => item.email !== email); },
+  };
+  const runner = new AgentRunner({
+    agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
+    databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'),
+    restartToleranceMs: 2_000, sampleIntervalMs: 50, heartbeatIntervalMs: 60_000,
+    offlineAllowanceBytes: 64n * 1024n * 1024n,
+  }, store, api, xray);
+
+  try {
+    await runner.start();
+    await waitFor(() => ensured >= 1);
+    await waitFor(() => observations.length >= 1);
+    const before = ensured;
+    const seen = observations.length;
+    virtualStart = Date.now();
+    live = [];
+    await waitFor(() => ensured > before, 6_000);
+    assert.deepEqual(live.map((item) => item.email), [desired.email], '容差内的重启也必须补齐用户');
+    // The recovery was NOT the tolerance: the estimated start advanced by less
+    // than it across the swap.
+    const previous = observations[seen - 1];
+    const next = observations[seen];
+    assert.ok(previous && next, '必须观察到跨越重启的两次采样');
+    const advance = (next.at - next.uptime * 1_000) - (previous.at - previous.uptime * 1_000);
+    assert.ok(advance <= 2_000, `估算启动时刻的推进(${advance}ms)应在容差内，触发补救的只能是活跃用户表`);
+  } finally {
+    await runner.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

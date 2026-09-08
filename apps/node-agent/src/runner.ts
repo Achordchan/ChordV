@@ -292,6 +292,21 @@ export class AgentRunner {
       this.reconcilePending = true;
     }
     this.lastXrayStart = startEstimate;
+    // The estimate cannot see a restart that landed WITHIN the tolerance of the
+    // previous process's start — entirely between samples, the baseline is
+    // simply replaced: a freshly started Xray that already accepted the
+    // reconciled users can be restarted again a second later by automation, and
+    // the emptied table never triggers the comparison. The LIVE table is the
+    // ground truth: an enabled user we own going missing means a restart (or
+    // anything else) took them, whatever the uptime says. One extra stats query
+    // per sample, the same kind metering already issues.
+    if (this.currentConfig.controlMode === 'direct_primary' && !this.awaitingInbound) {
+      const desired = this.store.listDesiredUsers().filter((user) => user.enabled);
+      if (desired.length > 0) {
+        const live = new Set((await this.xray.listUsers()).map((user) => user.email));
+        if (desired.some((user) => !live.has(user.email))) this.reconcilePending = true;
+      }
+    }
     await this.flushPendingReconcile();
   }
 

@@ -304,6 +304,26 @@ test('reset 发布空入站并清除密钥状态', () => {
     assert.equal(outcome.changed, true);
     assert.deepEqual(JSON.parse(readFileSync(join(applyDeps.confDir, '50-inbound.json'), 'utf8')), { inbounds: [] });
     assert.equal(fs.existsSync(applyDeps.stateFile), false);
+
+    // The committed empty fragment is NOT a deployment: reading it as one
+    // would make every agent restart classify it as foreign and reset again —
+    // restarting Xray each time until a new deployment succeeds.
+    const status = () => applyRequest(request({ mode: 'status' }), applyDeps);
+    assert.equal(status().deployed, false, 'reset 之后的空片段不得算作已部署');
+    // A repeated reset is a no-op (nothing loads from that fragment, and
+    // republishing would restart Xray for nothing). One restart from the
+    // apply, one from the first reset — no third.
+    const repeat = applyRequest(request({ mode: 'reset' }), applyDeps);
+    assert.deepEqual({ changed: repeat.changed, restarted: repeat.restarted }, { changed: false, restarted: false });
+    assert.equal(applyDeps.restarts, 2, '重复 reset 不得再重启 Xray');
+
+    // An empty written DIFFERENTLY is not the committed fragment: the helper
+    // cannot prove what it declares, so it stays "deployed" (conservative).
+    fs.writeFileSync(join(applyDeps.confDir, '50-inbound.json'), '{"inbounds":[]}');
+    assert.equal(status().deployed, true, '非提交形态的空片段仍按可能已部署处理');
+    // A nonempty fragment is of course a deployment.
+    fs.writeFileSync(join(applyDeps.confDir, '50-inbound.json'), JSON.stringify({ inbounds: [{ tag: 'stranger' }] }));
+    assert.equal(status().deployed, true);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
