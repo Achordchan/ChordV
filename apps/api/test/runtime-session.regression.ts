@@ -446,6 +446,21 @@ async function main() {
     /if \(blockedPairKeys\.has\(`\$\{access\.node\.id\}:\$\{target\.userId\}`\)\) \{\s*\n\s*continue;\s*\n\s*\}/,
     "被跳过的目标留给下轮重试（绑定保持 disabled，reconciler 会再来）"
   );
+  assert.match(
+    runtimeSessionSource,
+    /provisioned \+= await runWithSubscriptionUsageLock\(subscriptionId, \(\) =>\s*\n\s*this\.prisma\.\$transaction\(/,
+    "每个分块必须在 usage 锁下运行——计量随时可能并发改变资格（供给锁不排除计量）"
+  );
+  assert.match(
+    runtimeSessionSource,
+    /if \(!fresh \|\| !shouldProvisionPanelClients\(fresh\)\) \{\s*\n\s*return 0;\s*\n\s*\}/,
+    "每块事务内必须重读订阅并用共享谓词重检资格——中途耗尽/停用不得被陈旧供给覆盖"
+  );
+  assert.match(
+    runtimeSessionSource,
+    /const targetStillEligible = fresh\.teamId[\s\S]*?if \(!targetStillEligible\) \{\s*\n\s*continue;\s*\n\s*\}/,
+    "每块事务内必须逐目标重检（团队成员仍在/个人用户仍活跃）"
+  );
   // 10) The traffic reset excludes provisioning with the PROVISIONING lock for
   //     its whole span but takes the USAGE lock only around the final counter
   //     transaction: settlement needs the agent's final batches accounted,

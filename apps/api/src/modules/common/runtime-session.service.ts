@@ -935,15 +935,43 @@ export class RuntimeSessionService {
       let provisioned = 0;
       for (let index = 0; index < provisioningPairs.length; index += options.chunkSize) {
         const chunk = provisioningPairs.slice(index, index + options.chunkSize);
-        provisioned += await this.prisma.$transaction(
-          async (tx) => {
-            let count = 0;
-            for (const pair of chunk) {
-              count += await ensureTargetBinding(pair, tx);
-            }
-            return count;
-          },
-          { timeout: DIRECT_PROVISIONING_TX_TIMEOUT_MS }
+        provisioned += await runWithSubscriptionUsageLock(subscriptionId, () =>
+          this.prisma.$transaction(
+            async (tx) => {
+              // Eligibility was computed when the pairs were built, but
+              // metering runs concurrently (the provisioning lock does not
+              // exclude it): a batch may have exhausted or paused the
+              // subscription mid-run and disabled these bindings. Re-read
+              // the subscription under the USAGE lock — metering's lock —
+              // and re-verify eligibility per target, so stale provisioning
+              // cannot overwrite a fresh metering decision. Lock order stays
+              // provisioning → usage.
+              const fresh = await tx.subscription.findUnique({
+                where: { id: subscriptionId },
+                include: {
+                  user: true,
+                  team: { include: { members: { include: { user: true } } } }
+                }
+              });
+              if (!fresh || !shouldProvisionPanelClients(fresh)) {
+                return 0;
+              }
+              let count = 0;
+              for (const pair of chunk) {
+                const targetStillEligible = fresh.teamId
+                  ? fresh.team?.members.some(
+                      (member: any) => member.userId === pair.target.userId && member.user.status === "active"
+                    )
+                  : fresh.user?.id === pair.target.userId && fresh.user?.status === "active";
+                if (!targetStillEligible) {
+                  continue;
+                }
+                count += await ensureTargetBinding(pair, tx);
+              }
+              return count;
+            },
+            { timeout: DIRECT_PROVISIONING_TX_TIMEOUT_MS }
+          )
         );
       }
       return updatedBindingCount + provisioned;
