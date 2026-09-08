@@ -362,14 +362,21 @@ async function main() {
     /WHERE b\.status IN \('disabled', 'deleted'\)/,
     "候选必须包含 disabled 与 deleted 绑定"
   );
+  // Per-branch assertions: extract each UNION branch so a sloppy cross-branch
+  // match cannot hide a missing predicate (that is exactly how the personal
+  // branch briefly shipped without WHERE b.id IS NULL).
+  const cronSqlMatch = runtimeSessionSource.match(/SELECT "subscriptionId" FROM \(([\s\S]*?)\) candidates/);
+  assert.ok(cronSqlMatch, "重试候选必须是单条 UNION SQL");
+  const cronSqlBranches = cronSqlMatch[1]!.split("UNION");
+  assert.equal(cronSqlBranches.length, 3, "三个候选分支：绑定 + 个人缺口 + 团队缺口");
   assert.match(
-    runtimeSessionSource,
-    /JOIN "Subscription" s ON s\.id = na\."subscriptionId" AND s\."userId" IS NOT NULL[\s\S]*?LEFT JOIN "PanelClientBinding" b[\s\S]*?AND b\."userId" = s\."userId"[\s\S]*?WHERE b\.id IS NULL/,
-    "个人订阅的缺口必须按用户比对——初次供给失败只剩授权行是持久痕迹"
+    cronSqlBranches[1]!,
+    /s\."userId" IS NOT NULL[\s\S]*?b\."userId" = s\."userId"\s*\n\s*WHERE b\.id IS NULL/,
+    "个人订阅的缺口必须按用户比对且只选无绑定的——已供给的订阅不得每轮重供给"
   );
   assert.match(
-    runtimeSessionSource,
-    /JOIN "TeamMember" tm ON tm\."teamId" = s\."teamId"[\s\S]*?LEFT JOIN "PanelClientBinding" b[\s\S]*?AND b\."userId" = tm\."userId"[\s\S]*?WHERE b\.id IS NULL/,
+    cronSqlBranches[2]!,
+    /JOIN "TeamMember" tm[\s\S]*?b\."userId" = tm\."userId"\s*\n\s*WHERE b\.id IS NULL/,
     "团队订阅的缺口必须按成员比对——一个成员供给失败不能被其他成员的既有绑定掩盖"
   );
   assert.match(

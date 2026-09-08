@@ -631,6 +631,7 @@ export class RuntimeSessionService {
           JOIN "User" u ON u.id = s."userId" AND u.status = 'active'
           LEFT JOIN "PanelClientBinding" b
             ON b."subscriptionId" = na."subscriptionId" AND b."nodeId" = na."nodeId" AND b."userId" = s."userId"
+         WHERE b.id IS NULL
         UNION
         SELECT DISTINCT na."subscriptionId"
           FROM "SubscriptionNodeAccess" na
