@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Checkbox, Group, Loader, Modal, NumberInput, Paper, SimpleGrid, Stack, Text, TextInput } from "@mantine/core";
 import { IconKey, IconRocket } from "@tabler/icons-react";
 import type { AdminNodeRecordDto } from "@chordv/shared";
@@ -18,6 +18,21 @@ function stringField(spec: Record<string, unknown> | null, key: string): string 
 }
 
 /**
+ * Lifecycle of loading the applied deployment's COMPLETE spec. "loaded" with a
+ * null spec means no ENSURE_INBOUND ever applied (parameters imported from a
+ * panel) — the lossy node record is then the only source. "loading" and
+ * "error" mean the truth is UNKNOWN: reissue editing is gated on "loaded",
+ * because falling back to the node record from either would submit a spec
+ * that drops SNIs and replaces the custom destination of an existing
+ * deployment.
+ */
+type SpecLoad =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "loaded"; spec: Record<string, unknown> | null }
+  | { status: "error" };
+
+/**
  * R2-B: the admin half of ENSURE_INBOUND. Shows the Reality parameters the
  * agent reported back (the values every client config is generated from) and
  * queues deployments — the initial one that makes the node activatable, and
@@ -31,27 +46,40 @@ export function InboundDeploySection(props: SectionProps) {
   const [modalOpened, setModalOpened] = useState(false);
   const [form, setForm] = useState<InboundDeployFormState>({ listenPort: 443, serverNamesCsv: DEFAULT_SNI, dest: "", rotateKeys: false });
   const [confirmedRotation, setConfirmedRotation] = useState(false);
-  // The COMPLETE spec of the applied deployment (the node record is a lossy
-  // projection: one serverName, no dest, no inboundTag). The reissue form
-  // prefills and preserves from this; null when nothing was deployed through
-  // ENSURE_INBOUND (never deployed, or parameters imported from a panel).
-  const [currentSpec, setCurrentSpec] = useState<Record<string, unknown> | null>(null);
+  const [specLoad, setSpecLoad] = useState<SpecLoad>({ status: "idle" });
+  const [specRetry, setSpecRetry] = useState(0);
+  const loadEpoch = useRef(0);
 
   const deployed = node.serverPort > 0 && Boolean(node.realityPublicKey?.trim());
   // First deployment has no keys to rotate; the option only exists where it
   // means something — and where it is destructive.
   const canRotate = deployed;
 
-  useEffect(() => {
-    let cancelled = false;
-    setCurrentSpec(null);
-    if (deployed) {
-      fetchNodeInboundSpec(node.id)
-        .then((result) => { if (!cancelled) setCurrentSpec(result.spec); })
-        .catch(() => undefined);
-    }
-    return () => { cancelled = true; };
+  // Loading is epoch-guarded: only the MOST RECENT load may publish state —
+  // a response landing after a node switch or a spec refresh (new applied
+  // revision) must not overwrite the newer load's result.
+  const loadSpec = useCallback(() => {
+    const epoch = ++loadEpoch.current;
+    if (!deployed) { setSpecLoad({ status: "idle" }); return; }
+    setSpecLoad({ status: "loading" });
+    fetchNodeInboundSpec(node.id)
+      .then((result) => { if (loadEpoch.current === epoch) setSpecLoad({ status: "loaded", spec: result.spec }); })
+      .catch(() => { if (loadEpoch.current === epoch) setSpecLoad({ status: "error" }); });
   }, [node.id, deployed]);
+
+  // Refresh when the APPLIED revision moves: after a reissue completes, the
+  // refreshed node record carries the new parameters while neither node.id
+  // nor `deployed` changed — without this dependency the next modal would
+  // prefill the PREVIOUS deployment's spec and a subsequent reissue or key
+  // rotation would silently roll the successful change back. The reissue
+  // gate below stays disabled until the refreshed spec has loaded.
+  useEffect(() => {
+    loadSpec();
+  }, [loadSpec, node.inboundAppliedRevision, specRetry]);
+
+  const currentSpec = specLoad.status === "loaded" ? specLoad.spec : null;
+  // Reissue editing requires the CURRENT spec; a first deployment needs none.
+  const reissueReady = !deployed || specLoad.status === "loaded";
 
   useEffect(() => {
     if (!modalOpened) return;
@@ -105,7 +133,8 @@ export function InboundDeploySection(props: SectionProps) {
           variant={deployed ? "light" : "filled"}
           color={deployed ? "blue" : "teal"}
           leftSection={<IconRocket size={14} />}
-          disabled={deployment.stage === "queued"}
+          disabled={deployment.stage === "queued" || !reissueReady}
+          loading={deployed && specLoad.status === "loading"}
           onClick={() => setModalOpened(true)}
         >
           {deployed ? "调整参数 / 重新下发" : "部署入站"}
@@ -128,6 +157,23 @@ export function InboundDeploySection(props: SectionProps) {
           尚未部署入站：节点仍是占位符（Agent 注册完成后等待下发）。部署 Reality 入站并回填参数后，节点才能激活并分配给订阅。
         </Alert>
       )}
+
+      {deployed && specLoad.status === "loading" ? (
+        <Alert color="blue" variant="light">
+          <Group gap="sm" wrap="nowrap">
+            <Loader size="xs" />
+            <Text size="sm">正在读取当前部署规格，重新下发将在读取完成后开放。</Text>
+          </Group>
+        </Alert>
+      ) : null}
+      {deployed && specLoad.status === "error" ? (
+        <Alert color="red" variant="light" title="读取当前部署规格失败">
+          <Group gap="sm" justify="space-between" wrap="wrap">
+            <Text size="sm">重新下发已停用：此时提交会退化为不完整的节点记录参数（丢失多 SNI 与自定义回退目标）。</Text>
+            <Button size="xs" variant="light" color="red" onClick={() => setSpecRetry((count) => count + 1)}>重试</Button>
+          </Group>
+        </Alert>
+      ) : null}
 
       {deployment.stage === "queued" ? (
         <Alert color="blue" variant="light">

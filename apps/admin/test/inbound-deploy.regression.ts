@@ -7,6 +7,7 @@ import ts from "typescript";
 // refs, mirroring agent-node-onboarding.regression.ts. The mounted section is
 // covered by the targeted browser check.
 const source = readFileSync(resolve(import.meta.dirname, "../src/features/nodes/useInboundDeployment.ts"), "utf8");
+const sectionSource = readFileSync(resolve(import.meta.dirname, "../src/features/nodes/InboundDeploySection.tsx"), "utf8");
 const tree = ts.createSourceFile("hook.ts", source, ts.ScriptTarget.Latest, true);
 const expressions = new Map<string, string>();
 function visit(node: ts.Node) {
@@ -19,6 +20,19 @@ visit(tree);
 function callback(name: string, scope: Record<string, unknown>) {
   const text = expressions.get(name); assert.ok(text, `${name} callback should exist`);
   const code = ts.transpileModule(`const fn = ${text};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  return new Function(...Object.keys(scope), `${code}; return fn;`)(...Object.values(scope));
+}
+const sectionTree = ts.createSourceFile("section.tsx", sectionSource, ts.ScriptTarget.Latest, true);
+const sectionExpressions = new Map<string, string>();
+(function visitSection(node: ts.Node) {
+  if (ts.isVariableDeclaration(node) && node.initializer && ts.isCallExpression(node.initializer) && node.initializer.expression.getText(sectionTree) === "useCallback") {
+    sectionExpressions.set(node.name.getText(sectionTree), node.initializer.arguments[0].getText(sectionTree));
+  }
+  ts.forEachChild(node, visitSection);
+})(sectionTree);
+function sectionCallback(name: string, scope: Record<string, unknown>) {
+  const body = sectionExpressions.get(name); assert.ok(body, `${name} callback should exist`);
+  const code = ts.transpileModule(`const fn = ${body};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   return new Function(...Object.keys(scope), `${code}; return fn;`)(...Object.values(scope));
 }
 function deferred() {
@@ -124,10 +138,46 @@ function pollFixture(records: Array<Record<string, unknown>>, runFirstScheduleOn
   assert.deepEqual(f.notified, []);
 }
 
+// Spec loading: only a SUCCESSFUL load may open reissue editing — an
+// in-flight load must not publish early, a SUPERSEDED load must not publish at
+// all, and a failure must surface as an error rather than degrade to the
+// lossy node fallback.
+{
+  const mutations: Array<[string, unknown]> = [];
+  const loadEpoch = { current: 0 };
+  const pending: Array<{ resolve: (value: unknown) => void; reject: (error: Error) => void }> = [];
+  const scope: Record<string, unknown> = {
+    loadEpoch, deployed: true, node,
+    fetchNodeInboundSpec: () => new Promise((resolve, reject) => pending.push({ resolve, reject })),
+    setSpecLoad: (value: unknown) => mutations.push(["setSpecLoad", value])
+  };
+  const load = sectionCallback("loadSpec", scope);
+  load();
+  assert.deepEqual(mutations[0], ["setSpecLoad", { status: "loading" }], "加载中不得提前放行");
+  // A newer load (node switch / applied revision moved) supersedes it; the
+  // stale response must not publish. (One microtask tick per resolve.)
+  load();
+  pending[0].resolve({ spec: { stale: true } });
+  await Promise.resolve();
+  assert.equal(mutations.length, 2, "被取代的加载不得发布状态");
+  pending[1].resolve({ spec: { listenPort: 8443 } });
+  await Promise.resolve();
+  assert.deepEqual(mutations[2], ["setSpecLoad", { status: "loaded", spec: { listenPort: 8443 } }]);
+  // A failure is an ERROR, never "no spec".
+  load();
+  pending[2].reject(new Error("boom"));
+  // A rejection passes .then before reaching .catch: two microtask hops.
+  await Promise.resolve(); await Promise.resolve();
+  assert.deepEqual(mutations[4], ["setSpecLoad", { status: "error" }], "失败必须显式暴露");
+  // An undeployed node loads nothing at all (first deployment needs no spec).
+  sectionCallback("loadSpec", { ...scope, deployed: false })();
+  assert.deepEqual(mutations[5], ["setSpecLoad", { status: "idle" }]);
+  assert.equal(pending.length, 3, "未部署节点不得发起规格读取");
+}
+
 // Destructive-operation marking lives in the section source: rotation is only
 // offered on an already-deployed node, and submitting it requires an explicit
 // confirmation that states what it invalidates.
-const sectionSource = readFileSync(resolve(import.meta.dirname, "../src/features/nodes/InboundDeploySection.tsx"), "utf8");
 assert.match(sectionSource, /轮换 Reality 密钥（破坏性操作）/, "轮换必须标注为破坏性操作");
 assert.match(sectionSource, /已发出的所有订阅将立即失效/, "确认文案必须写明失效后果");
 assert.match(sectionSource, /const canRotate = deployed;/, "轮换选项只在已部署节点上出现");
@@ -153,5 +203,12 @@ assert.doesNotMatch(sectionSource, /serverNames: \[form\.serverNamesCsv\]/, "SNI
 assert.match(sectionSource, /dest: stringField\(currentSpec, "dest"\) \?\? ""/, "dest 预填部署原值（可能是自定义主机/端口）");
 assert.match(sectionSource, /inboundTag: stringField\(currentSpec, "inboundTag"\)/, "inboundTag 必须随规格保留");
 assert.match(sectionSource, /必须能为所选 SNI 出示有效证书/, "回退目标的说明必须写明与 SNI 配套的原因");
+// Reissue editing is gated on a SUCCESSFUL spec load, the spec refreshes when
+// the applied revision moves, and fetch failures are surfaced with a retry.
+assert.match(sectionSource, /const reissueReady = !deployed \|\| specLoad\.status === "loaded"/, "重新下发必须以规格成功加载为门槛");
+assert.match(sectionSource, /disabled=\{deployment\.stage === "queued" \|\| !reissueReady\}/, "加载未完成/失败时按钮必须禁用");
+assert.match(sectionSource, /\}, \[loadSpec, node\.inboundAppliedRevision, specRetry\]\);/, "规格必须随 applied revision 变化刷新");
+assert.match(sectionSource, /读取当前部署规格失败/, "读取失败必须显式暴露而非当作没有部署");
+assert.match(sectionSource, /setSpecRetry\(\(count\) => count \+ 1\)/, "失败后必须可重试");
 
 console.log("inbound deploy regression passed (queue/poll session discipline, completion by applied revision, destructive rotation marking)");
