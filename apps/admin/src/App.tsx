@@ -3120,6 +3120,7 @@ export function App() {
                 onSearchChange={(value) => setSearch((current) => ({ ...current, nodes: value }))}
                 nodes={nodes}
                 leaseRevocationJobs={snapshot.leaseRevocationJobs}
+                nodeCommandJobs={snapshot.nodeCommandJobs}
                 leaseRevocationRetryBusyKey={leaseRevocationRetryBusyKey}
                 probingNodeId={probingNodeId}
                 probingAll={probingAll}

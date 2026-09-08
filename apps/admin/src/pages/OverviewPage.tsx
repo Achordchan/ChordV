@@ -22,7 +22,9 @@ type OverviewPageProps = {
 };
 
 export function OverviewPage(props: OverviewPageProps) {
-  const backgroundSyncQueueCount = props.snapshot.leaseRevocationJobs.length;
+  // Both queues are "background sync": lease revocations and the direct
+  // provisioning commands that replaced panel synchronization.
+  const backgroundSyncQueueCount = props.snapshot.leaseRevocationJobs.length + props.snapshot.nodeCommandJobs.length;
   const abnormalNodeCount = props.snapshot.nodes.filter((item) => {
     if (item.isActive === false) {
       return false;

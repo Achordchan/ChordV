@@ -205,6 +205,22 @@ function testNodeCommandQueueShowsDirectProvisioning() {
     /<PanelSyncQueueDrawer[\s\S]*?nodeCommandJobs=\{snapshot\.nodeCommandJobs\}/,
     "抽屉必须拿到快照里的节点命令"
   );
+  assert.match(
+    nodesPageSource,
+    /summarizeNodeCommandJobsForNode\(props\.nodeCommandJobs, props\.node\.id\)/,
+    "节点行的同步状态必须统计该节点的命令"
+  );
+  assert.match(
+    nodesPageSource,
+    /if \(leaseSummary\.total <= 0 && commandSummary\.total <= 0\) \{\s*return \(\s*<Badge color="green" variant="light">\s*已同步/,
+    "只有连接撤销与节点命令都为空时才能显示已同步"
+  );
+  assert.match(nodesPageSource, /buildBackgroundSyncLabel\("节点命令", commandSummary\)/);
+  assert.match(
+    appSource,
+    /<NodesPage[\s\S]*?nodeCommandJobs=\{snapshot\.nodeCommandJobs\}/,
+    "节点页必须拿到快照里的节点命令"
+  );
 }
 
 function testNodeParentActionsAlwaysReleaseBusyState() {

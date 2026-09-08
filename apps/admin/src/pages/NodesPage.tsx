@@ -29,6 +29,7 @@ type NodesPageProps = {
   onSearchChange: (value: string) => void;
   nodes: AdminNodeRecordDto[];
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
+  nodeCommandJobs: AdminNodeCommandJobDto[];
   leaseRevocationRetryBusyKey: string | null;
   probingNodeId: string | null;
   probingAll: boolean;
@@ -118,6 +119,7 @@ export function NodesPage(props: NodesPageProps) {
                     <NodeSyncQueueCell
                       node={item}
                       leaseRevocationJobs={props.leaseRevocationJobs}
+                      nodeCommandJobs={props.nodeCommandJobs}
                       leaseRetryBusyKey={props.leaseRevocationRetryBusyKey}
                       onOpenLeaseRevocationQueue={props.onOpenLeaseRevocationQueue}
                       onRetryNodeLeaseRevocationJobs={props.onRetryNodeLeaseRevocationJobs}
@@ -187,14 +189,16 @@ export function NodesPage(props: NodesPageProps) {
 function NodeSyncQueueCell(props: {
   node: AdminNodeRecordDto;
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
+  nodeCommandJobs: AdminNodeCommandJobDto[];
   leaseRetryBusyKey: string | null;
   onOpenLeaseRevocationQueue: (filter?: LeaseRevocationQueueFilter) => void;
   onRetryNodeLeaseRevocationJobs: (nodeId: string) => void;
 }) {
   const leaseSummary = summarizeLeaseRevocationJobsForNode(props.leaseRevocationJobs, props.node.id);
+  const commandSummary = summarizeNodeCommandJobsForNode(props.nodeCommandJobs, props.node.id);
   const leaseRetryable = hasRetryableBackgroundSync(leaseSummary);
 
-  if (leaseSummary.total <= 0) {
+  if (leaseSummary.total <= 0 && commandSummary.total <= 0) {
     return (
       <Badge color="green" variant="light">
         已同步
@@ -209,9 +213,19 @@ function NodeSyncQueueCell(props: {
           {buildBackgroundSyncLabel("连接撤销", leaseSummary)}
         </Badge>
       ) : null}
+      {commandSummary.total > 0 ? (
+        <Badge color="yellow" variant="light">
+          {buildBackgroundSyncLabel("节点命令", commandSummary)}
+        </Badge>
+      ) : null}
       {leaseSummary.failed > 0 && leaseSummary.lastError ? (
         <Text size="xs" c="dimmed" lineClamp={1}>
           {summarizeAdminDiagnosticMessage(leaseSummary.lastError, "连接撤销任务失败，请稍后重试或查看服务器日志。")}
+        </Text>
+      ) : null}
+      {commandSummary.failed > 0 && commandSummary.lastError ? (
+        <Text size="xs" c="dimmed" lineClamp={1}>
+          {summarizeAdminDiagnosticMessage(commandSummary.lastError, "节点命令执行失败，Agent 会自动重试。")}
         </Text>
       ) : null}
       <Group gap={4}>
@@ -399,6 +413,17 @@ function canRetryFilteredQueueByNode(filter?: LeaseRevocationQueueFilter | null)
 
 function summarizeLeaseRevocationJobsForNode(jobs: AdminLeaseRevocationJobDto[], nodeId: string) {
   const related = jobs.filter((job) => job.nodeId === nodeId && job.status !== "completed");
+  return {
+    total: related.length,
+    pending: related.filter((job) => job.status === "pending").length,
+    running: related.filter((job) => job.status === "running").length,
+    failed: related.filter((job) => job.status === "failed").length,
+    lastError: related.find((job) => job.lastError)?.lastError ?? null
+  };
+}
+
+function summarizeNodeCommandJobsForNode(jobs: AdminNodeCommandJobDto[], nodeId: string) {
+  const related = jobs.filter((job) => job.nodeId === nodeId);
   return {
     total: related.length,
     pending: related.filter((job) => job.status === "pending").length,
