@@ -7,7 +7,7 @@ import type { AgentStore } from './store.js';
 import type { XrayAdapter } from './xray-adapter.js';
 import { CommandProcessor } from './command-processor.js';
 import { FileInboundApplier, type InboundApplier } from './xray-inbound.js';
-import { isNodeControlMode, type AgentConfigSnapshot } from './types.js';
+import { isNodeControlMode, type AgentConfigSnapshot, type DesiredUser } from './types.js';
 
 export class AgentRunner {
   private stopped = false;
@@ -22,6 +22,13 @@ export class AgentRunner {
   private lastXrayStart = 0;
   /** Set when Xray was (re)started; cleared only once users are back in place. */
   private reconcilePending = false;
+  /**
+   * Set when this host has no inbound of ours to provision users into (the
+   * foreign-inbound cleanup published an empty configuration). Xray cannot add
+   * a user to a tag that does not exist, so every reconcile would throw — the
+   * intent stays pending until a deployment recreates the tag.
+   */
+  private awaitingInbound = false;
   private readonly inbound: InboundApplier;
 
   constructor(
@@ -102,7 +109,7 @@ export class AgentRunner {
         const reconcileUsers = preserveLocalDisables
           ? snapshot.users.map((user) => localUsers.get(user.bindingId)?.enabled === false ? { ...user, enabled: false } : user)
           : snapshot.users;
-        await this.commands.reconcile(reconcileUsers);
+        await this.reconcileUsers(reconcileUsers);
         if (preserveLocalDisables) {
           this.store.applyConfigSnapshot({ ...snapshot, users: reconcileUsers });
           this.currentConfig = this.store.getConfigSnapshot();
@@ -123,9 +130,24 @@ export class AgentRunner {
       this.store.restoreBackendConfirmedUsers(snapshot.users);
       this.currentConfig = this.store.getConfigSnapshot();
       if (this.currentConfig.controlMode === 'direct_primary') {
-        await this.commands.reconcile(this.store.listDesiredUsers());
+        await this.reconcileUsers(this.store.listDesiredUsers());
       }
     });
+  }
+
+  /**
+   * Every user-provisioning path funnels through here. While this host has no
+   * inbound of its own, Xray has no tag to add users to and the call would
+   * throw — out of start(), or out of the events loop before it can receive
+   * the ENSURE_INBOUND that would fix it. Remember the intent instead; the
+   * deployment reconciles as part of applying the inbound.
+   */
+  private async reconcileUsers(users: DesiredUser[]): Promise<void> {
+    if (this.awaitingInbound) {
+      this.reconcilePending = true;
+      return;
+    }
+    await this.commands.reconcile(users);
   }
 
   /**
@@ -162,8 +184,14 @@ export class AgentRunner {
     }
     if (!status.deployed) return;
     await this.inbound.reset(randomUUID());
-    await this.commands.reconcile(this.store.listDesiredUsers());
-    console.warn('[node-agent] 已清除不属于本节点身份的 Xray 入站配置');
+    // The tag is gone with the configuration, so the users this identity wants
+    // have nowhere to go. Provisioning them now would throw out of start() —
+    // and take down the very process that must stay up to receive the
+    // ENSURE_INBOUND that recreates the inbound. Record the intent and let the
+    // deployment carry it out (ensureInbound reconciles on every apply).
+    this.reconcilePending = true;
+    this.awaitingInbound = true;
+    console.warn('[node-agent] 已清除不属于本节点身份的 Xray 入站配置，等待控制面重新下发入站后再恢复用户');
   }
 
   private async checkXrayAndRecover(): Promise<void> {
@@ -182,6 +210,8 @@ export class AgentRunner {
    */
   private async flushPendingReconcile(): Promise<void> {
     if (!this.reconcilePending || this.currentConfig.controlMode !== 'direct_primary') return;
+    // No inbound, nowhere to put them: keep the intent, skip the attempt.
+    if (this.awaitingInbound) return;
     await this.commands.reconcile(this.store.listDesiredUsers());
     this.reconcilePending = false;
   }
@@ -304,6 +334,12 @@ export class AgentRunner {
               await this.sampleWithinStateMutation();
             }
             const commandResult = await this.commands.execute(command, this.currentConfig.controlMode === 'direct_primary');
+            if (commandResult.status === 'completed' && command.type === 'ENSURE_INBOUND') {
+              // The tag exists again and the deployment reconciled the users
+              // into it, so the deferred intent is satisfied.
+              this.awaitingInbound = false;
+              this.reconcilePending = false;
+            }
             if (commandResult.status === 'completed' && (command.type === 'DISABLE_USER' || command.type === 'REMOVE_USER')) {
               commandResult.result = {
                 ...commandResult.result,

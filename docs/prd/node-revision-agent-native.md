@@ -182,3 +182,5 @@ R2-A 落地细节:
 - **Reality 私钥归属**:默认 agent 生成上报公钥(私钥不出 VPS);若换机重装,公钥变化 → 订阅需重发(改版场景可接受)
 - **补偿策略**:运营层面(送流量/延期)不在本 PRD 范围;系统只保证数据不丢
 - install 脚本域名:走现有生产域名(公开路由,无鉴权,token 即凭据)
+- 两个交接目录都挂在 root 拥有的 `/var/lib/chordv-xray` 下(`requests/` 归 agent 0700、`results/` 归 root 0755),agent 单元只为 `requests/` 开 `ReadWritePaths`:如果请求目录的父目录归 agent,被入侵的 agent 可以在重装前把它换成指向 `/usr/local/lib/chordv` 的符号链接,`install -d -o chordv-agent` 会跟着链接把助手脚本目录的属主交给 agent——下次 root 执行的就是它写的脚本。安装脚本因此先拒绝三个目录上的符号链接,再设置属主。
+- 清空他人入站之后不立刻补下发用户:入站的 tag 随配置一起没了,Xray 无法把用户加进不存在的 tag,那次 reconcile 会抛出 `start()`——正好干掉唯一能接收后续 `ENSURE_INBOUND` 的进程。改为记下待恢复意图并挂起所有 reconcile 路径(启动、配置刷新、离线恢复),等入站重新部署时由 `ensureInbound` 一并补齐。

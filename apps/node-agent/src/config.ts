@@ -135,11 +135,12 @@ export function loadConfig(): AgentConfig {
     xrayApiAddress,
     xrayInboundTag: process.env.XRAY_INBOUND_TAG?.trim() || 'vless-in',
     databasePath: resolve(process.env.AGENT_DATABASE_PATH || './data/node-agent.db'),
-    inboundRequestDir: resolve(
-      process.env.CHORDV_XRAY_REQUEST_DIR
-      || join(dirname(resolve(process.env.AGENT_DATABASE_PATH || './data/node-agent.db')), 'xray')
-    ),
-    inboundResultDir: resolve(process.env.CHORDV_XRAY_RESULT_DIR || '/var/lib/chordv-xray'),
+    // Defaults match the helper's own (its unit loads no environment file), and
+    // both live under a root-owned parent: the agent must not own a directory
+    // root walks or hands ownership to, or a symlink swapped in there would
+    // redirect what root writes and chowns.
+    inboundRequestDir: resolve(process.env.CHORDV_XRAY_REQUEST_DIR || '/var/lib/chordv-xray/requests'),
+    inboundResultDir: resolve(process.env.CHORDV_XRAY_RESULT_DIR || '/var/lib/chordv-xray/results'),
     restartToleranceMs: positiveInteger('AGENT_XRAY_RESTART_TOLERANCE_MS', 2_000),
     ...(process.env.CHORDV_NODE_PUBLIC_HOST?.trim() ? { publicHost: process.env.CHORDV_NODE_PUBLIC_HOST.trim() } : {}),
     ...(registerToken && !token ? { registerToken } : {}),

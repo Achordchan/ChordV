@@ -688,3 +688,97 @@ test('探测不到助手状态时不做破坏性清理', async () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('清空外来入站后仍能启动，用户等到入站重新部署才补齐', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-foreign-users-'));
+  const store = new AgentStore(join(directory, 'agent.db'), {
+    nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
+  });
+  const desired = user();
+  const snapshot: AgentConfigSnapshot = { nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [desired] };
+  store.applyConfigSnapshot(snapshot);
+  const requestDir = join(directory, 'xray');
+  const resultDir = join(directory, 'xray-out');
+  mkdirSync(requestDir, { recursive: true });
+  mkdirSync(resultDir, { recursive: true });
+  // Cleaning up the stranger's inbound removes the TAG: Xray cannot add users
+  // to a tag that no longer exists, so any provisioning attempt now fails.
+  let tagExists = true;
+  let live: Array<{ email: string; uuid?: string }> = [];
+  const results: Array<{ status: string; error?: string }> = [];
+  const command = {
+    commandId: 'command-inbound-1',
+    type: 'ENSURE_INBOUND',
+    targetRevision: '2',
+    payload: {
+      inboundTag: 'test-in', listenPort: 443, dest: 'www.microsoft.com:443',
+      serverNames: ['www.microsoft.com'], flow: 'xtls-rprx-vision', fingerprint: 'chrome', spiderX: '/',
+    },
+  };
+  let delivered = false;
+  const api = {
+    getConfig: async () => snapshot,
+    whoami: async () => ({ observedIp: '203.0.113.9' }),
+    heartbeat: async () => ({ accepted: true, ackThrough: '0', configRevision: '1' }),
+    uploadBatch: async () => ({ accepted: true, duplicate: false, ackThrough: '1' }),
+    reportCommandResult: async (result: { status: string; error?: string }) => { results.push(result); },
+    consumeEvents: async (handler: (command: unknown) => Promise<void>, signal: AbortSignal) => {
+      if (!delivered) {
+        delivered = true;
+        await handler(command);
+      }
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    },
+  } as unknown as AgentApiClient;
+  const xray: XrayAdapter = {
+    health: async () => undefined,
+    uptimeSeconds: async () => 1,
+    inboundLive: async () => tagExists,
+    readAbsoluteCounters: async () => [],
+    listUsers: async () => live,
+    ensureUser: async (target) => {
+      if (!tagExists) throw new Error('入站 test-in 不存在');
+      live = [...live.filter((item) => item.email !== target.email), { email: target.email, uuid: target.uuid }];
+    },
+    removeUser: async (email) => { live = live.filter((item) => item.email !== email); },
+  };
+  let resets = 0;
+  const runner = new AgentRunner({
+    agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
+    databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: requestDir, inboundResultDir: resultDir, restartToleranceMs: 2_000,
+    sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
+  }, store, api, xray, {
+    status: async (requestId) => ({ requestId, ok: true, changed: false, restarted: false, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: true, listenPort: 443, xrayVersion: '' }),
+    reset: async (requestId) => {
+      resets += 1;
+      tagExists = false;
+      live = [];
+      return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: false, listenPort: 0, xrayVersion: '' };
+    },
+    apply: async (_spec, requestId) => {
+      tagExists = true;
+      return {
+        requestId, ok: true, changed: true, restarted: true,
+        realityPublicKey: 'k'.repeat(43), shortId: '0123456789abcdef', serverName: 'www.microsoft.com',
+        listen: '0.0.0.0', deployed: true, listenPort: 443, xrayVersion: 'Xray 1.8.24',
+      };
+    },
+  });
+
+  try {
+    // The cleanup must not take the process down with it: this very process is
+    // the one that has to receive the ENSURE_INBOUND that restores service.
+    await runner.start();
+    assert.equal(resets, 1, '必须清空外来入站');
+    assert.equal(live.length, 0, '入站不存在期间不应尝试下发用户');
+    await waitFor(() => results.length > 0, 5_000);
+    assert.equal(results[0]?.status, 'completed', `部署应成功：${results[0]?.error ?? ''}`);
+    assert.deepEqual(live.map((item) => item.email), [desired.email], '入站部署完成后用户必须补齐');
+  } finally {
+    await runner.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

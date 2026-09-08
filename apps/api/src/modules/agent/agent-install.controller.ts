@@ -269,7 +269,8 @@ CHORDV_REGISTER_TOKEN=\$REGISTER_TOKEN
 AGENT_DATABASE_PATH=/var/lib/chordv-node-agent/agent.db
 AGENT_CREDENTIALS_PATH=/var/lib/chordv-node-agent/credentials.json
 CHORDV_AGENT_NODE_BIN=\${NODE_BIN@Q}
-CHORDV_XRAY_RESULT_DIR=/var/lib/chordv-xray
+CHORDV_XRAY_REQUEST_DIR=/var/lib/chordv-xray/requests
+CHORDV_XRAY_RESULT_DIR=/var/lib/chordv-xray/results
 EOF
 # systemd reads EnvironmentFile as root before dropping privileges; the group
 # grant only lets the service user read it, never write it.
@@ -301,6 +302,8 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/chordv-node-agent
+# The handoff request directory only; results are root's and stay read-only here.
+ReadWritePaths=/var/lib/chordv-xray/requests
 
 [Install]
 WantedBy=multi-user.target
@@ -368,8 +371,14 @@ XRAY_USER="chordv-xray"
 XRAY_BIN=/usr/local/bin/xray
 XRAY_CONF_DIR=/etc/chordv/xray/conf.d
 HELPER_DIR=/usr/local/lib/chordv
-REQUEST_DIR=/var/lib/chordv-node-agent/xray
-RESULT_DIR=/var/lib/chordv-xray
+# Both handoff directories live under a ROOT-owned parent. Putting the request
+# directory inside the agent's own data directory would let a compromised agent
+# replace it with a symlink; "install -d -o chordv-agent" follows an existing
+# directory symlink and would hand that target's ownership to the agent — the
+# helper directory included, and with it the script root executes next.
+XRAY_HANDOFF_DIR=/var/lib/chordv-xray
+REQUEST_DIR="\$XRAY_HANDOFF_DIR/requests"
+RESULT_DIR="\$XRAY_HANDOFF_DIR/results"
 
 if ! id "\$XRAY_USER" >/dev/null 2>&1; then
   useradd --system --home /var/lib/chordv-xray --shell /usr/sbin/nologin "\$XRAY_USER"
@@ -424,11 +433,20 @@ done
 
 install -d -m 0755 -o root -g root "\$HELPER_DIR"
 install -m 0755 -o root -g root "\$TRUSTED_DIR/dist/src/xray-apply.js" "\$HELPER_DIR/xray-apply.js"
+# The parent is root-owned (as is /var/lib), so the agent cannot replace either
+# child directory — which is what makes the ownership grant below safe. A
+# symlink here could only have been planted by root, so refuse rather than
+# follow it.
+for handoff in "\$XRAY_HANDOFF_DIR" "\$REQUEST_DIR" "\$RESULT_DIR"; do
+  if [[ -L "\$handoff" ]]; then
+    echo "安装失败：\$handoff 是符号链接，拒绝在其上设置属主。" >&2
+    exit 1
+  fi
+done
+install -d -m 0755 -o root -g root "\$XRAY_HANDOFF_DIR"
+# The agent owns only the request directory (it must create pending.json there);
+# results are root-owned, so nothing root writes can be redirected by the agent.
 install -d -m 0700 -o "\$SERVICE_USER" -g "\$SERVICE_USER" "\$REQUEST_DIR"
-# Results go to a ROOT-owned directory with root-owned ancestors: publishing
-# them into the agent's own directory would let a compromised agent replace
-# that directory with a symlink (or swap root's temporary file before the
-# rename) and have root install arbitrary JSON into Xray's confdir.
 install -d -m 0755 -o root -g root "\$RESULT_DIR"
 
 cat > "\$XRAY_UNIT" <<XRAYUNIT

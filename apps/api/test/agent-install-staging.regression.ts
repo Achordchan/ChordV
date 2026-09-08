@@ -169,12 +169,26 @@ TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh
 [[ "$(stat -c '%U:%G:%a' /etc/chordv/xray/conf.d/10-api.json)" == root:root:644 ]]
 [[ ! -e /etc/chordv/xray/conf.d/50-inbound.json ]]
 [[ "$(stat -c '%U:%G:%a' /usr/local/lib/chordv/xray-apply.js)" == root:root:755 ]]
-[[ "$(stat -c '%U:%a' /var/lib/chordv-node-agent/xray)" == chordv-agent:700 ]]
-# Root's results must land outside anything the agent can write or replace.
+# Both handoff directories hang off a ROOT-owned parent: the agent must never
+# own a directory that root walks, or a symlink swapped in there would redirect
+# what root writes — and, on reinstall, what "install -d -o chordv-agent"
+# chowns (that is how the helper script itself could be handed to the agent).
 [[ "$(stat -c '%U:%G:%a' /var/lib/chordv-xray)" == root:root:755 ]]
+[[ "$(stat -c '%U:%a' /var/lib/chordv-xray/requests)" == chordv-agent:700 ]]
+# Root's results must land outside anything the agent can write or replace.
+[[ "$(stat -c '%U:%G:%a' /var/lib/chordv-xray/results)" == root:root:755 ]]
+# A planted symlink must be refused, not followed and chowned.
+rm -rf /var/lib/chordv-xray/requests
+ln -s /usr/local/lib/chordv /var/lib/chordv-xray/requests
+TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh 2>/tmp/symlink.err && exit 98
+grep -q '符号链接' /tmp/symlink.err
+[[ "$(stat -c '%U:%G' /usr/local/lib/chordv)" == root:root ]]
+rm -f /var/lib/chordv-xray/requests
+TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh
+[[ "$(stat -c '%U:%a' /var/lib/chordv-xray/requests)" == chordv-agent:700 ]]
 [[ "$(stat -c '%a' /usr/local/bin/xray)" == 755 ]]
 grep -q 'ReadOnlyPaths=/etc/chordv/xray' /etc/systemd/system/xray.service
-grep -q 'PathChanged=/var/lib/chordv-node-agent/xray/pending.json' /etc/systemd/system/chordv-xray-apply.path
+grep -q 'PathChanged=/var/lib/chordv-xray/requests/pending.json' /etc/systemd/system/chordv-xray-apply.path
 grep -q '/usr/local/lib/chordv/xray-apply.js' /etc/systemd/system/chordv-xray-apply.service
 grep -q 'chordv-managed: xray' /etc/systemd/system/xray.service
 # What root runs must come from the archive, not from the release tree: replace

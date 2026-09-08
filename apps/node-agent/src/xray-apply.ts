@@ -633,14 +633,16 @@ function waitForListener(port: number, binary: string, attempts = 20, delayMs = 
 }
 
 function main(): void {
-  const requestDir = process.env.CHORDV_XRAY_REQUEST_DIR?.trim() || '/var/lib/chordv-node-agent/xray';
+  // Both handoff directories sit under a root-owned parent: the agent owns only
+  // the request directory's CONTENTS, never a path root walks or chowns.
+  const requestDir = process.env.CHORDV_XRAY_REQUEST_DIR?.trim() || '/var/lib/chordv-xray/requests';
   // Results are published into a ROOT-owned directory whose ancestors are also
   // root-owned. Writing them back into the agent's own directory would let a
   // compromised agent replace that directory with a symlink, or swap root's
   // temporary file before the rename — turning result publication into
   // "install arbitrary JSON wherever the symlink points", including Xray's
   // confdir. The agent only ever reads from here.
-  const resultDir = process.env.CHORDV_XRAY_RESULT_DIR?.trim() || '/var/lib/chordv-xray';
+  const resultDir = process.env.CHORDV_XRAY_RESULT_DIR?.trim() || '/var/lib/chordv-xray/results';
   const confDir = process.env.CHORDV_XRAY_CONF_DIR?.trim() || '/etc/chordv/xray/conf.d';
   const stateFile = process.env.CHORDV_XRAY_STATE_FILE?.trim() || '/etc/chordv/xray/inbound-state.json';
   const xrayBin = process.env.CHORDV_XRAY_BIN?.trim() || '/usr/local/bin/xray';
