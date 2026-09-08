@@ -55,6 +55,11 @@ export function InboundDeploySection(props: SectionProps) {
   const [specLoad, setSpecLoad] = useState<SpecLoad>({ status: "idle" });
   const [specRetry, setSpecRetry] = useState(0);
   const loadEpoch = useRef(0);
+  // The applied revision the open form was built from. A change underneath
+  // (another administrator's deployment completing) means the form's
+  // port/SNI/dest snapshot is stale; submitting it would roll the newer
+  // deployment back or reset its tag.
+  const [formRevision, setFormRevision] = useState<string | null>(null);
 
   const deployed = node.serverPort > 0 && Boolean(node.realityPublicKey?.trim());
   // First deployment has no keys to rotate; the option only exists where it
@@ -102,12 +107,19 @@ export function InboundDeploySection(props: SectionProps) {
       rotateKeys: false
     });
     setConfirmedRotation(false);
+    setFormRevision(node.inboundAppliedRevision ?? "0");
     // Form defaults snapshot the node and the loaded spec at open time;
     // refreshes mid-modal must not overwrite what the operator is typing.
   }, [modalOpened]);
 
   const serverNames = splitCsv(form.serverNamesCsv);
-  const canSubmit = serverNames.length > 0 && (!form.rotateKeys || confirmedRotation);
+  // A revision change under an open form invalidates its snapshot: the fields
+  // were captured against the PREVIOUS deployment, and mixing them with
+  // node-record fallbacks or the newer spec's preserved fields could roll the
+  // newer deployment back. Block submission until the operator reopens the
+  // form against the current spec.
+  const revisionChangedUnderneath = formRevision !== null && (node.inboundAppliedRevision ?? "0") !== formRevision;
+  const canSubmit = serverNames.length > 0 && (!form.rotateKeys || confirmedRotation) && !revisionChangedUnderneath;
 
   async function submitDeploy() {
     if (!canSubmit) return;
@@ -202,6 +214,11 @@ export function InboundDeploySection(props: SectionProps) {
               ? "轮换会让该节点已发出的所有订阅立即失效，所有客户端必须重新获取订阅配置。仅在密钥疑似泄露时使用。"
               : "命令将进入队列，由节点上的 Agent 执行：部署 VLESS+Reality 入站并回填连接参数。私钥只在 VPS 上生成，不会离开机器。"}
           </Alert>
+          {revisionChangedUnderneath ? (
+            <Alert color="red" variant="light" title="节点部署已在此表单打开期间发生变化">
+              表单中的参数是对上一份部署的快照，为避免覆盖新部署（或重置其 inboundTag），提交已停用：请关闭并重新打开表单以加载当前参数。
+            </Alert>
+          ) : null}
           <NumberInput
             label="监听端口"
             value={form.listenPort}

@@ -212,6 +212,14 @@ assert.match(sectionSource, /\}, \[loadSpec, node\.inboundAppliedRevision, specR
 assert.match(sectionSource, /读取当前部署规格失败/, "读取失败必须显式暴露而非当作没有部署");
 assert.match(sectionSource, /setSpecRetry\(\(count\) => count \+ 1\)/, "失败后必须可重试");
 assert.doesNotMatch(sectionSource, /\(current\) => \(\{[^}]*event\.currentTarget/, "函数式更新器里不得读 event.currentTarget（React 可能推迟到 currentTarget 清空后才执行）");
+// The open form is bound to the applied revision it was built from: a change
+// underneath (another admin's deployment completing) must block submission
+// until the operator reopens the form against the current spec — gating only
+// the modal-opening button leaves the stale snapshot submittable.
+assert.match(sectionSource, /setFormRevision\(node\.inboundAppliedRevision \?\? "0"\)/, "打开表单必须快照 applied revision");
+assert.match(sectionSource, /const revisionChangedUnderneath = formRevision !== null && \(node\.inboundAppliedRevision \?\? "0"\) !== formRevision;/, "必须检测表单打开期间的 revision 变化");
+assert.match(sectionSource, /&& !revisionChangedUnderneath/, "revision 变化后提交必须被阻断");
+assert.match(sectionSource, /节点部署已在此表单打开期间发生变化/, "阻断时必须向操作员说明原因与恢复方式");
 
 // The deploy completion callback must apply the polled record IMMEDIATELY:
 // discarding it for a full-list refetch leaves the drawer on the old revision
