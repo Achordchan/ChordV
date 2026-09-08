@@ -54,7 +54,7 @@ import {
   toClientRuntimeEventType
 } from "./runtime-session.utils";
 import { pickCurrentSubscription } from "./subscription.utils";
-import { runWithSubscriptionUsageLock } from "./usage-lock.utils";
+import { runWithSubscriptionProvisioningLock, runWithSubscriptionUsageLock } from "./usage-lock.utils";
 import { canServeManagedClients, usesAgentControl, usesAgentShadowMetering, type NodeControlModeValue } from "./node-control-mode";
 import { createOrRefreshLeaseRevocationJob } from "./lease-revocation-job.utils";
 import { createOrRefreshNodeCommandJob } from "./node-command-job.utils";
@@ -484,12 +484,13 @@ export class RuntimeSessionService {
   }
 
   async queueDirectSubscriptionAccessSync(subscriptionId: string) {
-    // One transaction, under the SHARED subscription usage lock: binding
-    // activation, baseline, revision bump and the ENSURE_USER job must commit
-    // or roll back together, and the sync must serialize against traffic
-    // resets and other provisioning paths (other API processes included —
-    // the lock is a pg advisory lock when DATABASE_URL is set).
-    return runWithSubscriptionUsageLock(subscriptionId, () =>
+    // One transaction, under the SHARED provisioning lock: binding activation,
+    // baseline, revision bump and the ENSURE_USER job must commit or roll
+    // back together, and the sync must serialize against traffic resets and
+    // other provisioning paths (other API processes included — the lock is a
+    // pg advisory lock when DATABASE_URL is set). The PROVISIONING lock, not
+    // the usage one: metering must never wait on a provisioning sync.
+    return runWithSubscriptionProvisioningLock(subscriptionId, () =>
       this.prisma.$transaction((tx) =>
         this.syncSubscriptionPanelAccessLocked(subscriptionId, {
           writer: tx,
@@ -556,13 +557,14 @@ export class RuntimeSessionService {
   }
 
   /**
-   * The provisioning sync under the shared subscription usage lock: without
-   * it, a sync started just before a traffic reset (or running in another API
+   * The provisioning sync under the shared provisioning lock: without it, a
+   * sync started just before a traffic reset (or running in another API
    * process) could reactivate quiesced bindings mid-reset and invalidate the
-   * reset's accounting boundary.
+   * reset's accounting boundary. The provisioning lock — not the usage lock —
+   * so metering batches are never blocked by restoration work.
    */
   private async runDirectSubscriptionAccessSyncLocked(subscriptionId: string) {
-    return runWithSubscriptionUsageLock(subscriptionId, () =>
+    return runWithSubscriptionProvisioningLock(subscriptionId, () =>
       this.prisma.$transaction((tx) =>
         this.queueDirectSubscriptionAccessSyncTx(tx, subscriptionId, { skipActiveTargets: true })
       )

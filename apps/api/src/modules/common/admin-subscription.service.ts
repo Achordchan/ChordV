@@ -50,7 +50,7 @@ import { AuthSessionService } from "./auth-session.service";
 import { PrismaService } from "./prisma.service";
 import { readMemberUsedTrafficGb } from "./member-traffic-usage";
 import { RuntimeSessionService, assertDirectTerminalWatermarksSettled } from "./runtime-session.service";
-import { runWithSubscriptionOwnerLock, runWithSubscriptionUsageLock } from "./usage-lock.utils";
+import { runWithSubscriptionOwnerLock, runWithSubscriptionProvisioningLock, runWithSubscriptionUsageLock } from "./usage-lock.utils";
 import { buildSnapshotKey, DEFAULT_MAX_CONCURRENT_SESSIONS } from "./runtime-session.utils";
 import { trafficGbNumberToBytes } from "./traffic-bytes.utils";
 import { isPrismaCodedError, toPrismaTransientHttpError } from "./prisma-error.utils";
@@ -1762,16 +1762,19 @@ export class AdminSubscriptionService {
     // provisioning: mid-reset the subscription is still eligible, so a
     // provisioning sync (the reconciler cron, a renewal, or another API
     // process) would reactivate the quiesced bindings and break the reset's
-    // settlement boundary. The subscription usage lock (a pg advisory lock in
-    // production) is held for the entire span — every provisioning path takes
-    // the same lock — and the in-flight marker is the same-process fast path;
-    // both are in-memory like the reset itself, so a restart aborts the reset
-    // and the reconciler then restoring service is the intended recovery.
+    // settlement boundary. That exclusion is the PROVISIONING lock — not the
+    // usage lock — because settlement itself requires the agent's final
+    // metering batches to be accounted, and ingestion takes the usage lock;
+    // holding it here would deadlock the reset against its own settlement.
+    // The usage lock is taken only around the final counter transaction, and
+    // lock order is always provisioning → usage. The in-flight marker stays
+    // as the same-process fast path.
     await this.runtimeSessionService.withDirectTrafficResetInFlight(subscription.id, async () => {
-      await runWithSubscriptionUsageLock(subscription.id, async () => {
+      await runWithSubscriptionProvisioningLock(subscription.id, async () => {
         await this.quiesceAndSettleDirectTrafficReset(subscription.id, targetUserId);
 
         const resetSampledAt = new Date();
+        await runWithSubscriptionUsageLock(subscription.id, async () => {
         try {
           updatedSubscription = await this.prisma.$transaction(async (tx) => {
             const bindings = await tx.panelClientBinding.findMany({
@@ -1869,6 +1872,7 @@ export class AdminSubscriptionService {
         } catch (error) {
           throw toAdminLocalSaveHttpError(error, "订阅流量重置保存失败，请刷新订阅列表后重试。");
         }
+        });
       });
     });
 

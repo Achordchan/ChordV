@@ -413,27 +413,42 @@ async function main() {
   );
   assert.match(
     runtimeSessionSource,
-    /private async runDirectSubscriptionAccessSyncLocked\(subscriptionId: string\) \{\s*\n\s*return runWithSubscriptionUsageLock\(subscriptionId, \(\) =>\s*\n\s*this\.prisma\.\$transaction\(\(tx\) =>\s*\n\s*this\.queueDirectSubscriptionAccessSyncTx\(tx, subscriptionId, \{ skipActiveTargets: true \}\)\s*\n\s*\)\s*\n\s*\);/,
-    "重试与重启用供给必须持共享订阅 usage lock，且以恢复模式运行（跳过活跃绑定）"
-  );
-  assert.match(
-    runtimeSessionSource,
-    /async queueDirectSubscriptionAccessSync\(subscriptionId: string\) \{\s*\n\s*\/\/ One transaction, under the SHARED subscription usage lock[\s\S]*?return runWithSubscriptionUsageLock\(subscriptionId, \(\) =>/,
-    "公共供给入口同样必须持锁"
+    /private async runDirectSubscriptionAccessSyncLocked\(subscriptionId: string\) \{\s*\n\s*return runWithSubscriptionProvisioningLock\(subscriptionId, \(\) =>\s*\n\s*this\.prisma\.\$transaction\(\(tx\) =>\s*\n\s*this\.queueDirectSubscriptionAccessSyncTx\(tx, subscriptionId, \{ skipActiveTargets: true \}\)\s*\n\s*\)\s*\n\s*\);/,
+    "重试与重启用供给必须持共享供给锁（不是 usage 锁——计量永远不得被恢复工作阻塞），且以恢复模式运行"
   );
 
-  // 9) The PUBLIC provisioning entry point must be one transaction: a failure
-  //    after binding activation must not leave an active binding without its
-  //    ENSURE_USER command (nothing would retry the missing command).
+  // 9) The PUBLIC provisioning entry point must be one transaction under the
+  //    provisioning lock: a failure after binding activation must not leave an
+  //    active binding without its ENSURE_USER command (nothing would retry the
+  //    missing command), and metering must not wait on it.
   assert.match(
     runtimeSessionSource,
-    /async queueDirectSubscriptionAccessSync\(subscriptionId: string\) \{\s*\n\s*\/\/ One transaction, under the SHARED subscription usage lock[\s\S]*?return runWithSubscriptionUsageLock\(subscriptionId, \(\) =>\s*\n\s*this\.prisma\.\$transaction\(\(tx\) =>\s*\n\s*this\.syncSubscriptionPanelAccessLocked\(subscriptionId, \{\s*\n\s*writer: tx,\s*\n\s*ensureOnly: true\s*\n\s*\}\)\s*\n\s*\)\s*\n\s*\);/,
-    "公共供给入口必须持共享锁并整体包在事务里"
+    /async queueDirectSubscriptionAccessSync\(subscriptionId: string\) \{\s*\n\s*\/\/ One transaction, under the SHARED provisioning lock[\s\S]*?return runWithSubscriptionProvisioningLock\(subscriptionId, \(\) =>\s*\n\s*this\.prisma\.\$transaction\(\(tx\) =>\s*\n\s*this\.syncSubscriptionPanelAccessLocked\(subscriptionId, \{\s*\n\s*writer: tx,\s*\n\s*ensureOnly: true\s*\n\s*\}\)\s*\n\s*\)\s*\n\s*\);/,
+    "公共供给入口必须持供给锁并整体包在事务里"
+  );
+  // 10) The traffic reset excludes provisioning with the PROVISIONING lock for
+  //     its whole span but takes the USAGE lock only around the final counter
+  //     transaction: settlement needs the agent's final batches accounted,
+  //     and ingestion takes the usage lock — holding it during the settle wait
+  //     would deadlock the reset against its own settlement.
+  assert.match(
+    adminSubscriptionSource,
+    /await this\.runtimeSessionService\.withDirectTrafficResetInFlight\(subscription\.id, async \(\) => \{\s*\n\s*await runWithSubscriptionProvisioningLock\(subscription\.id, async \(\) => \{\s*\n\s*await this\.quiesceAndSettleDirectTrafficReset\(subscription\.id, targetUserId\);/,
+    "流量重置必须从 quiesce 起持有供给锁（与供给互斥）"
   );
   assert.match(
     adminSubscriptionSource,
-    /await this\.runtimeSessionService\.withDirectTrafficResetInFlight\(subscription\.id, async \(\) => \{\s*\n\s*await runWithSubscriptionUsageLock\(subscription\.id, async \(\) => \{\s*\n\s*await this\.quiesceAndSettleDirectTrafficReset\(subscription\.id, targetUserId\);/,
-    "流量重置必须从 quiesce 起就持有订阅 usage lock（供给与之全程互斥）"
+    /const resetSampledAt = new Date\(\);\s*\n\s*await runWithSubscriptionUsageLock\(subscription\.id, async \(\) => \{\s*\n\s*try \{/,
+    "usage 锁只包最终计数事务——沉降等待期间计量批次必须能入账"
+  );
+  const usageLockUtilsSource = readFileSync(
+    path.resolve(__dirname, "../src/modules/common/usage-lock.utils.ts"),
+    "utf8"
+  );
+  assert.match(
+    usageLockUtilsSource,
+    /export async function runWithSubscriptionProvisioningLock/,
+    "供给锁必须是独立锁键（不与 usage 锁共用键空间）"
   );
 
   console.log("runtime session regression passed (connect 门不反转、供给资格共享判定、节点禁用联动绑定、删除绑定保留计量基线)");
