@@ -364,8 +364,13 @@ async function main() {
   );
   assert.match(
     runtimeSessionSource,
-    /FROM "SubscriptionNodeAccess" na[\s\S]*?LEFT JOIN "PanelClientBinding" b[\s\S]*?WHERE b\.id IS NULL/,
-    "候选必须包含「已分配节点却完全没有绑定」——初次供给在事务提交前失败时只剩授权行是持久痕迹"
+    /JOIN "Subscription" s ON s\.id = na\."subscriptionId" AND s\."userId" IS NOT NULL[\s\S]*?LEFT JOIN "PanelClientBinding" b[\s\S]*?AND b\."userId" = s\."userId"[\s\S]*?WHERE b\.id IS NULL/,
+    "个人订阅的缺口必须按用户比对——初次供给失败只剩授权行是持久痕迹"
+  );
+  assert.match(
+    runtimeSessionSource,
+    /JOIN "TeamMember" tm ON tm\."teamId" = s\."teamId"[\s\S]*?LEFT JOIN "PanelClientBinding" b[\s\S]*?AND b\."userId" = tm\."userId"[\s\S]*?WHERE b\.id IS NULL/,
+    "团队订阅的缺口必须按成员比对——一个成员供给失败不能被其他成员的既有绑定掩盖"
   );
   assert.match(
     runtimeSessionSource,

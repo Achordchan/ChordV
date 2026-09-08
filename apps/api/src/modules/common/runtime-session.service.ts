@@ -603,17 +603,20 @@ export class RuntimeSessionService {
   @Cron("*/30 * * * * *")
   @DrainableJob()
   async retryPendingDirectProvisioning() {
-    // Two candidate shapes, merged and rotated by the cursor:
+    // Candidate shapes, merged and rotated by the cursor:
     // 1. Existing disabled/deleted bindings — restoration is owed (re-enable
     //    or renewal raced an unsettled disable/remove).
-    // 2. Assigned nodes with NO binding at all — initial provisioning failed
-    //    before its transaction committed (nothing persisted to retry), so
-    //    the assignment itself is the only durable trace. The sync's
+    // 2. Per-USER gaps: an assigned active node where an ELIGIBLE owner (the
+    //    personal user, or an active team member) has no binding row at all —
+    //    initial provisioning failed before its transaction committed, so the
+    //    assignment/membership rows are the only durable trace. Per-user, not
+    //    per-node: a team member's failed provisioning must surface even when
+    //    other members already have bindings on the node. The sync's own
     //    eligibility checks still decide who actually gets provisioned;
-    //    intentionally bare assignments (no active members yet) simply no-op
+    //    intentionally bare owners (subscription paused, exhausted, …) no-op
     //    and rotate.
-    // Inactive nodes are pruned in both branches: the sync never provisions
-    // on them.
+    // Inactive nodes and disabled accounts are pruned in the query; the sync
+    // never provisions on them.
     const subscriptions: Array<{ subscriptionId: string }> = await this.prisma.$queryRaw`
       SELECT "subscriptionId" FROM (
         SELECT DISTINCT b."subscriptionId"
@@ -624,8 +627,19 @@ export class RuntimeSessionService {
         SELECT DISTINCT na."subscriptionId"
           FROM "SubscriptionNodeAccess" na
           JOIN "Node" n ON n.id = na."nodeId" AND n."isActive"
+          JOIN "Subscription" s ON s.id = na."subscriptionId" AND s."userId" IS NOT NULL
+          JOIN "User" u ON u.id = s."userId" AND u.status = 'active'
           LEFT JOIN "PanelClientBinding" b
-            ON b."subscriptionId" = na."subscriptionId" AND b."nodeId" = na."nodeId"
+            ON b."subscriptionId" = na."subscriptionId" AND b."nodeId" = na."nodeId" AND b."userId" = s."userId"
+        UNION
+        SELECT DISTINCT na."subscriptionId"
+          FROM "SubscriptionNodeAccess" na
+          JOIN "Node" n ON n.id = na."nodeId" AND n."isActive"
+          JOIN "Subscription" s ON s.id = na."subscriptionId" AND s."teamId" IS NOT NULL
+          JOIN "TeamMember" tm ON tm."teamId" = s."teamId"
+          JOIN "User" u ON u.id = tm."userId" AND u.status = 'active'
+          LEFT JOIN "PanelClientBinding" b
+            ON b."subscriptionId" = na."subscriptionId" AND b."nodeId" = na."nodeId" AND b."userId" = tm."userId"
          WHERE b.id IS NULL
       ) candidates
       WHERE "subscriptionId" > ${this.directProvisioningRetryCursor}
