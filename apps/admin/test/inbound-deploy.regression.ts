@@ -149,7 +149,8 @@ function pollFixture(records: Array<Record<string, unknown>>, runFirstScheduleOn
   const scope: Record<string, unknown> = {
     loadEpoch, deployed: true, node,
     fetchNodeInboundSpec: () => new Promise((resolve, reject) => pending.push({ resolve, reject })),
-    setSpecLoad: (value: unknown) => mutations.push(["setSpecLoad", value])
+    setSpecLoad: (value: unknown) => mutations.push(["setSpecLoad", value]),
+    specErrorMessage: (error: Error) => error.message
   };
   const load = sectionCallback("loadSpec", scope);
   load();
@@ -168,7 +169,7 @@ function pollFixture(records: Array<Record<string, unknown>>, runFirstScheduleOn
   pending[2].reject(new Error("boom"));
   // A rejection passes .then before reaching .catch: two microtask hops.
   await Promise.resolve(); await Promise.resolve();
-  assert.deepEqual(mutations[4], ["setSpecLoad", { status: "error" }], "失败必须显式暴露");
+  assert.deepEqual(mutations[4], ["setSpecLoad", { status: "error", message: "boom" }], "失败必须显式暴露且携带原因");
   // An undeployed node loads nothing at all (first deployment needs no spec).
   sectionCallback("loadSpec", { ...scope, deployed: false })();
   assert.deepEqual(mutations[5], ["setSpecLoad", { status: "idle" }]);
@@ -210,5 +211,6 @@ assert.match(sectionSource, /disabled=\{deployment\.stage === "queued" \|\| !rei
 assert.match(sectionSource, /\}, \[loadSpec, node\.inboundAppliedRevision, specRetry\]\);/, "规格必须随 applied revision 变化刷新");
 assert.match(sectionSource, /读取当前部署规格失败/, "读取失败必须显式暴露而非当作没有部署");
 assert.match(sectionSource, /setSpecRetry\(\(count\) => count \+ 1\)/, "失败后必须可重试");
+assert.doesNotMatch(sectionSource, /\(current\) => \(\{[^}]*event\.currentTarget/, "函数式更新器里不得读 event.currentTarget（React 可能推迟到 currentTarget 清空后才执行）");
 
 console.log("inbound deploy regression passed (queue/poll session discipline, completion by applied revision, destructive rotation marking)");

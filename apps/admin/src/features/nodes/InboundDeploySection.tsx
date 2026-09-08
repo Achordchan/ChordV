@@ -17,6 +17,12 @@ function stringField(spec: Record<string, unknown> | null, key: string): string 
   return typeof spec?.[key] === "string" ? spec[key] as string : undefined;
 }
 
+function specErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  try { const body = JSON.parse(raw); if (typeof body?.message === "string") return body.message; } catch { /* plain error */ }
+  return raw;
+}
+
 /**
  * Lifecycle of loading the applied deployment's COMPLETE spec. "loaded" with a
  * null spec means no ENSURE_INBOUND ever applied (parameters imported from a
@@ -30,7 +36,7 @@ type SpecLoad =
   | { status: "idle" }
   | { status: "loading" }
   | { status: "loaded"; spec: Record<string, unknown> | null }
-  | { status: "error" };
+  | { status: "error"; message: string };
 
 /**
  * R2-B: the admin half of ENSURE_INBOUND. Shows the Reality parameters the
@@ -64,7 +70,7 @@ export function InboundDeploySection(props: SectionProps) {
     setSpecLoad({ status: "loading" });
     fetchNodeInboundSpec(node.id)
       .then((result) => { if (loadEpoch.current === epoch) setSpecLoad({ status: "loaded", spec: result.spec }); })
-      .catch(() => { if (loadEpoch.current === epoch) setSpecLoad({ status: "error" }); });
+      .catch((error) => { if (loadEpoch.current === epoch) setSpecLoad({ status: "error", message: specErrorMessage(error) }); });
   }, [node.id, deployed]);
 
   // Refresh when the APPLIED revision moves: after a reissue completes, the
@@ -169,7 +175,7 @@ export function InboundDeploySection(props: SectionProps) {
       {deployed && specLoad.status === "error" ? (
         <Alert color="red" variant="light" title="读取当前部署规格失败">
           <Group gap="sm" justify="space-between" wrap="wrap">
-            <Text size="sm">重新下发已停用：此时提交会退化为不完整的节点记录参数（丢失多 SNI 与自定义回退目标）。</Text>
+            <Text size="sm">{specLoad.message || "重新下发已停用：此时提交会退化为不完整的节点记录参数（丢失多 SNI 与自定义回退目标）。"}</Text>
             <Button size="xs" variant="light" color="red" onClick={() => setSpecRetry((count) => count + 1)}>重试</Button>
           </Group>
         </Alert>
@@ -209,14 +215,14 @@ export function InboundDeploySection(props: SectionProps) {
             placeholder={DEFAULT_SNI}
             error={serverNames.length === 0 ? "SNI 不能为空" : null}
             description="重新下发时保持完整列表：删除其中一个 SNI 会让用它连接的客户端立即失效。"
-            onChange={(event) => setForm((current) => ({ ...current, serverNamesCsv: event.currentTarget.value }))}
+            onChange={(event) => { const value = event.currentTarget.value; setForm((current) => ({ ...current, serverNamesCsv: value })); }}
           />
           <TextInput
             label="回退目标（dest）"
             value={form.dest}
             placeholder={`${serverNames[0] || DEFAULT_SNI}:443`}
             description={`留空则自动使用「${serverNames[0] || DEFAULT_SNI}:443」：Reality 的回退目标必须能为所选 SNI 出示有效证书，SNI 与目标不配套时握手会失败。`}
-            onChange={(event) => setForm((current) => ({ ...current, dest: event.currentTarget.value }))}
+            onChange={(event) => { const value = event.currentTarget.value; setForm((current) => ({ ...current, dest: value })); }}
           />
           {deployed ? (
             <Text size="xs" c="dimmed">
@@ -227,7 +233,7 @@ export function InboundDeploySection(props: SectionProps) {
             <>
               <Checkbox
                 checked={form.rotateKeys}
-                onChange={(event) => { setForm((current) => ({ ...current, rotateKeys: event.currentTarget.checked })); setConfirmedRotation(false); }}
+                onChange={(event) => { const checked = event.currentTarget.checked; setForm((current) => ({ ...current, rotateKeys: checked })); setConfirmedRotation(false); }}
                 label="轮换 Reality 密钥（破坏性操作）"
                 color="red"
               />

@@ -607,9 +607,15 @@ async function testGetInboundSpec() {
   // Nothing applied yet: revision 0 (or no node at all) has no spec.
   assert.deepEqual(await run({ inboundAppliedRevision: 0n }, { payload: spec }), { spec: null });
   assert.deepEqual(await run(null, { payload: spec }), { spec: null });
-  // An applied revision whose job row is gone (e.g. parameters predate
-  // agent-native deployments) is honestly null, not a guess.
-  assert.deepEqual(await run({ inboundAppliedRevision: 12n }, null), { spec: null });
+  // A NONZERO applied revision whose job row is gone (e.g. command history
+  // was cleaned up) must fail loudly: answering "no spec" — identical to a
+  // never-deployed node — would let the reissue form fall back to the lossy
+  // node record and silently drop SNIs / replace the dest / reset the tag.
+  await assert.rejects(
+    () => run({ inboundAppliedRevision: 12n }, null),
+    /部署规格记录缺失/,
+    "applied 但规格缺失必须报错而不是当作未部署"
+  );
 }
 
 function main() {

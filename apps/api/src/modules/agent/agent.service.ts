@@ -335,7 +335,15 @@ export class AgentService {
       orderBy: [{ targetRevision: "desc" }, { createdAt: "desc" }],
       select: { payload: true }
     });
-    return { spec: (job?.payload as Record<string, unknown> | undefined) ?? null };
+    if (!job) {
+      // A nonzero applied revision means the current parameters came from an
+      // ENSURE_INBOUND command. Answering "no spec" here — the same as a node
+      // that was never deployed — would let the reissue form fall back to the
+      // lossy node record and silently drop SNIs, replace the dest and reset
+      // the tag. Fail loudly instead, so the UI keeps reissue disabled.
+      throw new BadRequestException("该节点的部署规格记录缺失（命令历史可能已被清理），无法安全地重新下发");
+    }
+    return { spec: job.payload as Record<string, unknown> };
   }
 
   async queueCommand(nodeId: string, input: QueueAgentCommandDto): Promise<AgentCommandDto> {
