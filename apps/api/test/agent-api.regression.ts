@@ -49,6 +49,7 @@ async function main() {
   let storedWatermarks: unknown = null;
   const completionService = new AgentService({
     $transaction: async (operation: (tx: any) => Promise<unknown>) => operation({
+      $queryRaw: async () => [],
       nodeCommandJob: {
         findFirst: async () => ({ id: "command-disable", commandType: "DISABLE_USER", payload: { bindingId: "binding-1" } }),
         update: async () => undefined

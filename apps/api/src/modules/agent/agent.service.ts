@@ -238,6 +238,11 @@ export class AgentService {
 
   async completeCommand(agent: NodeAgent, commandId: string, input: AgentCommandResultDto) {
     const updated = await this.prisma.$transaction(async (tx) => {
+      // The same per-node serialization point as queueCommand, taken FIRST for
+      // the same lock-order reason: this transaction writes a job row and then
+      // the Node row, while queueCommand holds the Node lock while releasing a
+      // superseded job's key — inverting the two orders would deadlock.
+      await tx.$queryRaw`SELECT id FROM "Node" WHERE id = ${agent.nodeId} FOR UPDATE`;
       const job = await tx.nodeCommandJob.findFirst({
         where: { id: commandId, nodeId: agent.nodeId, agentId: agent.id, status: { in: ["pending", "running", "failed"] } },
         select: { id: true, commandType: true, payload: true, targetRevision: true, dedupeKey: true }
@@ -311,12 +316,6 @@ export class AgentService {
       orderBy: [{ lastSeenAt: "desc" }, { createdAt: "desc" }]
     });
     if (!agent) throw new BadRequestException("该节点尚未创建有效 Agent 凭据");
-    const node = await this.prisma.node.update({
-      where: { id: nodeId },
-      data: { agentConfigRevision: { increment: 1n } },
-      select: { agentConfigRevision: true }
-    });
-    const targetRevision = node.agentConfigRevision;
     // The inbound spec is the one payload the server must understand: it is
     // what the agent's report is later compared against field by field, and a
     // command dispatched with an unvalidated spec could never be verified.
@@ -334,18 +333,74 @@ export class AgentService {
       ?? (input.type === "ENSURE_INBOUND"
         ? inboundSpecKey(nodeId, payload as NormalizedInboundSpec)
         : `${nodeId}:${input.type}:${randomUUID()}`);
-    const job = await this.prisma.nodeCommandJob.upsert({
-      where: { dedupeKey },
-      update: {},
-      create: {
-        id: randomUUID(),
-        dedupeKey,
-        nodeId,
-        agentId: agent.id,
-        commandType: input.type,
-        targetRevision,
-        payload: payload as Prisma.InputJsonValue
+    // The revision allocation, the intervening-deployment check, the key
+    // release and the upsert are ONE atomic unit per node. Without the
+    // serialization a concurrent request can slip in between another's
+    // revision allocation and its insert: the second 443 request would see no
+    // intervening job, collapse onto the obsolete command, and the node would
+    // end on 8443 despite the later 443 request — the unique index only
+    // arbitrates same-key writes, and this check is cross-job. The Node row
+    // lock also sets the lock ORDER convention (Node first, then job rows):
+    // completeCommand takes the same lock first, and inverting the two orders
+    // would deadlock against this release path.
+    const job = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Node" WHERE id = ${nodeId} FOR UPDATE`;
+      const node = await tx.node.update({
+        where: { id: nodeId },
+        data: { agentConfigRevision: { increment: 1n } },
+        select: { agentConfigRevision: true }
+      });
+      const targetRevision = node.agentConfigRevision;
+      // Collapse an identical request only while the outstanding one is still
+      // the NEWEST deployment for the node. When the operator went 443 → 8443
+      // → 443 again with nothing completed yet, the outstanding 443 command
+      // carries an OLDER revision than the 8443 one: collapsing onto it would
+      // leave 8443 as the newest operation, and the agent's stale-revision
+      // guard would then reject the reused command — the operator's last
+      // request would never run. Release the key (the completion flow's own
+      // rename) and let the upsert below create a fresh command with the
+      // newly allocated revision instead.
+      if (input.type === "ENSURE_INBOUND" && !input.dedupeKey) {
+        const outstanding = await tx.nodeCommandJob.findUnique({ where: { dedupeKey } });
+        if (outstanding) {
+          // "Newer" by targetRevision, not createdAt: every created job
+          // consumed its own increment of the node's monotonic counter, so
+          // revisions are strictly ordered where timestamps can tie.
+          const intervening = await tx.nodeCommandJob.findFirst({
+            where: {
+              nodeId,
+              commandType: "ENSURE_INBOUND",
+              targetRevision: { gt: outstanding.targetRevision },
+            },
+            select: { id: true },
+          });
+          if (intervening) {
+            // Match on STILL HOLDING the base key rather than on a status: an
+            // outstanding job may already be running (the agent picked it up
+            // but has not reported), and a job that completed concurrently has
+            // already released the key its own way (:done:) and must be left
+            // alone — either way the base key ends up free for the fresh
+            // command.
+            await tx.nodeCommandJob.updateMany({
+              where: { id: outstanding.id, dedupeKey },
+              data: { dedupeKey: `${dedupeKey}:superseded:${outstanding.id}` },
+            });
+          }
+        }
       }
+      return tx.nodeCommandJob.upsert({
+        where: { dedupeKey },
+        update: {},
+        create: {
+          id: randomUUID(),
+          dedupeKey,
+          nodeId,
+          agentId: agent.id,
+          commandType: input.type,
+          targetRevision,
+          payload: payload as Prisma.InputJsonValue
+        }
+      });
     });
     const command = serializeCommand(job);
     this.events.publish(agent.id, command);

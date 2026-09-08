@@ -179,6 +179,7 @@ async function testWriteBackAndActivation() {
     const jobUpdates: Array<Record<string, unknown>> = [];
     let applied = options.appliedRevision ?? 0n;
     const tx = {
+      $queryRaw: async () => [],
       nodeCommandJob: {
         findFirst: async () => ({ id: "command-1", commandType: "ENSURE_INBOUND", payload: spec, targetRevision: 5n, dedupeKey: "node-1:ENSURE_INBOUND:abc" }),
         update: async ({ data }: { data: Record<string, unknown> }) => { jobUpdates.push(data); return {}; }
@@ -240,6 +241,7 @@ async function testDedupeReleaseIsInboundOnly() {
   for (const [commandType, released] of [["ENSURE_INBOUND", true], ["ENABLE_USER", false]] as const) {
     const jobUpdates: Array<Record<string, unknown>> = [];
     const tx = {
+      $queryRaw: async () => [],
       nodeCommandJob: {
         findFirst: async () => ({ id: "job-1", commandType, payload: {}, targetRevision: 5n, dedupeKey: "node-1:key" }),
         update: async ({ data }: { data: Record<string, unknown> }) => { jobUpdates.push(data); return {}; }
@@ -258,50 +260,186 @@ async function testDedupeReleaseIsInboundOnly() {
   }
 }
 
+/** In-memory NodeCommandJob table modelling the unique index, a monotonic clock, and per-node serialization. */
+function commandJobStore() {
+  const rows: Array<Record<string, any>> = [];
+  let clock = 0;
+  let revision = 6n;
+  // Models the Node row lock: $transaction bodies run exclusively, so the
+  // interleaved-request test can prove the service keeps its whole decision
+  // inside the serialized section.
+  let txLock: Promise<void> = Promise.resolve();
+  const store: {
+    rows: Array<Record<string, any>>;
+    prisma: Record<string, any>;
+    /** One-shot pause for the next job INSERT, to interleave two requests. */
+    gate: Promise<void> | null;
+    gateHit: boolean;
+  } = { rows, prisma: null as unknown as Record<string, any>, gate: null, gateHit: false };
+  const prisma: Record<string, any> = {
+    nodeAgent: { findFirst: async () => ({ id: "agent-1", agentId: "agent-1", nodeId: "node-1" }) },
+    $queryRaw: async () => [],
+    $transaction: async (run: (tx: Record<string, any>) => Promise<unknown>) => {
+      const previous = txLock;
+      let release!: () => void;
+      txLock = new Promise<void>((resolve) => { release = resolve; });
+      await previous;
+      try {
+        return await run(prisma);
+      } finally {
+        release();
+      }
+    },
+    node: { update: async () => ({ agentConfigRevision: ++revision }) },
+    nodeCommandJob: {
+      findUnique: async ({ where }: { where: { dedupeKey: string } }) =>
+        rows.find((row) => row.dedupeKey === where.dedupeKey) ?? null,
+      findFirst: async ({ where }: { where: Record<string, any> }) =>
+        rows.find((row) => row.nodeId === where.nodeId
+          && row.commandType === where.commandType
+          && row.targetRevision > where.targetRevision.gt) ?? null,
+      updateMany: async ({ where, data }: { where: Record<string, any>; data: Record<string, any> }) => {
+        let count = 0;
+        for (const row of rows) {
+          if (row.id === where.id && row.dedupeKey === where.dedupeKey) { Object.assign(row, data); count += 1; }
+        }
+        return { count };
+      },
+      upsert: async ({ where, create }: { where: { dedupeKey: string }; create: Record<string, any> }) => {
+        const existing = rows.find((row) => row.dedupeKey === where.dedupeKey);
+        if (existing) return existing;
+        if (store.gate) {
+          const gate = store.gate;
+          store.gate = null;
+          store.gateHit = true;
+          await gate;
+        }
+        const row = { ...create, status: "pending", attempts: 0, createdAt: new Date(Date.UTC(2026, 0, 1) + ++clock * 60_000) };
+        rows.push(row);
+        return row;
+      },
+    },
+  };
+  store.prisma = prisma;
+  return store;
+}
+
 async function testDedupeScope() {
   // Model the unique index: the same dedupeKey collapses onto one row. That is
   // what makes two concurrent identical requests one operation — a read-then-
   // insert could let both observe "nothing outstanding" and schedule two
   // disruptive restarts.
-  const rows = new Map<string, Record<string, unknown>>();
-  const service = new AgentService(
-    {
-      nodeAgent: { findFirst: async () => ({ id: "agent-1", agentId: "agent-1", nodeId: "node-1" }) },
-      node: { update: async () => ({ agentConfigRevision: 7n }) },
-      nodeCommandJob: {
-        upsert: async ({ where, create }: { where: { dedupeKey: string }; create: Record<string, unknown> }) => {
-          const existing = rows.get(where.dedupeKey);
-          if (existing) return existing;
-          const row = { ...create, status: "pending", createdAt: new Date(0), targetRevision: 7n };
-          rows.set(where.dedupeKey, row);
-          return row;
-        }
-      }
-    } as never,
-    { publish() {} } as never,
-    { publishSubscriptionUpdated: async () => undefined } as never
-  );
+  const store = commandJobStore();
+  const service = new AgentService(store.prisma as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
 
   const first = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
   const second = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
-  assert.equal(rows.size, 1, "未完成的同规格请求必须折叠成一条");
+  assert.equal(store.rows.length, 1, "未完成的同规格请求必须折叠成一条");
   assert.equal(first.commandId, second.commandId);
   // The payload is normalized before it is persisted: the report is compared
   // against exactly this row.
-  assert.deepEqual([...rows.values()][0].payload, { ...INBOUND_DEFAULTS, serverNames: [...INBOUND_DEFAULTS.serverNames], rotateKeys: false });
+  assert.deepEqual(store.rows[0].payload, { ...INBOUND_DEFAULTS, serverNames: [...INBOUND_DEFAULTS.serverNames], rotateKeys: false });
 
   // Completion releases the key (see the rename in completeCommand), so the
   // same deployment can be ordered again — otherwise a node could never return
   // to a port it used before, and a second rotation would be impossible.
-  const [key, row] = [...rows.entries()][0];
-  rows.delete(key);
-  rows.set(`${key}:done:${row.id as string}`, row);
+  const [key, row] = [store.rows[0].dedupeKey as string, store.rows[0]];
+  Object.assign(row, { dedupeKey: `${key}:done:${row.id}` });
   await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
-  assert.equal(rows.size, 2, "已完成的部署必须可以再次下发");
+  assert.equal(store.rows.length, 2, "已完成的部署必须可以再次下发");
 
   // A different spec is a different operation.
   await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: { listenPort: 8443 } } as never);
-  assert.equal(rows.size, 3);
+  assert.equal(store.rows.length, 3);
+}
+
+async function testDedupeInterveningDeployment() {
+  // 443 → 8443 → 443 again with NOTHING completed (the agent is disconnected):
+  // the third request must not collapse onto the first command — it carries an
+  // older revision than the 8443 one, so 8443 would remain the newest
+  // operation and the agent's stale-revision guard would reject the reused
+  // command; the operator's last request would never run.
+  const store = commandJobStore();
+  const service = new AgentService(store.prisma as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
+  const port443 = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
+  const port8443 = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: { listenPort: 8443 } } as never);
+  assert.notEqual(port443.commandId, port8443.commandId);
+
+  const again = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
+  assert.notEqual(again.commandId, port443.commandId, "存在更新的部署请求时不得折叠回旧命令");
+  assert.notEqual(again.commandId, port8443.commandId);
+  // The fresh command carries a newly allocated revision NEWER than 8443's:
+  // once every queued command has run (or the stale ones were rejected), the
+  // node ends on the operator's last request.
+  assert.ok(BigInt(again.targetRevision) > BigInt(port8443.targetRevision), "新命令必须拿到新分配的更高 revision");
+  // The outstanding 443 job released the base key to the fresh command — a
+  // fourth identical request collapses onto the FRESH one, not the old one.
+  const fourth = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
+  assert.equal(fourth.commandId, again.commandId, "没有更新的间隔部署时仍应折叠（双击）");
+  // Every job keeps a unique key, and the superseded one is recognisable.
+  assert.equal(new Set(store.rows.map((row: Record<string, any>) => row.dedupeKey)).size, store.rows.length);
+  assert.match(String(store.rows.find((row: Record<string, any>) => row.id === port443.commandId)?.dedupeKey), /:superseded:/);
+}
+
+async function testDedupeInterveningWhileRunning() {
+  // Same timeline, but the first 443 command is already RUNNING (the agent
+  // picked it up while disconnected from the control plane and has not
+  // reported). Releasing only pending jobs would leave the key held, the
+  // upsert would collapse onto the old command, and 8443 would stay the
+  // newest deployment — the exact bug this PR fixes.
+  const store = commandJobStore();
+  const service = new AgentService(store.prisma as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
+  const port443 = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
+  Object.assign(store.rows[0], { status: "running" });
+  const port8443 = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: { listenPort: 8443 } } as never);
+
+  const again = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
+  assert.notEqual(again.commandId, port443.commandId, "运行中的旧命令同样必须释放键、不得折叠");
+  assert.ok(BigInt(again.targetRevision) > BigInt(port8443.targetRevision), "新命令必须拿到新分配的更高 revision");
+  assert.match(String(store.rows.find((row: Record<string, any>) => row.id === port443.commandId)?.dedupeKey), /:superseded:/);
+
+  // A job that completed concurrently released its key the completion way and
+  // must not be touched: the rename matches nothing when the row no longer
+  // holds the base key.
+  const fresh = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: { listenPort: 9443 } } as never);
+  const freshRow = store.rows.find((row: Record<string, any>) => row.id === fresh.commandId)!;
+  Object.assign(freshRow, { status: "completed", dedupeKey: `${freshRow.dedupeKey}:done:${freshRow.id}` });
+  const after = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: { listenPort: 9443 } } as never);
+  assert.notEqual(after.commandId, fresh.commandId, "已完成的命令释放键后，同规格必须可以再次下发");
+  assert.equal(String(freshRow.dedupeKey).endsWith(":done:" + String(freshRow.id)), true, "完成流程释放的键不得被改写");
+}
+
+async function testDedupeInterleavedRequests() {
+  // The 8443 request has ALLOCATED its revision but not yet inserted its job
+  // when the second 443 request arrives — plain concurrency, no queueing
+  // order needed. Without per-node serialization the 443 request sees no
+  // intervening job, collapses onto the obsolete revision-1 command, and the
+  // node ends on 8443 despite the later 443 request: the unique index only
+  // arbitrates same-key writes, and this check is cross-job.
+  const store = commandJobStore();
+  const service = new AgentService(store.prisma as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
+  const port443 = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
+  let releaseInsert!: () => void;
+  store.gate = new Promise<void>((resolve) => { releaseInsert = resolve; });
+
+  const eightFourFourThree = service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: { listenPort: 8443 } } as never);
+  await new Promise<void>((resolve) => {
+    const check = () => (store.gateHit ? resolve() : setTimeout(check, 5));
+    check();
+  });
+  assert.equal(store.gateHit, true, "8443 请求必须已到达插入点（revision 已分配、任务未可见）");
+
+  const again = service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
+  let completed = false;
+  void again.then(() => { completed = true; });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(completed, false, "并发的同规格请求必须在节点串行化点等待，而不是看到一半的状态");
+
+  releaseInsert();
+  const [a, b] = [await eightFourFourThree, await again];
+  assert.notEqual(b.commandId, port443.commandId, "并发交错时也不得折叠回旧命令");
+  assert.ok(BigInt(b.targetRevision) > BigInt(a.targetRevision), "后到的请求必须拿到更高的 revision");
+  assert.match(String(store.rows.find((row: Record<string, any>) => row.id === port443.commandId)?.dedupeKey), /:superseded:/);
 }
 
 function testInstallerAndDownloadRoute() {
@@ -427,6 +565,9 @@ function main() {
   return testWhoamiAcrossProxyHops()
     .then(testWriteBackAndActivation)
     .then(testDedupeScope)
+    .then(testDedupeInterveningDeployment)
+    .then(testDedupeInterveningWhileRunning)
+    .then(testDedupeInterleavedRequests)
     .then(testDedupeReleaseIsInboundOnly);
 }
 
