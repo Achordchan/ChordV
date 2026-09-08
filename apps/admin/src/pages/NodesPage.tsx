@@ -14,6 +14,7 @@ import { summarizeAdminDiagnosticMessage } from "../utils/admin-filters";
 import {
   filterLeaseRevocationJobs,
   hasLeaseRevocationQueueFilter,
+  hasNodeCommandQueueFilter,
   type LeaseRevocationQueueFilter
 } from "../utils/admin-queue-filters";
 import {
@@ -258,9 +259,10 @@ export function PanelSyncQueueDrawer(props: {
   opened: boolean;
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
   nodeCommandQueue: AdminNodeCommandQueueDto;
-  // Server-side filtered detail for the CURRENT target: the cached list above
-  // is capped, so a busy target's commands may fall outside it entirely.
-  nodeCommandQueueDetail?: AdminNodeCommandQueueDto | null;
+  // Server-side filtered detail for the CURRENT target (keyed by filter in
+  // App; null when absent or failed): the cached list above is capped, so a
+  // busy target's commands may fall outside it entirely.
+  nodeCommandQueueDetail?: { queue: AdminNodeCommandQueueDto | null; failed: boolean } | null;
   leaseRetryBusyKey: string | null;
   filter?: LeaseRevocationQueueFilter | null;
   onClose: () => void;
@@ -269,8 +271,9 @@ export function PanelSyncQueueDrawer(props: {
   onRetryLeaseNode: (nodeId: string) => void;
 }) {
   const filteredLeaseRevocationJobs = filterLeaseRevocationJobs(props.leaseRevocationJobs, props.filter);
-  const filteredNodeCommandJobs = hasLeaseRevocationQueueFilter(props.filter)
-    ? props.nodeCommandQueueDetail?.jobs ?? []
+  const commandDetail = props.nodeCommandQueueDetail ?? null;
+  const filteredNodeCommandJobs = hasNodeCommandQueueFilter(props.filter)
+    ? commandDetail?.queue?.jobs ?? []
     : props.nodeCommandQueue.jobs;
   const listedCommandTotal = sumNodeCommandSummaries(props.nodeCommandQueue.summaries, "nodes");
   const hasFilter = hasLeaseRevocationQueueFilter(props.filter);
@@ -391,7 +394,13 @@ export function PanelSyncQueueDrawer(props: {
               {filteredNodeCommandJobs.length === 0 ? (
                 <Table.Tr>
                   <Table.Td colSpan={6}>
-                    <Text c="dimmed">暂无待处理的节点命令</Text>
+                    {commandDetail?.failed ? (
+                      <Text c="red">该对象的节点命令加载失败，请稍后重试或刷新页面。</Text>
+                    ) : hasNodeCommandQueueFilter(props.filter) && !commandDetail?.queue ? (
+                      <Text c="dimmed">正在加载该对象的节点命令…</Text>
+                    ) : (
+                      <Text c="dimmed">暂无待处理的节点命令</Text>
+                    )}
                   </Table.Td>
                 </Table.Tr>
               ) : (

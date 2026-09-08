@@ -10,6 +10,7 @@ import { filterLeaseRevocationJobs, filterNodeCommandJobs } from "../src/utils/a
 import { findNodeCommandSummary, sumNodeCommandSummaries } from "../src/utils/node-command-summary";
 
 const nodesPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/NodesPage.tsx"), "utf8");
+const queueFiltersSource = readFileSync(resolve(import.meta.dirname, "../src/utils/admin-queue-filters.ts"), "utf8");
 const usersPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/UsersPage.tsx"), "utf8");
 const subscriptionsPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/SubscriptionsPage.tsx"), "utf8");
 const appSource = readFileSync(resolve(import.meta.dirname, "../src/App.tsx"), "utf8");
@@ -200,11 +201,41 @@ function testNodeCommandQueueShowsDirectProvisioning() {
 
   assert.match(
     nodesPageSource,
-    /hasLeaseRevocationQueueFilter\(props\.filter\)\s*\?\s*props\.nodeCommandQueueDetail\?\.jobs \?\? \[\]\s*:\s*props\.nodeCommandQueue\.jobs/,
+    /hasNodeCommandQueueFilter\(props\.filter\)\s*\?\s*commandDetail\?\.queue\?\.jobs \?\? \[\]\s*:\s*props\.nodeCommandQueue\.jobs/,
     "队列抽屉过滤视图必须用服务端按目标取回的命令明细，而不是被截断的全局列表"
+  );
+  assert.match(
+    queueFiltersSource,
+    /export function hasNodeCommandQueueFilter\(filter\?: LeaseRevocationQueueFilter \| null\) \{\s*return Boolean\(filter\?\.nodeId \|\| filter\?\.subscriptionId \|\| filter\?\.userId \|\| filter\?\.teamId\);/,
+    "team-only 过滤对节点命令必须算已过滤，否则团队视图会退回全局列表"
   );
   assert.match(nodesPageSource, /节点命令同步/, "队列抽屉必须包含节点命令分区");
   assert.match(nodesPageSource, /translateNodeCommandType\(job\.commandType\)/);
+  assert.match(
+    nodesPageSource,
+    /commandDetail\?\.failed \? \(\s*<Text c="red">该对象的节点命令加载失败/,
+    "明细加载失败必须明示，不得静默显示空表或旧数据"
+  );
+  assert.match(
+    nodesPageSource,
+    /正在加载该对象的节点命令/,
+    "过滤视图在明细未就绪时必须显示加载中，而不是「暂无」"
+  );
+  assert.match(
+    appSource,
+    /setNodeCommandDetail\(\{ filterKey: nodeCommandDetailFilterKey\(filter\), queue: null, failed: false \}\)/,
+    "切换目标必须立刻清空上一个目标的明细"
+  );
+  assert.match(
+    appSource,
+    /nodeCommandDetail\?\.filterKey === nodeCommandDetailFilterKey\(leaseRevocationQueue\.filter\)/,
+    "抽屉只接收与当前过滤键匹配的明细"
+  );
+  assert.match(
+    appSource,
+    /if \(leaseRevocationQueue\.opened\) \{\s*refreshNodeCommandQueueDetail\(leaseRevocationQueue\.filter\);\s*\}/,
+    "队列刷新时必须一并刷新打开中的过滤明细"
+  );
   assert.match(
     appSource,
     /<PanelSyncQueueDrawer[\s\S]*?nodeCommandQueue=\{snapshot\.nodeCommandQueue\}/,

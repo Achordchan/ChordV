@@ -140,7 +140,7 @@ import { CustomerSubscriptionsPage } from "./pages/CustomerSubscriptionsPage";
 import { ImageBedPage } from "./pages/ImageBedPage";
 import { NodesPage, PanelSyncQueueDrawer } from "./pages/NodesPage";
 import { AgentNodeCreateModal } from "./features/nodes/AgentNodeCreateModal";
-import type { LeaseRevocationQueueFilter } from "./utils/admin-queue-filters";
+import { hasNodeCommandQueueFilter, type LeaseRevocationQueueFilter } from "./utils/admin-queue-filters";
 import { sumNodeCommandSummaries } from "./utils/node-command-summary";
 import { OverviewPage } from "./pages/OverviewPage";
 import { PlansPage } from "./pages/PlansPage";
@@ -458,28 +458,57 @@ export function App() {
   const nodeAccessSavingRef = useRef(false);
   const nodeAccessRequestSeqRef = useRef(0);
   const [leaseRevocationQueue, setLeaseRevocationQueue] = useState<LeaseRevocationQueueState>({ opened: false, filter: null });
-  const [nodeCommandQueueDetail, setNodeCommandQueueDetail] = useState<AdminNodeCommandQueueDto | null>(null);
+  const [nodeCommandDetail, setNodeCommandDetail] = useState<{
+    filterKey: string;
+    queue: AdminNodeCommandQueueDto | null;
+    failed: boolean;
+  } | null>(null);
   const nodeCommandDetailSeqRef = useRef(0);
 
-  const openLeaseRevocationQueue = (filter?: LeaseRevocationQueueFilter) => {
-    setLeaseRevocationQueue({ opened: true, filter: filter ?? null });
+  const nodeCommandDetailFilterKey = (filter?: LeaseRevocationQueueFilter | null) =>
+    [filter?.nodeId ?? "", filter?.subscriptionId ?? "", filter?.userId ?? "", filter?.teamId ?? ""].join("|");
+
+  const refreshNodeCommandQueueDetail = (filter?: LeaseRevocationQueueFilter | null) => {
     // The globally cached detail list is capped; a filtered view must fetch
     // the target's own commands from the server, or a busy target whose
     // commands fell off the first page would show an empty queue.
-    const detailFilter = filter?.nodeId || filter?.subscriptionId || filter?.userId || filter?.teamId
-      ? { nodeId: filter?.nodeId, subscriptionId: filter?.subscriptionId, userId: filter?.userId, teamId: filter?.teamId }
-      : undefined;
-    if (detailFilter) {
-      const requestSeq = nodeCommandDetailSeqRef.current + 1;
-      nodeCommandDetailSeqRef.current = requestSeq;
-      void fetchAdminNodeCommandJobs(detailFilter)
-        .then((queue) => {
-          if (nodeCommandDetailSeqRef.current === requestSeq) {
-            setNodeCommandQueueDetail(queue);
-          }
-        })
-        .catch(() => undefined);
+    if (!hasNodeCommandQueueFilter(filter)) {
+      return;
     }
+    const requestFilter = {
+      nodeId: filter?.nodeId,
+      subscriptionId: filter?.subscriptionId,
+      userId: filter?.userId,
+      teamId: filter?.teamId
+    };
+    const filterKey = nodeCommandDetailFilterKey(filter);
+    const requestSeq = nodeCommandDetailSeqRef.current + 1;
+    nodeCommandDetailSeqRef.current = requestSeq;
+    void fetchAdminNodeCommandJobs(requestFilter)
+      .then((queue) => {
+        if (nodeCommandDetailSeqRef.current === requestSeq) {
+          setNodeCommandDetail({ filterKey, queue, failed: false });
+        }
+      })
+      .catch(() => {
+        if (nodeCommandDetailSeqRef.current === requestSeq) {
+          // Keep the previous payload but mark it failed: silently showing a
+          // different target's (or a stale) command list would mislead.
+          setNodeCommandDetail((current) => (current?.filterKey === filterKey ? { ...current, failed: true } : null));
+        }
+      });
+  };
+
+  const openLeaseRevocationQueue = (filter?: LeaseRevocationQueueFilter) => {
+    setLeaseRevocationQueue({ opened: true, filter: filter ?? null });
+    // Keyed AND cleared on target change: switching targets must never keep
+    // the previous target's commands on screen while (or after) loading.
+    if (hasNodeCommandQueueFilter(filter)) {
+      setNodeCommandDetail({ filterKey: nodeCommandDetailFilterKey(filter), queue: null, failed: false });
+    } else {
+      setNodeCommandDetail(null);
+    }
+    refreshNodeCommandQueueDetail(filter);
   };
 
   const closeLeaseRevocationQueue = () => {
@@ -1296,6 +1325,11 @@ export function App() {
       ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.leaseRevocationJobs } : {}),
       ...(nodeCommandQueueResult.ok ? { nodeCommandQueue: nodeCommandQueueResult.nodeCommandQueue } : {})
     });
+    // An open filtered drawer must not keep showing commands the queue just
+    // reported as completed — refresh its target-scoped detail too.
+    if (leaseRevocationQueue.opened) {
+      refreshNodeCommandQueueDetail(leaseRevocationQueue.filter);
+    }
     if (!nodesResult.ok || !leaseRevocationJobsResult.ok || !nodeCommandQueueResult.ok) {
       throw new Error(
         [
@@ -3336,7 +3370,11 @@ export function App() {
         opened={leaseRevocationQueue.opened}
         leaseRevocationJobs={snapshot.leaseRevocationJobs}
         nodeCommandQueue={snapshot.nodeCommandQueue}
-        nodeCommandQueueDetail={nodeCommandQueueDetail}
+        nodeCommandQueueDetail={
+          nodeCommandDetail?.filterKey === nodeCommandDetailFilterKey(leaseRevocationQueue.filter)
+            ? nodeCommandDetail
+            : null
+        }
         leaseRetryBusyKey={leaseRevocationRetryBusyKey}
         filter={leaseRevocationQueue.filter}
         onClose={closeLeaseRevocationQueue}

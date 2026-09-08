@@ -122,21 +122,22 @@ export class AdminNodeService {
    * outside the global first page.
    */
   async listNodeCommandJobs(filter?: { nodeId?: string; subscriptionId?: string; userId?: string; teamId?: string }) {
-    const hasFilter = Boolean(filter?.nodeId || filter?.subscriptionId || filter?.userId || filter?.teamId);
+    // Scope constraints INTERSECT (AND), matching the lease queue's filter
+    // semantics: a team member's view supplies subscriptionId + userId +
+    // teamId together and means exactly that member, not everyone else's
+    // commands under the same team or subscription.
+    const scoped = {
+      ...(filter?.nodeId ? { nodeId: filter.nodeId } : {}),
+      ...(filter?.subscriptionId ? { subscriptionId: filter.subscriptionId } : {}),
+      ...(filter?.userId ? { userId: filter.userId } : {}),
+      ...(filter?.teamId ? { teamId: filter.teamId } : {})
+    };
+    const hasFilter = Object.keys(scoped).length > 0;
     const rows = await runAdminNodeLocalOperation(
       () => this.prisma.nodeCommandJob.findMany({
         where: {
           status: { in: ["pending", "running", "failed"] },
-          ...(hasFilter
-            ? {
-                OR: [
-                  ...(filter?.nodeId ? [{ nodeId: filter.nodeId }] : []),
-                  ...(filter?.subscriptionId ? [{ subscriptionId: filter.subscriptionId }] : []),
-                  ...(filter?.userId ? [{ userId: filter.userId }] : []),
-                  ...(filter?.teamId ? [{ teamId: filter.teamId }] : [])
-                ]
-              }
-            : {})
+          ...(hasFilter ? scoped : {})
         },
         orderBy: [{ status: "asc" }, { nextRunAt: "asc" }, { createdAt: "desc" }],
         take: NODE_COMMAND_JOB_PAGE_SIZE,

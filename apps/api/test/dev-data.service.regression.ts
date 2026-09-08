@@ -5909,15 +5909,19 @@ async function testListNodeCommandJobsAppliesTargetFilter() {
   await service.listNodeCommandJobs({ subscriptionId: "sub_1" });
   assert.deepEqual(
     receivedWhere,
-    { status: { in: ["pending", "running", "failed"] }, OR: [{ subscriptionId: "sub_1" }] },
-    "订阅过滤必须下推为服务端 OR 条件"
+    { status: { in: ["pending", "running", "failed"] }, subscriptionId: "sub_1" },
+    "订阅过滤必须下推为服务端条件"
   );
 
-  await service.listNodeCommandJobs({ nodeId: "node_1", userId: "user_1" });
+  // A team member's view supplies subscriptionId + userId + teamId together
+  // and means EXACTLY that member: intersecting (AND) the scopes is the only
+  // correct reading — OR would flood the page with other members' commands
+  // and could hide this member's failure.
+  await service.listNodeCommandJobs({ subscriptionId: "sub_1", userId: "user_1", teamId: "team_1" });
   assert.deepEqual(
-    (receivedWhere as Record<string, unknown>).OR,
-    [{ nodeId: "node_1" }, { userId: "user_1" }],
-    "多目标过滤按 OR 组合"
+    receivedWhere,
+    { status: { in: ["pending", "running", "failed"] }, subscriptionId: "sub_1", userId: "user_1", teamId: "team_1" },
+    "多目标过滤必须按 AND 交集，不得按 OR 并集"
   );
 
   await service.listNodeCommandJobs();
