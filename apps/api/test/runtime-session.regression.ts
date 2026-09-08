@@ -436,6 +436,16 @@ async function main() {
     /for \(let index = 0; index < provisioningPairs\.length; index \+= options\.chunkSize\) \{\s*\n\s*const chunk = provisioningPairs\.slice\(index, index \+ options\.chunkSize\);[\s\S]*?\$transaction\([\s\S]*?\{ timeout: DIRECT_PROVISIONING_TX_TIMEOUT_MS \}/,
     "供给目标必须按 chunkSize 分块、每块显式超时的事务提交"
   );
+  assert.match(
+    runtimeSessionSource,
+    /for \(const binding of unsettledBlockedBindings\) \{\s*\n\s*try \{\s*\n\s*await assertDirectTerminalWatermarksSettled\(writer, binding\);\s*\n\s*\} catch \{\s*\n\s*blockedPairKeys\.add\(`\$\{binding\.nodeId\}:\$\{binding\.userId\}`\);\s*\n\s*\}\s*\n\s*\}/,
+    "未沉降的目标必须在分块前逐个识别并跳过——一个离线节点不得挡住其他健康节点的供给（队头阻塞）"
+  );
+  assert.match(
+    runtimeSessionSource,
+    /if \(blockedPairKeys\.has\(`\$\{access\.node\.id\}:\$\{target\.userId\}`\)\) \{\s*\n\s*continue;\s*\n\s*\}/,
+    "被跳过的目标留给下轮重试（绑定保持 disabled，reconciler 会再来）"
+  );
   // 10) The traffic reset excludes provisioning with the PROVISIONING lock for
   //     its whole span but takes the USAGE lock only around the final counter
   //     transaction: settlement needs the agent's final batches accounted,

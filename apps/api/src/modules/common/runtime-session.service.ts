@@ -872,12 +872,34 @@ export class RuntimeSessionService {
     );
 
     const provisioningPairs: Array<{ target: (typeof targets)[number]; access: (typeof subscription.nodeAccesses)[number] }> = [];
+    // A disabled/deleted binding whose disable has NOT settled yet (offline
+    // agent, watermarks unconfirmed or final batches unaccounted) cannot be
+    // re-activated — and letting that conflict throw inside a chunk would
+    // abort the chunk AND every chunk after it, so every retry stops at the
+    // same poisoned target while healthy nodes behind it stay unprovisioned.
+    // Pre-check settlement per target instead: unsettled ones are skipped
+    // this round (they stay disabled; the reconciler retries them later).
+    const unsettledBlockedBindings = await writer.panelClientBinding.findMany({
+      where: { subscriptionId, status: { in: ["disabled", "deleted"] } },
+      select: { id: true, nodeId: true, userId: true, directDisableWatermarks: true }
+    });
+    const blockedPairKeys = new Set<string>();
+    for (const binding of unsettledBlockedBindings) {
+      try {
+        await assertDirectTerminalWatermarksSettled(writer, binding);
+      } catch {
+        blockedPairKeys.add(`${binding.nodeId}:${binding.userId}`);
+      }
+    }
     for (const target of targets) {
       for (const access of subscription.nodeAccesses) {
         if (!access.node.isActive || !isNodeOnboardingReady(access.node)) {
           continue;
         }
         if (activeBindingKeys.has(`${access.node.id}:${target.userId}`)) {
+          continue;
+        }
+        if (blockedPairKeys.has(`${access.node.id}:${target.userId}`)) {
           continue;
         }
         provisioningPairs.push({ target, access });
