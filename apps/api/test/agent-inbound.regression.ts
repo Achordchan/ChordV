@@ -278,7 +278,7 @@ function commandJobStore() {
         updateMany: async ({ where, data }: { where: Record<string, any>; data: Record<string, any> }) => {
           let count = 0;
           for (const row of rows) {
-            if (row.id === where.id && row.status === where.status) { Object.assign(row, data); count += 1; }
+            if (row.id === where.id && row.dedupeKey === where.dedupeKey) { Object.assign(row, data); count += 1; }
           }
           return { count };
         },
@@ -349,6 +349,34 @@ async function testDedupeInterveningDeployment() {
   // Every job keeps a unique key, and the superseded one is recognisable.
   assert.equal(new Set(store.rows.map((row: Record<string, any>) => row.dedupeKey)).size, store.rows.length);
   assert.match(String(store.rows.find((row: Record<string, any>) => row.id === port443.commandId)?.dedupeKey), /:superseded:/);
+}
+
+async function testDedupeInterveningWhileRunning() {
+  // Same timeline, but the first 443 command is already RUNNING (the agent
+  // picked it up while disconnected from the control plane and has not
+  // reported). Releasing only pending jobs would leave the key held, the
+  // upsert would collapse onto the old command, and 8443 would stay the
+  // newest deployment — the exact bug this PR fixes.
+  const store = commandJobStore();
+  const service = new AgentService(store.prisma as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
+  const port443 = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
+  Object.assign(store.rows[0], { status: "running" });
+  const port8443 = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: { listenPort: 8443 } } as never);
+
+  const again = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
+  assert.notEqual(again.commandId, port443.commandId, "运行中的旧命令同样必须释放键、不得折叠");
+  assert.ok(BigInt(again.targetRevision) > BigInt(port8443.targetRevision), "新命令必须拿到新分配的更高 revision");
+  assert.match(String(store.rows.find((row: Record<string, any>) => row.id === port443.commandId)?.dedupeKey), /:superseded:/);
+
+  // A job that completed concurrently released its key the completion way and
+  // must not be touched: the rename matches nothing when the row no longer
+  // holds the base key.
+  const fresh = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: { listenPort: 9443 } } as never);
+  const freshRow = store.rows.find((row: Record<string, any>) => row.id === fresh.commandId)!;
+  Object.assign(freshRow, { status: "completed", dedupeKey: `${freshRow.dedupeKey}:done:${freshRow.id}` });
+  const after = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: { listenPort: 9443 } } as never);
+  assert.notEqual(after.commandId, fresh.commandId, "已完成的命令释放键后，同规格必须可以再次下发");
+  assert.equal(String(freshRow.dedupeKey).endsWith(":done:" + String(freshRow.id)), true, "完成流程释放的键不得被改写");
 }
 
 function testInstallerAndDownloadRoute() {
@@ -475,6 +503,7 @@ function main() {
     .then(testWriteBackAndActivation)
     .then(testDedupeScope)
     .then(testDedupeInterveningDeployment)
+    .then(testDedupeInterveningWhileRunning)
     .then(testDedupeReleaseIsInboundOnly);
 }
 

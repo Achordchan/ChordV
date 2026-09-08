@@ -357,11 +357,14 @@ export class AgentService {
           select: { id: true },
         });
         if (intervening) {
-          // updateMany so a job that completed concurrently (and already
-          // released the key its own way) is left alone; either way the base
-          // key is free for the fresh command.
+          // Match on STILL HOLDING the base key rather than on a status: an
+          // outstanding job may already be running (the agent picked it up but
+          // has not reported), and a job that completed concurrently has
+          // already released the key its own way (:done:) and must be left
+          // alone — either way the base key ends up free for the fresh
+          // command.
           await this.prisma.nodeCommandJob.updateMany({
-            where: { id: outstanding.id, status: "pending" },
+            where: { id: outstanding.id, dedupeKey },
             data: { dedupeKey: `${dedupeKey}:superseded:${outstanding.id}` },
           });
         }
