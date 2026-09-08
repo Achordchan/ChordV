@@ -448,8 +448,18 @@ async function main() {
   );
   assert.match(
     runtimeSessionSource,
-    /if \(blockedPairKeys\.has\(`\$\{access\.node\.id\}:\$\{target\.userId\}`\)\) \{\s*\n\s*continue;\s*\n\s*\}/,
-    "被跳过的目标留给下轮重试（绑定保持 disabled，reconciler 会再来）"
+    /if \(blockedPairKeys\.has\(`\$\{access\.node\.id\}:\$\{target\.userId\}`\)\) \{\s*\n\s*pendingSettlementTargetCount \+= 1;\s*\n\s*continue;\s*\n\s*\}/,
+    "被跳过的目标要计入待跟进数——全部被挡时调用方不得报告「已完全同步」"
+  );
+  assert.match(
+    runtimeSessionSource,
+    /return updatedBindingCount \+ provisioned \+ pendingSettlementTargetCount;/,
+    "分块路径的返回值必须包含待沉降目标数（调用方把 0 当作已同步）"
+  );
+  assert.match(
+    runtimeSessionSource,
+    /return updatedBindingCount \+ pendingSettlementTargetCount;/,
+    "单写入方路径同样计入待沉降目标数"
   );
   assert.match(
     runtimeSessionSource,

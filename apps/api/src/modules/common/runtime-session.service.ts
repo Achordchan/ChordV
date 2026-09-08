@@ -897,6 +897,9 @@ export class RuntimeSessionService {
     // same poisoned target while healthy nodes behind it stay unprovisioned.
     // Pre-check settlement per target instead: unsettled ones are skipped
     // this round (they stay disabled; the reconciler retries them later).
+    // They still COUNT toward the returned follow-up number: callers read 0
+    // as "fully synced", and a renewal whose every target is blocked pending
+    // settlement is NOT synced — the reconciler still owes those bindings.
     const unsettledBlockedBindings = await writer.panelClientBinding.findMany({
       where: { subscriptionId, status: { in: ["disabled", "deleted"] } },
       select: { id: true, nodeId: true, userId: true, directDisableWatermarks: true }
@@ -909,6 +912,7 @@ export class RuntimeSessionService {
         blockedPairKeys.add(`${binding.nodeId}:${binding.userId}`);
       }
     }
+    let pendingSettlementTargetCount = 0;
     for (const target of targets) {
       for (const access of subscription.nodeAccesses) {
         if (!access.node.isActive || !isNodeOnboardingReady(access.node)) {
@@ -918,6 +922,7 @@ export class RuntimeSessionService {
           continue;
         }
         if (blockedPairKeys.has(`${access.node.id}:${target.userId}`)) {
+          pendingSettlementTargetCount += 1;
           continue;
         }
         provisioningPairs.push({ target, access });
@@ -1008,13 +1013,13 @@ export class RuntimeSessionService {
           )
         );
       }
-      return updatedBindingCount + provisioned;
+      return updatedBindingCount + provisioned + pendingSettlementTargetCount;
     }
 
     for (const pair of provisioningPairs) {
       updatedBindingCount += await ensureTargetBinding(pair, writer);
     }
-    return updatedBindingCount;
+    return updatedBindingCount + pendingSettlementTargetCount;
   }
 
   async revokeUserLeases(
