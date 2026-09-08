@@ -481,15 +481,24 @@ export class AgentService {
         bindingTarget = binding;
       }
       // Exhausted (cancelled) failures resolve only under a genuinely NEW
-      // order: binding-scoped commands resolve per binding, target-less
-      // commands (ENSURE_INBOUND, RECONCILE_USERS, ...) per node+commandType.
+      // order, and only with a scope the new command actually covers:
+      // - a verified binding resolves that binding's exhausted rows;
+      // - a payload with NO user-targeting field (ENSURE_INBOUND,
+      //   RECONCILE_USERS, ...) resolves node+commandType-wide;
+      // - a user command targeted by email/userKey WITHOUT a bindingId
+      //   resolves NOTHING — node-wide would clear OTHER users' exhausted
+      //   failures on the same node.
       // Only rows older than this new order can be resolved, which is
       // structural here — the replacement is being created now.
-      await resolveExhaustedCommands(tx, {
-        ...(bindingTarget ? { bindingId: bindingTarget.id } : {}),
-        nodeId,
-        commandType: input.type
-      });
+      if (bindingTarget) {
+        await resolveExhaustedCommands(tx, {
+          bindingId: bindingTarget.id,
+          nodeId,
+          commandType: input.type
+        });
+      } else if (!hasUserTargeting(payload)) {
+        await resolveExhaustedCommands(tx, { nodeId, commandType: input.type });
+      }
       try {
         return await tx.nodeCommandJob.create({
           data: {
@@ -660,6 +669,16 @@ function serializeAgent(agent: NodeAgent): AdminNodeAgentDto {
     lastSeenAt: agent.lastSeenAt?.toISOString() ?? null,
     revokedAt: agent.revokedAt?.toISOString() ?? null
   };
+}
+
+function hasUserTargeting(payload: unknown) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return false;
+  }
+  return ["bindingId", "userKey", "email", "uuid"].some((key) => {
+    const value = Reflect.get(payload, key);
+    return typeof value === "string" && value.length > 0;
+  });
 }
 
 function serializeCommand(job: { id: string; commandType: NodeAgentCommandType; targetRevision: bigint; payload: Prisma.JsonValue; createdAt: Date }): AgentCommandDto {

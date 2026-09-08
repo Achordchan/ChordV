@@ -439,6 +439,30 @@ async function testUserCommandResolutionIsBindingScoped() {
     /不属于该节点/,
     "他节点的绑定不得被命令操作"
   );
+
+  // A user command targeted by email WITHOUT a bindingId must resolve nothing:
+  // node-wide resolution would clear OTHER users' exhausted failures on the
+  // node (the agent addresses the user via findStored, but the control plane
+  // has not verified which binding is meant).
+  store.rows.push(
+    { id: "exhausted-c", dedupeKey: "old:c", nodeId: "node-1", commandType: "ENSURE_USER", status: "cancelled", resolvedAt: null, bindingId: "binding-c", subscriptionId: "sub-3", userId: "user-3", teamId: null, targetRevision: 3n, createdAt: new Date(2) }
+  );
+  await service.queueCommand("node-1", { type: "ENSURE_USER", payload: { email: "someone@example.invalid" } } as never);
+  assert.equal(
+    store.rows.find((row) => row.id === "exhausted-c")?.resolvedAt ?? null,
+    null,
+    "按 email 定位、无 bindingId 的用户命令不得做节点级解决"
+  );
+
+  // Genuinely target-less commands keep the node-wide scope.
+  store.rows.push(
+    { id: "exhausted-reconcile", dedupeKey: "old:reconcile", nodeId: "node-1", commandType: "RECONCILE_USERS", status: "cancelled", resolvedAt: null, targetRevision: 4n, createdAt: new Date(3) }
+  );
+  await service.queueCommand("node-1", { type: "RECONCILE_USERS", payload: {} } as never);
+  assert.ok(
+    store.rows.find((row) => row.id === "exhausted-reconcile")?.resolvedAt instanceof Date,
+    "无目标命令仍按节点+类型解决耗尽行"
+  );
 }
 
 async function testInboundCasGuard() {

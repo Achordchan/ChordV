@@ -242,8 +242,13 @@ async function main() {
   );
   assert.match(
     agentServiceSource,
-    /await resolveExhaustedCommands\(tx, \{\s*\n\s*\.\.\.\(bindingTarget \? \{ bindingId: bindingTarget\.id \} : \{\}\),\s*\n\s*nodeId,\s*\n\s*commandType: input\.type\s*\n\s*\}\);/,
-    "用户命令必须按绑定解决耗尽行——按节点+类型会把同节点其他用户的失败一并清掉"
+    /if \(bindingTarget\) \{\s*\n\s*await resolveExhaustedCommands\(tx, \{\s*\n\s*bindingId: bindingTarget\.id,\s*\n\s*nodeId,\s*\n\s*commandType: input\.type\s*\n\s*\}\);\s*\n\s*\} else if \(!hasUserTargeting\(payload\)\) \{\s*\n\s*await resolveExhaustedCommands\(tx, \{ nodeId, commandType: input\.type \}\);\s*\n\s*\}/,
+    "解决必须按绑定；无绑定却按用户定位的命令不得回退节点级（会清掉同节点其他用户的失败）"
+  );
+  assert.match(
+    agentServiceSource,
+    /function hasUserTargeting\(payload: unknown\) \{[\s\S]*?"bindingId", "userKey", "email", "uuid"/,
+    "用户定位字段判定要覆盖 agent 寻址用户的全部字段"
   );
   assert.match(
     agentServiceSource,
