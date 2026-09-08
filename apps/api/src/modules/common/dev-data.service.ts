@@ -1984,13 +1984,14 @@ export class DevDataService implements OnModuleInit {
 
   private async queueSubscriptionPanelAccessSyncAfterLocalSave(subscriptionId: string) {
     try {
-      // Transaction-scoped: binding activation, its traffic baseline, the node
-      // revision bump and the ENSURE_USER job must commit or roll back as one.
-      // A binding marked active without its command would tell the control
-      // plane the node has the user while the agent never got told.
+      // The public entry, not a bare transaction: it takes the subscription
+      // PROVISIONING lock (saving assignments during a traffic reset's settle
+      // wait must not reactivate the quiesced bindings) and provisions in
+      // bounded atomic chunks — per target, binding activation + baseline +
+      // revision + ENSURE_USER still commit together.
       const result = await this.withNodeAccessPanelSyncBudget(
         subscriptionId,
-        this.prisma.$transaction((tx) => this.queueDirectSubscriptionAccessSyncTx(tx, subscriptionId))
+        this.runtimeSessionService.queueDirectSubscriptionAccessSync(subscriptionId)
       );
       if (result.ok) {
         return result.queuedCount > 0
@@ -2013,16 +2014,6 @@ export class DevDataService implements OnModuleInit {
         .filter(Boolean)
         .join(" ");
     }
-  }
-
-  private async queueDirectSubscriptionAccessSyncTx(writer: any, subscriptionId: string) {
-    const queueTx = (this.runtimeSessionService as {
-      queueDirectSubscriptionAccessSyncTx?: (writer: any, subscriptionId: string) => Promise<number>;
-    }).queueDirectSubscriptionAccessSyncTx;
-    if (typeof queueTx !== "function") {
-      throw new Error("runtime session service does not support transaction-scoped direct access queueing");
-    }
-    return queueTx.call(this.runtimeSessionService, writer, subscriptionId);
   }
 
   private startSubscriptionPanelAccessSync(subscriptionId: string) {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { plainToInstance } from "class-transformer";
 import { validateSync } from "class-validator";
 import { createHash } from "node:crypto";
-import { existsSync, promises as fsForPatch } from "node:fs";
+import { existsSync, promises as fsForPatch, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -6563,10 +6563,8 @@ async function testUpdateNodeAccessKeepsLocalSaveWhenPublishFails() {
   assert.deepEqual(result.nodeIds, ["node_1"]);
 }
 
-async function testNodeAccessEnsureQueuesDirectSyncInsideTransaction() {
-  let inTransaction = false;
-  let sawTransactionScopedSync = false;
-  let txSyncCalls = 0;
+async function testNodeAccessEnsureUsesLockedProvisioningEntry() {
+  let publicSyncCalls = 0;
   const node = {
     id: "node_1",
     name: "node",
@@ -6612,9 +6610,8 @@ async function testNodeAccessEnsureQueuesDirectSyncInsideTransaction() {
       }
     },
     runtimeSessionService: {
-      queueDirectSubscriptionAccessSyncTx: async () => {
-        sawTransactionScopedSync = inTransaction;
-        txSyncCalls += 1;
+      queueDirectSubscriptionAccessSync: async () => {
+        publicSyncCalls += 1;
         return 0;
       }
     },
@@ -6625,11 +6622,20 @@ async function testNodeAccessEnsureQueuesDirectSyncInsideTransaction() {
 
   await service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_1"] });
 
-  assert.equal(txSyncCalls, 1, "供给必须走事务作用域的 direct 入口，不得退回根客户端调用");
-  assert.equal(
-    sawTransactionScopedSync,
-    true,
-    "绑定激活/基线/修订/ENSURE_USER 必须在同一事务内提交或回滚"
+  assert.equal(publicSyncCalls, 1, "保存授权后的供给必须走公共入口（带供给锁与分块事务）");
+  const devDataSource = readFileSync(
+    path.resolve(__dirname, "../src/modules/common/dev-data.service.ts"),
+    "utf8"
+  );
+  assert.match(
+    devDataSource,
+    /this\.runtimeSessionService\.queueDirectSubscriptionAccessSync\(subscriptionId\)/,
+    "保存授权后的供给必须走公共入口——自带供给锁，重置沉降期间保存授权不会复活静默绑定"
+  );
+  assert.doesNotMatch(
+    devDataSource,
+    /\$transaction\(\(tx\) => this\.queueDirectSubscriptionAccessSyncTx\(tx, subscriptionId\)\)/,
+    "不得再绕过供给锁自行开事务排队供给"
   );
 }
 
@@ -17483,7 +17489,7 @@ async function main() {
   await testUpdateNodeAccessMapsUnknownLocalSaveFailure();
   await testUpdateNodeAccessMapsTransactionCommitFailure();
   await testUpdateNodeAccessKeepsLocalSaveWhenPublishFails();
-  await testNodeAccessEnsureQueuesDirectSyncInsideTransaction();
+  await testNodeAccessEnsureUsesLockedProvisioningEntry();
   await testNodeAccessRemovalMessagesDescribeQueuedRevocation();
   await testNodeAccessHttpMapsSubscriptionLookupFailureToServiceUnavailable();
   await testNodeAccessHttpMapsNodeListFailureToServiceUnavailable();

@@ -290,12 +290,16 @@ async function main() {
       },
       $transaction: async (task: (tx: unknown) => Promise<unknown>) => task({})
     },
-    queueDirectSubscriptionAccessSyncTx: async (
-      _tx: unknown,
+    syncSubscriptionPanelAccessLocked: async (
       subscriptionId: string,
-      options?: { skipActiveTargets?: boolean }
+      options?: { ensureOnly?: boolean; skipActiveTargets?: boolean; chunkSize?: number }
     ) => {
-      synced.push({ subscriptionId, skipActiveTargets: options?.skipActiveTargets });
+      synced.push({
+        subscriptionId,
+        skipActiveTargets: options?.skipActiveTargets,
+        chunkSize: options?.chunkSize
+      });
+      return 0;
     },
     logDirectProvisioningRetry: () => undefined
   }) as RuntimeSessionService;
@@ -307,10 +311,10 @@ async function main() {
   assert.deepEqual(
     synced,
     [
-      { subscriptionId: "sub_1", skipActiveTargets: true },
-      { subscriptionId: "sub_3", skipActiveTargets: true }
+      { subscriptionId: "sub_1", skipActiveTargets: true, chunkSize: 25 },
+      { subscriptionId: "sub_3", skipActiveTargets: true, chunkSize: 25 }
     ],
-    "重置进行中的订阅必须跳过（其余订阅照常重试），且恢复模式不得重确保已活跃绑定"
+    "重置进行中的订阅必须跳过；恢复模式不得重确保活跃绑定；供给按分块事务运行"
   );
   assert.equal(cron.directProvisioningRetryCursor, "", "不满一批时游标回绕到起点");
   await cron.retryPendingDirectProvisioning();
@@ -413,18 +417,24 @@ async function main() {
   );
   assert.match(
     runtimeSessionSource,
-    /private async runDirectSubscriptionAccessSyncLocked\(subscriptionId: string\) \{\s*\n\s*return runWithSubscriptionProvisioningLock\(subscriptionId, \(\) =>\s*\n\s*this\.prisma\.\$transaction\(\(tx\) =>\s*\n\s*this\.queueDirectSubscriptionAccessSyncTx\(tx, subscriptionId, \{ skipActiveTargets: true \}\)\s*\n\s*\)\s*\n\s*\);/,
-    "重试与重启用供给必须持共享供给锁（不是 usage 锁——计量永远不得被恢复工作阻塞），且以恢复模式运行"
+    /private async runDirectSubscriptionAccessSyncLocked\(subscriptionId: string\) \{\s*\n\s*return runWithSubscriptionProvisioningLock\(subscriptionId, \(\) =>\s*\n\s*this\.syncSubscriptionPanelAccessLocked\(subscriptionId, \{\s*\n\s*ensureOnly: true,\s*\n\s*skipActiveTargets: true,\s*\n\s*chunkSize: DIRECT_PROVISIONING_TX_BATCH_SIZE\s*\n\s*\}\)\s*\n\s*\);/,
+    "重试与重启用供给必须持供给锁、以恢复模式运行、按分块事务供给"
   );
 
-  // 9) The PUBLIC provisioning entry point must be one transaction under the
-  //    provisioning lock: a failure after binding activation must not leave an
-  //    active binding without its ENSURE_USER command (nothing would retry the
-  //    missing command), and metering must not wait on it.
+  // 9) Bulk provisioning must not run as one unbounded interactive
+  //    transaction: a large team would always exceed any single budget, and a
+  //    reconciler repeating it can never make progress. Bounded atomic chunks
+  //    (each with an explicit timeout) keep the per-binding invariant while
+  //    staying under the provisioning lock.
   assert.match(
     runtimeSessionSource,
-    /async queueDirectSubscriptionAccessSync\(subscriptionId: string\) \{\s*\n\s*\/\/ One transaction, under the SHARED provisioning lock[\s\S]*?return runWithSubscriptionProvisioningLock\(subscriptionId, \(\) =>\s*\n\s*this\.prisma\.\$transaction\(\(tx\) =>\s*\n\s*this\.syncSubscriptionPanelAccessLocked\(subscriptionId, \{\s*\n\s*writer: tx,\s*\n\s*ensureOnly: true\s*\n\s*\}\)\s*\n\s*\)\s*\n\s*\);/,
-    "公共供给入口必须持供给锁并整体包在事务里"
+    /async queueDirectSubscriptionAccessSync\(subscriptionId: string\) \{\s*\n\s*\/\/ Bounded atomic chunks under the SHARED provisioning lock[\s\S]*?return runWithSubscriptionProvisioningLock\(subscriptionId, \(\) =>\s*\n\s*this\.syncSubscriptionPanelAccessLocked\(subscriptionId, \{\s*\n\s*ensureOnly: true,\s*\n\s*chunkSize: DIRECT_PROVISIONING_TX_BATCH_SIZE\s*\n\s*\}\)\s*\n\s*\);/,
+    "公共供给入口必须持供给锁并按分块事务供给"
+  );
+  assert.match(
+    runtimeSessionSource,
+    /for \(let index = 0; index < provisioningPairs\.length; index \+= options\.chunkSize\) \{\s*\n\s*const chunk = provisioningPairs\.slice\(index, index \+ options\.chunkSize\);[\s\S]*?\$transaction\([\s\S]*?\{ timeout: DIRECT_PROVISIONING_TX_TIMEOUT_MS \}/,
+    "供给目标必须按 chunkSize 分块、每块显式超时的事务提交"
   );
   // 10) The traffic reset excludes provisioning with the PROVISIONING lock for
   //     its whole span but takes the USAGE lock only around the final counter

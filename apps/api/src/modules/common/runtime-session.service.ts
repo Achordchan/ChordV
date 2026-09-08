@@ -107,6 +107,11 @@ type PanelSyncAction = "ensure_client" | "disable_client" | "delete_client" | "r
 const DEFAULT_PANEL_TRAFFIC_RESET_CONFIRM_MAX_BYTES = 16n * 1024n * 1024n;
 const LEASE_REVOCATION_BATCH_SIZE = Number(process.env.CHORDV_LEASE_REVOCATION_BATCH_SIZE ?? 50);
 const DIRECT_PROVISIONING_RETRY_BATCH_SIZE = Number(process.env.CHORDV_DIRECT_PROVISIONING_RETRY_BATCH_SIZE ?? 50);
+// Per-chunk transaction budget and size for bulk provisioning: bounded atomic
+// chunks keep large teams progressing instead of one oversized transaction
+// that always times out.
+const DIRECT_PROVISIONING_TX_BATCH_SIZE = Number(process.env.CHORDV_DIRECT_PROVISIONING_TX_BATCH_SIZE ?? 25);
+const DIRECT_PROVISIONING_TX_TIMEOUT_MS = Number(process.env.CHORDV_DIRECT_PROVISIONING_TX_TIMEOUT_MS ?? 30_000);
 const DEFAULT_LEASE_REVOCATION_JOB_CONCURRENCY = 4;
 const DEFAULT_LEASE_REVOCATION_JOB_TIMEOUT_MS = 30_000;
 const LEASE_REVOCATION_RETRY_BASE_SECONDS = Number(process.env.CHORDV_LEASE_REVOCATION_RETRY_BASE_SECONDS ?? 15);
@@ -484,19 +489,17 @@ export class RuntimeSessionService {
   }
 
   async queueDirectSubscriptionAccessSync(subscriptionId: string) {
-    // One transaction, under the SHARED provisioning lock: binding activation,
-    // baseline, revision bump and the ENSURE_USER job must commit or roll
-    // back together, and the sync must serialize against traffic resets and
-    // other provisioning paths (other API processes included — the lock is a
-    // pg advisory lock when DATABASE_URL is set). The PROVISIONING lock, not
-    // the usage one: metering must never wait on a provisioning sync.
+    // Bounded atomic chunks under the SHARED provisioning lock: binding
+    // activation, baseline, revision bump and the ENSURE_USER job commit or
+    // roll back together PER TARGET, the sync serializes against traffic
+    // resets and other provisioning paths (other API processes included),
+    // and a large team cannot blow a single-transaction budget. Metering is
+    // never blocked (provisioning lock, not the usage one).
     return runWithSubscriptionProvisioningLock(subscriptionId, () =>
-      this.prisma.$transaction((tx) =>
-        this.syncSubscriptionPanelAccessLocked(subscriptionId, {
-          writer: tx,
-          ensureOnly: true
-        })
-      )
+      this.syncSubscriptionPanelAccessLocked(subscriptionId, {
+        ensureOnly: true,
+        chunkSize: DIRECT_PROVISIONING_TX_BATCH_SIZE
+      })
     );
   }
 
@@ -561,13 +564,16 @@ export class RuntimeSessionService {
    * sync started just before a traffic reset (or running in another API
    * process) could reactivate quiesced bindings mid-reset and invalidate the
    * reset's accounting boundary. The provisioning lock — not the usage lock —
-   * so metering batches are never blocked by restoration work.
+   * so metering batches are never blocked by restoration work. Runs in
+   * bounded atomic chunks so an oversized subscription still makes progress.
    */
   private async runDirectSubscriptionAccessSyncLocked(subscriptionId: string) {
     return runWithSubscriptionProvisioningLock(subscriptionId, () =>
-      this.prisma.$transaction((tx) =>
-        this.queueDirectSubscriptionAccessSyncTx(tx, subscriptionId, { skipActiveTargets: true })
-      )
+      this.syncSubscriptionPanelAccessLocked(subscriptionId, {
+        ensureOnly: true,
+        skipActiveTargets: true,
+        chunkSize: DIRECT_PROVISIONING_TX_BATCH_SIZE
+      })
     );
   }
 
@@ -725,6 +731,12 @@ export class RuntimeSessionService {
       ensureOnly?: boolean;
       /** Provision only missing/restorable targets; skip already-active bindings. */
       skipActiveTargets?: boolean;
+      /**
+       * Process provisioning targets in bounded atomic chunks (each its own
+       * transaction with an explicit timeout) instead of one transaction for
+       * the whole subscription. Requires no caller-supplied writer.
+       */
+      chunkSize?: number;
     }
   ) {
     const writer = options?.writer ?? this.prisma;
@@ -859,6 +871,7 @@ export class RuntimeSessionService {
         : []
     );
 
+    const provisioningPairs: Array<{ target: (typeof targets)[number]; access: (typeof subscription.nodeAccesses)[number] }> = [];
     for (const target of targets) {
       for (const access of subscription.nodeAccesses) {
         if (!access.node.isActive || !isNodeOnboardingReady(access.node)) {
@@ -867,24 +880,55 @@ export class RuntimeSessionService {
         if (activeBindingKeys.has(`${access.node.id}:${target.userId}`)) {
           continue;
         }
-        const binding = await this.ensurePanelClientBinding(writer, {
-          node: {
-            id: access.node.id,
-            name: access.node.name,
-            flow: access.node.flow,
-            controlMode: access.node.controlMode
-          },
-          subscriptionId,
-          userId: target.userId,
-          teamId: target.teamId,
-          userEmail: target.userEmail,
-          userDisplayName: target.userDisplayName,
-          expireAt: subscription.expireAt
-        });
-        if (binding) {
-          updatedBindingCount += 1;
-        }
+        provisioningPairs.push({ target, access });
       }
+    }
+
+    const ensureTargetBinding = async (pair: (typeof provisioningPairs)[number], pairWriter: any) => {
+      const binding = await this.ensurePanelClientBinding(pairWriter, {
+        node: {
+          id: pair.access.node.id,
+          name: pair.access.node.name,
+          flow: pair.access.node.flow,
+          controlMode: pair.access.node.controlMode
+        },
+        subscriptionId,
+        userId: pair.target.userId,
+        teamId: pair.target.teamId,
+        userEmail: pair.target.userEmail,
+        userDisplayName: pair.target.userDisplayName,
+        expireAt: subscription.expireAt
+      });
+      return binding ? 1 : 0;
+    };
+
+    if (options?.chunkSize && !options?.writer) {
+      // Bulk provisioning runs as bounded atomic chunks instead of one giant
+      // interactive transaction: a large team × many nodes would blow past
+      // any single-transaction budget, and a reconciler that retries the
+      // same oversized transaction can never make progress. Each chunk keeps
+      // the per-binding invariant (activation + baseline + revision +
+      // ENSURE_USER commit together); the caller holds the provisioning lock
+      // across all chunks, so the reset exclusion is preserved.
+      let provisioned = 0;
+      for (let index = 0; index < provisioningPairs.length; index += options.chunkSize) {
+        const chunk = provisioningPairs.slice(index, index + options.chunkSize);
+        provisioned += await this.prisma.$transaction(
+          async (tx) => {
+            let count = 0;
+            for (const pair of chunk) {
+              count += await ensureTargetBinding(pair, tx);
+            }
+            return count;
+          },
+          { timeout: DIRECT_PROVISIONING_TX_TIMEOUT_MS }
+        );
+      }
+      return updatedBindingCount + provisioned;
+    }
+
+    for (const pair of provisioningPairs) {
+      updatedBindingCount += await ensureTargetBinding(pair, writer);
     }
     return updatedBindingCount;
   }
