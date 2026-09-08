@@ -15,6 +15,7 @@ import {
 import * as bcrypt from "bcryptjs";
 import type {
   AdminAnnouncementRecordDto,
+  AdminNodeCommandQueueDto,
   AdminNodeRecordDto,
   AdminPlanRecordDto,
   AdminPolicyRecordDto,
@@ -161,6 +162,10 @@ const ADMIN_SUPPORT_TICKET_LIST_LIMIT = readPositiveIntegerEnv("CHORDV_ADMIN_SUP
 const ADMIN_SUPPORT_TICKET_DETAIL_MESSAGE_LIMIT = readPositiveIntegerEnv("CHORDV_ADMIN_SUPPORT_TICKET_DETAIL_MESSAGE_LIMIT", 300);
 const TICKET_ATTACHMENT_UPLOAD_BUDGET_MS = readPositiveIntegerEnv("CHORDV_TICKET_ATTACHMENT_UPLOAD_TIMEOUT_MS", 60_000);
 const ADMIN_SNAPSHOT_OPTIONAL_TIMEOUT_MS = 1_200;
+const EMPTY_NODE_COMMAND_QUEUE: AdminNodeCommandQueueDto = {
+  jobs: [],
+  summaries: { nodes: [], subscriptions: [], users: [], teams: [] }
+};
 
 type NodeAccessRevocationEffects = {
   revokedSessionCount: number;
@@ -528,7 +533,7 @@ export class DevDataService implements OnModuleInit {
   }
 
   async getAdminSnapshot(): Promise<AdminSnapshotDto> {
-    const [policy, users, plans, subscriptions, teams, nodes, leaseRevocationJobs, nodeCommandJobs, announcements, releases, ticketCounts] =
+    const [policy, users, plans, subscriptions, teams, nodes, leaseRevocationJobs, nodeCommandQueue, announcements, releases, ticketCounts] =
       await workLifecycle.all([
         this.getAdminPolicy(),
         this.safeAdminSnapshotList("users", () => this.listAdminUsers()),
@@ -537,7 +542,11 @@ export class DevDataService implements OnModuleInit {
         this.safeAdminSnapshotList("teams", () => this.listAdminTeams()),
         this.safeAdminSnapshotList("nodes", () => this.listAdminNodes()),
         this.safeAdminSnapshotList("lease revocation jobs", () => this.listAdminLeaseRevocationJobs()),
-        this.safeAdminSnapshotList("node command jobs", () => this.listAdminNodeCommandJobs()),
+        this.safeAdminSnapshotValue(
+          "node command queue",
+          () => this.getAdminNodeCommandQueue(),
+          EMPTY_NODE_COMMAND_QUEUE
+        ),
         this.safeAdminSnapshotList("announcements", () => this.listAdminAnnouncements()),
         this.safeAdminSnapshotList("releases", () => this.listAdminReleases()),
         this.safeAdminSnapshotValue("support ticket counts", () => this.getSupportTicketDashboardCounts(), {
@@ -565,7 +574,7 @@ export class DevDataService implements OnModuleInit {
       teams,
       nodes,
       leaseRevocationJobs,
-      nodeCommandJobs,
+      nodeCommandQueue,
       announcements,
       policy,
       releases
@@ -2464,6 +2473,14 @@ export class DevDataService implements OnModuleInit {
 
   async listAdminNodeCommandJobs() {
     return this.adminNodeService.listNodeCommandJobs();
+  }
+
+  async getAdminNodeCommandQueue(): Promise<AdminNodeCommandQueueDto> {
+    const [jobs, summaries] = await workLifecycle.all([
+      this.adminNodeService.listNodeCommandJobs(),
+      this.adminNodeService.listNodeCommandSummaries()
+    ]);
+    return { jobs, summaries };
   }
 
   async retryAdminLeaseRevocationJob(jobId: string) {

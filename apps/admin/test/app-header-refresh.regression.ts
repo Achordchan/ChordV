@@ -257,11 +257,11 @@ function testQueueLoadsDoNotBlockMainSectionData() {
   assert.match(secondaryBody, /settleAdminLoad\(fetchAdminNodeCommandJobs\(\)\)/);
   assert.match(
     secondaryBody,
-    /mergeSnapshot\(\{\s*leaseRevocationJobs: leaseRevocationJobsResult\.value,\s*nodeCommandJobs: nodeCommandJobsResult\.value\s*\}\)/,
+    /mergeSnapshot\(\{\s*leaseRevocationJobs: leaseRevocationJobsResult\.value,\s*nodeCommandQueue: nodeCommandQueueResult\.value\s*\}\)/,
     "订阅/用户视角的后台同步任务必须同时刷新连接撤销与节点命令"
   );
   assert.match(secondaryBody, /leaseRevocationJobsResult\.ok \? \{ leaseRevocationJobs: leaseRevocationJobsResult\.value \} : \{\}/);
-  assert.match(secondaryBody, /nodeCommandJobsResult\.ok \? \{ nodeCommandJobs: nodeCommandJobsResult\.value \} : \{\}/);
+  assert.match(secondaryBody, /nodeCommandQueueResult\.ok \? \{ nodeCommandQueue: nodeCommandQueueResult\.value \} : \{\}/);
 }
 
 
@@ -295,7 +295,7 @@ function testPendingQueueRefreshKeepsNodeRefreshOnQueueFailure() {
   assert.match(refreshLeaseRevocationJobsAfterPendingBody, /mergeSnapshot\(\{[\s\S]*?nodesResult\.ok[\s\S]*?leaseRevocationJobsResult\.ok[\s\S]*?\}\);/);
   assert.match(
     refreshLeaseRevocationJobsAfterPendingBody,
-    /nodeCommandJobsResult\.ok \? \{ nodeCommandJobs: nodeCommandJobsResult\.nodeCommandJobs \} : \{\}/,
+    /nodeCommandQueueResult\.ok \? \{ nodeCommandQueue: nodeCommandQueueResult\.nodeCommandQueue \} : \{\}/,
     "同步队列刷新失败时也要带上节点命令队列"
   );
 }

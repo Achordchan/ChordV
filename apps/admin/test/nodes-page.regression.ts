@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { AdminLeaseRevocationJobDto, AdminNodeCommandJobDto } from "@chordv/shared";
+import type {
+  AdminLeaseRevocationJobDto,
+  AdminNodeCommandJobDto,
+  AdminNodeCommandSummariesDto
+} from "@chordv/shared";
 import { filterLeaseRevocationJobs, filterNodeCommandJobs } from "../src/utils/admin-queue-filters";
+import { findNodeCommandSummary, sumNodeCommandSummaries } from "../src/utils/node-command-summary";
 
 const nodesPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/NodesPage.tsx"), "utf8");
 const usersPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/UsersPage.tsx"), "utf8");
@@ -195,32 +200,67 @@ function testNodeCommandQueueShowsDirectProvisioning() {
 
   assert.match(
     nodesPageSource,
-    /filterNodeCommandJobs\(props\.nodeCommandJobs, props\.filter\)/,
+    /filterNodeCommandJobs\(props\.nodeCommandQueue\.jobs, props\.filter\)/,
     "队列抽屉必须按当前过滤条件展示节点命令"
   );
   assert.match(nodesPageSource, /节点命令同步/, "队列抽屉必须包含节点命令分区");
   assert.match(nodesPageSource, /translateNodeCommandType\(job\.commandType\)/);
   assert.match(
     appSource,
-    /<PanelSyncQueueDrawer[\s\S]*?nodeCommandJobs=\{snapshot\.nodeCommandJobs\}/,
-    "抽屉必须拿到快照里的节点命令"
+    /<PanelSyncQueueDrawer[\s\S]*?nodeCommandQueue=\{snapshot\.nodeCommandQueue\}/,
+    "抽屉必须拿到快照里的节点命令队列"
   );
   assert.match(
     nodesPageSource,
-    /summarizeNodeCommandJobsForNode\(props\.nodeCommandJobs, props\.node\.id\)/,
-    "节点行的同步状态必须统计该节点的命令"
+    /findNodeCommandSummary\(props\.nodeCommandSummaries, "nodes", props\.node\.id\)/,
+    "节点行的同步状态必须用精确聚合统计该节点的命令，而不是分页列表"
   );
   assert.match(
     nodesPageSource,
-    /if \(leaseSummary\.total <= 0 && commandSummary\.total <= 0\) \{\s*return \(\s*<Badge color="green" variant="light">\s*已同步/,
+    /if \(leaseSummary\.total <= 0 && \(commandSummary\?\.total \?\? 0\) <= 0\) \{\s*return \(\s*<Badge color="green" variant="light">\s*已同步/,
     "只有连接撤销与节点命令都为空时才能显示已同步"
   );
   assert.match(nodesPageSource, /buildBackgroundSyncLabel\("节点命令", commandSummary\)/);
   assert.match(
     appSource,
-    /<NodesPage[\s\S]*?nodeCommandJobs=\{snapshot\.nodeCommandJobs\}/,
-    "节点页必须拿到快照里的节点命令"
+    /<NodesPage[\s\S]*?nodeCommandQueue=\{snapshot\.nodeCommandQueue\}/,
+    "节点页必须拿到快照里的节点命令队列"
   );
+}
+
+// Exact counts must come from the summaries, never from the paginated list: a
+// node whose commands fell off the first page must not read as synced, and the
+// per-subscription/user inline status must survive a list refresh.
+function testNodeCommandSummariesDriveSyncState() {
+  const summaries: AdminNodeCommandSummariesDto = {
+    nodes: [{ key: "node_1", pending: 3, running: 0, failed: 1, total: 4, lastError: "agent offline" }],
+    subscriptions: [{ key: "sub_1", pending: 3, running: 0, failed: 1, total: 4, lastError: "agent offline" }],
+    users: [{ key: "user_1", pending: 3, running: 0, failed: 1, total: 4, lastError: "agent offline" }],
+    teams: [{ key: "team_1", pending: 3, running: 0, failed: 1, total: 4, lastError: "agent offline" }]
+  };
+
+  assert.deepEqual(findNodeCommandSummary(summaries, "nodes", "node_1"), summaries.nodes[0]);
+  assert.equal(findNodeCommandSummary(summaries, "nodes", "node_2"), null, "无命令的节点不得命中汇总");
+  assert.equal(findNodeCommandSummary(summaries, "users", null), null);
+  assert.equal(findNodeCommandSummary(null, "users", "user_1"), null);
+  assert.equal(sumNodeCommandSummaries(summaries, "nodes"), 4);
+
+  for (const [label, source] of [
+    ["users", usersPageSource],
+    ["subscriptions", subscriptionsPageSource]
+  ] as const) {
+    assert.match(
+      source,
+      /\(commandSummary\?\.total \?\? 0\) === 0/,
+      `${label} page inline status must consider the direct command summary`
+    );
+    assert.match(
+      source,
+      /findNodeCommandSummary\(props\.nodeCommandQueue\.summaries/,
+      `${label} page must read the direct command summaries from the snapshot`
+    );
+    assert.match(source, /buildNodeCommandPendingLabel\(commandSummary\)/);
+  }
 }
 
 function testNodeParentActionsAlwaysReleaseBusyState() {
@@ -247,6 +287,7 @@ testPendingAndFailedBackgroundJobsAreRetryable();
 testUserAndSubscriptionPendingPanelSyncUseYellowInlineStatus();
 testLeaseRevocationQueueRetryButtonsExposeScopedBusyState();
 testNodeCommandQueueShowsDirectProvisioning();
+testNodeCommandSummariesDriveSyncState();
 testNodeParentActionsAlwaysReleaseBusyState();
 
 console.log("admin nodes page regression checks passed");

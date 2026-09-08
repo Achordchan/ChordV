@@ -214,6 +214,18 @@ async function main() {
   );
   assert.equal(scopedCount, 0, "订阅不存在时事务作用域入口应返回 0");
 
+  // 6) User commands must carry their binding target as COLUMNS. The admin
+  //    queue aggregates outstanding commands per subscription/user/team to
+  //    keep the pending indicator alive across list refreshes, and it cannot
+  //    read the payload JSON for that. Both enqueue sites must write them.
+  const bindingColumns = /bindingId: binding\.id,\s*\n\s*subscriptionId: binding\.subscriptionId,\s*\n\s*userId: binding\.userId,\s*\n\s*teamId: binding\.teamId/;
+  assert.match(runtimeSessionSource, bindingColumns, "queueDirectBindingCommand 必须写入绑定的订阅/用户/团队列");
+  const directMeteringSource = readFileSync(
+    path.resolve(__dirname, "../src/modules/agent/agent-direct-metering.ts"),
+    "utf8"
+  );
+  assert.match(directMeteringSource, bindingColumns, "自动停用命令也必须写入绑定的订阅/用户/团队列");
+
   console.log("runtime session regression passed (connect 门不反转、供给资格共享判定、节点禁用联动绑定、删除绑定保留计量基线)");
 }
 

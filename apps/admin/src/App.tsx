@@ -140,6 +140,7 @@ import { ImageBedPage } from "./pages/ImageBedPage";
 import { NodesPage, PanelSyncQueueDrawer } from "./pages/NodesPage";
 import { AgentNodeCreateModal } from "./features/nodes/AgentNodeCreateModal";
 import type { LeaseRevocationQueueFilter } from "./utils/admin-queue-filters";
+import { sumNodeCommandSummaries } from "./utils/node-command-summary";
 import { OverviewPage } from "./pages/OverviewPage";
 import { PlansPage } from "./pages/PlansPage";
 import { PoliciesPage } from "./pages/PoliciesPage";
@@ -822,7 +823,10 @@ export function App() {
         teams: [],
         nodes: [],
         leaseRevocationJobs: [],
-        nodeCommandJobs: [],
+        nodeCommandQueue: {
+          jobs: [],
+          summaries: { nodes: [], subscriptions: [], users: [], teams: [] }
+        },
         announcements: [],
         policy: patch.policy as AdminPolicyRecordDto,
         releases: []
@@ -880,7 +884,7 @@ export function App() {
         { key: "teams", sections: ["users", "subscriptions"], task: fetchAdminTeams() },
         { key: "nodes", sections: ["overview", "nodes"], task: fetchAdminNodes() },
         { key: "leaseRevocationJobs", sections: ["users", "subscriptions", "nodes"], task: fetchAdminLeaseRevocationJobs() },
-        { key: "nodeCommandJobs", sections: ["users", "subscriptions", "nodes"], task: fetchAdminNodeCommandJobs() },
+        { key: "nodeCommandQueue", sections: ["users", "subscriptions", "nodes"], task: fetchAdminNodeCommandJobs() },
         { key: "announcements", sections: ["announcements"], task: fetchAdminAnnouncements() }
       ];
       const results = await Promise.allSettled(listEntries.map((item) => item.task));
@@ -1068,23 +1072,23 @@ export function App() {
     options?: { silent?: boolean }
   ) {
     if (targetSection === "users" || targetSection === "subscriptions") {
-      const [leaseRevocationJobsResult, nodeCommandJobsResult] = await Promise.all([
+      const [leaseRevocationJobsResult, nodeCommandQueueResult] = await Promise.all([
         settleAdminLoad(fetchAdminLeaseRevocationJobs()),
         settleAdminLoad(fetchAdminNodeCommandJobs())
       ]);
       if (!canApplySectionResult(requestSeq, mutationSeqAtStart)) {
         return;
       }
-      if (leaseRevocationJobsResult.ok && nodeCommandJobsResult.ok) {
+      if (leaseRevocationJobsResult.ok && nodeCommandQueueResult.ok) {
         mergeSnapshot({
           leaseRevocationJobs: leaseRevocationJobsResult.value,
-          nodeCommandJobs: nodeCommandJobsResult.value
+          nodeCommandQueue: nodeCommandQueueResult.value
         });
         return;
       }
       if (!options?.silent) {
         const failureReason = leaseRevocationJobsResult.ok
-          ? (nodeCommandJobsResult.ok ? null : nodeCommandJobsResult.reason)
+          ? (nodeCommandQueueResult.ok ? null : nodeCommandQueueResult.reason)
           : leaseRevocationJobsResult.reason;
         notifications.show({
           color: "yellow",
@@ -1099,7 +1103,7 @@ export function App() {
       return;
     }
 
-    const [leaseRevocationJobsResult, nodeCommandJobsResult] = await Promise.all([
+    const [leaseRevocationJobsResult, nodeCommandQueueResult] = await Promise.all([
       settleAdminLoad(fetchAdminLeaseRevocationJobs()),
       settleAdminLoad(fetchAdminNodeCommandJobs())
     ]);
@@ -1108,11 +1112,11 @@ export function App() {
     }
     mergeSnapshot({
       ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.value } : {}),
-      ...(nodeCommandJobsResult.ok ? { nodeCommandJobs: nodeCommandJobsResult.value } : {})
+      ...(nodeCommandQueueResult.ok ? { nodeCommandQueue: nodeCommandQueueResult.value } : {})
     });
-    if ((!leaseRevocationJobsResult.ok || !nodeCommandJobsResult.ok) && !options?.silent) {
+    if ((!leaseRevocationJobsResult.ok || !nodeCommandQueueResult.ok) && !options?.silent) {
       const failureReason = leaseRevocationJobsResult.ok
-        ? (nodeCommandJobsResult.ok ? null : nodeCommandJobsResult.reason)
+        ? (nodeCommandQueueResult.ok ? null : nodeCommandQueueResult.reason)
         : leaseRevocationJobsResult.reason;
       notifications.show({
         color: "yellow",
@@ -1253,7 +1257,7 @@ export function App() {
   }
 
   async function refreshLeaseRevocationJobsAfterPending() {
-    const [nodesResult, leaseRevocationJobsResult, nodeCommandJobsResult] = await Promise.all([
+    const [nodesResult, leaseRevocationJobsResult, nodeCommandQueueResult] = await Promise.all([
       fetchAdminNodes().then(
         (nodes) => ({ ok: true as const, nodes }),
         (reason) => ({ ok: false as const, reason })
@@ -1263,21 +1267,21 @@ export function App() {
         (reason) => ({ ok: false as const, reason })
       ),
       fetchAdminNodeCommandJobs().then(
-        (nodeCommandJobs) => ({ ok: true as const, nodeCommandJobs }),
+        (nodeCommandQueue) => ({ ok: true as const, nodeCommandQueue }),
         (reason) => ({ ok: false as const, reason })
       )
     ]);
     mergeSnapshot({
       ...(nodesResult.ok ? { nodes: nodesResult.nodes } : {}),
       ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.leaseRevocationJobs } : {}),
-      ...(nodeCommandJobsResult.ok ? { nodeCommandJobs: nodeCommandJobsResult.nodeCommandJobs } : {})
+      ...(nodeCommandQueueResult.ok ? { nodeCommandQueue: nodeCommandQueueResult.nodeCommandQueue } : {})
     });
-    if (!nodesResult.ok || !leaseRevocationJobsResult.ok || !nodeCommandJobsResult.ok) {
+    if (!nodesResult.ok || !leaseRevocationJobsResult.ok || !nodeCommandQueueResult.ok) {
       throw new Error(
         [
           nodesResult.ok ? null : readError(nodesResult.reason, "节点列表加载失败"),
           leaseRevocationJobsResult.ok ? null : readError(leaseRevocationJobsResult.reason, "连接撤销队列加载失败"),
-          nodeCommandJobsResult.ok ? null : readError(nodeCommandJobsResult.reason, "节点命令队列加载失败")
+          nodeCommandQueueResult.ok ? null : readError(nodeCommandQueueResult.reason, "节点命令队列加载失败")
         ]
           .filter(Boolean)
           .join("；")
@@ -2795,7 +2799,8 @@ export function App() {
     );
   }
 
-  const backgroundSyncQueueCount = snapshot.leaseRevocationJobs.length + snapshot.nodeCommandJobs.length;
+  const backgroundSyncQueueCount =
+    snapshot.leaseRevocationJobs.length + sumNodeCommandSummaries(snapshot.nodeCommandQueue.summaries, "nodes");
   const waitingAdminTicketCount = snapshot.dashboard.waitingAdminTickets;
   const agentNodeCount = snapshot.nodes.filter((item) => Boolean(item.agent || item.registrationStatus === "agent_ready")).length;
 
@@ -2999,6 +3004,7 @@ export function App() {
                     allSubscriptions={allSubscriptions}
                     allUsers={snapshot.users}
                     leaseRevocationJobs={snapshot.leaseRevocationJobs}
+                    nodeCommandQueue={snapshot.nodeCommandQueue}
                     leaseRevocationRetryBusyKey={leaseRevocationRetryBusyKey}
                     teamUsageByTeamId={teamUsageByTeamId}
                     teamUsageLoadingByTeamId={teamUsageLoadingByTeamId}
@@ -3087,6 +3093,7 @@ export function App() {
                 resetTrafficBusyKey={resetTrafficBusyKey}
                 allUsers={snapshot.users}
                 leaseRevocationJobs={snapshot.leaseRevocationJobs}
+                nodeCommandQueue={snapshot.nodeCommandQueue}
                 leaseRevocationRetryBusyKey={leaseRevocationRetryBusyKey}
                 onOpenKickMemberModal={openKickMemberModal}
                 onRetryLeaseRevocationJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}
@@ -3120,7 +3127,7 @@ export function App() {
                 onSearchChange={(value) => setSearch((current) => ({ ...current, nodes: value }))}
                 nodes={nodes}
                 leaseRevocationJobs={snapshot.leaseRevocationJobs}
-                nodeCommandJobs={snapshot.nodeCommandJobs}
+                nodeCommandQueue={snapshot.nodeCommandQueue}
                 leaseRevocationRetryBusyKey={leaseRevocationRetryBusyKey}
                 probingNodeId={probingNodeId}
                 probingAll={probingAll}
@@ -3308,7 +3315,7 @@ export function App() {
       <PanelSyncQueueDrawer
         opened={leaseRevocationQueue.opened}
         leaseRevocationJobs={snapshot.leaseRevocationJobs}
-        nodeCommandJobs={snapshot.nodeCommandJobs}
+        nodeCommandQueue={snapshot.nodeCommandQueue}
         leaseRetryBusyKey={leaseRevocationRetryBusyKey}
         filter={leaseRevocationQueue.filter}
         onClose={closeLeaseRevocationQueue}

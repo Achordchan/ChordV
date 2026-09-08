@@ -9,6 +9,8 @@ import {
 import type {
   AdminLeaseRevocationJobDto,
   AdminNodeCommandJobDto,
+  AdminNodeCommandSummariesDto,
+  AdminNodeCommandSummaryDto,
   AdminNodeRecordDto,
   UpdateNodeInputDto
 } from "@chordv/shared";
@@ -33,6 +35,8 @@ const DEFAULT_BULK_NODE_PROBE_REQUEST_BUDGET_MS = 45_000;
 const MAX_BULK_NODE_PROBE_REQUEST_BUDGET_MS = 45_000;
 const DEFAULT_BULK_NODE_PROBE_CONCURRENCY = 10;
 const BULK_NODE_PROBE_START_GUARD_MS = 5;
+const NODE_COMMAND_JOB_PAGE_SIZE = 200;
+const NODE_COMMAND_ERROR_SAMPLE_SIZE = 500;
 
 @Injectable()
 export class AdminNodeService {
@@ -110,9 +114,9 @@ export class AdminNodeService {
 
   /**
    * Active agent commands — the direct track's replacement for the retired
-   * panel sync queue. ENSURE/DISABLE/REMOVE_USER carry a bindingId in their
-   * payload; resolving it back to the binding is what lets the admin UI filter
-   * the queue per subscription or per user.
+   * panel sync queue. User commands carry their binding target as columns
+   * (denormalized at enqueue), so the queue can be filtered and aggregated per
+   * subscription/user/team without reading the payload JSON.
    */
   async listNodeCommandJobs(): Promise<AdminNodeCommandJobDto[]> {
     const rows = await runAdminNodeLocalOperation(
@@ -121,48 +125,122 @@ export class AdminNodeService {
           status: { in: ["pending", "running", "failed"] }
         },
         orderBy: [{ status: "asc" }, { nextRunAt: "asc" }, { createdAt: "desc" }],
-        take: 200,
+        take: NODE_COMMAND_JOB_PAGE_SIZE,
         include: { node: { select: { name: true } } }
       }),
       "节点命令队列读取失败，请刷新后重试。"
     );
-    const bindingIds = Array.from(
-      new Set(rows.map((row) => readCommandBindingId(row.payload)).filter((bindingId): bindingId is string => Boolean(bindingId)))
-    );
-    let bindings: Array<{ id: string; subscriptionId: string; userId: string | null }> = [];
-    if (bindingIds.length > 0) {
-      try {
-        bindings = await runAdminNodeLocalOperation(
-          () => this.prisma.panelClientBinding.findMany({
-            where: { id: { in: bindingIds } },
-            select: { id: true, subscriptionId: true, userId: true }
-          }),
-          "节点命令队列绑定信息读取失败，请刷新后重试。"
-        );
-      } catch (error) {
-        this.logger.warn(`Node command queue loaded without binding targets: ${readAdminNodeErrorMessage(error)}`);
-      }
-    }
-    const bindingById = new Map(bindings.map((binding) => [binding.id, binding]));
 
-    return rows.map((row) => {
-      const binding = bindingById.get(readCommandBindingId(row.payload) ?? "");
-      return {
-        id: row.id,
-        nodeId: row.nodeId,
-        nodeName: row.node?.name ?? null,
-        commandType: row.commandType as AdminNodeCommandJobDto["commandType"],
-        status: row.status as AdminNodeCommandJobDto["status"],
-        attempts: row.attempts,
-        targetRevision: row.targetRevision.toString(),
-        subscriptionId: binding?.subscriptionId ?? null,
-        userId: binding?.userId ?? null,
-        lastError: row.lastError,
-        nextRunAt: row.nextRunAt.toISOString(),
-        completedAt: row.completedAt?.toISOString() ?? null,
-        createdAt: row.createdAt.toISOString()
-      };
-    });
+    return rows.map((row) => ({
+      id: row.id,
+      nodeId: row.nodeId,
+      nodeName: row.node?.name ?? null,
+      commandType: row.commandType as AdminNodeCommandJobDto["commandType"],
+      status: row.status as AdminNodeCommandJobDto["status"],
+      attempts: row.attempts,
+      targetRevision: row.targetRevision.toString(),
+      subscriptionId: row.subscriptionId,
+      userId: row.userId,
+      lastError: row.lastError,
+      nextRunAt: row.nextRunAt.toISOString(),
+      completedAt: row.completedAt?.toISOString() ?? null,
+      createdAt: row.createdAt.toISOString()
+    }));
+  }
+
+  /**
+   * Exact outstanding-command counts per node/subscription/user/team. The
+   * detail list above is paginated, so it must never be the source of a
+   * "synced" verdict: a node with 300 queued users would otherwise read as
+   * synced once its commands fell off the first page.
+   */
+  async listNodeCommandSummaries(): Promise<AdminNodeCommandSummariesDto> {
+    const rows = await runAdminNodeLocalOperation(
+      () => this.prisma.nodeCommandJob.groupBy({
+        by: ["nodeId", "subscriptionId", "userId", "teamId", "status"],
+        where: {
+          status: { in: ["pending", "running", "failed"] }
+        },
+        _count: { _all: true }
+      }),
+      "节点命令统计读取失败，请刷新后重试。"
+    );
+    const recentErrors = await this.listRecentNodeCommandErrors();
+
+    const nodes = new Map<string, AdminNodeCommandSummaryDto>();
+    const subscriptions = new Map<string, AdminNodeCommandSummaryDto>();
+    const users = new Map<string, AdminNodeCommandSummaryDto>();
+    const teams = new Map<string, AdminNodeCommandSummaryDto>();
+    const addCount = (map: Map<string, AdminNodeCommandSummaryDto>, key: string | null, status: string, count: number) => {
+      if (!key) {
+        return;
+      }
+      const summary = map.get(key) ?? { pending: 0, running: 0, failed: 0, total: 0, lastError: null };
+      if (status === "failed") {
+        summary.failed += count;
+      } else if (status === "running") {
+        summary.running += count;
+      } else {
+        summary.pending += count;
+      }
+      summary.total += count;
+      map.set(key, summary);
+    };
+    const addError = (map: Map<string, AdminNodeCommandSummaryDto>, key: string | null, error: string | null) => {
+      if (!key || !error) {
+        return;
+      }
+      const summary = map.get(key) ?? { pending: 0, running: 0, failed: 0, total: 0, lastError: null };
+      summary.lastError = summary.lastError ?? error;
+      map.set(key, summary);
+    };
+
+    for (const row of rows) {
+      const count = row._count?._all ?? 0;
+      addCount(nodes, row.nodeId, row.status, count);
+      addCount(subscriptions, row.subscriptionId, row.status, count);
+      addCount(users, row.userId, row.status, count);
+      addCount(teams, row.teamId, row.status, count);
+    }
+    // Newest first: the first error seen for a target is the one to show.
+    for (const error of recentErrors) {
+      addError(nodes, error.nodeId, error.lastError);
+      addError(subscriptions, error.subscriptionId, error.lastError);
+      addError(users, error.userId, error.lastError);
+      addError(teams, error.teamId, error.lastError);
+    }
+
+    const toEntries = (map: Map<string, AdminNodeCommandSummaryDto>) =>
+      Array.from(map, ([key, summary]) => ({ key, ...summary })).sort((a, b) => a.key.localeCompare(b.key));
+    return {
+      nodes: toEntries(nodes),
+      subscriptions: toEntries(subscriptions),
+      users: toEntries(users),
+      teams: toEntries(teams)
+    };
+  }
+
+  private async listRecentNodeCommandErrors() {
+    try {
+      return await runAdminNodeLocalOperation(
+        () => this.prisma.nodeCommandJob.findMany({
+          where: { status: "failed", lastError: { not: null } },
+          orderBy: { createdAt: "desc" },
+          take: NODE_COMMAND_ERROR_SAMPLE_SIZE,
+          select: {
+            nodeId: true,
+            subscriptionId: true,
+            userId: true,
+            teamId: true,
+            lastError: true
+          }
+        }),
+        "节点命令错误读取失败，请刷新后重试。"
+      );
+    } catch (error) {
+      this.logger.warn(`Node command summaries loaded without errors: ${readAdminNodeErrorMessage(error)}`);
+      return [];
+    }
   }
 
   async retryLeaseRevocationJob(jobId: string): Promise<AdminLeaseRevocationJobDto[]> {
@@ -647,14 +725,6 @@ async function runAdminNodeLocalOperation<T>(operation: () => Promise<T>, messag
   } catch (error) {
     throwLocalSaveAsServiceUnavailable(error, message);
   }
-}
-
-function readCommandBindingId(payload: unknown): string | null {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return null;
-  }
-  const bindingId = Reflect.get(payload, "bindingId");
-  return typeof bindingId === "string" && bindingId.length > 0 ? bindingId : null;
 }
 
 function readPositiveIntegerEnv(name: string, fallback: number) {

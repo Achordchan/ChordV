@@ -1,6 +1,6 @@
 import type {
   AdminLeaseRevocationJobDto,
-  AdminNodeCommandJobDto,
+  AdminNodeCommandQueueDto,
   AdminNodeRecordDto,
   AgentCommandDto,
   CreateAgentNodeInputDto,
@@ -25,7 +25,7 @@ export function fetchAdminLeaseRevocationJobs() {
 }
 
 export function fetchAdminNodeCommandJobs() {
-  return request<AdminNodeCommandJobDto[]>("/admin/nodes/node-command-jobs", {
+  return request<AdminNodeCommandQueueDto>("/admin/nodes/node-command-jobs", {
     timeoutMs: ADMIN_READ_TIMEOUT_MS
   });
 }

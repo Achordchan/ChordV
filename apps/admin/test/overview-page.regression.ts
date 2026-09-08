@@ -65,8 +65,8 @@ assert.deepEqual(
 assert.match(overviewPage, /from "\.\.\/utils\/node-status"/, "概览页必须使用共享的节点状态判定");
 assert.match(
   overviewPage,
-  /props\.snapshot\.leaseRevocationJobs\.length \+ props\.snapshot\.nodeCommandJobs\.length/,
-  "后台同步任务计数必须同时包含连接撤销与节点命令，否则供给失败会显示为空队列"
+  /props\.snapshot\.leaseRevocationJobs\.length \+ sumNodeCommandSummaries\(props\.snapshot\.nodeCommandQueue\.summaries, "nodes"\)/,
+  "后台同步任务计数必须同时包含连接撤销与节点命令的精确聚合，否则供给失败会显示为空队列"
 );
 
 console.log("admin overview page regression checks passed");

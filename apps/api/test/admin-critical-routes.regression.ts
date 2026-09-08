@@ -172,7 +172,10 @@ const devDataServiceStub = {
   getTeamUsage: async (teamId: string) => record("team-usage", teamId),
   listAdminNodes: async () => [record("nodes-list", "all")],
   listAdminLeaseRevocationJobs: async () => [record("lease-jobs-list", "all")],
-  listAdminNodeCommandJobs: async () => [record("node-command-jobs-list", "all")],
+  getAdminNodeCommandQueue: async () => ({
+    jobs: [record("node-command-jobs-list", "all")],
+    summaries: { nodes: [], subscriptions: [], users: [], teams: [] }
+  }),
   retryAdminLeaseRevocationJob: async (jobId: string) => [record("lease-job-retry", jobId)],
   retryAdminLeaseRevocationJobsForNode: async (nodeId: string) => [record("lease-jobs-node-retry", nodeId)],
   updateNode: async (nodeId: string, body: unknown) => record("node-update", nodeId, body),

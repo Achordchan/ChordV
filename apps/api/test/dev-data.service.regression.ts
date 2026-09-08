@@ -135,7 +135,10 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 500) {
 function createDevDataService(overrides: Record<string, unknown> = {}) {
   return createInstance<DevDataService>(DevDataService.prototype, {
     listAdminLeaseRevocationJobs: async () => [],
-    listAdminNodeCommandJobs: async () => [],
+    getAdminNodeCommandQueue: async () => ({
+      jobs: [],
+      summaries: { nodes: [], subscriptions: [], users: [], teams: [] }
+    }),
     ...overrides
   });
 }
@@ -5698,11 +5701,9 @@ async function testListAdminNodesMapsLocalReadFailure() {
 }
 
 // The direct track's provisioning commands live in NodeCommandJob, so the
-// admin queue must resolve each command's payload bindingId back to its
-// subscription/user — otherwise a pending ENSURE_USER cannot be shown for the
-// subscription (or user) it belongs to.
-async function testListNodeCommandJobsResolvesBindingTargets() {
-  let bindingQuery: unknown = null;
+// admin queue must carry their binding target (subscription/user) — otherwise
+// a pending ENSURE_USER cannot be shown for the subscription it belongs to.
+async function testListNodeCommandJobsReadsBindingTargets() {
   const service = createAdminNodeService({
     logger: {
       warn: () => undefined
@@ -5718,6 +5719,8 @@ async function testListNodeCommandJobsResolvesBindingTargets() {
             attempts: 0,
             targetRevision: 7n,
             payload: { bindingId: "binding_1", email: "member@example.invalid" },
+            subscriptionId: "sub_1",
+            userId: "user_1",
             lastError: null,
             nextRunAt: new Date("2026-01-01T00:00:05.000Z"),
             completedAt: null,
@@ -5732,6 +5735,8 @@ async function testListNodeCommandJobsResolvesBindingTargets() {
             attempts: 1,
             targetRevision: 8n,
             payload: { port: 443 },
+            subscriptionId: null,
+            userId: null,
             lastError: "deploy failed",
             nextRunAt: new Date("2026-01-01T00:00:10.000Z"),
             completedAt: null,
@@ -5739,23 +5744,12 @@ async function testListNodeCommandJobsResolvesBindingTargets() {
             node: { name: "东京" }
           }
         ]
-      },
-      panelClientBinding: {
-        findMany: async (query: unknown) => {
-          bindingQuery = query;
-          return [{ id: "binding_1", subscriptionId: "sub_1", userId: "user_1" }];
-        }
       }
     }
   });
 
   const jobs = await service.listNodeCommandJobs();
 
-  assert.deepEqual(
-    bindingQuery,
-    { where: { id: { in: ["binding_1"] } }, select: { id: true, subscriptionId: true, userId: true } },
-    "只应反查命令 payload 里出现过的绑定"
-  );
   assert.deepEqual(jobs[0], {
     id: "cmd_user",
     nodeId: "node_1",
@@ -5774,6 +5768,51 @@ async function testListNodeCommandJobsResolvesBindingTargets() {
   assert.equal(jobs[1]?.subscriptionId, null, "非绑定命令（部署入站）不得伪造订阅归属");
   assert.equal(jobs[1]?.userId, null);
   assert.equal(jobs[1]?.lastError, "deploy failed");
+}
+
+// Counts must come from an aggregate over ALL outstanding commands, not from
+// the paginated detail list: a node whose 201st command fell off the page
+// would otherwise read as synced.
+async function testListNodeCommandSummariesAggregatePerTarget() {
+  const service = createAdminNodeService({
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      nodeCommandJob: {
+        groupBy: async () => [
+          { nodeId: "node_1", subscriptionId: "sub_1", userId: "user_1", teamId: "team_1", status: "pending", _count: { _all: 3 } },
+          { nodeId: "node_1", subscriptionId: "sub_1", userId: "user_1", teamId: "team_1", status: "failed", _count: { _all: 1 } },
+          { nodeId: "node_2", subscriptionId: null, userId: null, teamId: null, status: "running", _count: { _all: 1 } }
+        ],
+        findMany: async () => [
+          {
+            nodeId: "node_1",
+            subscriptionId: "sub_1",
+            userId: "user_1",
+            teamId: "team_1",
+            lastError: "agent offline"
+          }
+        ]
+      }
+    }
+  });
+
+  const summaries = await service.listNodeCommandSummaries();
+
+  assert.deepEqual(summaries.subscriptions, [
+    { key: "sub_1", pending: 3, running: 0, failed: 1, total: 4, lastError: "agent offline" }
+  ]);
+  assert.deepEqual(summaries.users, [
+    { key: "user_1", pending: 3, running: 0, failed: 1, total: 4, lastError: "agent offline" }
+  ]);
+  assert.deepEqual(summaries.teams, [
+    { key: "team_1", pending: 3, running: 0, failed: 1, total: 4, lastError: "agent offline" }
+  ]);
+  assert.deepEqual(summaries.nodes, [
+    { key: "node_1", pending: 3, running: 0, failed: 1, total: 4, lastError: "agent offline" },
+    { key: "node_2", pending: 0, running: 1, failed: 0, total: 1, lastError: null }
+  ]);
 }
 
 async function testUpdateNodeMapsLocalReadFailure() {
@@ -17176,7 +17215,8 @@ async function main() {
   await testResetSubscriptionTrafficMapsTeamMemberReadFailure();
   await testResetSubscriptionTrafficReturnsWhenSubscriptionPublishStalls();
   await testListAdminNodesMapsLocalReadFailure();
-  await testListNodeCommandJobsResolvesBindingTargets();
+  await testListNodeCommandJobsReadsBindingTargets();
+  await testListNodeCommandSummariesAggregatePerTarget();
   await testUpdateNodeMapsLocalReadFailure();
   await testRetryLeaseRevocationJobRequeuesWithoutKeepingBackoff();
   await testLeaseRevocationQueueFallsBackWhenNodeNameLookupFails();

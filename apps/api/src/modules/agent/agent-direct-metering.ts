@@ -298,7 +298,11 @@ export async function disableDirectBindingsForSubscriptions(
           agentId: targetAgentId,
           commandType: "DISABLE_USER",
           targetRevision: nodeRevision.agentConfigRevision,
-          payload: { bindingId: binding.id, email: binding.panelClientEmail, uuid: binding.panelClientId, reason: `subscription_${state}` }
+          payload: { bindingId: binding.id, email: binding.panelClientEmail, uuid: binding.panelClientId, reason: `subscription_${state}` },
+          bindingId: binding.id,
+          subscriptionId: binding.subscriptionId,
+          userId: binding.userId,
+          teamId: binding.teamId
         }
       });
     }

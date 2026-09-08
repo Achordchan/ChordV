@@ -588,6 +588,35 @@ export interface AdminNodeCommandJobDto {
   createdAt: string;
 }
 
+// Per-target aggregates of outstanding agent commands, computed server-side
+// (not from the paginated detail list) so a node/subscription is never shown
+// as synced because its commands fell off the first page.
+export interface AdminNodeCommandSummaryDto {
+  pending: number;
+  running: number;
+  failed: number;
+  total: number;
+  lastError: string | null;
+}
+
+export interface AdminNodeCommandSummaryEntryDto extends AdminNodeCommandSummaryDto {
+  key: string;
+}
+
+export interface AdminNodeCommandSummariesDto {
+  nodes: AdminNodeCommandSummaryEntryDto[];
+  subscriptions: AdminNodeCommandSummaryEntryDto[];
+  users: AdminNodeCommandSummaryEntryDto[];
+  teams: AdminNodeCommandSummaryEntryDto[];
+}
+
+// Detail list is paginated; summaries are exact. Consumers decide a target is
+// synced from the summaries, never from the page.
+export interface AdminNodeCommandQueueDto {
+  jobs: AdminNodeCommandJobDto[];
+  summaries: AdminNodeCommandSummariesDto;
+}
+
 export interface AdminAnnouncementRecordDto {
   id: string;
   title: string;
@@ -714,7 +743,7 @@ export interface AdminSnapshotDto {
   teams: AdminTeamRecordDto[];
   nodes: AdminNodeRecordDto[];
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
-  nodeCommandJobs: AdminNodeCommandJobDto[];
+  nodeCommandQueue: AdminNodeCommandQueueDto;
   announcements: AdminAnnouncementRecordDto[];
   policy: AdminPolicyRecordDto;
   releases: AdminReleaseRecordDto[];

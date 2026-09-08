@@ -652,6 +652,14 @@ model NodeCommandJob {
   commandType     NodeAgentCommandType
   targetRevision  BigInt               @default(0)
   payload         Json
+  // Owning binding, denormalized at enqueue time: user commands are always
+  // issued for a binding, and the admin queue must aggregate them per
+  // subscription/user without extracting the payload JSON. Null for commands
+  // that belong to no binding (ENSURE_INBOUND, RECONCILE_USERS, ...).
+  bindingId       String?
+  subscriptionId  String?
+  userId          String?
+  teamId          String?
   status          NodeAgentJobStatus   @default(pending)
   attempts        Int                  @default(0)
   nextRunAt       DateTime             @default(now())
@@ -666,6 +674,8 @@ model NodeCommandJob {
 
   @@index([nodeId, status, nextRunAt])
   @@index([agentId, status, nextRunAt])
+  @@index([subscriptionId, status])
+  @@index([userId, status])
 }
 
 model NodeUsageBatch {

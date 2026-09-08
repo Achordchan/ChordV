@@ -320,7 +320,7 @@ export class AdminController {
 
   @Get("nodes/node-command-jobs")
   getNodeCommandJobs() {
-    return this.devDataService.listAdminNodeCommandJobs();
+    return this.devDataService.getAdminNodeCommandQueue();
   }
 
   @Post("nodes/lease-revocation-jobs/:jobId/retry")

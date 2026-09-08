@@ -6,6 +6,7 @@ import { CountryFlag } from "../components/CountryFlag";
 import { StatusBadge } from "../features/shared/StatusBadge";
 import { formatDateTime } from "../utils/admin-format";
 import { compactNodeStatus } from "../utils/node-status";
+import { sumNodeCommandSummaries } from "../utils/node-command-summary";
 import {
   subscriptionStateColor,
   translateAgentStatus,
@@ -24,7 +25,8 @@ type OverviewPageProps = {
 export function OverviewPage(props: OverviewPageProps) {
   // Both queues are "background sync": lease revocations and the direct
   // provisioning commands that replaced panel synchronization.
-  const backgroundSyncQueueCount = props.snapshot.leaseRevocationJobs.length + props.snapshot.nodeCommandJobs.length;
+  const backgroundSyncQueueCount =
+    props.snapshot.leaseRevocationJobs.length + sumNodeCommandSummaries(props.snapshot.nodeCommandQueue.summaries, "nodes");
   const abnormalNodeCount = props.snapshot.nodes.filter((item) => {
     if (item.isActive === false) {
       return false;

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ActionIcon, Badge, Button, Drawer, Group, Stack, Table, Text } from "@mantine/core";
-import type { AdminLeaseRevocationJobDto, AdminNodeCommandJobDto, AdminNodeRecordDto } from "@chordv/shared";
+import type { AdminLeaseRevocationJobDto, AdminNodeCommandQueueDto, AdminNodeCommandSummariesDto, AdminNodeRecordDto } from "@chordv/shared";
 import { IconBolt, IconListDetails, IconPencil, IconPlus, IconSettingsAutomation, IconTrash } from "@tabler/icons-react";
 import { CountryFlag } from "../components/CountryFlag";
 import { DataTable } from "../features/shared/DataTable";
@@ -9,6 +9,7 @@ import { SectionCard } from "../features/shared/SectionCard";
 import { StatusBadge } from "../features/shared/StatusBadge";
 import { NodeControlCell, NodeControlDrawer } from "../features/nodes/NodeControlCenter";
 import { formatDateTime } from "../utils/admin-format";
+import { findNodeCommandSummary, sumNodeCommandSummaries } from "../utils/node-command-summary";
 import { summarizeAdminDiagnosticMessage } from "../utils/admin-filters";
 import {
   filterLeaseRevocationJobs,
@@ -29,7 +30,7 @@ type NodesPageProps = {
   onSearchChange: (value: string) => void;
   nodes: AdminNodeRecordDto[];
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
-  nodeCommandJobs: AdminNodeCommandJobDto[];
+  nodeCommandQueue: AdminNodeCommandQueueDto;
   leaseRevocationRetryBusyKey: string | null;
   probingNodeId: string | null;
   probingAll: boolean;
@@ -119,7 +120,7 @@ export function NodesPage(props: NodesPageProps) {
                     <NodeSyncQueueCell
                       node={item}
                       leaseRevocationJobs={props.leaseRevocationJobs}
-                      nodeCommandJobs={props.nodeCommandJobs}
+                      nodeCommandSummaries={props.nodeCommandQueue.summaries}
                       leaseRetryBusyKey={props.leaseRevocationRetryBusyKey}
                       onOpenLeaseRevocationQueue={props.onOpenLeaseRevocationQueue}
                       onRetryNodeLeaseRevocationJobs={props.onRetryNodeLeaseRevocationJobs}
@@ -189,16 +190,18 @@ export function NodesPage(props: NodesPageProps) {
 function NodeSyncQueueCell(props: {
   node: AdminNodeRecordDto;
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
-  nodeCommandJobs: AdminNodeCommandJobDto[];
+  // Exact per-node aggregates, not the paginated detail list: a node whose
+  // commands fell off the first page must still read as busy.
+  nodeCommandSummaries: AdminNodeCommandSummariesDto;
   leaseRetryBusyKey: string | null;
   onOpenLeaseRevocationQueue: (filter?: LeaseRevocationQueueFilter) => void;
   onRetryNodeLeaseRevocationJobs: (nodeId: string) => void;
 }) {
   const leaseSummary = summarizeLeaseRevocationJobsForNode(props.leaseRevocationJobs, props.node.id);
-  const commandSummary = summarizeNodeCommandJobsForNode(props.nodeCommandJobs, props.node.id);
+  const commandSummary = findNodeCommandSummary(props.nodeCommandSummaries, "nodes", props.node.id);
   const leaseRetryable = hasRetryableBackgroundSync(leaseSummary);
 
-  if (leaseSummary.total <= 0 && commandSummary.total <= 0) {
+  if (leaseSummary.total <= 0 && (commandSummary?.total ?? 0) <= 0) {
     return (
       <Badge color="green" variant="light">
         已同步
@@ -213,7 +216,7 @@ function NodeSyncQueueCell(props: {
           {buildBackgroundSyncLabel("连接撤销", leaseSummary)}
         </Badge>
       ) : null}
-      {commandSummary.total > 0 ? (
+      {commandSummary && commandSummary.total > 0 ? (
         <Badge color="yellow" variant="light">
           {buildBackgroundSyncLabel("节点命令", commandSummary)}
         </Badge>
@@ -223,7 +226,7 @@ function NodeSyncQueueCell(props: {
           {summarizeAdminDiagnosticMessage(leaseSummary.lastError, "连接撤销任务失败，请稍后重试或查看服务器日志。")}
         </Text>
       ) : null}
-      {commandSummary.failed > 0 && commandSummary.lastError ? (
+      {commandSummary && commandSummary.failed > 0 && commandSummary.lastError ? (
         <Text size="xs" c="dimmed" lineClamp={1}>
           {summarizeAdminDiagnosticMessage(commandSummary.lastError, "节点命令执行失败，Agent 会自动重试。")}
         </Text>
@@ -255,7 +258,7 @@ function NodeSyncQueueCell(props: {
 export function PanelSyncQueueDrawer(props: {
   opened: boolean;
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
-  nodeCommandJobs: AdminNodeCommandJobDto[];
+  nodeCommandQueue: AdminNodeCommandQueueDto;
   leaseRetryBusyKey: string | null;
   filter?: LeaseRevocationQueueFilter | null;
   onClose: () => void;
@@ -264,7 +267,8 @@ export function PanelSyncQueueDrawer(props: {
   onRetryLeaseNode: (nodeId: string) => void;
 }) {
   const filteredLeaseRevocationJobs = filterLeaseRevocationJobs(props.leaseRevocationJobs, props.filter);
-  const filteredNodeCommandJobs = filterNodeCommandJobs(props.nodeCommandJobs, props.filter);
+  const filteredNodeCommandJobs = filterNodeCommandJobs(props.nodeCommandQueue.jobs, props.filter);
+  const listedCommandTotal = sumNodeCommandSummaries(props.nodeCommandQueue.summaries, "nodes");
   const hasFilter = hasLeaseRevocationQueueFilter(props.filter);
   const drawerTitle = hasFilter ? props.filter?.title ?? "当前对象待处理任务" : "后台同步任务";
 
@@ -361,6 +365,11 @@ export function PanelSyncQueueDrawer(props: {
         </Stack>
         <Stack gap="xs">
           <Text fw={600}>节点命令同步</Text>
+          {!hasFilter && listedCommandTotal > props.nodeCommandQueue.jobs.length ? (
+            <Text size="xs" c="dimmed">
+              {`仅显示最近 ${props.nodeCommandQueue.jobs.length} 条，共 ${listedCommandTotal} 条待处理；节点状态列显示的是完整计数。`}
+            </Text>
+          ) : null}
           <DataTable>
             <Table.Thead>
               <Table.Tr>
@@ -422,16 +431,7 @@ function summarizeLeaseRevocationJobsForNode(jobs: AdminLeaseRevocationJobDto[],
   };
 }
 
-function summarizeNodeCommandJobsForNode(jobs: AdminNodeCommandJobDto[], nodeId: string) {
-  const related = jobs.filter((job) => job.nodeId === nodeId);
-  return {
-    total: related.length,
-    pending: related.filter((job) => job.status === "pending").length,
-    running: related.filter((job) => job.status === "running").length,
-    failed: related.filter((job) => job.status === "failed").length,
-    lastError: related.find((job) => job.lastError)?.lastError ?? null
-  };
-}
+
 
 function isRetryableBackgroundSyncStatus(status: AdminLeaseRevocationJobDto["status"]) {
   return status === "pending" || status === "failed";
