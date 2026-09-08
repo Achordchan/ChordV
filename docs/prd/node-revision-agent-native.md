@@ -137,6 +137,12 @@ R2-A 落地细节:
 - 提交后:预创建节点 + 签发注册 token → 引导页(install 命令 + 复制 + 状态轮询"等待 agent 注册…"→ 成功后自动跳到节点详情)
 - 节点详情:Agent 状态卡(在线/版本/队列深度/xray 状态/上次心跳,数据来自 NodeAgent 表)替代面板状态;入站部署按钮 + Reality 参数展示
 
+R2-B 落地细节:
+
+- 入站部署区块挂在节点控制器抽屉(健康卡与阶段清单之间),分两半:参数展示(接入地址/SNI/Reality 公钥/shortId/flow/fingerprint/spiderX/部署 revision,均来自 agent 回填的 `Node` 字段,`toAdminNodeRecord` 补齐了 realityPublicKey/flow/fingerprint/inboundAppliedRevision 的映射)与「部署入站 / 调整参数重新下发」。payload 只携带操作员真正决定的两项——监听端口与 SNI,其余保持控制面默认;服务端照常归一化与校验,客户端不做二次校验逻辑。
+- 队列响应是**命令**不是结果(带 targetRevision),完成判定靠轮询:节点记录的 `inboundAppliedRevision` 追上该 revision 即完成(3s 间隔、失败退避至 30s、5 分钟超时;超时只提示,命令仍在队列)。轮询的会话纪律与接入引导钩子一致:抽屉关闭或切换节点即失效,迟到的响应/轮询不得改状态、发通知或解锁新会话的请求。
+- **`rotateKeys` 按破坏性操作呈现**:选项仅在已部署节点上出现(首次部署没有可轮换的密钥),勾选后展示红色警告并要求二次确认「已发出的所有订阅将立即失效」才能提交——回归同时守着文案与提交门槛的源码断言。
+
 ### 2.5 删除:3x-ui 全链路
 
 - `apps/api/src/modules/xui/`(XuiService 全部)

@@ -43,6 +43,7 @@ type NodesPageProps = {
   onProbeNode: (nodeId: string) => void;
   onRefreshNode: (nodeId: string) => void;
   onSwitchNodeControlMode: (node: AdminNodeRecordDto, input: SwitchNodeControlModeInputDto) => Promise<boolean>;
+  onNodeRecordChanged: (node: AdminNodeRecordDto) => void;
   onOpenNodeDrawer: (nodeId: string) => void;
   onDeleteNode: (node: AdminNodeRecordDto) => void;
   onOpenAgentNodeCreate: () => void;
@@ -198,6 +199,7 @@ export function NodesPage(props: NodesPageProps) {
         busy={Boolean(controlNode && props.controlModeBusyNodeId === controlNode.id)}
         onClose={() => setControlNodeId(null)}
         onSwitchMode={props.onSwitchNodeControlMode}
+        onNodeRecordChanged={props.onNodeRecordChanged}
       />
     </>
   );

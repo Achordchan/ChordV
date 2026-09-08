@@ -40,3 +40,25 @@ export function buildImportNodePayload(nodeForm: NodeFormState): ImportNodeInput
     panelInboundId: updatePayload.panelInboundId ?? undefined
   };
 }
+
+export type InboundDeployFormState = {
+  listenPort: number | "";
+  serverName: string;
+  rotateKeys: boolean;
+};
+
+/**
+ * ENSURE_INBOUND payload for the R2-B deploy flow. Only what the operator
+ * actually decides: the port to listen on and the SNI to borrow. Everything
+ * else (dest, flow, fingerprint, spiderX, inboundTag) keeps its control-plane
+ * default — the server normalizes and validates the whole spec again anyway,
+ * and a mismatched pair like a custom SNI with the default fallback target is
+ * a camouflage concern, not a correctness one.
+ */
+export function buildInboundDeployPayload(form: InboundDeployFormState): Record<string, unknown> {
+  return {
+    listenPort: form.listenPort === "" ? 443 : form.listenPort,
+    serverNames: [form.serverName.trim()],
+    rotateKeys: form.rotateKeys === true
+  };
+}

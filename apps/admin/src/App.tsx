@@ -3454,6 +3454,11 @@ export function App() {
                 onProbeNode={(nodeId) => void handleProbeNode(nodeId)}
                 onRefreshNode={(nodeId) => void handleRefreshNode(nodeId)}
                 onSwitchNodeControlMode={handleSwitchNodeControlMode}
+                onNodeRecordChanged={() => {
+                  void fetchAdminNodes().then((updatedNodes) => {
+                    mergeSnapshot({ nodes: updatedNodes });
+                  }).catch(() => undefined);
+                }}
                 onOpenNodeDrawer={(nodeId) => openDrawer("node", nodeId)}
                 onDeleteNode={setDeleteNodeTarget}
                 onOpenAgentNodeCreate={() => { setAgentNodeResumeId(null); setAgentNodeCreateOpened(true); }}

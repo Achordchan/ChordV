@@ -3,6 +3,7 @@ import type {
   AdminNodePanelInboundDto,
   AdminNodeRecordDto,
   AdminPanelSyncJobDto,
+  AgentCommandDto,
   CreateAgentNodeInputDto,
   CreateAgentNodeResultDto,
   ImportNodeInputDto,
@@ -142,6 +143,18 @@ export function probeAllNodes() {
 export function deleteNode(nodeId: string) {
   return request<{ ok: boolean }>(`/admin/nodes/${nodeId}`, {
     method: "DELETE",
+    timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
+  });
+}
+
+// R2-B inbound deployment: queue an ENSURE_INBOUND command for the node's
+// agent. The response is the QUEUED command (with its targetRevision), not the
+// deployment outcome — completion is observed by polling the node record until
+// inboundAppliedRevision reaches that revision.
+export function deployNodeInbound(nodeId: string, payload: Record<string, unknown>) {
+  return request<AgentCommandDto>(`/admin/nodes/${nodeId}/agent-commands`, {
+    method: "POST",
+    body: JSON.stringify({ type: "ENSURE_INBOUND", payload }),
     timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
   });
 }

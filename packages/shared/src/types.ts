@@ -540,6 +540,16 @@ export interface AdminNodeRecordDto extends NodeSummaryDto {
   serverPort: number;
   shortId: string;
   spiderX: string;
+  // Reality parameters as deployed by ENSURE_INBOUND; empty strings while the
+  // node is still a placeholder. Optional for legacy fixtures — the API always
+  // sets them.
+  realityPublicKey?: string;
+  flow?: string;
+  fingerprint?: string;
+  // The revision whose inbound report was last written back into the node;
+  // "0" until the first deployment completes. The admin deploy flow polls
+  // until this reaches the queued command's targetRevision.
+  inboundAppliedRevision?: string;
   mldsa65Verify?: string | null;
   probeStatus: NodeProbeStatus;
   probeLatencyMs: number | null;

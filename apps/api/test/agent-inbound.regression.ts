@@ -14,6 +14,7 @@ import {
 } from "../src/modules/agent/agent-inbound";
 import { DEFAULT_TRUSTED_PROXIES, resolveTrustProxy } from "../src/trust-proxy";
 import { isNodeOnboardingReady } from "../src/modules/common/node-onboarding-policy";
+import { toAdminNodeRecord } from "../src/modules/common/node-import.utils";
 
 const read = (relative: string) => readFileSync(path.resolve(__dirname, relative), "utf8");
 
@@ -556,12 +557,47 @@ async function testWhoamiAcrossProxyHops() {
   assert.equal(await ask("10.0.0.0/8", { "x-forwarded-for": "203.0.113.9" }), "127.0.0.1");
 }
 
+function testAdminNodeRecordInboundFields() {
+  // The admin deploy flow displays exactly these fields, and its completion
+  // poll keys off inboundAppliedRevision — the serializer must carry them.
+  const base = {
+    id: "node-1", name: "node", region: "r", provider: "p", tags: [], recommended: false,
+    latencyMs: 0, probeLatencyMs: null, protocol: "vless", security: "reality",
+    serverHost: "203.0.113.7", serverPort: 443, serverName: "www.microsoft.com",
+    shortId: "0123456789abcdef", spiderX: "/",
+    subscriptionUrl: null, statsLastSyncedAt: null,
+    panelBaseUrl: null, panelApiBasePath: null, panelUsername: null, panelPassword: null,
+    panelInboundId: null, panelEnabled: false, panelStatus: "offline", panelLastSyncedAt: null, panelError: null,
+    probeStatus: "unknown", probeCheckedAt: null, probeError: null,
+    createdAt: new Date(0), updatedAt: new Date(0)
+  };
+  const deployed = toAdminNodeRecord({
+    ...base,
+    realityPublicKey: "k".repeat(43), flow: "xtls-rprx-vision", fingerprint: "chrome", inboundAppliedRevision: 12n
+  });
+  assert.equal(deployed.realityPublicKey, "k".repeat(43));
+  assert.equal(deployed.flow, "xtls-rprx-vision");
+  assert.equal(deployed.fingerprint, "chrome");
+  assert.equal(deployed.inboundAppliedRevision, "12");
+
+  // Placeholder node (registered, never deployed) and legacy rows without the
+  // columns must not surface undefined to the UI.
+  const placeholder = toAdminNodeRecord(base);
+  assert.deepEqual(
+    { realityPublicKey: placeholder.realityPublicKey, flow: placeholder.flow, fingerprint: placeholder.fingerprint, inboundAppliedRevision: placeholder.inboundAppliedRevision },
+    { realityPublicKey: "", flow: "", fingerprint: "", inboundAppliedRevision: "0" }
+  );
+  const legacy = toAdminNodeRecord({ ...base, inboundAppliedRevision: null });
+  assert.equal(legacy.inboundAppliedRevision, "0");
+}
+
 function main() {
   testCommandTypeIsDeclaredEverywhere();
   testSpecNormalization();
   testPublicAddressPolicy();
   testReportValidation();
   testInstallerAndDownloadRoute();
+  testAdminNodeRecordInboundFields();
   return testWhoamiAcrossProxyHops()
     .then(testWriteBackAndActivation)
     .then(testDedupeScope)

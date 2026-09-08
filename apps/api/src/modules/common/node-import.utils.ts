@@ -245,6 +245,10 @@ export function toAdminNodeRecord(row: {
   serverName: string;
   shortId: string;
   spiderX: string;
+  realityPublicKey?: string;
+  flow?: string;
+  fingerprint?: string;
+  inboundAppliedRevision?: bigint | null;
   mldsa65Verify?: string | null;
   subscriptionUrl: string | null;
   statsLastSyncedAt: Date | null;
@@ -324,6 +328,10 @@ export function toAdminNodeRecord(row: {
     serverPort: row.serverPort,
     shortId: row.shortId,
     spiderX: row.spiderX,
+    realityPublicKey: row.realityPublicKey ?? "",
+    flow: row.flow ?? "",
+    fingerprint: row.fingerprint ?? "",
+    inboundAppliedRevision: row.inboundAppliedRevision != null ? row.inboundAppliedRevision.toString() : "0",
     mldsa65Verify: row.mldsa65Verify ?? null,
     probeStatus: row.probeStatus,
     probeLatencyMs: row.probeLatencyMs,
