@@ -44,11 +44,17 @@ test('规格指纹与字段顺序无关，但排除 rotateKeys', () => {
 });
 
 // The helper publishes into a root-owned directory the agent cannot write; the
-// tests keep them separate for the same reason production does.
-function outDir(root: string): string {
+// tests keep them separate for the same reason production does. Each fixture
+// creates its own temp root, so the directory is made exactly once per fixture.
+function fixture(prefix: string): { root: string; out: string } {
+  const root = fs.mkdtempSync(join(tmpdir(), prefix));
   const out = join(root, 'out');
-  fs.mkdirSync(out, { recursive: true });
-  return out;
+  fs.mkdirSync(out);
+  return { root, out };
+}
+
+function outDir(root: string): string {
+  return join(root, 'out');
 }
 
 function applier(root: string, timeoutMs = 200) {
@@ -56,7 +62,7 @@ function applier(root: string, timeoutMs = 200) {
 }
 
 test('助手应答按 requestId 关联，旧结果不算本次的答复', async () => {
-  const root = fs.mkdtempSync(join(tmpdir(), 'agent-inbound-'));
+  const { root } = fixture('agent-inbound-');
   try {
     const spec = parseInboundSpec(payload(), 'vless-in');
     fs.writeFileSync(join(outDir(root), 'result.json'), JSON.stringify({ requestId: 'stale', ok: true }));
@@ -74,7 +80,7 @@ test('助手应答按 requestId 关联，旧结果不算本次的答复', async 
 });
 
 test('助手失败、畸形与超大应答都变成明确的错误', async () => {
-  const root = fs.mkdtempSync(join(tmpdir(), 'agent-inbound-bad-'));
+  const { root } = fixture('agent-inbound-bad-');
   const spec = parseInboundSpec(payload(), 'vless-in');
   const result = join(outDir(root), 'result.json');
   try {
@@ -97,7 +103,7 @@ test('助手失败、畸形与超大应答都变成明确的错误', async () =>
 });
 
 test('合法应答被完整解析', async () => {
-  const root = fs.mkdtempSync(join(tmpdir(), 'agent-inbound-ok-'));
+  const { root } = fixture('agent-inbound-ok-');
   try {
     const spec = parseInboundSpec(payload(), 'vless-in');
     fs.writeFileSync(join(outDir(root), 'result.json'), JSON.stringify({
@@ -114,7 +120,7 @@ test('合法应答被完整解析', async () => {
 });
 
 test('reset 的成功应答按 reset 规则解析，不会被当成部署结果拒绝', async () => {
-  const root = fs.mkdtempSync(join(tmpdir(), 'agent-inbound-reset-'));
+  const { root } = fixture('agent-inbound-reset-');
   try {
     // A successful reset carries no keys and port 0 on purpose. Validating it as
     // a deployment would reject it — and that error would surface during agent

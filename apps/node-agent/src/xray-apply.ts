@@ -409,8 +409,16 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
       return fs.readFileSync(target, 'utf8') === expected;
     } catch { return false; }
   };
+  /**
+   * A deployment made when the host had no IPv6 listens on 0.0.0.0. Once the
+   * operator enables IPv6 and gives the node an IPv6 endpoint, that listener no
+   * longer satisfies the request — and answering "nothing to do" would make the
+   * agent reject the result and every retry take the same shortcut forever.
+   */
+  const familyMatches = (recorded: { listen: string }) =>
+    !request.requireListen || (recorded.listen || '0.0.0.0') === request.requireListen;
   if (request.commandId && state?.commandId === request.commandId && !state.pending && configMatches(state)
-      && serving(state.listenPort || request.listenPort)) {
+      && familyMatches(state) && serving(state.listenPort || request.listenPort)) {
     return {
       deployed: true,
       listen: state.listen || '0.0.0.0',
@@ -432,7 +440,7 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
   // (the process died between publishing the config and committing the state),
   // so the shortcut would answer with a port that is no longer deployed.
   if (state?.hash === hash && !state.pending && !request.rotateKeys && configMatches(state)
-      && serving(state.listenPort || request.listenPort)) {
+      && familyMatches(state) && serving(state.listenPort || request.listenPort)) {
     // Nothing to do — and doing it anyway would restart Xray, dropping every
     // live connection and every gRPC-provisioned user for no reason.
     return {

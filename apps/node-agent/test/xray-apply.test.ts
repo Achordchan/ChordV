@@ -559,3 +559,27 @@ test('status 把「日志未提交」也算作可能已部署', () => {
     assert.equal(status().deployed, false);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('已部署的监听族不满足新要求时，空转分支必须重新部署', () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'xray-apply-family-change-'));
+  try {
+    // Deployed while the host had no IPv6: the listener is 0.0.0.0.
+    const v4Only = deps(root, { resolveListen: () => '0.0.0.0' });
+    const spec = request({ commandId: 'command-family' });
+    assert.equal(applyRequest(spec, v4Only).listen, '0.0.0.0');
+    assert.equal(applyRequest(spec, v4Only).restarted, false, '同一命令、同一族确实是空转');
+
+    // The operator enables IPv6 and gives the node an IPv6 endpoint. Answering
+    // "nothing to do" would hand back the v4 listener, the agent would reject
+    // it, and every retry would take the same shortcut forever.
+    const dualStack = deps(root, {
+      confDir: v4Only.confDir, stateFile: v4Only.stateFile, resolveListen: () => '::',
+    });
+    const redeployed = applyRequest({ ...spec, requireListen: '::' }, dualStack);
+    assert.equal(redeployed.listen, '::');
+    assert.equal(redeployed.restarted, true, '族变了就必须重新部署');
+    assert.equal(redeployed.realityPublicKey, keys.publicKey, '换族不换密钥');
+    // And now it settles into a true no-op again.
+    assert.equal(applyRequest({ ...spec, requireListen: '::' }, dualStack).restarted, false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
