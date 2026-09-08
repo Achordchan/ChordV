@@ -213,6 +213,12 @@ export class AdminNodeService {
       await this.tryRunAfterLocalNodeSave("queue node lease revocation after node disable", () =>
         this.runtimeSessionService.queueLeaseRevocationJobForNode(nodeId, "node_disabled")
       );
+      // Disabling the node must also disable its bindings: getConfig does not
+      // check node.isActive, so previously issued credentials would keep
+      // working outside the managed client's lease handling.
+      await this.tryRunAfterLocalNodeSave("queue binding disable after node disable", () =>
+        this.runtimeSessionService.markPanelBindingsDisabledForNode(nodeId)
+      );
     }
     const shouldPublishNodeUpdated =
       (input.isActive !== undefined && current.isActive !== input.isActive) ||

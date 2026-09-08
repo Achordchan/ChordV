@@ -221,7 +221,7 @@ export class RuntimeSessionService {
     if (!isNodeOnboardingReady(node)) {
       throw new ForbiddenException("当前节点尚未完成 Agent 注册或入站配置");
     }
-    if (usesAgentControl(node.controlMode)) {
+    if (!usesAgentControl(node.controlMode)) {
       throw new ForbiddenException("当前节点控制模式不可用");
     }
 
@@ -567,8 +567,11 @@ export class RuntimeSessionService {
       subscription.teamId && subscription.team
         ? new Set(subscription.team.members.filter((item: any) => item.user.status === "active").map((item: any) => item.userId))
         : null;
-    const shouldProvision = subscription.state === "active" && subscription.expireAt > new Date();
-    const shouldDeleteAll = subscription.state !== "active";
+    // The shared eligibility predicate carries the team/account status and
+    // effective-quota checks (a disabled team's active subscription must NOT
+    // re-provision credentials the team shutdown disabled).
+    const shouldProvision = shouldProvisionPanelClients(subscription);
+    const shouldDeleteAll = shouldDeletePanelClients(subscription);
 
     if (shouldDeleteAll) {
       if (options?.ensureOnly) {
@@ -907,6 +910,41 @@ export class RuntimeSessionService {
       subscriptionId
     });
     return nodeIds.length;
+  }
+
+  /**
+   * Disables every active binding on a node: queue DISABLE_USER for each (the
+   * agent drops the credentials; getConfig would otherwise keep serving users
+   * whose credentials were issued while the node was active) and mark the
+   * bindings disabled locally.
+   */
+  async markPanelBindingsDisabledForNode(nodeId: string) {
+    const subscriptions = await this.prisma.subscription.findMany({
+      where: {
+        panelClientBindings: {
+          some: {
+            nodeId,
+            status: "active"
+          }
+        }
+      },
+      select: { id: true }
+    });
+
+    let disabledCount = 0;
+    for (const subscription of subscriptions) {
+      try {
+        disabledCount += await withNodePanelBindingSubscriptionBudget(
+          () => this.markPanelBindingsDisabledForSubscription(subscription.id, { nodeIds: [nodeId] }),
+          `Node ${nodeId} binding disable for subscription ${subscription.id}`
+        );
+      } catch (error) {
+        this.logger.warn(
+          `Node ${nodeId} binding disable failed for subscription ${subscription.id}; remaining subscriptions will continue: ${readRuntimeErrorMessage(error)}`
+        );
+      }
+    }
+    return disabledCount;
   }
 
   async removePanelBindingsForSubscription(
