@@ -468,8 +468,13 @@ async function main() {
   );
   assert.match(
     runtimeSessionSource,
-    /const freshServableNodeIds = new Set\([\s\S]*?if \(!freshServableNodeIds\.has\(pair\.access\.node\.id\)\) \{\s*\n\s*continue;\s*\n\s*\}/,
+    /const freshServableAccessByNodeId = new Map\([\s\S]*?const freshAccess = freshServableAccessByNodeId\.get\(pair\.access\.node\.id\);\s*\n\s*if \(!freshAccess\) \{\s*\n\s*continue;\s*\n\s*\}/,
     "每块事务内必须重检节点仍活跃、仍分配——块间被撤销的节点不得恢复凭据"
+  );
+  assert.match(
+    runtimeSessionSource,
+    /count \+= await ensureTargetBinding\(\{ target: pair\.target, access: freshAccess \}, tx\);/,
+    "命令必须用重读的新节点参数构造——部署改了 flow 后不得把用户排回旧参数"
   );
   // 10) The traffic reset excludes provisioning with the PROVISIONING lock for
   //     its whole span but takes the USAGE lock only around the final counter

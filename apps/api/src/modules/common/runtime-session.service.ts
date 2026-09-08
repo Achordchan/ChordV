@@ -957,19 +957,21 @@ export class RuntimeSessionService {
               if (!fresh || !shouldProvisionPanelClients(fresh)) {
                 return 0;
               }
-              // Node activity and assignment are re-read here too: an
-              // administrator may disable the node or revoke its assignment
-              // between chunks, and the pair was captured against the OLD
-              // state — restoring credentials for a revoked node must not
-              // happen just because its disable watermarks settled.
-              const freshServableNodeIds = new Set(
+              // Node activity, assignment AND PARAMETERS are re-read here:
+              // an administrator may disable the node, revoke its assignment,
+              // or deploy a new inbound (changing flow) between chunks, and
+              // the pair was captured against the OLD state. The command is
+              // built from the FRESH node so a re-ordered ENSURE_USER never
+              // reverts a user to stale connection parameters.
+              const freshServableAccessByNodeId = new Map(
                 fresh.nodeAccesses
                   .filter((item: any) => item.node.isActive && isNodeOnboardingReady(item.node))
-                  .map((item: any) => item.nodeId)
+                  .map((item: any) => [item.nodeId, item])
               );
               let count = 0;
               for (const pair of chunk) {
-                if (!freshServableNodeIds.has(pair.access.node.id)) {
+                const freshAccess = freshServableAccessByNodeId.get(pair.access.node.id);
+                if (!freshAccess) {
                   continue;
                 }
                 const targetStillEligible = fresh.teamId
@@ -980,7 +982,7 @@ export class RuntimeSessionService {
                 if (!targetStillEligible) {
                   continue;
                 }
-                count += await ensureTargetBinding(pair, tx);
+                count += await ensureTargetBinding({ target: pair.target, access: freshAccess }, tx);
               }
               return count;
             },
