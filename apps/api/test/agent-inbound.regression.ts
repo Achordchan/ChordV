@@ -295,6 +295,15 @@ function commandJobStore() {
       }
     },
     node: { update: async () => ({ agentConfigRevision: ++revision, inboundAppliedRevision: applied }) },
+    panelClientBinding: {
+      findUnique: async ({ where }: { where: { id: string } }) => {
+        const bindings: Record<string, Record<string, any>> = {
+          "binding-a": { id: "binding-a", nodeId: "node-1", subscriptionId: "sub-1", userId: "user-1", teamId: "team-1" },
+          "binding-b": { id: "binding-b", nodeId: "node-1", subscriptionId: "sub-2", userId: "user-2", teamId: null }
+        };
+        return bindings[where.id] ?? null;
+      }
+    },
     nodeCommandJob: {
       findUnique: async ({ where }: { where: { dedupeKey: string } }) =>
         rows.find((row) => row.dedupeKey === where.dedupeKey) ?? null,
@@ -305,7 +314,15 @@ function commandJobStore() {
       updateMany: async ({ where, data }: { where: Record<string, any>; data: Record<string, any> }) => {
         let count = 0;
         for (const row of rows) {
-          if (row.id === where.id && row.dedupeKey === where.dedupeKey) { Object.assign(row, data); count += 1; }
+          if (where.id !== undefined) {
+            if (row.id === where.id && row.dedupeKey === where.dedupeKey) { Object.assign(row, data); count += 1; }
+            continue;
+          }
+          // resolveExhaustedCommands' scope filters (binding or node+type).
+          const scopeMatches = where.bindingId !== undefined
+            ? row.bindingId === where.bindingId
+            : row.nodeId === where.nodeId && row.commandType === where.commandType;
+          if (scopeMatches && row.status === "cancelled" && row.resolvedAt == null) { Object.assign(row, data); count += 1; }
         }
         return { count };
       },
@@ -389,6 +406,39 @@ async function testGetCommandOutcome() {
     nodeCommandJob: { findFirst: async () => null }
   } as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
   assert.equal(await missing.getCommandOutcome("node-1", "gone"), null);
+}
+
+async function testUserCommandResolutionIsBindingScoped() {
+  // Ordering ENSURE_USER for ONE user must resolve only THAT binding's
+  // exhausted failure: a node-scoped resolution would clear every other
+  // user's failed provisioning on the node without repairing anything.
+  const store = commandJobStore();
+  store.rows.push(
+    { id: "exhausted-a", dedupeKey: "old:a", nodeId: "node-1", commandType: "ENSURE_USER", status: "cancelled", resolvedAt: null, bindingId: "binding-a", subscriptionId: "sub-1", userId: "user-1", teamId: "team-1", targetRevision: 1n, createdAt: new Date(0) },
+    { id: "exhausted-b", dedupeKey: "old:b", nodeId: "node-1", commandType: "ENSURE_USER", status: "cancelled", resolvedAt: null, bindingId: "binding-b", subscriptionId: "sub-2", userId: "user-2", teamId: null, targetRevision: 2n, createdAt: new Date(1) }
+  );
+  const service = new AgentService(store.prisma as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
+
+  await service.queueCommand("node-1", { type: "ENSURE_USER", payload: { bindingId: "binding-a", email: "a@example.invalid", uuid: "u1" } } as never);
+
+  const exhaustedA = store.rows.find((row) => row.id === "exhausted-a");
+  const exhaustedB = store.rows.find((row) => row.id === "exhausted-b");
+  assert.ok(exhaustedA?.resolvedAt instanceof Date, "被重新下发的绑定，其耗尽失败应被解决");
+  assert.equal(exhaustedB?.resolvedAt ?? null, null, "其他用户绑定的耗尽失败不得被顺带解决");
+
+  const ordered = store.rows.find((row) => row.id !== "exhausted-a" && row.id !== "exhausted-b");
+  assert.deepEqual(
+    ordered && { bindingId: ordered.bindingId, subscriptionId: ordered.subscriptionId, userId: ordered.userId, teamId: ordered.teamId },
+    { bindingId: "binding-a", subscriptionId: "sub-1", userId: "user-1", teamId: "team-1" },
+    "用户命令必须带归属列（管理端按订阅/用户聚合依赖它们）"
+  );
+
+  // A binding that belongs to another node is refused, not silently executed.
+  await assert.rejects(
+    () => service.queueCommand("node-1", { type: "ENSURE_USER", payload: { bindingId: "binding-x", email: "x@example.invalid", uuid: "u2" } } as never),
+    /不属于该节点/,
+    "他节点的绑定不得被命令操作"
+  );
 }
 
 async function testInboundCasGuard() {
@@ -692,6 +742,7 @@ function main() {
   return testWhoamiAcrossProxyHops()
     .then(testWriteBackAndActivation)
     .then(testDedupeScope)
+    .then(testUserCommandResolutionIsBindingScoped)
     .then(testDedupeInterveningDeployment)
     .then(testInboundCasGuard)
     .then(testGetCommandOutcome)

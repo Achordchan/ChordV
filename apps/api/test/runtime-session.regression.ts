@@ -236,8 +236,18 @@ async function main() {
   );
   assert.match(
     agentServiceSource,
-    /const replayed = await tx\.nodeCommandJob\.findUnique\(\{ where: \{ dedupeKey \} \}\);\s*\n\s*if \(replayed\) \{\s*\n\s*return replayed;\s*\n\s*\}\s*\n\s*\/\/ Target-less commands[\s\S]*?await resolveExhaustedCommands\(tx, \{ nodeId, commandType: input\.type \}\);/,
+    /const replayed = await tx\.nodeCommandJob\.findUnique\(\{ where: \{ dedupeKey \} \}\);\s*\n\s*if \(replayed\) \{\s*\n\s*return replayed;\s*\n\s*\}/,
     "已存在 dedupe key 的幂等重放必须直接返回旧命令，不得触碰 resolveExhaustedCommands"
+  );
+  assert.match(
+    agentServiceSource,
+    /await resolveExhaustedCommands\(tx, \{\s*\n\s*\.\.\.\(bindingTarget \? \{ bindingId: bindingTarget\.id \} : \{\}\),\s*\n\s*nodeId,\s*\n\s*commandType: input\.type\s*\n\s*\}\);/,
+    "用户命令必须按绑定解决耗尽行——按节点+类型会把同节点其他用户的失败一并清掉"
+  );
+  assert.match(
+    agentServiceSource,
+    /if \(!binding \|\| binding\.nodeId !== nodeId\) \{\s*\n\s*throw new BadRequestException\("命令携带的用户绑定不属于该节点"\);/,
+    "他节点的绑定必须被拒绝"
   );
   assert.match(
     directMeteringSource,

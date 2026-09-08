@@ -460,12 +460,36 @@ export class AgentService {
       if (replayed) {
         return replayed;
       }
-      // Target-less commands (ENSURE_INBOUND, RECONCILE_USERS, ...) resolve
-      // per node+commandType: a re-ordered deployment supersedes an exhausted
-      // one, which must stop counting as an unresolved failure. Only rows
-      // older than this new order can be resolved, which is structural here —
-      // the replacement is being created now.
-      await resolveExhaustedCommands(tx, { nodeId, commandType: input.type });
+      // User commands carry their binding target in the payload: resolution
+      // must scope to THAT binding (ordering ENSURE_USER for one user must not
+      // clear other users' exhausted failures on the same node), and the new
+      // row must carry the ownership columns the admin queue aggregates by.
+      // A bindingId that does not belong to this node is rejected — otherwise
+      // the command would act on another node's user.
+      const payloadBindingId = typeof (payload as Record<string, unknown>).bindingId === "string"
+        ? (payload as Record<string, unknown>).bindingId as string
+        : null;
+      let bindingTarget: { id: string; subscriptionId: string; userId: string | null; teamId: string | null } | null = null;
+      if (payloadBindingId) {
+        const binding = await tx.panelClientBinding.findUnique({
+          where: { id: payloadBindingId },
+          select: { id: true, nodeId: true, subscriptionId: true, userId: true, teamId: true }
+        });
+        if (!binding || binding.nodeId !== nodeId) {
+          throw new BadRequestException("命令携带的用户绑定不属于该节点");
+        }
+        bindingTarget = binding;
+      }
+      // Exhausted (cancelled) failures resolve only under a genuinely NEW
+      // order: binding-scoped commands resolve per binding, target-less
+      // commands (ENSURE_INBOUND, RECONCILE_USERS, ...) per node+commandType.
+      // Only rows older than this new order can be resolved, which is
+      // structural here — the replacement is being created now.
+      await resolveExhaustedCommands(tx, {
+        ...(bindingTarget ? { bindingId: bindingTarget.id } : {}),
+        nodeId,
+        commandType: input.type
+      });
       try {
         return await tx.nodeCommandJob.create({
           data: {
@@ -475,7 +499,15 @@ export class AgentService {
             agentId: agent.id,
             commandType: input.type,
             targetRevision,
-            payload: payload as Prisma.InputJsonValue
+            payload: payload as Prisma.InputJsonValue,
+            ...(bindingTarget
+              ? {
+                  bindingId: bindingTarget.id,
+                  subscriptionId: bindingTarget.subscriptionId,
+                  userId: bindingTarget.userId,
+                  teamId: bindingTarget.teamId
+                }
+              : {})
           }
         });
       } catch (error) {
