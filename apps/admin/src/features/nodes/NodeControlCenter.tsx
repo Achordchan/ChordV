@@ -142,7 +142,10 @@ export function NodeControlDrawer(props: NodeControlDrawerProps) {
 
             <Divider />
 
-            <InboundDeploySection node={node} onNodeChanged={props.onNodeRecordChanged} />
+            {/* Keyed by node id: the drawer reuses this component across node
+                switches, and a stale open modal (form values, a confirmed key
+                rotation) must never carry into the next node. */}
+            <InboundDeploySection key={node.id} node={node} onNodeChanged={props.onNodeRecordChanged} />
 
             <Divider />
 

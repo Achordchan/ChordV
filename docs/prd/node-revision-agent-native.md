@@ -139,7 +139,7 @@ R2-A 落地细节:
 
 R2-B 落地细节:
 
-- 入站部署区块挂在节点控制器抽屉(健康卡与阶段清单之间),分两半:参数展示(接入地址/SNI/Reality 公钥/shortId/flow/fingerprint/spiderX/部署 revision,均来自 agent 回填的 `Node` 字段,`toAdminNodeRecord` 补齐了 realityPublicKey/flow/fingerprint/inboundAppliedRevision 的映射)与「部署入站 / 调整参数重新下发」。payload 只携带操作员真正决定的两项——监听端口与 SNI,其余保持控制面默认;服务端照常归一化与校验,客户端不做二次校验逻辑。
+- 入站部署区块挂在节点控制器抽屉(健康卡与阶段清单之间),**按 node.id 重新挂载**——抽屉在节点间复用组件,上一个节点残留的弹窗状态(表单值、已确认的密钥轮换)绝不能带到下一个节点。分两半:参数展示(接入地址/SNI/Reality 公钥/shortId/flow/fingerprint/spiderX/部署 revision,均来自 agent 回填的 `Node` 字段,`toAdminNodeRecord` 补齐了 realityPublicKey/flow/fingerprint/inboundAppliedRevision 的映射)与「部署入站 / 调整参数重新下发」。payload 携带操作员真正决定的三项——监听端口、SNI、回退目标(dest,**留空按 SNI 同域 :443 派生**:Reality 的回退目标必须能为所选 SNI 出示有效证书,自定义 SNI 配默认 microsoft 目标能部署成功但每次握手都失败);**重新下发时保留当前部署的 flow/fingerprint/spiderX**——表单不编辑的字段若缺省,服务端的 normalizeInboundSpec 会静默重置(API 部署过 `flow: ""` 的节点会被翻成 xtls-rprx-vision,已发出的客户端配置全部断连),首次部署则不带这些字段、走控制面默认。服务端照常归一化与校验,客户端不做二次校验逻辑。
 - 队列响应是**命令**不是结果(带 targetRevision),完成判定靠轮询:节点记录的 `inboundAppliedRevision` 追上该 revision 即完成(3s 间隔、失败退避至 30s、5 分钟超时;超时只提示,命令仍在队列)。轮询的会话纪律与接入引导钩子一致:抽屉关闭或切换节点即失效,迟到的响应/轮询不得改状态、发通知或解锁新会话的请求。
 - **`rotateKeys` 按破坏性操作呈现**:选项仅在已部署节点上出现(首次部署没有可轮换的密钥),勾选后展示红色警告并要求二次确认「已发出的所有订阅将立即失效」才能提交——回归同时守着文案与提交门槛的源码断言。
 

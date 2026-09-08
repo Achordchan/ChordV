@@ -24,7 +24,7 @@ export function InboundDeploySection(props: SectionProps) {
   const { node } = props;
   const deployment = useInboundDeployment(node.id, props.onNodeChanged);
   const [modalOpened, setModalOpened] = useState(false);
-  const [form, setForm] = useState<InboundDeployFormState>({ listenPort: 443, serverName: DEFAULT_SNI, rotateKeys: false });
+  const [form, setForm] = useState<InboundDeployFormState>({ listenPort: 443, serverName: DEFAULT_SNI, dest: "", rotateKeys: false });
   const [confirmedRotation, setConfirmedRotation] = useState(false);
 
   const deployed = node.serverPort > 0 && Boolean(node.realityPublicKey?.trim());
@@ -37,6 +37,9 @@ export function InboundDeploySection(props: SectionProps) {
     setForm({
       listenPort: deployed ? node.serverPort : 443,
       serverName: node.serverName?.trim() || DEFAULT_SNI,
+      // Empty derives from the SNI at build time; the operator only fills it
+      // to pin a specific fallback target.
+      dest: "",
       rotateKeys: false
     });
     setConfirmedRotation(false);
@@ -49,7 +52,16 @@ export function InboundDeploySection(props: SectionProps) {
 
   async function submitDeploy() {
     if (!canSubmit) return;
-    const queued = await deployment.deploy(node, buildInboundDeployPayload(form));
+    // A reissue must not silently reset the fields this form does not edit:
+    // preserve the deployed flow/fingerprint/spiderX so already-distributed
+    // client configurations keep connecting. A FIRST deployment sends none of
+    // them and takes the control-plane defaults.
+    const queued = await deployment.deploy(node, buildInboundDeployPayload({
+      ...form,
+      preserve: deployed
+        ? { flow: node.flow ?? "", fingerprint: node.fingerprint ?? "", spiderX: node.spiderX ?? "" }
+        : undefined
+    }));
     if (queued) setModalOpened(false);
   }
 
@@ -121,6 +133,18 @@ export function InboundDeploySection(props: SectionProps) {
             error={serverName.length === 0 ? "SNI 不能为空" : null}
             onChange={(event) => setForm((current) => ({ ...current, serverName: event.currentTarget.value }))}
           />
+          <TextInput
+            label="回退目标（dest）"
+            value={form.dest}
+            placeholder={`${serverName || DEFAULT_SNI}:443`}
+            description={`留空则自动使用「${serverName || DEFAULT_SNI}:443」：Reality 的回退目标必须能为所选 SNI 出示有效证书，SNI 与目标不配套时握手会失败。`}
+            onChange={(event) => setForm((current) => ({ ...current, dest: event.currentTarget.value }))}
+          />
+          {deployed ? (
+            <Text size="xs" c="dimmed">
+              重新下发会保持当前部署的 flow / fingerprint / spiderX 不变；本次未改变端口与 SNI 时，助手按同规格处理、不会重启 Xray。
+            </Text>
+          ) : null}
           {canRotate ? (
             <>
               <Checkbox

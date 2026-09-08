@@ -136,4 +136,16 @@ const apiClientSource = readFileSync(resolve(import.meta.dirname, "../src/api/no
 assert.match(apiClientSource, /type: "ENSURE_INBOUND"/, "部署走 ENSURE_INBOUND 命令");
 assert.match(apiClientSource, /\/agent-commands/, "部署走既有的 agent-commands 端点");
 
+// The drawer reuses the section across node switches: a stale open modal
+// (form values, an already-confirmed key rotation) must never deploy the
+// previous node's settings onto the new node.
+const controlCenterSource = readFileSync(resolve(import.meta.dirname, "../src/features/nodes/NodeControlCenter.tsx"), "utf8");
+assert.match(controlCenterSource, /<InboundDeploySection key=\{node\.id\}/, "区块必须按 node.id 重新挂载");
+
+// A reissue must preserve the deployed flow/fingerprint/spiderX, and the
+// fallback target must follow the SNI when the operator leaves it empty.
+assert.match(sectionSource, /preserve: deployed/, "重下发必须保留当前部署的 flow/fingerprint/spiderX");
+assert.match(sectionSource, /dest: ""/, "表单 dest 默认留空（由构造器按 SNI 派生）");
+assert.match(sectionSource, /必须能为所选 SNI 出示有效证书/, "回退目标的说明必须写明与 SNI 配套的原因");
+
 console.log("inbound deploy regression passed (queue/poll session discipline, completion by applied revision, destructive rotation marking)");
