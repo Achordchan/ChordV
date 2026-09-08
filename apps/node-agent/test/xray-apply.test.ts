@@ -441,3 +441,28 @@ test('Xray 已停时，空转分支必须先把服务拉起来', () => {
     assert.equal(settled.restarted, false);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('重投的轮换命令即使 Xray 已停也不再生成新密钥', () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'xray-apply-rotate-redeliver-'));
+  try {
+    const rotated = { privateKey: 'n'.repeat(43), publicKey: 'N'.repeat(43), shortId: 'ffeeddccbbaa9988' };
+    let generated = 0;
+    const applyDeps = deps(root, { generateKeys: () => (generated++ === 0 ? keys : rotated) });
+    const rotate = request({ rotateKeys: true, commandId: 'command-rotate-down' });
+    assert.equal(applyRequest(rotate, applyDeps).realityPublicKey, keys.publicKey);
+
+    // The agent crashed before recording completion AND the service is down, so
+    // the command-id shortcut is refused. Rotating again here would invalidate
+    // every credential issued from the first rotation.
+    let listening = false;
+    const recovering = deps(root, {
+      confDir: applyDeps.confDir, stateFile: applyDeps.stateFile,
+      generateKeys: () => rotated,
+      isListening: () => listening,
+      restart: () => { listening = true; },
+    });
+    const redelivered = applyRequest({ ...rotate, requestId: '99999999-2222-4333-8444-555555555555' }, recovering);
+    assert.equal(redelivered.realityPublicKey, keys.publicKey, '重投的轮换必须沿用首次生成的密钥');
+    assert.equal(redelivered.restarted, true, '服务没在跑就要拉起来');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

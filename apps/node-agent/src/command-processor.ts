@@ -137,26 +137,12 @@ export class CommandProcessor {
       throw new Error('拒绝执行过期的 ENSURE_INBOUND revision');
     }
 
-    // Re-issuing the same spec must not restart Xray: a restart drops every
-    // live connection and every gRPC-provisioned user. The shortcut is only
-    // sound when the LAST APPLY COMPLETED — a helper apply that succeeded and
-    // then failed verification leaves the machine on the new spec while this
-    // state still describes the old one, and taking the shortcut there would
-    // report a port Xray no longer serves.
-    const cached = previous?.hash === hash && !spec.rotateKeys && previous.complete
-      ? (previous.report as unknown as InboundReport)
-      : undefined;
-    if (cached && await this.xray.inboundLive()) {
-      // The address is resolved even here: a VPS whose public address changed
-      // (or an operator who corrected CHORDV_NODE_PUBLIC_HOST) must not keep
-      // the control plane handing out the old endpoint just because Xray needs
-      // no change.
-      const serverHost = await this.resolveVerifiedHost(cached.listen);
-      const report = { ...cached, serverHost, changed: false, liveVerifiedAt: new Date().toISOString() };
-      this.store.setInboundState({ hash, report: report as unknown as Record<string, unknown>, appliedRevision: command.targetRevision, complete: true });
-      return report;
-    }
-
+    // Everything goes through the helper — the agent never answers from its own
+    // memory. The helper owns the truth (its state file, the config on disk and
+    // whether Xray is serving), and it is the only side that can tell a genuine
+    // no-op from "someone restored an older config behind our back": a live tag
+    // says nothing about which port or key is actually deployed. A true no-op
+    // costs one request round trip and never restarts Xray.
     const requestId = randomUUID();
     // Record the INTENT before handing off: once the helper has the request the
     // machine may change whether or not this process ever learns the outcome (a

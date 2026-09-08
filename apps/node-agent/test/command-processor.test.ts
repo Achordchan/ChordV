@@ -202,17 +202,28 @@ test('非 direct 模式 RECONCILE 只更新本地状态，不写 Xray', async ()
   }
 });
 
+/**
+ * Models the real helper closely enough to be worth asserting against: it keeps
+ * the deployed spec, so re-issuing the same one is a genuine no-op (no restart)
+ * while a different one redeploys. The AGENT no longer decides that — the
+ * helper is the only side that can see what is actually deployed.
+ */
 class FakeApplier implements InboundApplier {
   calls: InboundSpec[] = [];
   commandIds: string[] = [];
+  restarts = 0;
   outcome: Partial<HelperResult> = {};
   failure?: Error;
+  private deployed?: string;
   async apply(spec: InboundSpec, requestId: string, commandId: string): Promise<HelperResult> {
     this.calls.push(spec);
     this.commandIds.push(commandId);
     if (this.failure) throw this.failure;
+    const identity = JSON.stringify({ ...spec, rotateKeys: false });
+    const changed = this.deployed !== identity || spec.rotateKeys;
+    if (changed) { this.deployed = identity; this.restarts += 1; }
     return {
-      requestId, ok: true, changed: true, restarted: true,
+      requestId, ok: true, changed, restarted: changed,
       realityPublicKey: 'k'.repeat(43), shortId: '0123456789abcdef',
       serverName: spec.serverNames[0], listen: '::', listenPort: spec.listenPort, xrayVersion: 'Xray 1.8.24',
       ...this.outcome,
@@ -256,9 +267,11 @@ test('ENSURE_INBOUND 上报可用连接参数，重复下发不再重启 Xray', 
     assert.equal(fixture.xray.users.get(desired().email), desired().uuid);
 
     const repeat = await fixture.processor.execute(command('ENSURE_INBOUND', inboundPayload, 'command-2'), true);
-    assert.equal(fixture.applier.calls.length, 1, '同一规格不得再次驱动助手重启 Xray');
+    // The request still goes to the helper — only it can tell a real no-op from
+    // "someone restored an older config" — but nothing restarts.
+    assert.equal(fixture.applier.restarts, 1, '同一规格不得再次重启 Xray');
     // The helper needs the command identity to recognise a redelivery.
-    assert.deepEqual(fixture.applier.commandIds, ['command-1']);
+    assert.deepEqual(fixture.applier.commandIds, ['command-1', 'command-2']);
     assert.equal((repeat.result?.inbound as Record<string, unknown>).changed, false);
     assert.equal((repeat.result?.inbound as Record<string, unknown>).realityPublicKey, 'k'.repeat(43));
   } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
@@ -352,7 +365,7 @@ test('助手已改动但命令未完成时，重复下发旧规格必须重新�
     host = '203.0.113.7';
     const restored = await processor.execute(command('ENSURE_INBOUND', inboundPayload, 'command-3'), true);
     assert.equal(restored.status, 'completed');
-    assert.equal(applier.calls.length, 3, '状态与机器不一致时不得走捷径');
+    assert.equal(applier.calls.length, 3, '状态与机器不一致时必须重新部署');
     assert.equal((restored.result?.inbound as Record<string, unknown>).serverPort, 443);
   } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
 });
@@ -374,7 +387,7 @@ test('无需改动 Xray 时也要刷新对外地址', async () => {
     const inbound = repeat.result?.inbound as Record<string, unknown>;
     assert.equal(inbound.serverHost, '198.51.100.9');
     assert.equal(inbound.changed, false);
-    assert.equal(applier.calls.length, 1, '仅地址变化不该重启 Xray');
+    assert.equal(applier.restarts, 1, '仅地址变化不该重启 Xray');
 
     // The family check still applies on the shortcut path.
     host = '2001:db8::1';
@@ -436,7 +449,7 @@ test('助手请求超时后，旧规格也必须重新走助手而不是读缓�
     applier.failure = undefined;
     const restored = await processor.execute(command('ENSURE_INBOUND', inboundPayload, 'command-3'), true);
     assert.equal(restored.status, 'completed');
-    assert.equal(applier.calls.length, 3, '不确定状态下不得用 tag 存活当作证据走捷径');
+    assert.equal(applier.calls.length, 3, '每次部署都必须经过助手确认实际部署内容');
   } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
 });
 

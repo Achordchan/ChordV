@@ -338,7 +338,11 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
       xrayVersion: xrayVersion(deps.xrayBin),
     };
   }
-  const reusable = state && !request.rotateKeys ? state.keys : undefined;
+  // A redelivered rotation must not rotate twice — even when the shortcut above
+  // was refused because Xray is not serving. That command's rotation already
+  // happened; repeating it would invalidate credentials issued from the first.
+  const sameCommand = Boolean(request.commandId) && state?.commandId === request.commandId;
+  const reusable = state && (!request.rotateKeys || sameCommand) ? state.keys : undefined;
   // `pending` means the recorded state may not describe what Xray is serving
   // (the process died between publishing the config and committing the state),
   // so the shortcut would answer with a port that is no longer deployed.
