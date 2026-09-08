@@ -213,4 +213,12 @@ assert.match(sectionSource, /读取当前部署规格失败/, "读取失败必�
 assert.match(sectionSource, /setSpecRetry\(\(count\) => count \+ 1\)/, "失败后必须可重试");
 assert.doesNotMatch(sectionSource, /\(current\) => \(\{[^}]*event\.currentTarget/, "函数式更新器里不得读 event.currentTarget（React 可能推迟到 currentTarget 清空后才执行）");
 
+// The deploy completion callback must apply the polled record IMMEDIATELY:
+// discarding it for a full-list refetch leaves the drawer on the old revision
+// and cached spec whenever that refetch fails — a re-opened form would then
+// re-submit the OLD settings after a successful change.
+const appSource = readFileSync(resolve(import.meta.dirname, "../src/App.tsx"), "utf8");
+assert.match(appSource, /onNodeRecordChanged=\{\(record\) =>/, "完成回调必须接收轮询到的记录");
+assert.match(appSource, /item\.id === record\.id \? record : item/, "完成回调必须立即合并传入的记录，全表刷新只是补充");
+
 console.log("inbound deploy regression passed (queue/poll session discipline, completion by applied revision, destructive rotation marking)");
