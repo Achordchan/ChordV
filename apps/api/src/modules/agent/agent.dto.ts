@@ -16,7 +16,6 @@ import {
   ValidateNested
 } from "class-validator";
 import type { NodeAgentCommandType } from "@chordv/shared";
-import type { NodeControlMode } from "@chordv/shared";
 
 const DECIMAL_INTEGER = /^(0|[1-9]\d*)$/;
 
@@ -196,19 +195,3 @@ export class QueueAgentCommandDto {
   expectedInboundAppliedRevision?: string;
 }
 
-export class SwitchNodeControlModeDto {
-  @IsIn(["xui_primary", "shadow_direct", "direct_primary", "rollback_pending"])
-  targetMode!: NodeControlMode;
-
-  @IsOptional()
-  @IsIn([true, false])
-  confirmDirect?: boolean;
-
-  @IsOptional()
-  @IsIn([true, false])
-  confirmRollback?: boolean;
-
-  @IsOptional()
-  @IsIn([true, false])
-  confirmXuiCalibrated?: boolean;
-}

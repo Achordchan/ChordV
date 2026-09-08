@@ -231,11 +231,9 @@ function testNodesPageKeepsNodeAndSyncTaskActions() {
   assert.match(nodesPageSource, />\s*同步任务\s*</);
   assert.match(nodesPageSource, /<Table\.Th>同步任务<\/Table\.Th>/);
   assert.match(nodesPageSource, /onProbeNode\(item\.id\)/);
-  assert.match(nodesPageSource, /onRefreshNode\(item\.id\)/);
   assert.match(nodesPageSource, /onOpenNodeDrawer\(item\.id\)/);
   assert.match(nodesPageSource, /onDeleteNode\(item\)/);
-  assert.match(nodesPageSource, /onOpenPanelSyncQueue\(\{ nodeId: props\.node\.id, title: props\.node\.name \}\)/);
-  assert.match(nodesPageSource, /onRetryNodePanelSyncJobs\(props\.node\.id\)/);
+  assert.match(nodesPageSource, /onOpenLeaseRevocationQueue\(\)/);
   assert.match(nodesPageSource, /onRetryNodeLeaseRevocationJobs\(props\.node\.id\)/);
 }
 

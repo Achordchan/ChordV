@@ -23,6 +23,6 @@ assert.ok(
   "overview should show actionable work before passive metrics"
 );
 assert.match(app, /onOpenTickets=\{\(\) => selectSection\("tickets"\)\}/);
-assert.match(app, /onOpenSyncQueue=\{\(\) => openPanelSyncQueue\(\)\}/);
+assert.match(app, /onOpenSyncQueue=\{\(\) => openLeaseRevocationQueue\(\)\}/);
 
 console.log("admin overview page regression checks passed");

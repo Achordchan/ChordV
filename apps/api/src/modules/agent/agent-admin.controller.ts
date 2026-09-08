@@ -1,8 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Post, UseGuards } from "@nestjs/common";
 import { IsArray, IsBoolean, IsIn, IsOptional, IsString, MaxLength } from "class-validator";
 import { AdminAuthGuard } from "../common/admin-auth.guard";
-import { AgentRegisterDto, CreateAgentCredentialDto, QueueAgentCommandDto, SwitchNodeControlModeDto } from "./agent.dto";
-import { AgentControlModeService } from "./agent-control-mode.service";
+import { AgentRegisterDto, CreateAgentCredentialDto, QueueAgentCommandDto } from "./agent.dto";
 import { AgentRegisterService } from "./agent-register.service";
 import { AgentService } from "./agent.service";
 
@@ -49,7 +48,6 @@ class CreateAgentNodeDto {
 export class AgentAdminController {
   constructor(
     private readonly service: AgentService,
-    private readonly controlModeService: AgentControlModeService,
     private readonly registerService: AgentRegisterService
   ) {}
 
@@ -103,8 +101,4 @@ export class AgentAdminController {
     return this.service.getCommandOutcome(nodeId, commandId);
   }
 
-  @Post(":nodeId/control-mode")
-  switchControlMode(@Param("nodeId") nodeId: string, @Body() body: SwitchNodeControlModeDto) {
-    return this.controlModeService.switchMode(nodeId, body);
-  }
 }

@@ -1,34 +1,28 @@
 import assert from "node:assert/strict";
 import { emptyNodeForm } from "../src/utils/admin-forms";
-import { buildImportNodePayload, buildInboundDeployPayload, buildUpdateNodePayload } from "../src/utils/admin-node-payloads";
+import { buildInboundDeployPayload, buildUpdateNodePayload } from "../src/utils/admin-node-payloads";
 
-function testImportNodeKeepsOnlySubscriptionUrl() {
-  const payload = buildImportNodePayload({
-    ...emptyNodeForm(),
-    provider: "",
-    panelInboundId: Number.NaN,
-    subscriptionUrl: "  https://node.example.com/sub  "
-  });
-
-  assert.equal(payload.subscriptionUrl, "https://node.example.com/sub");
-  assert.equal(payload.name, undefined);
-  assert.equal(payload.provider, undefined);
-  assert.equal(payload.panelBaseUrl, undefined);
-  assert.equal(payload.panelInboundId, undefined);
-}
-
-function testUpdateNodeCanClearSubscriptionUrl() {
+function testUpdateNodePayloadCarriesProfileFieldsOnly() {
   const payload = buildUpdateNodePayload({
     ...emptyNodeForm(),
-    subscriptionUrl: "   "
+    name: "  UAT Node  ",
+    provider: "uat",
+    tags: " a , b ",
+    isActive: false,
+    recommended: true
   });
 
-  assert.equal(Object.hasOwn(payload, "subscriptionUrl"), true);
-  assert.equal(payload.subscriptionUrl, null);
+  assert.equal(payload.name, "  UAT Node  ");
+  assert.equal(payload.provider, "uat");
+  assert.deepEqual(payload.tags, ["a", "b"]);
+  assert.equal(payload.isActive, false);
+  assert.equal(payload.recommended, true);
+  for (const field of ["subscriptionUrl", "panelBaseUrl", "panelInboundId", "panelEnabled"]) {
+    assert.equal(Object.hasOwn(payload, field), false, `${field} 已随面板退役移除`);
+  }
 }
 
-testImportNodeKeepsOnlySubscriptionUrl();
-testUpdateNodeCanClearSubscriptionUrl();
+testUpdateNodePayloadCarriesProfileFieldsOnly();
 
 console.log("admin node payload regression checks passed");
 

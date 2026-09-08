@@ -36,13 +36,13 @@ async function directAdmission() {
     rmSync(file, { recursive: true });
     let claims = 0;
     const worker = Object.create(RuntimeSessionService.prototype) as RuntimeSessionService;
-    Object.assign(worker, { prisma: { panelSyncJob: { findMany: async () => { claims++; return []; } } }, logger: { warn() {} } });
+    Object.assign(worker, { prisma: { leaseRevocationJob: { findMany: async () => { claims++; return []; } } }, logger: { warn() {} } });
     Object.assign(promotionAdmission, { token: "new-generation", file, approved: false });
-    await worker.retryPendingPanelSyncJobs(); assert.equal(claims, 0, "cron cannot claim work before approval");
+    await worker.retryPendingLeaseRevocationJobs(); assert.equal(claims, 0, "cron cannot claim work before approval");
     writeFileSync(file, "new-generation");
     assert.equal((await fetch(url + "/api/business", { method: "POST" })).status, 200);
     assert.equal(mutations, 1);
-    await worker.retryPendingPanelSyncJobs(); assert.equal(claims, 1);
+    await worker.retryPendingLeaseRevocationJobs(); assert.equal(claims, 1);
     assert.equal(new PromotionAdmission("next-generation", file).isApproved(), false, "old token cannot approve a restarted process");
   } finally {
     Object.assign(promotionAdmission, saved);

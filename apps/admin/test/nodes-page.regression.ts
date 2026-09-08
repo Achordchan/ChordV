@@ -125,27 +125,22 @@ function testUserAndSubscriptionPendingPanelSyncUseYellowInlineStatus() {
     );
     assert.match(
       source,
-      /<Button[\s\S]*?color="yellow"[\s\S]*?onOpenPanelSyncQueue/,
-      `${label} page should let admins open the sync queue from pending inline status`
+      /<Button[\s\S]*?color="yellow"[\s\S]*?onOpenLeaseRevocationQueue/,
+      `${label} page should let admins open the lease revocation queue from pending inline status`
     );
   }
 }
 
-function testNodeRefreshAndQueueRetryButtonsExposeScopedBusyState() {
-  assert.match(
-    nodesPageSource,
-    /loading=\{props\.refreshingNodeId === item\.id\}[\s\S]*?disabled=\{props\.refreshingNodeId !== null && props\.refreshingNodeId !== item\.id\}/,
-    "node refresh should only block other node refresh buttons, not leave the whole node page ambiguous"
-  );
-  assert.match(
-    nodesPageSource,
-    /loading=\{props\.panelRetryBusyKey === `job:\$\{job\.id\}`\}[\s\S]*?disabled=\{!retryable \|\| \(props\.panelRetryBusyKey !== null && props\.panelRetryBusyKey !== `job:\$\{job\.id\}`\)\}/,
-    "panel sync retry should show row-scoped busy state and block competing retry clicks"
-  );
+function testLeaseRevocationQueueRetryButtonsExposeScopedBusyState() {
   assert.match(
     nodesPageSource,
     /loading=\{props\.leaseRetryBusyKey === `lease-job:\$\{job\.id\}`\}[\s\S]*?disabled=\{!retryable \|\| \(props\.leaseRetryBusyKey !== null && props\.leaseRetryBusyKey !== `lease-job:\$\{job\.id\}`\)\}/,
     "lease revocation retry should show row-scoped busy state and block competing retry clicks"
+  );
+  assert.match(
+    nodesPageSource,
+    /loading=\{props\.leaseRetryBusyKey === `lease-node:\$\{job\.nodeId\}`\}[\s\S]*?disabled=\{!nodeRetryable \|\| \(props\.leaseRetryBusyKey !== null && props\.leaseRetryBusyKey !== `lease-node:\$\{job\.nodeId\}`\)\}/,
+    "node-level lease revocation retry should show row-scoped busy state and block competing retry clicks"
   );
 }
 
@@ -153,9 +148,6 @@ function testNodeParentActionsAlwaysReleaseBusyState() {
   const expectations = [
     ["handleProbeNode", /finally\s*{[\s\S]*?setProbingNodeId\(null\);[\s\S]*?probingBusyRef\.current = false;[\s\S]*?}/],
     ["handleProbeAllNodes", /finally\s*{[\s\S]*?setProbingAll\(false\);[\s\S]*?probingBusyRef\.current = false;[\s\S]*?}/],
-    ["handleRefreshNode", /finally\s*{[\s\S]*?refreshingNodeRef\.current = null;[\s\S]*?setRefreshingNodeId\(null\);[\s\S]*?}/],
-    ["handleRetryPanelSyncJob", /finally\s*{[\s\S]*?setPanelSyncRetryBusyKey\(null\);[\s\S]*?panelSyncRetryBusyRef\.current = false;[\s\S]*?}/],
-    ["handleRetryNodePanelSyncJobs", /finally\s*{[\s\S]*?setPanelSyncRetryBusyKey\(null\);[\s\S]*?panelSyncRetryBusyRef\.current = false;[\s\S]*?}/],
     ["handleRetryLeaseRevocationJob", /finally\s*{[\s\S]*?setLeaseRevocationRetryBusyKey\(null\);[\s\S]*?leaseRevocationRetryBusyRef\.current = false;[\s\S]*?}/],
     ["handleRetryNodeLeaseRevocationJobs", /finally\s*{[\s\S]*?setLeaseRevocationRetryBusyKey\(null\);[\s\S]*?leaseRevocationRetryBusyRef\.current = false;[\s\S]*?}/],
     ["handleDeleteNode", /finally\s*{[\s\S]*?setDeleteNodeSubmitting\(false\);[\s\S]*?deleteNodeSubmittingRef\.current = false;[\s\S]*?}/]
@@ -174,7 +166,7 @@ testTeamOnlyQueueFilterDoesNotHideLeaseRevocationJobs();
 testSpecificQueueFiltersStillApplyToLeaseRevocationJobs();
 testPendingAndFailedBackgroundJobsAreRetryable();
 testUserAndSubscriptionPendingPanelSyncUseYellowInlineStatus();
-testNodeRefreshAndQueueRetryButtonsExposeScopedBusyState();
+testLeaseRevocationQueueRetryButtonsExposeScopedBusyState();
 testNodeParentActionsAlwaysReleaseBusyState();
 
 console.log("admin nodes page regression checks passed");

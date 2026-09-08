@@ -228,9 +228,9 @@ async function postgresTests() {
     await genericUnavailable(freshReady);
     await pg.query(`ALTER TABLE ${quote(schema)}."User" RENAME COLUMN "renamedPasswordHash" TO "passwordHash"`);
     await freshReady();
-    await pg.query(`ALTER TABLE ${quote(schema)}."Node" DROP COLUMN "panelPassword"`);
+    await pg.query(`ALTER TABLE ${quote(schema)}."Node" DROP COLUMN "name"`);
     await genericUnavailable(freshReady);
-    await pg.query(`ALTER TABLE ${quote(schema)}."Node" ADD COLUMN "panelPassword" TEXT`);
+    await pg.query(`ALTER TABLE ${quote(schema)}."Node" ADD COLUMN "name" TEXT`);
     await pg.query(`DROP TABLE ${quote(schema)}."RefreshToken"`);
     await genericUnavailable(freshReady);
     await pg.query(`CREATE TABLE ${quote(schema)}."RefreshToken" (${models.find((model) => model.name === "RefreshToken")!.fields
@@ -254,3 +254,4 @@ async function postgresTests() {
 
 async function main() { await unitTests(); await readinessCacheTests(); await postgresTests(); }
 void main().catch((error) => { console.error(error); process.exitCode = 1; });
+

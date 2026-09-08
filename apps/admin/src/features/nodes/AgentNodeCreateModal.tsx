@@ -56,7 +56,7 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
         <Stack gap="sm">
           <Alert color="blue" variant="light" p="xs">
             <Text size="xs">
-              创建后将在目标 VPS 上执行一条安装命令完成接入：节点连接参数由 Agent 自动上报，无需填写 3x-ui 面板信息。
+              创建后将在目标 VPS 上执行一条安装命令完成接入：节点连接参数由 Agent 自动上报，无需填写面板信息。
             </Text>
           </Alert>
           <TextInput label="节点名称" required value={name} onChange={(event) => setName(event.currentTarget.value)} />

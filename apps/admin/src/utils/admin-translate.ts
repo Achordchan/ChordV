@@ -3,7 +3,6 @@ import type {
   AdminSubscriptionRecordDto,
   AnnouncementDisplayMode,
   AnnouncementLevel,
-  NodeControlMode,
   SubscriptionState,
   UserRole,
   UserStatus
@@ -61,34 +60,6 @@ export function nodeProbeColor(status: AdminNodeRecordDto["probeStatus"]) {
   if (status === "degraded") return "yellow";
   if (status === "offline") return "red";
   return "gray";
-}
-
-export function translatePanelStatus(status: AdminNodeRecordDto["panelStatus"], panelEnabled = true) {
-  if (status === "online") return "在线";
-  if (status === "degraded") return "异常";
-  if (status === "offline" && panelEnabled) return "面板失联";
-  return "未配置";
-}
-
-export function nodePanelColor(status: AdminNodeRecordDto["panelStatus"], panelEnabled = true) {
-  if (status === "online") return "green";
-  if (status === "degraded") return "yellow";
-  if (status === "offline" && panelEnabled) return "orange";
-  return "gray";
-}
-
-export function translateNodeControlMode(mode: NodeControlMode) {
-  if (mode === "shadow_direct") return "Agent 影子计量";
-  if (mode === "direct_primary") return "Agent 主控";
-  if (mode === "rollback_pending") return "回退处理中";
-  return "3X-UI 主控";
-}
-
-export function nodeControlModeColor(mode: NodeControlMode) {
-  if (mode === "shadow_direct") return "grape";
-  if (mode === "direct_primary") return "green";
-  if (mode === "rollback_pending") return "orange";
-  return "blue";
 }
 
 export function translateAgentStatus(status?: string | null) {

@@ -214,10 +214,7 @@ export class ClientAccessService {
         subscriptionId: access.subscription.id,
         node: {
           isActive: true,
-          OR: [
-            { controlMode: "direct_primary" },
-            { panelEnabled: true, controlMode: { in: ["xui_primary", "shadow_direct"] } }
-          ]
+          controlMode: "direct_primary"
         }
       },
       include: { node: true },
@@ -265,10 +262,7 @@ export class ClientAccessService {
         nodeId: { in: requestedNodeIds },
         node: {
           isActive: true,
-          OR: [
-            { controlMode: "direct_primary" },
-            { panelEnabled: true, controlMode: { in: ["xui_primary", "shadow_direct"] } }
-          ]
+          controlMode: "direct_primary"
         }
       },
       include: { node: true }

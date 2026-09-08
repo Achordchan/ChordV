@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { buildSnapshotKey } from "../common/runtime-session.utils";
-import { createOrRefreshLeaseRevocationJob } from "../common/panel-sync-job.utils";
+import { createOrRefreshLeaseRevocationJob } from "../common/lease-revocation-job.utils";
 import { trafficBytesToGbNumber, trafficGbNumberToBytes } from "../common/traffic-bytes.utils";
 import { AgentUsageBatchDto } from "./agent.dto";
 

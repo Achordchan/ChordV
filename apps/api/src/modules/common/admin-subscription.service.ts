@@ -52,7 +52,6 @@ import { readMemberUsedTrafficGb } from "./member-traffic-usage";
 import { RuntimeSessionService, assertDirectTerminalWatermarksSettled } from "./runtime-session.service";
 import { runWithSubscriptionOwnerLock, runWithSubscriptionUsageLock } from "./usage-lock.utils";
 import { buildSnapshotKey, DEFAULT_MAX_CONCURRENT_SESSIONS } from "./runtime-session.utils";
-import { createOrRefreshPanelSyncJob } from "./panel-sync-job.utils";
 import { trafficGbNumberToBytes } from "./traffic-bytes.utils";
 import { isPrismaCodedError, toPrismaTransientHttpError } from "./prisma-error.utils";
 import {
@@ -71,27 +70,11 @@ import {
 
 const SUBSCRIPTION_FOLLOW_UP_BUDGET_MS = 300;
 const SUBSCRIPTION_DEFERRED_EFFECT_DELAY_MS = 50;
-const PANEL_SYNC_RECENT_ERROR_LIMIT = 1_000;
 const DIRECT_RESET_BOUNDARY_TIMEOUT_MS = 30_000;
 const DIRECT_RESET_BOUNDARY_POLL_MS = 250;
 
 type PanelSyncBestEffortResult = { ok: true } | { ok: false; errorMessage: string };
 type AdminSubscriptionEntity = Parameters<typeof toAdminSubscriptionRecord>[0];
-type PanelSyncSummaryJob = {
-  subscriptionId: string;
-  userId: string | null;
-  teamId: string | null;
-  status: string;
-  lastError: string | null;
-  updatedAt: Date;
-  count?: number;
-};
-type PanelSyncSummary = {
-  pending: number;
-  running: number;
-  failed: number;
-  lastError: string | null;
-};
 type ResetTrafficCountersResult = {
   subscription: AdminSubscriptionEntity;
   targetUserId: string | null;
@@ -193,34 +176,31 @@ export class AdminSubscriptionService {
   }
 
   async listAdminUsers(): Promise<AdminUserRecordDto[]> {
-    const [rows, panelSyncJobs] = await runAdminSubscriptionLocalOperation(
-      () => workLifecycle.all([
-        this.prisma.user.findMany({
-          include: {
-            subscriptions: {
-              include: { plan: true },
-              orderBy: [{ createdAt: "desc" }]
-            },
-            teamMemberships: {
-              include: {
-                team: {
-                  include: {
-                    subscriptions: {
-                      include: { plan: true },
-                      orderBy: [{ createdAt: "desc" }]
-                    }
+    const rows = await runAdminSubscriptionLocalOperation(
+      () => this.prisma.user.findMany({
+        include: {
+          subscriptions: {
+            include: { plan: true },
+            orderBy: { createdAt: "desc" }
+          },
+          teamMemberships: {
+            orderBy: { createdAt: "asc" },
+            include: {
+              team: {
+                include: {
+                  subscriptions: {
+                    include: { plan: true },
+                    orderBy: { createdAt: "desc" }
                   }
                 }
               }
             }
-          },
-          orderBy: { createdAt: "asc" }
-        }),
-        this.listActivePanelSyncJobs()
-      ]),
+          }
+        },
+        orderBy: { createdAt: "asc" }
+      }),
       "用户列表加载失败，请稍后重试。"
     );
-    const panelSyncByUserId = buildPanelSyncSummaryMap(panelSyncJobs, "userId");
 
     return rows.map((row) => {
       const membership = row.teamMemberships[0] ?? null;
@@ -228,7 +208,7 @@ export class AdminSubscriptionService {
         ? pickCurrentSubscription(row.teamMemberships[0]?.team.subscriptions ?? [])
         : pickCurrentSubscription(row.subscriptions);
 
-      return withPanelSyncSummary(toAdminUserRecord(row, {
+      return toAdminUserRecord(row, {
         accountType: membership ? "team" : "personal",
         teamId: membership?.team.id ?? null,
         teamName: membership?.team.name ?? null,
@@ -239,7 +219,7 @@ export class AdminSubscriptionService {
         currentSubscription: currentSubscription
           ? toUserSubscriptionSummary(currentSubscription, membership?.team ?? null)
           : null
-      }), panelSyncByUserId.get(row.id));
+      });
     });
   }
 
@@ -658,23 +638,19 @@ export class AdminSubscriptionService {
   }
 
   async listAdminSubscriptions(): Promise<AdminSubscriptionRecordDto[]> {
-    const [rows, panelSyncJobs] = await runAdminSubscriptionLocalOperation(
-      () => workLifecycle.all([
-        this.prisma.subscription.findMany({
-          include: {
-            plan: true,
-            user: true,
-            team: true,
-            nodeAccesses: true
-          },
-          orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
-        }),
-        this.listActivePanelSyncJobs()
-      ]),
+    const rows = await runAdminSubscriptionLocalOperation(
+      () => this.prisma.subscription.findMany({
+        include: {
+          plan: true,
+          user: true,
+          team: true,
+          nodeAccesses: true
+        },
+        orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
+      }),
       "订阅列表加载失败，请稍后重试。"
     );
-    const panelSyncBySubscriptionId = buildPanelSyncSummaryMap(panelSyncJobs, "subscriptionId");
-    return rows.map((row) => withPanelSyncSummary(toAdminSubscriptionRecord(row), panelSyncBySubscriptionId.get(row.id)));
+    return rows.map((row) => toAdminSubscriptionRecord(row));
   }
 
   async createSubscription(input: CreateSubscriptionInputDto): Promise<AdminSubscriptionRecordDto> {
@@ -751,7 +727,7 @@ export class AdminSubscriptionService {
           "当前账号已切换为个人订阅，原 Team 工单已失效。如需继续咨询，请在当前个人订阅下重新创建工单。"
         )
       ),
-      await this.syncSubscriptionPanelAccessBestEffort(row.id)
+      await this.syncSubscriptionAccessBestEffort(row.id)
     );
     await this.publishSubscriptionUpdatedEvent({
       subscriptionId: row.id,
@@ -829,7 +805,7 @@ export class AdminSubscriptionService {
         this.syncActiveLeasesForSubscriptionBestEffort(row)
       ),
       this.startPanelSyncResultFollowUpInBackground(`subscription panel access sync after renew for ${subscriptionId}`, () =>
-        this.syncSubscriptionPanelAccessBestEffort(subscriptionId)
+        this.syncSubscriptionAccessBestEffort(subscriptionId)
       )
     );
     await this.publishSubscriptionUpdatedEvent({
@@ -909,7 +885,7 @@ export class AdminSubscriptionService {
         this.syncActiveLeasesForSubscriptionBestEffort(row)
       ),
       this.startPanelSyncResultFollowUpInBackground(`subscription panel access sync after plan change for ${subscriptionId}`, () =>
-        this.syncSubscriptionPanelAccessBestEffort(subscriptionId)
+        this.syncSubscriptionAccessBestEffort(subscriptionId)
       )
     );
     await this.publishSubscriptionUpdatedEvent({
@@ -980,7 +956,7 @@ export class AdminSubscriptionService {
         this.syncActiveLeasesForSubscriptionBestEffort(row)
       ),
       this.startPanelSyncResultFollowUpInBackground(`subscription panel access sync after update for ${subscriptionId}`, () =>
-        this.syncSubscriptionPanelAccessBestEffort(subscriptionId)
+        this.syncSubscriptionAccessBestEffort(subscriptionId)
       )
     );
     await this.publishSubscriptionUpdatedEvent({
@@ -1068,7 +1044,7 @@ export class AdminSubscriptionService {
     teamPanelSync = mergePanelSyncResults(
       teamPanelSync,
       this.startSubscriptionFollowUpInBackground(`team panel sync after personal conversion for ${teamSubscription.id}`, async () => {
-        const result = await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id);
+        const result = await this.syncSubscriptionAccessBestEffort(teamSubscription.id);
         if (!result.ok) {
           throw new Error(result.errorMessage);
         }
@@ -1122,32 +1098,28 @@ export class AdminSubscriptionService {
   }
 
   async listAdminTeams(): Promise<AdminTeamRecordDto[]> {
-    const [teams, panelSyncJobs] = await runAdminSubscriptionLocalOperation(
-      () => workLifecycle.all([
-        this.prisma.team.findMany({
-          include: {
-            owner: true,
-            members: {
-              include: { user: true },
-              orderBy: { createdAt: "asc" }
-            },
-            subscriptions: {
-              include: { plan: true },
-              orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
-            }
+    const teams = await runAdminSubscriptionLocalOperation(
+      () => this.prisma.team.findMany({
+        include: {
+          owner: true,
+          members: {
+            include: { user: true },
+            orderBy: { createdAt: "asc" }
           },
-          orderBy: { createdAt: "asc" }
-        }),
-        this.listActivePanelSyncJobs()
-      ]),
+          subscriptions: {
+            include: { plan: true },
+            orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
+          }
+        },
+        orderBy: { createdAt: "asc" }
+      }),
       "Team 列表加载失败，请稍后重试。"
     );
-    const panelSyncByTeamId = buildPanelSyncSummaryMap(panelSyncJobs, "teamId");
     return teams.map((team) =>
-      withPanelSyncSummary(toAdminTeamRecord({
+      toAdminTeamRecord({
         ...team,
         trafficLedgerEntries: []
-      }), panelSyncByTeamId.get(team.id))
+      })
     );
   }
 
@@ -1220,59 +1192,6 @@ export class AdminSubscriptionService {
     }
 
     return result;
-  }
-
-  private async listActivePanelSyncJobs(): Promise<PanelSyncSummaryJob[]> {
-    try {
-      const [counts, recentFailedJobs] = await workLifecycle.all([
-        this.prisma.panelSyncJob.groupBy({
-          by: ["subscriptionId", "userId", "teamId", "status"],
-          where: {
-            status: { in: ["pending", "running", "failed"] }
-          },
-          _count: { _all: true }
-        }),
-        this.prisma.panelSyncJob.findMany({
-          where: {
-            status: "failed",
-            lastError: { not: null }
-          },
-          select: {
-            subscriptionId: true,
-            userId: true,
-            teamId: true,
-            status: true,
-            lastError: true,
-            updatedAt: true
-          },
-          orderBy: [{ updatedAt: "desc" }],
-          take: PANEL_SYNC_RECENT_ERROR_LIMIT
-        })
-      ]);
-      return [
-        ...counts.map((row) => ({
-          subscriptionId: row.subscriptionId,
-          userId: row.userId,
-          teamId: row.teamId,
-          status: row.status,
-          lastError: null,
-          updatedAt: new Date(0),
-          count: row._count._all
-        })),
-        ...recentFailedJobs.map((row) => ({
-          subscriptionId: row.subscriptionId,
-          userId: row.userId,
-          teamId: row.teamId,
-          status: row.status,
-          lastError: row.lastError,
-          updatedAt: row.updatedAt,
-          count: 0
-        }))
-      ];
-    } catch (error) {
-      this.logger.warn(`Panel sync summary unavailable: ${error instanceof Error ? error.message : String(error)}`);
-      return [];
-    }
   }
 
   async createTeam(input: CreateTeamInputDto): Promise<AdminTeamRecordDto> {
@@ -1427,7 +1346,7 @@ export class AdminSubscriptionService {
         if (teamSubscriptionLookup.subscription) {
           panelSync = mergePanelSyncResults(
             panelSync,
-            await this.syncSubscriptionPanelAccessBestEffort(teamSubscriptionLookup.subscription.id)
+            await this.syncSubscriptionAccessBestEffort(teamSubscriptionLookup.subscription.id)
           );
         }
       }
@@ -1454,7 +1373,7 @@ export class AdminSubscriptionService {
           panelSync = mergePanelSyncResults(
             panelSync,
             this.startPanelSyncResultFollowUpInBackground(`subscription panel access sync after team owner update for ${teamSubscription.id}`, () =>
-              this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id)
+              this.syncSubscriptionAccessBestEffort(teamSubscription.id)
             )
           );
         }
@@ -1535,7 +1454,7 @@ export class AdminSubscriptionService {
     if (subscription) {
       panelSync = mergePanelSyncResults(
         panelSync,
-        await this.syncSubscriptionPanelAccessBestEffort(subscription.id)
+        await this.syncSubscriptionAccessBestEffort(subscription.id)
       );
       await this.publishSubscriptionUpdatedEvent({
         subscriptionId: subscription.id,
@@ -1601,7 +1520,7 @@ export class AdminSubscriptionService {
         panelSync = mergePanelSyncResults(
           panelSync,
           this.startPanelSyncResultFollowUpInBackground(`subscription panel access sync after owner transfer for ${subscription.id}`, () =>
-            this.syncSubscriptionPanelAccessBestEffort(subscription.id)
+            this.syncSubscriptionAccessBestEffort(subscription.id)
           )
         );
         await this.publishSubscriptionUpdatedEvent({
@@ -1771,7 +1690,7 @@ export class AdminSubscriptionService {
       throw toAdminLocalSaveHttpError(error, "Team 订阅保存失败，请刷新订阅列表后重试。");
     }
 
-    const panelSync = await this.syncSubscriptionPanelAccessBestEffort(row.id);
+    const panelSync = await this.syncSubscriptionAccessBestEffort(row.id);
     await this.publishSubscriptionUpdatedEvent({
       subscriptionId: row.id,
       userId: row.userId,
@@ -1840,8 +1759,6 @@ export class AdminSubscriptionService {
     let clearedBindingCount = 0;
     let updatedSubscription: AdminSubscriptionEntity | null = null;
     let panelSync: PanelSyncBestEffortResult = { ok: true };
-    let panelResetBindings: any[] = [];
-    let panelResetQueuedAt: Date | null = null;
 
     await runWithSubscriptionUsageLock(subscription.id, async () => {
       const resetSampledAt = new Date();
@@ -1864,7 +1781,6 @@ export class AdminSubscriptionService {
               await assertDirectTerminalWatermarksSettled(tx, binding);
             }
           }
-          panelResetBindings = bindings.filter((binding: any) => binding.source !== "direct");
           const baselineSamples = bindings.map((binding: any) => ({
             binding,
             uplinkBytes: binding.source === "direct" ? binding.lastUplinkBytes : 0n,
@@ -1913,14 +1829,7 @@ export class AdminSubscriptionService {
             }
           }
 
-          panelResetQueuedAt = resetSampledAt;
-          panelSync =
-            panelResetBindings.length > 0
-              ? {
-                  ok: false,
-                  errorMessage: "3x-ui traffic reset queued for background retry; local counters are already reset"
-                }
-              : { ok: true };
+          panelSync = { ok: true };
 
           const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
           return tx.subscription.update({
@@ -1955,19 +1864,6 @@ export class AdminSubscriptionService {
 
     if (!updatedSubscription) {
       throw new NotFoundException("订阅不存在");
-    }
-    if (panelResetBindings.length > 0 && panelResetQueuedAt) {
-      panelSync = mergePanelSyncResults(
-        panelSync,
-        await this.withSubscriptionFollowUpBudget<PanelSyncBestEffortResult>(
-          `3x-ui traffic reset queueing for ${subscription.id}`,
-          {
-            ok: false,
-            errorMessage: "3x-ui traffic reset queueing is still running in background; local counters are already reset"
-          },
-          () => this.queuePanelTrafficResetJobsBestEffort(panelResetBindings, panelResetQueuedAt as Date)
-        )
-      );
     }
     return {
       subscription: updatedSubscription,
@@ -2041,80 +1937,6 @@ export class AdminSubscriptionService {
       return;
     }
     await this.prisma.$transaction(writeSamples);
-  }
-
-  private async queuePanelTrafficResetJobsTx(writer: any, bindings: any[], panelResetQueuedAt: Date) {
-    if (bindings.length === 0) {
-      return;
-    }
-
-    for (const binding of bindings) {
-      const snapshot = binding.node ?? {};
-      const dedupeKey = `reset:${binding.id}`;
-      await createOrRefreshPanelSyncJob(writer, dedupeKey, {
-        create: {
-          id: randomUUID(),
-          dedupeKey,
-          action: "reset_client_traffic",
-          bindingId: binding.id,
-          subscriptionId: binding.subscriptionId,
-          userId: binding.userId,
-          teamId: binding.teamId,
-          nodeId: binding.nodeId,
-          panelClientEmail: binding.panelClientEmail,
-          panelClientId: binding.panelClientId,
-          panelInboundId: binding.panelInboundId,
-          panelBaseUrl: snapshot.panelBaseUrl ?? null,
-          panelApiBasePath: snapshot.panelApiBasePath ?? null,
-          panelUsername: snapshot.panelUsername ?? null,
-          panelPassword: snapshot.panelPassword ?? null,
-          status: "pending",
-          nextRunAt: panelResetQueuedAt
-        },
-        update: {
-          status: "pending",
-          nextRunAt: panelResetQueuedAt,
-          lockedAt: null,
-          completedAt: null,
-          attempts: 0,
-          lastError: null,
-          subscriptionId: binding.subscriptionId,
-          userId: binding.userId,
-          teamId: binding.teamId,
-          nodeId: binding.nodeId,
-          panelClientEmail: binding.panelClientEmail,
-          panelClientId: binding.panelClientId,
-          panelInboundId: binding.panelInboundId,
-          panelBaseUrl: snapshot.panelBaseUrl ?? null,
-          panelApiBasePath: snapshot.panelApiBasePath ?? null,
-          panelUsername: snapshot.panelUsername ?? null,
-          panelPassword: snapshot.panelPassword ?? null
-        }
-      });
-    }
-    this.publishSyncQueueUpdatedBestEffort({
-      nodeId: bindings.length === 1 ? bindings[0]?.nodeId : null,
-      subscriptionId: bindings[0]?.subscriptionId ?? null
-    });
-  }
-
-  private async queuePanelTrafficResetJobsBestEffort(bindings: any[], panelResetQueuedAt: Date): Promise<PanelSyncBestEffortResult> {
-    try {
-      await this.queuePanelTrafficResetJobsTx(this.prisma, bindings, panelResetQueuedAt);
-      return bindings.length > 0
-        ? {
-            ok: false,
-            errorMessage: "3x-ui traffic reset queued for background retry; local counters are already reset"
-          }
-        : { ok: true };
-    } catch (error) {
-      const errorMessage = readErrorMessage(error, "unknown error");
-      this.logger?.warn(`Traffic reset saved locally, but panel reset job queueing failed: ${errorMessage}`);
-      return {
-        ok: false,
-        errorMessage: `3x-ui traffic reset queueing failed after local reset was saved: ${errorMessage}`
-      };
-    }
   }
 
   private async resolveTargetUserIdsForSubscriptionTarget(target: {
@@ -2282,7 +2104,7 @@ export class AdminSubscriptionService {
         try {
           const subscriptionIds = await this.findCurrentSubscriptionIdsForUser(userId);
           const syncResults = await workLifecycle.all(
-            subscriptionIds.map((subscriptionId) => this.syncSubscriptionPanelAccessBestEffort(subscriptionId))
+            subscriptionIds.map((subscriptionId) => this.syncSubscriptionAccessBestEffort(subscriptionId))
           );
           return mergePanelSyncResults(...syncResults);
         } catch (error) {
@@ -2323,7 +2145,7 @@ export class AdminSubscriptionService {
                 this.queueSubscriptionDisconnectBestEffort(subscriptionId, "user_disabled", { userId })
               )
             )
-          : await workLifecycle.all(subscriptionIds.map((subscriptionId) => this.syncSubscriptionPanelAccessBestEffort(subscriptionId)));
+          : await workLifecycle.all(subscriptionIds.map((subscriptionId) => this.syncSubscriptionAccessBestEffort(subscriptionId)));
       let panelSync: PanelSyncBestEffortResult = { ok: true };
       for (const result of syncResults) {
         panelSync = mergePanelSyncResults(panelSync, result);
@@ -2383,7 +2205,7 @@ export class AdminSubscriptionService {
       const panelSync =
         status === "disabled"
           ? await this.queueSubscriptionDisconnectBestEffort(subscription.id, "team_disabled")
-          : await this.syncSubscriptionPanelAccessBestEffort(subscription.id);
+          : await this.syncSubscriptionAccessBestEffort(subscription.id);
       if (!panelSync.ok) {
         this.logger?.warn(`Team status panel follow-up for ${teamId} is pending: ${panelSync.errorMessage}`);
       }
@@ -2770,26 +2592,26 @@ export class AdminSubscriptionService {
     return DEFAULT_MAX_CONCURRENT_SESSIONS;
   }
 
-  private async syncSubscriptionPanelAccessBestEffort(subscriptionId: string) {
+  private async syncSubscriptionAccessBestEffort(subscriptionId: string) {
     return this.withSubscriptionFollowUpBudget(
-      `subscription panel access sync for ${subscriptionId}`,
+      `subscription access sync for ${subscriptionId}`,
       {
         ok: false as const,
-        errorMessage: "3x-ui panel sync is still running in background"
+        errorMessage: "节点用户同步仍在后台执行"
       },
       async () => {
     try {
-      const queuedCount = await this.runtimeSessionService.queueSubscriptionPanelAccessSync(subscriptionId);
+      const queuedCount = await this.runtimeSessionService.queueDirectSubscriptionAccessSync(subscriptionId);
       return queuedCount > 0
         ? {
             ok: false as const,
-            errorMessage: "3x-ui panel sync queued for background retry"
+            errorMessage: "节点用户同步已进入后台队列"
           }
         : { ok: true as const };
     } catch (error) {
       return {
         ok: false as const,
-        errorMessage: readErrorMessage(error, "3x-ui panel sync failed")
+        errorMessage: readErrorMessage(error, "节点用户同步失败")
       };
     }
       }
@@ -3425,64 +3247,6 @@ function mergePanelSyncResults(...results: PanelSyncBestEffortResult[]): PanelSy
   return {
     ok: false,
     errorMessage: failed.map((item) => item.errorMessage).join("; ")
-  };
-}
-
-function buildPanelSyncSummaryMap(
-  jobs: PanelSyncSummaryJob[],
-  key: "subscriptionId" | "userId" | "teamId"
-) {
-  const result = new Map<string, PanelSyncSummary>();
-  for (const job of jobs) {
-    const id = job[key];
-    if (!id) {
-      continue;
-    }
-    const summary = result.get(id) ?? { pending: 0, running: 0, failed: 0, lastError: null };
-    const count = job.count ?? 1;
-    if (job.status === "failed") {
-      summary.failed += count;
-    } else if (job.status === "running") {
-      summary.running += count;
-    } else {
-      summary.pending += count;
-    }
-    summary.lastError = summary.lastError ?? job.lastError;
-    result.set(id, summary);
-  }
-  return result;
-}
-
-function withPanelSyncSummary<T extends object>(record: T, summary?: PanelSyncSummary) {
-  if (!summary) {
-    return record;
-  }
-  const total = summary.pending + summary.running + summary.failed;
-  if (total === 0) {
-    return record;
-  }
-  const parts = [
-    summary.pending > 0 ? `待同步 ${summary.pending}` : null,
-    summary.running > 0 ? `执行中 ${summary.running}` : null,
-    summary.failed > 0 ? `失败 ${summary.failed}` : null
-  ].filter(Boolean);
-  const message = [
-    `存在 ${total} 个面板同步任务：${parts.join("，")}`,
-    summary.lastError ? `最近错误：${summary.lastError}` : null
-  ]
-    .filter(Boolean)
-    .join("；");
-  return {
-    ...record,
-    panelSyncStatus: "pending" as const,
-    panelSyncMessage: message,
-    panelSyncSummary: {
-      pending: summary.pending,
-      running: summary.running,
-      failed: summary.failed,
-      total,
-      lastError: summary.lastError
-    }
   };
 }
 

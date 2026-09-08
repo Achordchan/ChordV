@@ -62,11 +62,6 @@ enum MeteringIncidentStatus {
   resolved
 }
 
-enum XuiPanelStatus {
-  online
-  offline
-  degraded
-}
 
 enum NodeControlMode {
   xui_primary
@@ -291,7 +286,6 @@ model User {
   sessionLeases        NodeSessionLease[]
   securityEvents       SecurityEvent[]
   panelClientBindings  PanelClientBinding[]
-  panelSyncJobs        PanelSyncJob[]
   routingRules         ClientRoutingRule[]
   supportTickets       SupportTicket[]
   supportTicketMessages SupportTicketMessage[] @relation("SupportTicketMessageAuthor")
@@ -355,7 +349,6 @@ model Subscription {
   sessionLeases      NodeSessionLease[]
   securityEvents     SecurityEvent[]
   panelClientBindings PanelClientBinding[]
-  panelSyncJobs      PanelSyncJob[]
   supportTickets     SupportTicket[]
 }
 
@@ -372,7 +365,6 @@ model Team {
   trafficLedgerEntries TrafficLedger[]
   trafficSnapshots TrafficSnapshot[]
   panelClientBindings PanelClientBinding[]
-  panelSyncJobs     PanelSyncJob[]
   supportTickets  SupportTicket[]
 }
 
@@ -438,16 +430,11 @@ model Node {
   probeLatencyMs   Int?
   probeCheckedAt   DateTime?
   probeError       String?
-  panelBaseUrl     String?
-  panelApiBasePath String?         @default("/")
-  panelUsername    String?
-  panelPassword    String?
-  panelInboundId   Int?
-  panelEnabled     Boolean         @default(false)
-  panelStatus      XuiPanelStatus  @default(offline)
-  panelLastSyncedAt DateTime?
-  panelError       String?
-  controlMode      NodeControlMode @default(xui_primary)
+  // Direct metering is the only control mode since the 3X-UI retirement; the
+  // column stays because the agent protocol still carries it (snapshots and
+  // RECONCILE_USERS commands), and legacy enum values remain valid on the
+  // agent side.
+  controlMode      NodeControlMode @default(direct_primary)
   controlStatus    String          @default("unknown")
   // Agent-native registration lifecycle: pending_register (created, waiting for
   // the install command to be run) -> agent_ready (agent registered and holds
@@ -467,7 +454,6 @@ model Node {
   sessionLeases     NodeSessionLease[]
   securityEvents    SecurityEvent[]
   panelClientBindings PanelClientBinding[]
-  panelSyncJobs     PanelSyncJob[]
   nodeAgents        NodeAgent[]
   registerTokens    AgentRegisterToken[]
   nodeCommandJobs   NodeCommandJob[]
@@ -625,7 +611,6 @@ model PanelClientBinding {
   user             User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
   team             Team?        @relation(fields: [teamId], references: [id], onDelete: Cascade)
   node             Node         @relation(fields: [nodeId], references: [id], onDelete: Cascade)
-  panelSyncJobs    PanelSyncJob[]
 
   @@unique([subscriptionId, userId, nodeId])
   @@index([subscriptionId, nodeId, status])
@@ -703,40 +688,6 @@ model NodeUsageBatch {
   @@index([nodeId, accountedAt, sampledAt])
 }
 
-model PanelSyncJob {
-  id               String             @id
-  dedupeKey        String             @unique
-  action           String
-  bindingId        String
-  subscriptionId   String
-  userId           String?
-  teamId           String?
-  nodeId           String
-  panelClientEmail String
-  panelClientId    String
-  panelInboundId   Int
-  panelBaseUrl     String?
-  panelApiBasePath String?
-  panelUsername    String?
-  panelPassword    String?
-  status           String             @default("pending")
-  attempts         Int                @default(0)
-  nextRunAt        DateTime           @default(now())
-  lockedAt         DateTime?
-  lastError        String?
-  completedAt      DateTime?
-  createdAt        DateTime           @default(now())
-  updatedAt        DateTime           @updatedAt
-  binding          PanelClientBinding @relation(fields: [bindingId], references: [id], onDelete: Cascade)
-  subscription     Subscription       @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
-  user             User?              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  team             Team?              @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  node             Node               @relation(fields: [nodeId], references: [id], onDelete: Cascade)
-
-  @@index([status, nextRunAt])
-  @@index([nodeId, status, nextRunAt])
-  @@index([subscriptionId, status])
-}
 
 model LeaseRevocationJob {
   id             String    @id

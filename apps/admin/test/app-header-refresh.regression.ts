@@ -79,7 +79,6 @@ const handleHeaderRefreshBody = extractFunctionBody("handleHeaderRefresh");
 const loadInitialAdminDataBody = extractFunctionBody("loadInitialAdminData");
 const loadFullSnapshotBody = extractFunctionBody("loadFullSnapshot");
 const loadSectionDataBody = extractFunctionBody("loadSectionData");
-const refreshPanelSyncJobsAfterPendingBody = extractFunctionBody("refreshPanelSyncJobsAfterPending");
 const refreshLeaseRevocationJobsAfterPendingBody = extractFunctionBody("refreshLeaseRevocationJobsAfterPending");
 const submitDrawerBody = extractFunctionBody("submitDrawer");
 const saveNodeAccessEditorBody = extractFunctionBody("saveNodeAccessEditor");
@@ -256,8 +255,6 @@ function testQueueLoadsDoNotBlockMainSectionData() {
   assert.match(secondaryBody, /targetSection === "users" \|\| targetSection === "subscriptions"/);
   assert.match(secondaryBody, /settleAdminLoad\(fetchAdminLeaseRevocationJobs\(\)\)/);
   assert.match(secondaryBody, /mergeSnapshot\(\{ leaseRevocationJobs: leaseRevocationJobsResult\.value \}\)/);
-  assert.match(secondaryBody, /settleAdminLoad\(fetchAdminPanelSyncJobs\(\)\)/);
-  assert.match(secondaryBody, /panelSyncJobsResult\.ok \? \{ panelSyncJobs: panelSyncJobsResult\.value \} : \{\}/);
   assert.match(secondaryBody, /leaseRevocationJobsResult\.ok \? \{ leaseRevocationJobs: leaseRevocationJobsResult\.value \} : \{\}/);
 }
 
@@ -286,11 +283,6 @@ function testSectionLoadingOwnershipSurvivesSilentRefresh() {
 }
 
 function testPendingQueueRefreshKeepsNodeRefreshOnQueueFailure() {
-  assert.match(refreshPanelSyncJobsAfterPendingBody, /fetchAdminNodes\(\)\.then\(/);
-  assert.match(refreshPanelSyncJobsAfterPendingBody, /fetchAdminPanelSyncJobs\(\)\.then\(/);
-  assert.match(refreshPanelSyncJobsAfterPendingBody, /fetchAdminLeaseRevocationJobs\(\)\.then\(/);
-  assert.match(refreshPanelSyncJobsAfterPendingBody, /mergeSnapshot\(\{[\s\S]*?nodesResult\.ok[\s\S]*?panelSyncJobsResult\.ok[\s\S]*?leaseRevocationJobsResult\.ok[\s\S]*?\}\);/);
-
   assert.match(refreshLeaseRevocationJobsAfterPendingBody, /fetchAdminNodes\(\)\.then\(/);
   assert.match(refreshLeaseRevocationJobsAfterPendingBody, /fetchAdminLeaseRevocationJobs\(\)\.then\(/);
   assert.match(refreshLeaseRevocationJobsAfterPendingBody, /mergeSnapshot\(\{[\s\S]*?nodesResult\.ok[\s\S]*?leaseRevocationJobsResult\.ok[\s\S]*?\}\);/);
@@ -368,8 +360,6 @@ function testSessionExpiredClearsBusyRefs() {
     "convertSubmittingRef",
     "entityActionBusyRef",
     "probingBusyRef",
-    "refreshingNodeRef",
-    "panelSyncRetryBusyRef",
     "leaseRevocationRetryBusyRef",
     "policySavingRef",
     "nodeAccessSavingRef",
@@ -394,45 +384,35 @@ function testSubscriptionCreateRequiresExpireAtBeforeRequest() {
   assert.match(teamBranch, /buildCreateTeamSubscriptionPayload\(teamSubscriptionForm, expireAt\)/);
 }
 
-function testNodeAccessPendingSaveUsesYellowCompletedNotification() {
+function testNodeAccessSaveUsesGreenCompletedNotification() {
   assert.match(
     saveNodeAccessEditorBody,
-    /const panelSyncPending = result\.panelSyncStatus === "pending";/,
-    "node access save should detect backend pending panel sync status"
+    /updateSubscriptionNodeAccess\(nodeAccessEditor\.subscriptionId,\s*\{\s*nodeIds\s*}\)/,
+    "node access save should send the sanitized nodeIds array directly to the backend"
   );
   assert.match(
     saveNodeAccessEditorBody,
-    /color: panelSyncPending \? "yellow" : "green"/,
-    "node access save should show pending panel sync as yellow instead of red failure"
+    /color: "green",[\s\S]*?title: "操作成功",/,
+    "node access save is a local save and should complete green"
   );
   assert.match(
     saveNodeAccessEditorBody,
-    /title: panelSyncPending \? "已保存，后台同步待处理" : "操作成功"/,
-    "node access pending save should be treated as completed with background sync pending"
-  );
-  assert.match(
-    saveNodeAccessEditorBody,
-    /if \(panelSyncPending\) {[\s\S]*?refreshPanelSyncJobsAfterPending\(\)/,
-    "node access pending save should refresh the sync queue"
+    /summarizeAdminDiagnosticMessage\(result\.message, "节点授权已保存。"\)/,
+    "node access save should surface the backend success message"
   );
 }
 
-function testNodeAccessOptionsAllowOfflineAndPendingNodes() {
+function testNodeAccessOptionsShowNodeProfile() {
   const nodeOptionsBlock = extractBlockAfter("const nodeOptions = useMemo");
   assert.doesNotMatch(
     nodeOptionsBlock,
     /disabled:/,
-    "node access options should not disable offline or pending-sync nodes"
+    "node access options should not disable offline or pending nodes"
   );
   assert.match(
     source,
-    /function buildNodeAccessOptionLabel\(node: AdminNodeRecordDto\) {[\s\S]*?translateNodeAccessPanelStatus\(node\)[\s\S]*?node\.panelSyncPendingCount \? `待同步 \$\{node\.panelSyncPendingCount\}` : null[\s\S]*?node\.panelSyncFailedCount \? `失败 \$\{node\.panelSyncFailedCount\}` : null/,
-    "node access options should display offline and pending-sync information in labels"
-  );
-  assert.match(
-    source,
-    /if \(!node\.panelEnabled\) {[\s\S]*?return "面板停用";[\s\S]*?if \(node\.panelStatus === "offline"\) {[\s\S]*?return "离线";/,
-    "node access option labels should expose offline panel state without blocking save"
+    /function buildNodeAccessOptionLabel\(node: AdminNodeRecordDto\) \{\s*return `\$\{node\.name\} · \$\{node\.region\} · \$\{node\.provider\}`;\s*\}/,
+    "node access option labels should show the node profile summary"
   );
 }
 
@@ -444,7 +424,7 @@ function testNodeAccessClearSavesEmptyNodeIdsPayload() {
   );
   assert.match(
     saveNodeAccessEditorBody,
-    /updateSubscriptionNodeAccess\(nodeAccessEditor\.subscriptionId,\s*{\s*nodeIds\s*}\)/,
+    /updateSubscriptionNodeAccess\(nodeAccessEditor\.subscriptionId,\s*\{\s*nodeIds\s*}\)/,
     "node access save should send the sanitized nodeIds array directly to the backend"
   );
   assert.match(
@@ -533,8 +513,8 @@ testGenericAdminRuntimeEventsRefreshCurrentSection();
 testSignalBackedSectionsRefreshSilentlyThroughSignals();
 testSessionExpiredClearsBusyRefs();
 testSubscriptionCreateRequiresExpireAtBeforeRequest();
-testNodeAccessPendingSaveUsesYellowCompletedNotification();
-testNodeAccessOptionsAllowOfflineAndPendingNodes();
+testNodeAccessSaveUsesGreenCompletedNotification();
+testNodeAccessOptionsShowNodeProfile();
 testNodeAccessClearSavesEmptyNodeIdsPayload();
 testUserSubscriptionAndTeamMutationsUseDbFirstActionHandling();
 testInlineAndDestructiveMutationsUseDbFirstActionHandling();

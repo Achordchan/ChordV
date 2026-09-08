@@ -83,7 +83,6 @@ export type TeamSubscriptionFormState = {
 };
 
 export type NodeFormState = {
-  subscriptionUrl: string;
   name: string;
   countryCode: string;
   region: string;
@@ -91,12 +90,6 @@ export type NodeFormState = {
   tags: string;
   isActive: boolean;
   recommended: boolean;
-  panelBaseUrl: string;
-  panelApiBasePath: string;
-  panelUsername: string;
-  panelPassword: string;
-  panelInboundId: number;
-  panelEnabled: boolean;
 };
 
 export type AnnouncementFormState = {
@@ -239,20 +232,13 @@ export function emptyTeamSubscriptionForm(): TeamSubscriptionFormState {
 
 export function emptyNodeForm(): NodeFormState {
   return {
-    subscriptionUrl: "",
     name: "",
     countryCode: "",
     region: "",
     provider: "自有节点",
     tags: "",
     isActive: true,
-    recommended: true,
-    panelBaseUrl: "",
-    panelApiBasePath: "/",
-    panelUsername: "",
-    panelPassword: "",
-    panelInboundId: 1,
-    panelEnabled: false
+    recommended: true
   };
 }
 

@@ -26,8 +26,6 @@ import { notifications } from "@mantine/notifications";
 import type {
   AdminAnnouncementRecordDto,
   AdminNodeRecordDto,
-  AdminNodePanelInboundDto,
-  AdminPanelSyncJobDto,
   AdminPlanRecordDto,
   AdminPolicyRecordDto,
   AdminSecurityUpdateResultDto,
@@ -47,7 +45,6 @@ import type {
   DashboardSnapshotDto,
   PlanScope,
   RenewSubscriptionInputDto,
-  SwitchNodeControlModeInputDto,
   UpdateAnnouncementInputDto,
   UpdatePlanInputDto,
   UpdatePolicyInputDto,
@@ -98,29 +95,22 @@ import {
   fetchAdminDashboard,
   fetchAdminLeaseRevocationJobs,
   fetchAdminNodes,
-  fetchAdminPanelSyncJobs,
   fetchAdminPlans,
   fetchAdminPolicy,
   fetchAdminSubscriptions,
   fetchAdminTeams,
   fetchAdminUsers,
-  fetchNodePanelInbounds,
   getAdminProfile,
   getTeamUsage,
   getSubscriptionNodeAccess,
-  importNode,
   kickTeamMember,
   probeAllNodes,
   probeNode,
-  refreshNode,
   resetSubscriptionTraffic,
   renewSubscription,
   retryAdminLeaseRevocationJob,
   retryAdminLeaseRevocationJobsForNode,
-  retryAdminPanelSyncJob,
-  retryAdminPanelSyncJobsForNode,
   subscribeAdminRuntimeEvents,
-  switchNodeControlMode,
   updateAnnouncement,
   updateNode,
   updatePlan,
@@ -148,7 +138,7 @@ import { CustomerSubscriptionsPage } from "./pages/CustomerSubscriptionsPage";
 import { ImageBedPage } from "./pages/ImageBedPage";
 import { NodesPage, PanelSyncQueueDrawer } from "./pages/NodesPage";
 import { AgentNodeCreateModal } from "./features/nodes/AgentNodeCreateModal";
-import type { PanelSyncQueueFilter } from "./utils/admin-queue-filters";
+import type { LeaseRevocationQueueFilter } from "./utils/admin-queue-filters";
 import { OverviewPage } from "./pages/OverviewPage";
 import { PlansPage } from "./pages/PlansPage";
 import { PoliciesPage } from "./pages/PoliciesPage";
@@ -199,7 +189,7 @@ import {
   summarizeAdminDiagnosticMessage
 } from "./utils/admin-filters";
 import { addDays, formatDateTime, formatTrafficGb, fromDateTimeLocal, toDateTimeLocal } from "./utils/admin-format";
-import { buildImportNodePayload, buildUpdateNodePayload } from "./utils/admin-node-payloads";
+import { buildUpdateNodePayload } from "./utils/admin-node-payloads";
 import {
   getRenewActionDescription,
   subscriptionStateColor,
@@ -266,9 +256,9 @@ type AdminSecurityFormState = {
   confirmPassword: string;
 };
 
-type PanelSyncQueueState = {
+type LeaseRevocationQueueState = {
   opened: boolean;
-  filter: PanelSyncQueueFilter | null;
+  filter: LeaseRevocationQueueFilter | null;
 };
 
 const sectionMeta: Record<SectionKey, { label: string; icon: ReactNode }> = {
@@ -433,10 +423,6 @@ export function App() {
   const [agentNodeResumeId, setAgentNodeResumeId] = useState<string | null>(null);
   const [probingAll, setProbingAll] = useState(false);
   const probingBusyRef = useRef(false);
-  const [refreshingNodeId, setRefreshingNodeId] = useState<string | null>(null);
-  const refreshingNodeRef = useRef<string | null>(null);
-  const [panelSyncRetryBusyKey, setPanelSyncRetryBusyKey] = useState<string | null>(null);
-  const panelSyncRetryBusyRef = useRef(false);
   const [leaseRevocationRetryBusyKey, setLeaseRevocationRetryBusyKey] = useState<string | null>(null);
   const leaseRevocationRetryBusyRef = useRef(false);
   const dashboardRefreshSeqRef = useRef(0);
@@ -468,16 +454,14 @@ export function App() {
   const [nodeAccessSaving, setNodeAccessSaving] = useState(false);
   const nodeAccessSavingRef = useRef(false);
   const nodeAccessRequestSeqRef = useRef(0);
-  const [nodePanelInbounds, setNodePanelInbounds] = useState<AdminNodePanelInboundDto[]>([]);
-  const [nodePanelInboundsLoading, setNodePanelInboundsLoading] = useState(false);
-  const [panelSyncQueue, setPanelSyncQueue] = useState<PanelSyncQueueState>({ opened: false, filter: null });
+  const [leaseRevocationQueue, setLeaseRevocationQueue] = useState<LeaseRevocationQueueState>({ opened: false, filter: null });
 
-  const openPanelSyncQueue = (filter?: PanelSyncQueueFilter) => {
-    setPanelSyncQueue({ opened: true, filter: filter ?? null });
+  const openLeaseRevocationQueue = (filter?: LeaseRevocationQueueFilter) => {
+    setLeaseRevocationQueue({ opened: true, filter: filter ?? null });
   };
 
-  const closePanelSyncQueue = () => {
-    setPanelSyncQueue((current) => ({ ...current, opened: false }));
+  const closeLeaseRevocationQueue = () => {
+    setLeaseRevocationQueue((current) => ({ ...current, opened: false }));
   };
 
   const selectSection = (nextSection: SectionKey) => {
@@ -569,7 +553,7 @@ export function App() {
       }
       if (pendingSyncQueueRefreshRef.current) {
         pendingSyncQueueRefreshRef.current = false;
-        void refreshPanelSyncJobsAfterPending().catch(() => undefined);
+        void refreshLeaseRevocationJobsAfterPending().catch(() => undefined);
       }
       if (sectionRef.current === "releases") {
         setReleaseRefreshSignal((current) => current + 1);
@@ -598,7 +582,7 @@ export function App() {
           pendingSyncQueueRefreshRef.current = true;
           return;
         }
-        void refreshPanelSyncJobsAfterPending().catch(() => undefined);
+        void refreshLeaseRevocationJobsAfterPending().catch(() => undefined);
         void refreshDashboard({ silent: true });
         return;
       }
@@ -765,14 +749,6 @@ export function App() {
       ? snapshot?.subscriptions.find((item) => item.id === drawer.recordId) ?? null
       : null;
   const renewActionDisabled = drawer.type === "subscription-renew" && renewTargetSubscription !== null && !renewTargetSubscription.renewable;
-  const nodePanelInboundOptions = useMemo(
-    () =>
-      nodePanelInbounds.map((item) => ({
-        value: String(item.id),
-        label: `${item.remark} · ID ${item.id} · ${item.protocol.toUpperCase()} · ${item.port} · ${item.clientCount} 个客户端`
-      })),
-    [nodePanelInbounds]
-  );
 
   function handleSessionExpiredState() {
     clearAdminSession();
@@ -784,8 +760,6 @@ export function App() {
     convertSubmittingRef.current = false;
     entityActionBusyRef.current = null;
     probingBusyRef.current = false;
-    refreshingNodeRef.current = null;
-    panelSyncRetryBusyRef.current = false;
     leaseRevocationRetryBusyRef.current = false;
     policySavingRef.current = false;
     nodeAccessSavingRef.current = false;
@@ -819,9 +793,7 @@ export function App() {
     setNodeAccessSelection([]);
     setNodeAccessLoading(false);
     setNodeAccessSaving(false);
-    setNodePanelInbounds([]);
-    setNodePanelInboundsLoading(false);
-    setPanelSyncQueue({ opened: false, filter: null });
+    setLeaseRevocationQueue({ opened: false, filter: null });
     setDrawerBusy(false);
     setTeamProfileBusyKey(null);
     setTeamMemberBusyKey(null);
@@ -829,7 +801,6 @@ export function App() {
     setPolicySaving(false);
     setProbingNodeId(null);
     setProbingAll(false);
-    setRefreshingNodeId(null);
   }
 
   function ensureAuthenticated(message: string) {
@@ -849,7 +820,6 @@ export function App() {
         subscriptions: [],
         teams: [],
         nodes: [],
-        panelSyncJobs: [],
         leaseRevocationJobs: [],
         announcements: [],
         policy: patch.policy as AdminPolicyRecordDto,
@@ -907,7 +877,6 @@ export function App() {
         { key: "subscriptions", sections: ["overview", "subscriptions"], task: fetchAdminSubscriptions() },
         { key: "teams", sections: ["users", "subscriptions"], task: fetchAdminTeams() },
         { key: "nodes", sections: ["overview", "nodes"], task: fetchAdminNodes() },
-        { key: "panelSyncJobs", sections: ["nodes"], task: fetchAdminPanelSyncJobs() },
         { key: "leaseRevocationJobs", sections: ["users", "subscriptions", "nodes"], task: fetchAdminLeaseRevocationJobs() },
         { key: "announcements", sections: ["announcements"], task: fetchAdminAnnouncements() }
       ];
@@ -1118,25 +1087,18 @@ export function App() {
       return;
     }
 
-    const [panelSyncJobsResult, leaseRevocationJobsResult] = await Promise.all([
-      settleAdminLoad(fetchAdminPanelSyncJobs()),
-      settleAdminLoad(fetchAdminLeaseRevocationJobs())
-    ]);
+    const leaseRevocationJobsResult = await settleAdminLoad(fetchAdminLeaseRevocationJobs());
     if (!canApplySectionResult(requestSeq, mutationSeqAtStart)) {
       return;
     }
     mergeSnapshot({
-      ...(panelSyncJobsResult.ok ? { panelSyncJobs: panelSyncJobsResult.value } : {}),
       ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.value } : {})
     });
-    if ((!panelSyncJobsResult.ok || !leaseRevocationJobsResult.ok) && !options?.silent) {
+    if (!leaseRevocationJobsResult.ok && !options?.silent) {
       notifications.show({
         color: "yellow",
         title: "同步任务加载失败",
-        message: joinAdminLoadFailures([
-          panelSyncJobsResult.ok ? null : readError(panelSyncJobsResult.reason, "面板同步任务加载失败"),
-          leaseRevocationJobsResult.ok ? null : readError(leaseRevocationJobsResult.reason, "连接撤销队列加载失败")
-        ])
+        message: readError(leaseRevocationJobsResult.reason, "连接撤销队列加载失败")
       });
     }
   }
@@ -1271,39 +1233,6 @@ export function App() {
     ]);
   }
 
-  async function refreshPanelSyncJobsAfterPending() {
-    const [nodesResult, panelSyncJobsResult, leaseRevocationJobsResult] = await Promise.all([
-      fetchAdminNodes().then(
-        (nodes) => ({ ok: true as const, nodes }),
-        (reason) => ({ ok: false as const, reason })
-      ),
-      fetchAdminPanelSyncJobs().then(
-        (panelSyncJobs) => ({ ok: true as const, panelSyncJobs }),
-        (reason) => ({ ok: false as const, reason })
-      ),
-      fetchAdminLeaseRevocationJobs().then(
-        (leaseRevocationJobs) => ({ ok: true as const, leaseRevocationJobs }),
-        (reason) => ({ ok: false as const, reason })
-      )
-    ]);
-    mergeSnapshot({
-      ...(nodesResult.ok ? { nodes: nodesResult.nodes } : {}),
-      ...(panelSyncJobsResult.ok ? { panelSyncJobs: panelSyncJobsResult.panelSyncJobs } : {}),
-      ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.leaseRevocationJobs } : {})
-    });
-    if (!nodesResult.ok || !panelSyncJobsResult.ok || !leaseRevocationJobsResult.ok) {
-      throw new Error(
-        [
-          nodesResult.ok ? null : readError(nodesResult.reason, "节点列表加载失败"),
-          panelSyncJobsResult.ok ? null : readError(panelSyncJobsResult.reason, "面板同步任务加载失败"),
-          leaseRevocationJobsResult.ok ? null : readError(leaseRevocationJobsResult.reason, "连接撤销队列加载失败")
-        ]
-          .filter(Boolean)
-          .join("；")
-      );
-    }
-  }
-
   async function refreshLeaseRevocationJobsAfterPending() {
     const [nodesResult, leaseRevocationJobsResult] = await Promise.all([
       fetchAdminNodes().then(
@@ -1331,20 +1260,6 @@ export function App() {
     }
   }
 
-  function refreshAdminNodesAfterPanelSyncRetry() {
-    void fetchAdminNodes()
-      .then((nodes) => {
-        mergeSnapshot({ nodes });
-      })
-      .catch((reason) => {
-        notifications.show({
-          color: "yellow",
-          title: "重试已提交，节点列表刷新失败",
-          message: readError(reason, "节点列表刷新失败，请稍后手动刷新确认")
-        });
-      });
-  }
-
   async function handleHeaderRefresh() {
     const currentSection = sectionRef.current;
     if (currentSection === "overview") {
@@ -1368,72 +1283,6 @@ export function App() {
       return;
     }
     await loadSectionData(currentSection, { force: true });
-  }
-
-  async function handleRetryPanelSyncJob(jobId: string) {
-    const busyKey = `job:${jobId}`;
-    if (panelSyncRetryBusyRef.current) {
-      return;
-    }
-    try {
-      panelSyncRetryBusyRef.current = true;
-      setPanelSyncRetryBusyKey(busyKey);
-      const panelSyncJobs = await retryAdminPanelSyncJob(jobId);
-      mergeSnapshot({ panelSyncJobs });
-      refreshAdminNodesAfterPanelSyncRetry();
-      notifications.show({
-        color: "green",
-        title: "已重新排队",
-        message: "面板同步任务已加入重试任务"
-      });
-    } catch (reason) {
-      const retryMessage = readError(reason, "同步任务重新排队失败");
-      const retryUncertain = isPotentiallyCompletedMutationFailure(retryMessage);
-      if (retryUncertain) {
-        void refreshPanelSyncJobsAfterPending().catch(() => undefined);
-      }
-      notifications.show({
-        color: retryUncertain ? "yellow" : "red",
-        title: retryUncertain ? "重试状态不确定" : "重试失败",
-        message: retryUncertain ? `${retryMessage} 请求可能已提交，请刷新同步任务确认。` : retryMessage
-      });
-    } finally {
-      setPanelSyncRetryBusyKey(null);
-      panelSyncRetryBusyRef.current = false;
-    }
-  }
-
-  async function handleRetryNodePanelSyncJobs(nodeId: string) {
-    const busyKey = `node:${nodeId}`;
-    if (panelSyncRetryBusyRef.current) {
-      return;
-    }
-    try {
-      panelSyncRetryBusyRef.current = true;
-      setPanelSyncRetryBusyKey(busyKey);
-      const panelSyncJobs = await retryAdminPanelSyncJobsForNode(nodeId);
-      mergeSnapshot({ panelSyncJobs });
-      refreshAdminNodesAfterPanelSyncRetry();
-      notifications.show({
-        color: "green",
-        title: "已重新排队",
-        message: "该节点的面板同步任务已加入重试任务"
-      });
-    } catch (reason) {
-      const retryMessage = readError(reason, "节点同步任务重新排队失败");
-      const retryUncertain = isPotentiallyCompletedMutationFailure(retryMessage);
-      if (retryUncertain) {
-        void refreshPanelSyncJobsAfterPending().catch(() => undefined);
-      }
-      notifications.show({
-        color: retryUncertain ? "yellow" : "red",
-        title: retryUncertain ? "重试状态不确定" : "重试失败",
-        message: retryUncertain ? `${retryMessage} 请求可能已提交，请刷新同步任务确认。` : retryMessage
-      });
-    } finally {
-      setPanelSyncRetryBusyKey(null);
-      panelSyncRetryBusyRef.current = false;
-    }
   }
 
   async function handleRetryLeaseRevocationJob(jobId: string) {
@@ -1497,66 +1346,6 @@ export function App() {
     } finally {
       setLeaseRevocationRetryBusyKey(null);
       leaseRevocationRetryBusyRef.current = false;
-    }
-  }
-
-  async function handleLoadNodePanelInbounds(
-    form: NodeFormState = nodeForm,
-    options: { automatic?: boolean; nodeId?: string | null } = {}
-  ) {
-    const nodeId = options.nodeId ?? (drawer.type === "node" ? drawer.recordId : null);
-    const editingNode = nodeId ? nodes.find((item) => item.id === nodeId) : null;
-    const canUseSavedPassword = Boolean(editingNode?.hasPanelPassword && !form.panelPassword.trim());
-    if (!form.panelBaseUrl || !form.panelUsername || (!form.panelPassword && !canUseSavedPassword)) {
-      notifications.show({
-        title: "缺少面板信息",
-        message: canUseSavedPassword ? "请先填写面板地址和账号" : "请先填写面板地址、账号和密码",
-        color: "yellow"
-      });
-      return;
-    }
-
-    try {
-      setNodePanelInboundsLoading(true);
-      const result = await fetchNodePanelInbounds({
-        panelBaseUrl: form.panelBaseUrl,
-        panelApiBasePath: form.panelApiBasePath || "/",
-        panelUsername: form.panelUsername,
-        panelPassword: form.panelPassword || undefined,
-        nodeId: editingNode?.id
-      });
-      setNodePanelInbounds(result);
-
-      if (result.length > 0) {
-        const hasCurrent = result.some((item) => item.id === form.panelInboundId);
-        if (!hasCurrent) {
-          setNodeForm((current) => ({ ...current, panelInboundId: result[0].id }));
-        }
-      }
-
-      notifications.show({
-        title: "读取成功",
-        message: result.length > 0 ? `已获取 ${result.length} 条入站` : "面板中暂无可用入站",
-        color: result.length > 0 ? "green" : "yellow"
-      });
-    } catch (reason) {
-      const message = readError(reason, "读取 3x-ui 入站失败。该操作会直接访问面板；如果面板离线或路径错误，请先手动填写入站 ID。");
-      if (ensureAuthenticated(message)) {
-        return;
-      }
-      const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
-      const uncertain = !definiteLocalSaveFailure && isUncertainRequestFailure(message);
-      notifications.show({
-        title: options.automatic || uncertain ? "面板入站暂不可用" : "读取失败",
-        message:
-          options.automatic || uncertain
-            ? `${message} 这不会影响保存已有节点配置，可手动填写入站 ID。`
-            : message,
-        color: options.automatic || uncertain ? "yellow" : "red"
-      });
-      setNodePanelInbounds([]);
-    } finally {
-      setNodePanelInboundsLoading(false);
     }
   }
 
@@ -1743,11 +1532,10 @@ export function App() {
       const result = await action();
       applyLocalActionResult(result);
       const resolvedMessage = extractActionMessage(result, successText);
-      const panelSyncPending = hasPendingPanelSync(result);
       const successOverride = options.resolveSuccess?.(result) ?? null;
       notifications.show({
-        color: panelSyncPending ? "yellow" : successOverride?.color ?? "green",
-        title: panelSyncPending ? "已保存，后台同步待处理" : successOverride?.title ?? options.successTitle ?? "操作成功",
+        color: successOverride?.color ?? "green",
+        title: successOverride?.title ?? options.successTitle ?? "操作成功",
         message: successOverride?.message ?? resolvedMessage
       });
       if (options.refreshAfter ?? true) void refreshCurrentDataAfterAction().catch((refreshReason) => {
@@ -1757,15 +1545,6 @@ export function App() {
           message: readError(refreshReason, "刷新最新数据失败")
         });
       });
-      if (panelSyncPending) {
-        void refreshPanelSyncJobsAfterPending().catch((refreshReason) => {
-          notifications.show({
-            color: "yellow",
-            title: "面板同步任务刷新失败",
-            message: readError(refreshReason, "同步任务刷新失败")
-          });
-        });
-      }
       return true;
     } catch (reason) {
       const message = readError(reason, options.failureFallback ?? "操作失败");
@@ -1775,26 +1554,18 @@ export function App() {
       const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
       const completedAfterFailure = isLikelySavedAfterFailure(message);
       const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || completedAfterFailure);
-      const savedPendingSync = uncertain && completedAfterFailure;
       if (uncertain && (options.refreshAfter ?? true)) {
         void refreshCurrentDataAfterAction().catch((refreshReason) => {
           notifications.show({
             color: "yellow",
-            title: savedPendingSync ? "已保存，后台同步待处理" : "请求状态不确定",
+            title: "请求状态不确定",
             message: readError(refreshReason, "状态刷新失败")
-          });
-        });
-        void refreshPanelSyncJobsAfterPending().catch((refreshReason) => {
-          notifications.show({
-            color: "yellow",
-            title: "同步任务刷新失败",
-            message: readError(refreshReason, "同步任务刷新失败")
           });
         });
       }
       notifications.show({
         color: uncertain ? "yellow" : "red",
-        title: uncertain ? (savedPendingSync ? "已保存，后台同步待处理" : "请求状态不确定") : options.failureTitle ?? "操作失败",
+        title: uncertain ? "请求状态不确定" : options.failureTitle ?? "操作失败",
         message: uncertain
           ? options.uncertainMessage?.(message) ?? buildUncertainMutationMessage("操作", message)
           : message
@@ -1874,13 +1645,12 @@ export function App() {
       const result = await updateSubscriptionNodeAccess(nodeAccessEditor.subscriptionId, {
         nodeIds
       });
-      const panelSyncPending = result.panelSyncStatus === "pending";
       notifications.show({
-        color: panelSyncPending ? "yellow" : "green",
-        title: panelSyncPending ? "已保存，后台同步待处理" : "操作成功",
+        color: "green",
+        title: "操作成功",
         message:
-          summarizeAdminDiagnosticMessage(result.message, "节点授权已保存，后台同步待处理。") ??
-          summarizeAdminDiagnosticMessage(result.panelSyncMessage, "节点授权已保存，后台同步待处理。") ??
+          summarizeAdminDiagnosticMessage(result.message, "节点授权已保存。") ??
+          summarizeAdminDiagnosticMessage(result.panelSyncMessage, "节点授权已保存。") ??
           "节点授权已保存"
       });
       closeNodeAccessEditor();
@@ -1891,15 +1661,6 @@ export function App() {
           message: `${readError(refreshReason, "刷新最新数据失败")} 本次保存请求已经成功返回，可手动刷新订阅列表和同步任务确认最新状态。`
         });
       });
-      if (panelSyncPending) {
-        void refreshPanelSyncJobsAfterPending().catch((refreshReason) => {
-          notifications.show({
-            color: "yellow",
-            title: "面板同步任务刷新失败",
-            message: readError(refreshReason, "同步任务刷新失败")
-          });
-        });
-      }
     } catch (reason) {
       const message = readError(reason, "保存节点授权失败");
       if (ensureAuthenticated(message)) {
@@ -1908,7 +1669,6 @@ export function App() {
       const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
       const completedAfterFailure = isLikelySavedAfterFailure(message);
       const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || completedAfterFailure);
-      const savedPendingSync = uncertain && completedAfterFailure;
       if (uncertain) {
         if (completedAfterFailure) {
           closeNodeAccessEditor();
@@ -1916,21 +1676,14 @@ export function App() {
         void refreshCurrentDataAfterAction().catch((refreshReason) => {
           notifications.show({
             color: "yellow",
-            title: savedPendingSync ? "节点授权已保存，后台同步待处理" : "节点授权状态不确定",
+            title: completedAfterFailure ? "节点授权已保存" : "节点授权状态不确定",
             message: readError(refreshReason, "节点授权状态刷新失败")
-          });
-        });
-        void refreshPanelSyncJobsAfterPending().catch((refreshReason) => {
-          notifications.show({
-            color: "yellow",
-            title: "同步任务刷新失败",
-            message: readError(refreshReason, "同步任务刷新失败")
           });
         });
       }
       notifications.show({
         color: uncertain ? "yellow" : "red",
-        title: uncertain ? (savedPendingSync ? "节点授权已保存，后台同步待处理" : "节点授权状态不确定") : "操作失败",
+        title: uncertain ? (completedAfterFailure ? "节点授权已保存" : "节点授权状态不确定") : "操作失败",
         message: uncertain ? buildUncertainMutationMessage("节点授权", message) : message
       });
     } finally {
@@ -2070,33 +1823,19 @@ export function App() {
       if (recordId) {
         const record = snapshot.nodes.find((item) => item.id === recordId);
         if (!record) return;
-        const nextForm = {
-          subscriptionUrl: record.subscriptionUrl ?? "",
+        setNodeForm({
           name: record.name,
           countryCode: record.countryCode ?? resolveCountryCode({ region: record.region }) ?? "",
           region: record.region,
           provider: record.provider,
           tags: record.tags.join(", "),
           isActive: record.isActive ?? true,
-          recommended: record.recommended,
-          panelBaseUrl: record.panelBaseUrl ?? "",
-          panelApiBasePath: record.panelApiBasePath ?? "/",
-          panelUsername: record.panelUsername ?? "",
-          panelPassword: "",
-          panelInboundId: record.panelInboundId ?? 1,
-          panelEnabled: record.panelEnabled
-        };
-        setNodePanelInbounds([]);
-        setNodeForm(nextForm);
-        if (nextForm.panelBaseUrl && nextForm.panelUsername && (record.hasPanelPassword || nextForm.panelPassword)) {
-          void handleLoadNodePanelInbounds(nextForm, { automatic: true, nodeId: recordId });
-        }
+          recommended: record.recommended
+        });
       } else {
-        setNodePanelInbounds([]);
         setNodeForm({
           ...emptyNodeForm(),
-          isActive: true,
-          panelEnabled: true
+          isActive: true
         });
       }
     }
@@ -2301,38 +2040,22 @@ export function App() {
       }
 
       if (drawer.type === "node") {
-        const editingNode = drawer.recordId ? nodes.find((item) => item.id === drawer.recordId) : null;
-        const hasExistingPanelPassword = Boolean(editingNode?.hasPanelPassword);
-        if (
-          nodeForm.panelEnabled &&
-          (!nodeForm.panelBaseUrl.trim() ||
-            !nodeForm.panelUsername.trim() ||
-            (!nodeForm.panelPassword.trim() && !hasExistingPanelPassword) ||
-            !Number.isFinite(Number(nodeForm.panelInboundId)) ||
-            Number(nodeForm.panelInboundId) <= 0)
-        ) {
+        if (!drawer.recordId) {
+          // Node creation goes through the agent-native onboarding flow
+          // (“添加节点”按钮) — the drawer only edits existing nodes.
           notifications.show({
             color: "yellow",
-            title: "面板信息不完整",
-            message: "启用 3x-ui 面板时必须填写面板地址、账号、密码，并先选择有效入站。"
+            title: "请使用 Agent 接入流程",
+            message: "新增节点请点击“添加节点”，按安装命令完成 Agent 接入后再编辑节点资料。"
           });
           return;
         }
-
         const updatePayload = buildUpdateNodePayload(nodeForm);
-        const importPayload = buildImportNodePayload(nodeForm);
-        const success = drawer.recordId
-          ? await runAction(
-              () => updateNode(drawer.recordId!, updatePayload),
-              "节点已更新",
-              dbFirstMutationOptions
-            )
-          : await runAction(() => importNode(importPayload), "节点已添加", {
-              failureTitle: "新增节点失败，未保存",
-              failureFallback:
-                "新增节点需要先读取可用运行参数。请填写有效订阅地址，或修复 3x-ui 面板连接并选择入站后重试。",
-              ...dbFirstMutationOptions
-            });
+        const success = await runAction(
+          () => updateNode(drawer.recordId!, updatePayload),
+          "节点已更新",
+          dbFirstMutationOptions
+        );
         if (success) forceCloseDrawer();
       }
 
@@ -2375,15 +2098,6 @@ export function App() {
         uncertainMessage: (message) => `${message} 节点探测状态不确定，请刷新节点列表确认最新探测结果。`,
         resolveSuccess: (result) => {
           const node = result as AdminNodeRecordDto;
-          if (node.panelStatus === "degraded") {
-            return {
-              color: "yellow",
-              title: "探测完成，面板异常",
-              message: `节点连通性已探测，但 3x-ui 面板不可达：${
-                summarizeAdminDiagnosticMessage(node.panelError, "请检查面板地址、路径或账号密码。") ?? "请检查面板地址、路径或账号密码。"
-              }`
-            };
-          }
           if (node.probeStatus !== "healthy") {
             return {
               color: "yellow",
@@ -2414,13 +2128,12 @@ export function App() {
         uncertainMessage: (message) => `${message} 批量探测状态不确定，请刷新节点列表确认最新探测结果。`,
         resolveSuccess: (result) => {
           const nodes = Array.isArray(result) ? (result as AdminNodeRecordDto[]) : [];
-          const degradedCount = nodes.filter((node) => node.panelStatus === "degraded").length;
           const failedProbeCount = nodes.filter((node) => node.probeStatus !== "healthy").length;
-          if (degradedCount > 0 || failedProbeCount > 0) {
+          if (failedProbeCount > 0) {
             return {
               color: "yellow",
               title: "探测完成，存在异常",
-              message: `已完成 ${nodes.length} 个节点探测；面板异常 ${degradedCount} 个，节点连通异常 ${failedProbeCount} 个。`
+              message: `已完成 ${nodes.length} 个节点探测；节点连通异常 ${failedProbeCount} 个。`
             };
           }
           return null;
@@ -2429,58 +2142,6 @@ export function App() {
     } finally {
       setProbingAll(false);
       probingBusyRef.current = false;
-    }
-  }
-
-  async function handleRefreshNode(nodeId: string) {
-    if (refreshingNodeRef.current) {
-      return;
-    }
-    refreshingNodeRef.current = nodeId;
-    setRefreshingNodeId(nodeId);
-    try {
-    await runAction(() => refreshNode(nodeId), "节点已从 3x-ui 面板刷新", {
-      successTitle: "读取面板成功",
-      failureTitle: "读取面板失败",
-      failureFallback: "读取 3x-ui 面板并刷新节点失败",
-      uncertainMessage: (message) => `${message} 面板读取状态不确定，请刷新节点列表确认节点运行时是否已更新。`,
-      resolveSuccess: (result) => {
-        const node = result as AdminNodeRecordDto;
-        if (node.panelStatus === "degraded") {
-          return {
-            color: "yellow",
-            title: "面板读取失败，本地配置已保留",
-            message: summarizeAdminDiagnosticMessage(node.panelError, "3x-ui 面板暂不可用，节点本地运行参数未被覆盖。") ?? "3x-ui 面板暂不可用，节点本地运行参数未被覆盖。"
-          };
-        }
-        return null;
-      }
-    });
-    } finally {
-      refreshingNodeRef.current = null;
-      setRefreshingNodeId(null);
-    }
-  }
-
-  async function handleSwitchNodeControlMode(node: AdminNodeRecordDto, input: SwitchNodeControlModeInputDto) {
-    const actionKey = `node-control:${node.id}`;
-    if (entityActionBusyRef.current) return false;
-    entityActionBusyRef.current = actionKey;
-    setEntityActionBusyKey(actionKey);
-    try {
-      return await runAction(
-        () => switchNodeControlMode(node.id, input),
-        "节点控制模式已更新",
-        {
-          successTitle: "控制链路已更新",
-          failureTitle: "控制链路切换失败",
-          failureFallback: "后台未能完成节点控制模式切换；现有控制链路保持不变。",
-          uncertainMessage: (message) => `${message} 请刷新节点控制器确认最终模式，期间不要重复切换。`
-        }
-      );
-    } finally {
-      entityActionBusyRef.current = null;
-      setEntityActionBusyKey(null);
     }
   }
 
@@ -2697,7 +2358,7 @@ export function App() {
     }
     const targetKey = `${subscriptionId}:${userId ?? "all"}`;
     const confirmed = window.confirm(
-      `确认重置 ${ownerLabel} 的流量吗？后台会先立即重置本地流量，3x-ui 面板计量会进入后台同步任务。`
+      `确认重置 ${ownerLabel} 的流量吗？后台会立即重置本地流量，相关连接撤销会进入后台同步任务。`
     );
     if (!confirmed) {
       return;
@@ -3109,9 +2770,9 @@ export function App() {
     );
   }
 
-  const backgroundSyncQueueCount = snapshot.panelSyncJobs.length + snapshot.leaseRevocationJobs.length;
+  const backgroundSyncQueueCount = snapshot.leaseRevocationJobs.length;
   const waitingAdminTicketCount = snapshot.dashboard.waitingAdminTickets;
-  const agentControlledNodeCount = snapshot.nodes.filter((item) => (item.controlMode ?? "xui_primary") !== "xui_primary").length;
+  const agentNodeCount = snapshot.nodes.filter((item) => Boolean(item.agent || item.registrationStatus === "agent_ready")).length;
 
   return (
     <>
@@ -3164,11 +2825,11 @@ export function App() {
                   当前接入
                 </Text>
                 <Text size="xl" fw={700}>
-                  {agentControlledNodeCount > 0 ? "混合节点控制" : "3X-UI 直连"}
+                  Agent 直连
                 </Text>
                 <Text size="sm" c="dimmed">
-                  {agentControlledNodeCount > 0
-                    ? `${agentControlledNodeCount} 个 Agent 节点 · ${snapshot.nodes.length - agentControlledNodeCount} 个 3X-UI 节点`
+                  {agentNodeCount > 0
+                    ? `${agentNodeCount} 个 Agent 节点 · ${snapshot.nodes.length - agentNodeCount} 个待接入`
                     : `默认模式 ${snapshot.policy.defaultMode === "rule" ? "规则模式" : snapshot.policy.defaultMode === "global" ? "全局代理" : "直连模式"}`}
                 </Text>
               </Stack>
@@ -3212,7 +2873,7 @@ export function App() {
                         </Badge>
                       ) : undefined
                     }
-                    onClick={() => openPanelSyncQueue()}
+                    onClick={() => openLeaseRevocationQueue()}
                   >
                     同步任务
                   </Menu.Item>
@@ -3268,9 +2929,6 @@ export function App() {
                   >
                     全部探测
                   </Button>
-                  <Button leftSection={<IconPlus size={16} />} onClick={() => openDrawer("node")}>
-                    添加面板
-                  </Button>
                 </Group>
               ) : null}
               {section === "announcements" ? (
@@ -3298,7 +2956,7 @@ export function App() {
                 }}
                 onOpenNodes={() => selectSection("nodes")}
                 onOpenTickets={() => selectSection("tickets")}
-                onOpenSyncQueue={() => openPanelSyncQueue()}
+                onOpenSyncQueue={() => openLeaseRevocationQueue()}
               />
             ) : null}
 
@@ -3358,7 +3016,7 @@ export function App() {
                     }
                     onDisconnectUser={(userId, displayName, source) => void handleDisconnectUser(userId, displayName, source)}
                     onRetryLeaseRevocationJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}
-                    onOpenPanelSyncQueue={openPanelSyncQueue}
+                    onOpenLeaseRevocationQueue={openLeaseRevocationQueue}
                   />
                 }
               />
@@ -3412,7 +3070,7 @@ export function App() {
                 teamUsageLoadingByTeamId={teamUsageLoadingByTeamId}
                 teamUsageErrorByTeamId={teamUsageErrorByTeamId}
                 onLoadTeamUsage={(teamId, options) => void loadTeamUsage(teamId, options)}
-                onOpenPanelSyncQueue={openPanelSyncQueue}
+                onOpenLeaseRevocationQueue={openLeaseRevocationQueue}
               />
             ) : null}
 
@@ -3436,24 +3094,14 @@ export function App() {
                 searchValue={search.nodes}
                 onSearchChange={(value) => setSearch((current) => ({ ...current, nodes: value }))}
                 nodes={nodes}
-                panelSyncJobs={snapshot.panelSyncJobs}
                 leaseRevocationJobs={snapshot.leaseRevocationJobs}
-                panelSyncQueueOpened={panelSyncQueue.opened}
-                panelSyncRetryBusyKey={panelSyncRetryBusyKey}
                 leaseRevocationRetryBusyKey={leaseRevocationRetryBusyKey}
                 probingNodeId={probingNodeId}
                 probingAll={probingAll}
-                refreshingNodeId={refreshingNodeId}
-                controlModeBusyNodeId={entityActionBusyKey?.startsWith("node-control:") ? entityActionBusyKey.slice("node-control:".length) : null}
-                onOpenPanelSyncQueue={openPanelSyncQueue}
-                onClosePanelSyncQueue={closePanelSyncQueue}
-                onRetryPanelSyncJob={(jobId) => void handleRetryPanelSyncJob(jobId)}
-                onRetryNodePanelSyncJobs={(nodeId) => void handleRetryNodePanelSyncJobs(nodeId)}
+                onOpenLeaseRevocationQueue={openLeaseRevocationQueue}
                 onRetryLeaseRevocationJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}
                 onRetryNodeLeaseRevocationJobs={(nodeId) => void handleRetryNodeLeaseRevocationJobs(nodeId)}
                 onProbeNode={(nodeId) => void handleProbeNode(nodeId)}
-                onRefreshNode={(nodeId) => void handleRefreshNode(nodeId)}
-                onSwitchNodeControlMode={handleSwitchNodeControlMode}
                 onNodeRecordChanged={(record) => {
                   // Apply the polled record IMMEDIATELY: the deploy flow has
                   // already marked completion and re-enabled reissue, so the
@@ -3512,8 +3160,6 @@ export function App() {
         drawerRecordId={drawer.recordId}
         snapshot={snapshot}
         eligiblePersonalUsers={eligiblePersonalUsers}
-        nodePanelInbounds={nodePanelInbounds}
-        nodePanelInboundsLoading={nodePanelInboundsLoading}
         userForm={userForm}
         setUserForm={setUserForm}
         planForm={planForm}
@@ -3549,7 +3195,6 @@ export function App() {
           }
           void submitDrawer();
         }}
-        onLoadNodePanelInbounds={() => void handleLoadNodePanelInbounds()}
       />
 
       <Modal opened={convertSubscriptionTarget !== null} onClose={closeConvertToTeamModal} title="转入 Team 订阅" centered size="lg">
@@ -3635,16 +3280,12 @@ export function App() {
       />
 
       <PanelSyncQueueDrawer
-        opened={panelSyncQueue.opened}
-        jobs={snapshot.panelSyncJobs}
+        opened={leaseRevocationQueue.opened}
         leaseRevocationJobs={snapshot.leaseRevocationJobs}
-        panelRetryBusyKey={panelSyncRetryBusyKey}
         leaseRetryBusyKey={leaseRevocationRetryBusyKey}
-        filter={panelSyncQueue.filter}
-        onClose={closePanelSyncQueue}
-        onShowAll={() => openPanelSyncQueue()}
-        onRetryJob={(jobId) => void handleRetryPanelSyncJob(jobId)}
-        onRetryNode={(nodeId) => void handleRetryNodePanelSyncJobs(nodeId)}
+        filter={leaseRevocationQueue.filter}
+        onClose={closeLeaseRevocationQueue}
+        onShowAll={() => openLeaseRevocationQueue()}
         onRetryLeaseJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}
         onRetryLeaseNode={(nodeId) => void handleRetryNodeLeaseRevocationJobs(nodeId)}
       />
@@ -3748,39 +3389,8 @@ function extractActionMessage(result: unknown, fallback: string) {
   return fallback;
 }
 
-function hasPendingPanelSync(result: unknown): boolean {
-  if (!result || typeof result !== "object") {
-    return false;
-  }
-  const record = result as Record<string, unknown>;
-  if (record.panelSyncStatus === "pending") {
-    return true;
-  }
-  return ["data", "result", "payload", "response"].some((key) => hasPendingPanelSync(record[key]));
-}
-
 function buildNodeAccessOptionLabel(node: AdminNodeRecordDto) {
-  const statusParts = [
-    translateNodeAccessPanelStatus(node),
-    node.panelSyncPendingCount ? `待同步 ${node.panelSyncPendingCount}` : null,
-    node.panelSyncRunningCount ? `同步中 ${node.panelSyncRunningCount}` : null,
-    node.panelSyncFailedCount ? `失败 ${node.panelSyncFailedCount}` : null
-  ].filter(Boolean);
-  const statusSuffix = statusParts.length > 0 ? ` · ${statusParts.join(" / ")}` : "";
-  return `${node.name} · ${node.region} · ${node.provider}${statusSuffix}`;
-}
-
-function translateNodeAccessPanelStatus(node: AdminNodeRecordDto) {
-  if (!node.panelEnabled) {
-    return "面板停用";
-  }
-  if (node.panelStatus === "offline") {
-    return "离线";
-  }
-  if (node.panelStatus === "degraded") {
-    return "异常";
-  }
-  return null;
+  return `${node.name} · ${node.region} · ${node.provider}`;
 }
 
 function drawerTitle(type: DrawerType) {

@@ -1,5 +1,5 @@
 import { Button, Drawer, Group, Stack } from "@mantine/core";
-import type { AdminNodePanelInboundDto, AdminSnapshotDto } from "@chordv/shared";
+import type { AdminSnapshotDto } from "@chordv/shared";
 import { AnnouncementEditorSection, PlanEditorSection, SubscriptionAdjustEditorSection, SubscriptionChangePlanEditorSection, SubscriptionCreateEditorSection, SubscriptionRenewEditorSection, TeamEditorSection, TeamMemberEditorSection, TeamSubscriptionEditorSection, UserEditorSection } from "./DrawerSections";
 import { NodeEditorSection } from "./NodeEditorSection";
 import type {
@@ -37,8 +37,6 @@ type AdminDrawerFormProps = {
   drawerRecordId: string | null;
   snapshot: AdminSnapshotDto;
   eligiblePersonalUsers: Array<{ id: string; displayName: string; email: string }>;
-  nodePanelInbounds: AdminNodePanelInboundDto[];
-  nodePanelInboundsLoading: boolean;
   userForm: UserFormState;
   setUserForm: React.Dispatch<React.SetStateAction<UserFormState>>;
   planForm: PlanFormState;
@@ -64,7 +62,6 @@ type AdminDrawerFormProps = {
   drawerBusy: boolean;
   onClose: () => void;
   onSubmit: () => void;
-  onLoadNodePanelInbounds: () => void;
 };
 
 export function AdminDrawerForm(props: AdminDrawerFormProps) {
@@ -140,9 +137,6 @@ export function AdminDrawerForm(props: AdminDrawerFormProps) {
             node={props.snapshot.nodes.find((item) => item.id === props.drawerRecordId) ?? null}
             nodeForm={props.nodeForm}
             setNodeForm={props.setNodeForm}
-            nodePanelInbounds={props.nodePanelInbounds}
-            nodePanelInboundsLoading={props.nodePanelInboundsLoading}
-            onLoadNodePanelInbounds={props.onLoadNodePanelInbounds}
           />
         ) : null}
         {props.drawerType === "announcement" ? (

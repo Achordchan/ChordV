@@ -19,11 +19,9 @@ import { ReleaseCenterService } from "./release-center.service";
 import { RuntimeComponentsService } from "./runtime-components.service";
 import { RuntimeSessionService } from "./runtime-session.service";
 import { MeteringIncidentService } from "./metering-incident.service";
-import { XuiModule } from "../xui/xui.module";
 
 @Global()
 @Module({
-  imports: [XuiModule],
   providers: [
     DevDataService,
     AdminRuntimeEventsService,

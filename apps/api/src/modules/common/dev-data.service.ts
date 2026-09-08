@@ -16,7 +16,6 @@ import * as bcrypt from "bcryptjs";
 import type {
   AdminAnnouncementRecordDto,
   AdminNodeRecordDto,
-  AdminNodePanelInboundDto,
   AdminPlanRecordDto,
   AdminPolicyRecordDto,
   AdminReleaseRecordDto,
@@ -64,7 +63,6 @@ import type {
   CreateUserInputDto,
   DisconnectUserResultDto,
   GeneratedRuntimeConfigDto,
-  ImportNodeInputDto,
   MarkClientAnnouncementsReadInputDto,
   NodeProbeStatus,
   NodeSummaryDto,
@@ -120,19 +118,7 @@ import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { ClientTicketService } from "./client-ticket.service";
 import { ImageBedService, type UploadedTicketAttachmentFile } from "./image-bed.service";
 import { dedupeNodeAccessRows } from "./dev-data.utils";
-import {
-  decodeSubscriptionText,
-  inferRegion,
-  normalizeOptionalString as normalizeNodeOptionalString,
-  normalizePanelApiBasePath,
-  normalizeTags,
-  parseVlessLink,
-  probeNodeConnectivity,
-  readRuntimeInboundId,
-  toAdminNodeRecord,
-  toNodeId,
-  toNodeSummary
-} from "./node-import.utils";
+import { normalizeTags, probeNodeConnectivity, toAdminNodeRecord, toNodeSummary } from "./node-import.utils";
 import { PrismaService } from "./prisma.service";
 import { throwLocalReadAsServiceUnavailable, toPrismaTransientHttpError, throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 import { createId } from "./release-center.utils";
@@ -542,7 +528,7 @@ export class DevDataService implements OnModuleInit {
   }
 
   async getAdminSnapshot(): Promise<AdminSnapshotDto> {
-    const [policy, users, plans, subscriptions, teams, nodes, panelSyncJobs, leaseRevocationJobs, announcements, releases, ticketCounts] =
+    const [policy, users, plans, subscriptions, teams, nodes, leaseRevocationJobs, announcements, releases, ticketCounts] =
       await workLifecycle.all([
         this.getAdminPolicy(),
         this.safeAdminSnapshotList("users", () => this.listAdminUsers()),
@@ -550,7 +536,6 @@ export class DevDataService implements OnModuleInit {
         this.safeAdminSnapshotList("subscriptions", () => this.listAdminSubscriptions()),
         this.safeAdminSnapshotList("teams", () => this.listAdminTeams()),
         this.safeAdminSnapshotList("nodes", () => this.listAdminNodes()),
-        this.safeAdminSnapshotList("panel sync jobs", () => this.listAdminPanelSyncJobs()),
         this.safeAdminSnapshotList("lease revocation jobs", () => this.listAdminLeaseRevocationJobs()),
         this.safeAdminSnapshotList("announcements", () => this.listAdminAnnouncements()),
         this.safeAdminSnapshotList("releases", () => this.listAdminReleases()),
@@ -578,7 +563,6 @@ export class DevDataService implements OnModuleInit {
       subscriptions,
       teams,
       nodes,
-      panelSyncJobs,
       leaseRevocationJobs,
       announcements,
       policy,
@@ -1968,29 +1952,21 @@ export class DevDataService implements OnModuleInit {
 
   private async trySyncSubscriptionPanelAccess(subscriptionId: string) {
     try {
-      const queuePanelAccessSync = (this.runtimeSessionService as { queueSubscriptionPanelAccessSync?: unknown })
-        .queueSubscriptionPanelAccessSync;
-      if (typeof queuePanelAccessSync !== "function") {
-        return {
-          ok: false as const,
-          errorMessage: "runtime session service does not support queued panel access synchronization"
-        };
-      }
       const syncResult = await this.withNodeAccessPanelSyncBudget(
         subscriptionId,
-        (queuePanelAccessSync as (subscriptionId: string) => Promise<number>).call(this.runtimeSessionService, subscriptionId)
+        this.runtimeSessionService.queueDirectSubscriptionAccessSync(subscriptionId)
       );
       if (!syncResult.ok) {
         return syncResult;
       }
       const queuedCount = syncResult.queuedCount;
       if (queuedCount > 0) {
-        return { ok: false as const, errorMessage: "3x-ui panel sync queued for background retry" };
+        return { ok: false as const, errorMessage: "节点用户同步已进入后台队列" };
       }
       return { ok: true as const };
     } catch (error) {
       const errorMessage = readPanelSyncErrorMessage(error);
-      this.logger?.warn(`节点授权已保存，但 3x-ui 客户端预同步失败：${subscriptionId}: ${errorMessage}`);
+      this.logger?.warn(`节点授权已保存，但节点用户预同步失败：${subscriptionId}: ${errorMessage}`);
       return { ok: false as const, errorMessage };
     }
   }
@@ -1999,7 +1975,7 @@ export class DevDataService implements OnModuleInit {
     try {
       const result = await this.withNodeAccessPanelSyncBudget(
         subscriptionId,
-        this.prisma.$transaction((tx) => this.queueSubscriptionPanelAccessSyncTx(tx, subscriptionId))
+        this.runtimeSessionService.queueDirectSubscriptionAccessSync(subscriptionId)
       );
       if (result.ok) {
         return result.queuedCount > 0
@@ -2022,16 +1998,6 @@ export class DevDataService implements OnModuleInit {
         .filter(Boolean)
         .join(" ");
     }
-  }
-
-  private async queueSubscriptionPanelAccessSyncTx(writer: any, subscriptionId: string) {
-    const queuePanelAccessSyncTx = (this.runtimeSessionService as {
-      queueSubscriptionPanelAccessSyncTx?: (writer: any, subscriptionId: string) => Promise<number>;
-    }).queueSubscriptionPanelAccessSyncTx;
-    if (typeof queuePanelAccessSyncTx !== "function") {
-      throw new Error("runtime session service does not support transaction-scoped panel access queueing");
-    }
-    return queuePanelAccessSyncTx.call(this.runtimeSessionService, writer, subscriptionId);
   }
 
   private startSubscriptionPanelAccessSync(subscriptionId: string) {
@@ -2476,18 +2442,6 @@ export class DevDataService implements OnModuleInit {
     return this.adminNodeService.listAdminNodes();
   }
 
-  async listAdminPanelSyncJobs() {
-    return this.adminNodeService.listPanelSyncJobs();
-  }
-
-  async retryAdminPanelSyncJob(jobId: string) {
-    return this.adminNodeService.retryPanelSyncJob(jobId);
-  }
-
-  async retryAdminPanelSyncJobsForNode(nodeId: string) {
-    return this.adminNodeService.retryPanelSyncJobsForNode(nodeId);
-  }
-
   async listAdminLeaseRevocationJobs() {
     return this.adminNodeService.listLeaseRevocationJobs();
   }
@@ -2500,26 +2454,8 @@ export class DevDataService implements OnModuleInit {
     return this.adminNodeService.retryLeaseRevocationJobsForNode(nodeId);
   }
 
-  async importNodeFromSubscription(input: ImportNodeInputDto): Promise<AdminNodeRecordDto> {
-    return this.adminNodeService.importNodeFromSubscription(input);
-  }
-
-  async listNodePanelInbounds(input: {
-    panelBaseUrl: string;
-    panelApiBasePath?: string;
-    panelUsername: string;
-    panelPassword?: string;
-    nodeId?: string;
-  }): Promise<AdminNodePanelInboundDto[]> {
-    return this.adminNodeService.listNodePanelInbounds(input);
-  }
-
   async updateNode(nodeId: string, input: UpdateNodeInputDto): Promise<AdminNodeRecordDto> {
     return this.adminNodeService.updateNode(nodeId, input);
-  }
-
-  async refreshNode(nodeId: string): Promise<AdminNodeRecordDto> {
-    return this.adminNodeService.refreshNode(nodeId);
   }
 
   async probeNode(nodeId: string): Promise<AdminNodeRecordDto> {

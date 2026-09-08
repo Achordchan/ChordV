@@ -45,8 +45,7 @@ export class MeteringIncidentService {
       where: {
         id: connectedNodeId,
         isActive: true,
-        panelEnabled: true,
-        panelStatus: "online"
+        controlStatus: "online"
       },
       select: { id: true }
     });

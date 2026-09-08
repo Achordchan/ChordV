@@ -26,7 +26,7 @@ import {
 import { DataTable } from "../features/shared/DataTable";
 import { SectionCard } from "../features/shared/SectionCard";
 import { StatusBadge } from "../features/shared/StatusBadge";
-import type { PanelSyncQueueFilter } from "../utils/admin-queue-filters";
+import type { LeaseRevocationQueueFilter } from "../utils/admin-queue-filters";
 import type { TeamFormState, TeamMemberFormState } from "../utils/admin-forms";
 import { summarizeAdminDiagnosticMessage, summarizeTeamUsage } from "../utils/admin-filters";
 import { formatDateTime, formatTrafficGb } from "../utils/admin-format";
@@ -84,7 +84,7 @@ type UsersPageProps = {
   onToggleTeamUserStatus: (userId: string, nextStatus: "active" | "disabled", displayName: string) => void;
   onDisconnectUser: (userId: string, displayName: string, source?: "personal" | "team-member") => void;
   onRetryLeaseRevocationJob: (jobId: string) => void;
-  onOpenPanelSyncQueue: (filter?: PanelSyncQueueFilter) => void;
+  onOpenLeaseRevocationQueue: (filter?: LeaseRevocationQueueFilter) => void;
 };
 
 type DetailTarget =
@@ -186,8 +186,8 @@ export function UsersPage(props: UsersPageProps) {
                         <StatusBadge color={item.status === "active" ? "green" : "gray"} label={`账号${translateUserStatus(item.status)}`} />
                         <PanelSyncInlineStatus
                           item={fullSubscription ?? item}
-                          onOpenPanelSyncQueue={() =>
-                            props.onOpenPanelSyncQueue({
+                          onOpenLeaseRevocationQueue={() =>
+                            props.onOpenLeaseRevocationQueue({
                               subscriptionId: subscriptionId ?? undefined,
                               userId: item.id,
                               title: item.displayName
@@ -244,8 +244,8 @@ export function UsersPage(props: UsersPageProps) {
                         <StatusBadge color={item.status === "active" ? "green" : "gray"} label={item.status === "active" ? "启用" : "停用"} />
                         <PanelSyncInlineStatus
                           item={item}
-                          onOpenPanelSyncQueue={() =>
-                            props.onOpenPanelSyncQueue({
+                          onOpenLeaseRevocationQueue={() =>
+                            props.onOpenLeaseRevocationQueue({
                               subscriptionId: item.currentSubscription?.id,
                               teamId: item.id,
                               title: item.name
@@ -335,8 +335,8 @@ export function UsersPage(props: UsersPageProps) {
                                     />
                                     <PanelSyncInlineStatus
                                       item={userRecord}
-                                      onOpenPanelSyncQueue={() =>
-                                        props.onOpenPanelSyncQueue({
+                                      onOpenLeaseRevocationQueue={() =>
+                                        props.onOpenLeaseRevocationQueue({
                                           subscriptionId: item.currentSubscription?.id,
                                           userId: member.userId,
                                           teamId: item.id,
@@ -427,7 +427,7 @@ export function UsersPage(props: UsersPageProps) {
         onToggleTeamUserStatus={props.onToggleTeamUserStatus}
         onDisconnectUser={props.onDisconnectUser}
         onRetryLeaseRevocationJob={props.onRetryLeaseRevocationJob}
-        onOpenPanelSyncQueue={props.onOpenPanelSyncQueue}
+        onOpenLeaseRevocationQueue={props.onOpenLeaseRevocationQueue}
       />
     </Stack>
   );
@@ -513,7 +513,7 @@ type CustomerDetailDrawerProps = {
   onToggleTeamUserStatus: (userId: string, nextStatus: "active" | "disabled", displayName: string) => void;
   onDisconnectUser: (userId: string, displayName: string, source?: "personal" | "team-member") => void;
   onRetryLeaseRevocationJob: (jobId: string) => void;
-  onOpenPanelSyncQueue: (filter?: PanelSyncQueueFilter) => void;
+  onOpenLeaseRevocationQueue: (filter?: LeaseRevocationQueueFilter) => void;
 };
 
 function CustomerDetailDrawer(props: CustomerDetailDrawerProps) {
@@ -588,9 +588,9 @@ function CustomerDetailContent(props: CustomerDetailContentProps) {
           <Stack gap="sm">
             <PanelSyncInlineStatus
               item={fullSubscription ?? user}
-              onOpenPanelSyncQueue={() =>
+              onOpenLeaseRevocationQueue={() =>
                 openOutsideDetail(() =>
-                  props.onOpenPanelSyncQueue({
+                  props.onOpenLeaseRevocationQueue({
                     subscriptionId: subscriptionId ?? undefined,
                     userId: user.id,
                     title: user.displayName
@@ -693,9 +693,9 @@ function CustomerDetailContent(props: CustomerDetailContentProps) {
           <Stack gap="sm">
             <PanelSyncInlineStatus
               item={team}
-              onOpenPanelSyncQueue={() =>
+              onOpenLeaseRevocationQueue={() =>
                 openOutsideDetail(() =>
-                  props.onOpenPanelSyncQueue({
+                  props.onOpenLeaseRevocationQueue({
                     subscriptionId: team.currentSubscription?.id,
                     teamId: team.id,
                     title: team.name
@@ -847,9 +847,9 @@ function CustomerDetailContent(props: CustomerDetailContentProps) {
       <DrawerSection title="状态与同步">
         <PanelSyncInlineStatus
           item={userRecord}
-          onOpenPanelSyncQueue={() =>
+          onOpenLeaseRevocationQueue={() =>
             openOutsideDetail(() =>
-              props.onOpenPanelSyncQueue({
+              props.onOpenLeaseRevocationQueue({
                 subscriptionId: team.currentSubscription?.id,
                 userId: member.userId,
                 teamId: team.id,
@@ -1035,7 +1035,7 @@ function PanelSyncInlineStatus(props: {
     panelSyncMessage?: string | null;
     panelSyncSummary?: { pending: number; running: number; failed: number; total: number; lastError: string | null } | null;
   } | null;
-  onOpenPanelSyncQueue: () => void;
+  onOpenLeaseRevocationQueue: () => void;
 }) {
   const summary = props.item?.panelSyncSummary;
   if (props.item?.panelSyncStatus !== "pending" && (summary?.total ?? 0) === 0) {
@@ -1061,7 +1061,7 @@ function PanelSyncInlineStatus(props: {
           leftSection={<IconListDetails size={12} />}
           onClick={(event) => {
             event.stopPropagation();
-            props.onOpenPanelSyncQueue();
+            props.onOpenLeaseRevocationQueue();
           }}
           title="查看后台同步任务"
         >

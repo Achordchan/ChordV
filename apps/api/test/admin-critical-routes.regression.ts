@@ -171,16 +171,10 @@ const devDataServiceStub = {
   createTeamSubscription: async (teamId: string, body: unknown) => record("team-subscription-create", teamId, body),
   getTeamUsage: async (teamId: string) => record("team-usage", teamId),
   listAdminNodes: async () => [record("nodes-list", "all")],
-  listAdminPanelSyncJobs: async () => [record("panel-jobs-list", "all")],
-  retryAdminPanelSyncJob: async (jobId: string) => [record("panel-job-retry", jobId)],
-  retryAdminPanelSyncJobsForNode: async (nodeId: string) => [record("panel-jobs-node-retry", nodeId)],
   listAdminLeaseRevocationJobs: async () => [record("lease-jobs-list", "all")],
   retryAdminLeaseRevocationJob: async (jobId: string) => [record("lease-job-retry", jobId)],
   retryAdminLeaseRevocationJobsForNode: async (nodeId: string) => [record("lease-jobs-node-retry", nodeId)],
-  importNodeFromSubscription: async (body: unknown) => record("node-import", "new", body),
-  listNodePanelInbounds: async (body: unknown) => record("node-panel-inbounds", "panel", body),
   updateNode: async (nodeId: string, body: unknown) => record("node-update", nodeId, body),
-  refreshNode: async (nodeId: string) => record("node-refresh", nodeId),
   probeNode: async (nodeId: string) => record("node-probe", nodeId),
   probeAllNodes: async () => [record("nodes-probe-all", "all")],
   deleteNode: async (nodeId: string) => record("node-delete", nodeId),
@@ -610,37 +604,10 @@ async function main() {
     );
     assert.equal((await requestJson(baseUrl, "/api/admin/teams/team_1/usage", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes", { method: "GET" })).status, 200);
-    assert.equal((await requestJson(baseUrl, "/api/admin/nodes/panel-sync-jobs", { method: "GET" })).status, 200);
-    assert.equal((await requestJson(baseUrl, "/api/admin/nodes/panel-sync-jobs/job_1/retry")).status, 201);
-    assert.equal((await requestJson(baseUrl, "/api/admin/nodes/node_1/panel-sync-jobs/retry")).status, 201);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/lease-revocation-jobs", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/lease-revocation-jobs/lease_job_1/retry")).status, 201);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/node_1/lease-revocation-jobs/retry")).status, 201);
-    assert.equal(
-      (await requestJson(baseUrl, "/api/admin/nodes/import", {
-        body: { subscriptionUrl: "https://node.example.com/sub", name: "UAT Node", countryCode: "US" }
-      })).status,
-      201
-    );
-    assert.equal(
-      (await requestJson(baseUrl, "/api/admin/nodes/import", {
-        body: {
-          subscriptionUrl: "vless://11111111-1111-4111-8111-111111111111@node.example.com:443?security=reality&pbk=public-key&sid=abcd&sni=node.example.com#UAT",
-          name: "UAT Direct VLESS Node",
-          countryCode: "US"
-        }
-      })).status,
-      201,
-      "节点导入必须允许直接使用 vless:// 链接"
-    );
-    assert.equal(
-      (await requestJson(baseUrl, "/api/admin/nodes/panel-inbounds", {
-        body: { panelBaseUrl: "https://panel.example.com", panelUsername: "admin", panelPassword: "password" }
-      })).status,
-      201
-    );
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/node_1", { method: "PATCH", body: { isActive: false } })).status, 200);
-    assert.equal((await requestJson(baseUrl, "/api/admin/nodes/node_1/refresh")).status, 201);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/node_1/probe")).status, 201);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/probe-all")).status, 201);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/node_1", { method: "DELETE" })).status, 200);
@@ -916,33 +883,10 @@ async function main() {
         { route: "team-subscription-create", value: "team_1", body: { planId: "plan_1", expireAt, totalTrafficGb: 10 } },
         { route: "team-usage", value: "team_1" },
         { route: "nodes-list", value: "all" },
-        { route: "panel-jobs-list", value: "all" },
-        { route: "panel-job-retry", value: "job_1" },
-        { route: "panel-jobs-node-retry", value: "node_1" },
         { route: "lease-jobs-list", value: "all" },
         { route: "lease-job-retry", value: "lease_job_1" },
         { route: "lease-jobs-node-retry", value: "node_1" },
-        {
-          route: "node-import",
-          value: "new",
-          body: { subscriptionUrl: "https://node.example.com/sub", name: "UAT Node", countryCode: "US" }
-        },
-        {
-          route: "node-import",
-          value: "new",
-          body: {
-            subscriptionUrl: "vless://11111111-1111-4111-8111-111111111111@node.example.com:443?security=reality&pbk=public-key&sid=abcd&sni=node.example.com#UAT",
-            name: "UAT Direct VLESS Node",
-            countryCode: "US"
-          }
-        },
-        {
-          route: "node-panel-inbounds",
-          value: "panel",
-          body: { panelBaseUrl: "https://panel.example.com", panelUsername: "admin", panelPassword: "password" }
-        },
         { route: "node-update", value: "node_1", body: { isActive: false } },
-        { route: "node-refresh", value: "node_1" },
         { route: "node-probe", value: "node_1" },
         { route: "nodes-probe-all", value: "all" },
         { route: "node-delete", value: "node_1" },

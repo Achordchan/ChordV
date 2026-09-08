@@ -275,8 +275,8 @@ async function assertActualScheduledAndStreams() {
   // Use the actual decorated cron worker, not a synthetic app.close mock.
   const batch = deferred(); let claims = 0;
   const worker = Object.create(RuntimeSessionService.prototype) as RuntimeSessionService;
-  Object.assign(worker, { prisma: { panelSyncJob: { findMany: async () => { claims++; await batch.promise; return []; } } }, logger: { warn() {} } });
-  const running = worker.retryPendingPanelSyncJobs(); await sleep(10); assert.equal(claims, 1);
+  Object.assign(worker, { prisma: { leaseRevocationJob: { findMany: async () => { claims++; await batch.promise; return []; } } }, logger: { warn() {} } });
+  const running = worker.retryPendingLeaseRevocationJobs(); await sleep(10); assert.equal(claims, 1);
   const client = new ClientRuntimeEventsService({} as never);
   const admin = new AdminRuntimeEventsService({} as never);
   const validation = deferred();
@@ -300,7 +300,7 @@ async function assertActualScheduledAndStreams() {
   let drained = false;
   await sleep(10);
   const drain = workLifecycle.drain(server, 4000).then(() => { drained = true; });
-  await worker.retryPendingPanelSyncJobs(); assert.equal(claims, 1, "no cron DB claims during drain");
+  await worker.retryPendingLeaseRevocationJobs(); assert.equal(claims, 1, "no cron DB claims during drain");
   const agentClaimsBeforeDrain = agentClaims;
   await agentEvents.retryDueCommands();
   assert.equal(agentClaims, agentClaimsBeforeDrain, "no agent command claims during drain");
@@ -357,12 +357,12 @@ async function assertBudgetWindowsAndNoRaceTrack() {
   // retry queue that will re-run it, a background logger). Work whose whole purpose is
   // to CREATE the durable record has no such owner: releasing its accounting lets a
   // self-update close Prisma and exit mid-enqueue, leaving the local change without the
-  // panel sync it implies. Those helpers therefore stay tracked. They are local DB
-  // enqueues, so the drain waits on the database, never on an unreachable panel.
+  // follow-up it implies. Those helpers therefore stay tracked. They are local DB
+  // enqueues, so the drain waits on the database, never on an unreachable remote.
   // Converting them needs "persist a retry record, THEN bound the wait" — until that
   // exists this list must SHRINK, never grow.
   const keptTracked = new Map<string, number>([
-    ["src/modules/common/runtime-session.service.ts", 2],   // queuePanelAccessSyncForNodeSubscription, withNodePanelBindingSubscriptionBudget
+    ["src/modules/common/runtime-session.service.ts", 1],   // withNodePanelBindingSubscriptionBudget
     ["src/modules/common/admin-node.service.ts", 2],        // runAfterLocalNodeSaveWithBudget, tryRunAfterLocalNodeSave
     ["src/modules/common/admin-subscription.service.ts", 1] // withSubscriptionFollowUpBudget
   ]);

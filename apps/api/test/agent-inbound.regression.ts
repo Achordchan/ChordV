@@ -614,9 +614,7 @@ function testAdminNodeRecordInboundFields() {
     latencyMs: 0, probeLatencyMs: null, protocol: "vless", security: "reality",
     serverHost: "203.0.113.7", serverPort: 443, serverName: "www.microsoft.com",
     shortId: "0123456789abcdef", spiderX: "/",
-    subscriptionUrl: null, statsLastSyncedAt: null,
-    panelBaseUrl: null, panelApiBasePath: null, panelUsername: null, panelPassword: null,
-    panelInboundId: null, panelEnabled: false, panelStatus: "offline", panelLastSyncedAt: null, panelError: null,
+    statsLastSyncedAt: null,
     probeStatus: "unknown", probeCheckedAt: null, probeError: null,
     createdAt: new Date(0), updatedAt: new Date(0)
   };
