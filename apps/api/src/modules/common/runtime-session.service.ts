@@ -484,15 +484,18 @@ export class RuntimeSessionService {
   }
 
   async queueDirectSubscriptionAccessSync(subscriptionId: string) {
-    // One transaction: binding activation, baseline, revision bump and the
-    // ENSURE_USER job must commit or roll back together. A binding marked
-    // active without its command leaves the control plane believing the node
-    // has the user while nothing retries the missing command.
-    return this.prisma.$transaction((tx) =>
-      this.syncSubscriptionPanelAccessLocked(subscriptionId, {
-        writer: tx,
-        ensureOnly: true
-      })
+    // One transaction, under the SHARED subscription usage lock: binding
+    // activation, baseline, revision bump and the ENSURE_USER job must commit
+    // or roll back together, and the sync must serialize against traffic
+    // resets and other provisioning paths (other API processes included —
+    // the lock is a pg advisory lock when DATABASE_URL is set).
+    return runWithSubscriptionUsageLock(subscriptionId, () =>
+      this.prisma.$transaction((tx) =>
+        this.syncSubscriptionPanelAccessLocked(subscriptionId, {
+          writer: tx,
+          ensureOnly: true
+        })
+      )
     );
   }
 
@@ -533,12 +536,24 @@ export class RuntimeSessionService {
     });
     for (const subscription of subscriptions) {
       try {
-        await this.prisma.$transaction((tx) => this.queueDirectSubscriptionAccessSyncTx(tx, subscription.id));
+        await this.runDirectSubscriptionAccessSyncLocked(subscription.id);
       } catch (error) {
         this.logDirectProvisioningRetry(subscription.id, error, "Node re-enable provisioning");
       }
     }
     return subscriptions.length;
+  }
+
+  /**
+   * The provisioning sync under the shared subscription usage lock: without
+   * it, a sync started just before a traffic reset (or running in another API
+   * process) could reactivate quiesced bindings mid-reset and invalidate the
+   * reset's accounting boundary.
+   */
+  private async runDirectSubscriptionAccessSyncLocked(subscriptionId: string) {
+    return runWithSubscriptionUsageLock(subscriptionId, () =>
+      this.prisma.$transaction((tx) => this.queueDirectSubscriptionAccessSyncTx(tx, subscriptionId))
+    );
   }
 
   private logDirectProvisioningRetry(subscriptionId: string, error: unknown, label: string) {
@@ -590,7 +605,13 @@ export class RuntimeSessionService {
   async retryPendingDirectProvisioning() {
     const subscriptions = await this.prisma.panelClientBinding.findMany({
       where: {
-        status: "disabled",
+        // "deleted" matters too: an expired subscription's bindings are marked
+        // deleted, and renewing before the removal watermarks settle fails in
+        // assertDirectTerminalWatermarksSettled — without deleted bindings in
+        // the scan that subscription would never be retried once settlement
+        // completes. The sync's eligibility checks still decide who actually
+        // gets provisioned.
+        status: { in: ["disabled", "deleted"] },
         // The sync never provisions on an inactive node — prune here so
         // bindings of disabled nodes cannot occupy retry slots.
         node: { isActive: true },
@@ -612,7 +633,7 @@ export class RuntimeSessionService {
         continue;
       }
       try {
-        await this.prisma.$transaction((tx) => this.queueDirectSubscriptionAccessSyncTx(tx, subscriptionId));
+        await this.runDirectSubscriptionAccessSyncLocked(subscriptionId);
       } catch (error) {
         this.logDirectProvisioningRetry(subscriptionId, error, "Direct provisioning retry");
       }

@@ -13,7 +13,8 @@ import { isNodeOnboardingReady } from "../src/modules/common/node-onboarding-pol
 // 1) The connect gate must ADMIT direct_primary (the only supported mode now).
 //    An inverted condition rejects every connection to a registered, enabled
 //    node — no normal client can connect at all.
-const runtimeSessionSource = readFileSync(path.resolve(__dirname, "../src/modules/common/runtime-session.service.ts"), "utf8");
+  const runtimeSessionSource = readFileSync(path.resolve(__dirname, "../src/modules/common/runtime-session.service.ts"), "utf8");
+  const adminSubscriptionSource = readFileSync(path.resolve(__dirname, "../src/modules/common/admin-subscription.service.ts"), "utf8");
 assert.equal(usesAgentControl("direct_primary"), true, "direct_primary 必须由 agent 控制");
 assert.equal(usesAgentControl("xui_primary"), false, "xui_primary 不再受支持");
 assert.match(
@@ -260,8 +261,13 @@ async function main() {
   //    retryPendingDirectProvisioning re-runs the per-subscription sync every
   //    tick until settlement lets the re-activation through. A one-shot warn
   //    would leave the node enabled with its users permanently disabled.
-  //    Retries must also be FAIR (cursor rotation, inactive nodes pruned) and
-  //    must skip subscriptions whose direct traffic reset is in flight.
+  //    Retries must also be FAIR (cursor rotation, inactive nodes pruned),
+  //    cover DELETED bindings (renewal during removal settlement), skip
+  //    subscriptions whose direct traffic reset is in flight, and run the sync
+  //    under the SHARED subscription usage lock (cross-process serialization
+  //    against traffic resets). The local lock path needs no DATABASE_URL.
+  const previousDatabaseUrl = process.env.DATABASE_URL;
+  delete process.env.DATABASE_URL;
   const scannedWheres: Array<Record<string, unknown>> = [];
   const synced: string[] = [];
   const subscriptionsPool = ["sub_1", "sub_2", "sub_3"];
@@ -300,8 +306,8 @@ async function main() {
   assert.deepEqual(synced, ["sub_1", "sub_3", "sub_1", "sub_3"], "周期重试持续进行");
   assert.deepEqual(
     scannedWheres[1],
-    { status: "disabled", node: { isActive: true } },
-    "查询必须剪掉非活跃节点的绑定，且游标回绕后从头扫起"
+    { status: { in: ["disabled", "deleted"] }, node: { isActive: true } },
+    "查询必须覆盖 deleted 绑定（续费遇删除沉降失败的订阅才有人重试）并剪掉非活跃节点"
   );
 
   // Cursor advance: a full batch leaves the cursor at the last id, so a large
@@ -313,6 +319,7 @@ async function main() {
     "sub_1",
     "游标推进后只扫其后的订阅"
   );
+  process.env.DATABASE_URL = previousDatabaseUrl;
 
   // A reset's in-flight marker is released when the reset finishes, so the
   // reconciler picks the subscription up on a later tick.
@@ -355,14 +362,29 @@ async function main() {
     /if \(this\.directTrafficResetsInFlight\.has\(subscriptionId\)\) \{\s*\n\s*continue;\s*\n\s*\}/,
     "重试循环必须跳过重置进行中的订阅"
   );
+  assert.match(
+    runtimeSessionSource,
+    /private async runDirectSubscriptionAccessSyncLocked\(subscriptionId: string\) \{\s*\n\s*return runWithSubscriptionUsageLock\(subscriptionId, \(\) =>\s*\n\s*this\.prisma\.\$transaction\(\(tx\) => this\.queueDirectSubscriptionAccessSyncTx\(tx, subscriptionId\)\)\s*\n\s*\);/,
+    "重试与重启用供给必须持共享订阅 usage lock（跨进程与流量重置串行）"
+  );
+  assert.match(
+    runtimeSessionSource,
+    /async queueDirectSubscriptionAccessSync\(subscriptionId: string\) \{\s*\n\s*\/\/ One transaction, under the SHARED subscription usage lock[\s\S]*?return runWithSubscriptionUsageLock\(subscriptionId, \(\) =>/,
+    "公共供给入口同样必须持锁"
+  );
 
   // 9) The PUBLIC provisioning entry point must be one transaction: a failure
   //    after binding activation must not leave an active binding without its
   //    ENSURE_USER command (nothing would retry the missing command).
   assert.match(
     runtimeSessionSource,
-    /async queueDirectSubscriptionAccessSync\(subscriptionId: string\) \{\s*\n\s*\/\/ One transaction[\s\S]*?return this\.prisma\.\$transaction\(\(tx\) =>\s*\n\s*this\.syncSubscriptionPanelAccessLocked\(subscriptionId, \{\s*\n\s*writer: tx,\s*\n\s*ensureOnly: true\s*\n\s*\}\)\s*\n\s*\);/,
-    "公共供给入口必须整体包在事务里"
+    /async queueDirectSubscriptionAccessSync\(subscriptionId: string\) \{\s*\n\s*\/\/ One transaction, under the SHARED subscription usage lock[\s\S]*?return runWithSubscriptionUsageLock\(subscriptionId, \(\) =>\s*\n\s*this\.prisma\.\$transaction\(\(tx\) =>\s*\n\s*this\.syncSubscriptionPanelAccessLocked\(subscriptionId, \{\s*\n\s*writer: tx,\s*\n\s*ensureOnly: true\s*\n\s*\}\)\s*\n\s*\)\s*\n\s*\);/,
+    "公共供给入口必须持共享锁并整体包在事务里"
+  );
+  assert.match(
+    adminSubscriptionSource,
+    /await this\.runtimeSessionService\.withDirectTrafficResetInFlight\(subscription\.id, async \(\) => \{\s*\n\s*await runWithSubscriptionUsageLock\(subscription\.id, async \(\) => \{\s*\n\s*await this\.quiesceAndSettleDirectTrafficReset\(subscription\.id, targetUserId\);/,
+    "流量重置必须从 quiesce 起就持有订阅 usage lock（供给与之全程互斥）"
   );
 
   console.log("runtime session regression passed (connect 门不反转、供给资格共享判定、节点禁用联动绑定、删除绑定保留计量基线)");

@@ -1758,115 +1758,117 @@ export class AdminSubscriptionService {
     let updatedSubscription: AdminSubscriptionEntity | null = null;
     let panelSync: PanelSyncBestEffortResult = { ok: true };
 
-    // The whole quiesce → settle → counters span must exclude the automatic
-    // provisioning reconciler: mid-reset the subscription is still eligible,
-    // so retryPendingDirectProvisioning would reactivate the quiesced
-    // bindings and break the reset's settlement boundary. The marker is
-    // in-memory like the reset itself — a restart aborts the reset, and the
-    // reconciler then restoring service is the intended recovery.
+    // The whole quiesce → settle → counters span must exclude other
+    // provisioning: mid-reset the subscription is still eligible, so a
+    // provisioning sync (the reconciler cron, a renewal, or another API
+    // process) would reactivate the quiesced bindings and break the reset's
+    // settlement boundary. The subscription usage lock (a pg advisory lock in
+    // production) is held for the entire span — every provisioning path takes
+    // the same lock — and the in-flight marker is the same-process fast path;
+    // both are in-memory like the reset itself, so a restart aborts the reset
+    // and the reconciler then restoring service is the intended recovery.
     await this.runtimeSessionService.withDirectTrafficResetInFlight(subscription.id, async () => {
-      await this.quiesceAndSettleDirectTrafficReset(subscription.id, targetUserId);
-
       await runWithSubscriptionUsageLock(subscription.id, async () => {
-      const resetSampledAt = new Date();
+        await this.quiesceAndSettleDirectTrafficReset(subscription.id, targetUserId);
 
-      try {
-        updatedSubscription = await this.prisma.$transaction(async (tx) => {
-          const bindings = await tx.panelClientBinding.findMany({
-            where: {
-              subscriptionId: subscription.id,
-              ...(targetUserId ? { userId: targetUserId } : {}),
-              status: { in: ["active", "disabled"] }
-            },
-            include: {
-              node: true
-            }
-          });
-          clearedBindingCount = bindings.length;
-          for (const binding of bindings) {
-            if (binding.source === "direct" && binding.status === "disabled") {
-              await assertDirectTerminalWatermarksSettled(tx, binding);
-            }
-          }
-          const baselineSamples = bindings.map((binding: any) => ({
-            binding,
-            uplinkBytes: binding.source === "direct" ? binding.lastUplinkBytes : 0n,
-            downlinkBytes: binding.source === "direct" ? binding.lastDownlinkBytes : 0n,
-            sampledAt: resetSampledAt
-          }));
-
-          const lockedSubscription = await tx.subscription.findUnique({
-            where: { id: subscription.id },
-            include: {
-              plan: true,
-              user: true,
-              team: true,
-              nodeAccesses: true
-            }
-          });
-          if (!lockedSubscription) {
-            return null;
-          }
-
-          await this.persistTrafficResetBaselineSamples(baselineSamples.filter((item): item is NonNullable<typeof item> => Boolean(item)), tx);
-          const totalTrafficGb = options.totalTrafficGb ?? lockedSubscription.totalTrafficGb;
-          const expireAt =
-            options.renewExpireAt !== undefined
-              ? resolveRenewExpireAt(lockedSubscription.expireAt, options.renewExpireAt ?? undefined)
-              : options.expireAt ?? new Date(lockedSubscription.expireAt);
-          let usedTrafficGb = 0;
-          let usedTrafficBytes = 0n;
-
-          if (lockedSubscription.teamId) {
-            await tx.trafficLedger.deleteMany({
+        const resetSampledAt = new Date();
+        try {
+          updatedSubscription = await this.prisma.$transaction(async (tx) => {
+            const bindings = await tx.panelClientBinding.findMany({
               where: {
-                teamId: lockedSubscription.teamId,
-                subscriptionId: lockedSubscription.id,
-                ...(targetUserId ? { userId: targetUserId } : {})
+                subscriptionId: subscription.id,
+                ...(targetUserId ? { userId: targetUserId } : {}),
+                status: { in: ["active", "disabled"] }
+              },
+              include: {
+                node: true
               }
             });
+            clearedBindingCount = bindings.length;
+            for (const binding of bindings) {
+              if (binding.source === "direct" && binding.status === "disabled") {
+                await assertDirectTerminalWatermarksSettled(tx, binding);
+              }
+            }
+            const baselineSamples = bindings.map((binding: any) => ({
+              binding,
+              uplinkBytes: binding.source === "direct" ? binding.lastUplinkBytes : 0n,
+              downlinkBytes: binding.source === "direct" ? binding.lastDownlinkBytes : 0n,
+              sampledAt: resetSampledAt
+            }));
 
-            if (targetUserId) {
-              const aggregate = await tx.trafficLedger.aggregate({
-                where: { subscriptionId: lockedSubscription.id },
-                _sum: { usedTrafficGb: true, usedTrafficBytes: true }
+            const lockedSubscription = await tx.subscription.findUnique({
+              where: { id: subscription.id },
+              include: {
+                plan: true,
+                user: true,
+                team: true,
+                nodeAccesses: true
+              }
+            });
+            if (!lockedSubscription) {
+              return null;
+            }
+
+            await this.persistTrafficResetBaselineSamples(baselineSamples.filter((item): item is NonNullable<typeof item> => Boolean(item)), tx);
+            const totalTrafficGb = options.totalTrafficGb ?? lockedSubscription.totalTrafficGb;
+            const expireAt =
+              options.renewExpireAt !== undefined
+                ? resolveRenewExpireAt(lockedSubscription.expireAt, options.renewExpireAt ?? undefined)
+                : options.expireAt ?? new Date(lockedSubscription.expireAt);
+            let usedTrafficGb = 0;
+            let usedTrafficBytes = 0n;
+
+            if (lockedSubscription.teamId) {
+              await tx.trafficLedger.deleteMany({
+                where: {
+                  teamId: lockedSubscription.teamId,
+                  subscriptionId: lockedSubscription.id,
+                  ...(targetUserId ? { userId: targetUserId } : {})
+                }
               });
-              usedTrafficGb = aggregate._sum.usedTrafficGb ?? 0;
-              usedTrafficBytes = aggregate._sum.usedTrafficBytes ?? 0n;
+
+              if (targetUserId) {
+                const aggregate = await tx.trafficLedger.aggregate({
+                  where: { subscriptionId: lockedSubscription.id },
+                  _sum: { usedTrafficGb: true, usedTrafficBytes: true }
+                });
+                usedTrafficGb = aggregate._sum.usedTrafficGb ?? 0;
+                usedTrafficBytes = aggregate._sum.usedTrafficBytes ?? 0n;
+              }
             }
-          }
 
-          panelSync = { ok: true };
+            panelSync = { ok: true };
 
-          const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
-          return tx.subscription.update({
-            where: { id: lockedSubscription.id },
-            data: {
-              totalTrafficGb,
-              usedTrafficGb,
-              remainingTrafficGb,
-              totalTrafficBytes: trafficGbNumberToBytes(totalTrafficGb),
-              usedTrafficBytes,
-              expireAt,
-              state: resolveSubscriptionState(
-                options.statePreference ?? (lockedSubscription.state === "paused" ? "paused" : "active"),
+            const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
+            return tx.subscription.update({
+              where: { id: lockedSubscription.id },
+              data: {
+                totalTrafficGb,
+                usedTrafficGb,
                 remainingTrafficGb,
-                expireAt
-              ),
-              ...(options.sourceAction ? { sourceAction: options.sourceAction } : {}),
-              lastSyncedAt: new Date()
-            },
-            include: {
-              plan: true,
-              user: true,
-              team: true,
-              nodeAccesses: true
-            }
-          });
-        });
-      } catch (error) {
-        throw toAdminLocalSaveHttpError(error, "订阅流量重置保存失败，请刷新订阅列表后重试。");
-      }
+                totalTrafficBytes: trafficGbNumberToBytes(totalTrafficGb),
+                usedTrafficBytes,
+                expireAt,
+                state: resolveSubscriptionState(
+                  options.statePreference ?? (lockedSubscription.state === "paused" ? "paused" : "active"),
+                  remainingTrafficGb,
+                  expireAt
+                ),
+                ...(options.sourceAction ? { sourceAction: options.sourceAction } : {}),
+                lastSyncedAt: new Date()
+              },
+              include: {
+                plan: true,
+                user: true,
+                team: true,
+                nodeAccesses: true
+              }
+            });
+            });
+        } catch (error) {
+          throw toAdminLocalSaveHttpError(error, "订阅流量重置保存失败，请刷新订阅列表后重试。");
+        }
       });
     });
 
