@@ -23,10 +23,12 @@ export class AgentRunner {
   /** Set when Xray was (re)started; cleared only once users are back in place. */
   private reconcilePending = false;
   /**
-   * Set when this host has no inbound of ours to provision users into (the
-   * foreign-inbound cleanup published an empty configuration). Xray cannot add
-   * a user to a tag that does not exist, so every reconcile would throw — the
-   * intent stays pending until a deployment recreates the tag.
+   * True while this host has no inbound to provision users into: Xray cannot
+   * add a user to a tag that does not exist, so every reconcile would throw.
+   * Read from the DURABLE intent at the top of start() — the flag must survive
+   * a process restart between the foreign-inbound cleanup and the
+   * ENSURE_INBOUND that recreates the tag — and cleared only when a deployment
+   * completes.
    */
   private awaitingInbound = false;
   private readonly inbound: InboundApplier;
@@ -56,6 +58,17 @@ export class AgentRunner {
   }
 
   async start(): Promise<void> {
+    // Establish the missing-inbound state BEFORE any startup reconciliation:
+    // everything below (refreshConfig, recovery, restart detection) provisions
+    // users, and Xray rejects adding a user to a tag that does not exist. The
+    // durable intent is what survives a restart between the foreign-inbound
+    // cleanup and the ENSURE_INBOUND that restores service — without it every
+    // subsequent start() would throw before the events loop can receive that
+    // command, and the agent could never recover itself. It is deliberately NOT
+    // derived from "no deployment record": hosts whose inbound predates inbound
+    // deployment (operator-managed tags) have no record either, and their users
+    // must keep flowing.
+    this.awaitingInbound = this.store.isInboundAwaiting();
     try {
       await this.refreshConfig();
     } catch (error) {
@@ -183,14 +196,20 @@ export class AgentRunner {
       return;
     }
     if (!status.deployed) return;
+    // Record the intent DURABLY before resetting: a crash between the two
+    // would otherwise lose the "tag is gone" fact with the process, and the
+    // next start() would throw at the missing tag before it can receive the
+    // redeployment.
+    this.store.setInboundAwaiting(true);
+    this.awaitingInbound = true;
     await this.inbound.reset(randomUUID());
     // The tag is gone with the configuration, so the users this identity wants
     // have nowhere to go. Provisioning them now would throw out of start() —
     // and take down the very process that must stay up to receive the
-    // ENSURE_INBOUND that recreates the inbound. Record the intent and let the
-    // deployment carry it out (ensureInbound reconciles on every apply).
+    // ENSURE_INBOUND that recreates the inbound. Record the re-provisioning
+    // intent and let the deployment carry it out (ensureInbound reconciles on
+    // every apply).
     this.reconcilePending = true;
-    this.awaitingInbound = true;
     console.warn('[node-agent] 已清除不属于本节点身份的 Xray 入站配置，等待控制面重新下发入站后再恢复用户');
   }
 
@@ -336,7 +355,9 @@ export class AgentRunner {
             const commandResult = await this.commands.execute(command, this.currentConfig.controlMode === 'direct_primary');
             if (commandResult.status === 'completed' && command.type === 'ENSURE_INBOUND') {
               // The tag exists again and the deployment reconciled the users
-              // into it, so the deferred intent is satisfied.
+              // into it, so the deferred intent is satisfied — durably too, or
+              // the next restart would defer again for no reason.
+              this.store.setInboundAwaiting(false);
               this.awaitingInbound = false;
               this.reconcilePending = false;
             }

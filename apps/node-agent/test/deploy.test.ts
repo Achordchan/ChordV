@@ -22,6 +22,23 @@ test('健康检查以状态库所属用户身份执行，缺少 runuser 时中�
   assert.match(healthCheck, /缺少 runuser/);
 });
 
+test('单元里每个硬性 ReadWritePaths 都必须由 install-systemd.sh 建出', () => {
+  // install-systemd.sh 只装 agent，不知道任何 Xray 交接目录。硬性要求的路径
+  // 若不存在，systemd 连 mount namespace 都建不出来，服务起不来——既有的
+  // 用户管理负载也被拖死。装不出来的路径必须带 "-" 前缀（可选）。
+  const unit = readFileSync(new URL('../deploy/chordv-node-agent.service', import.meta.url), 'utf8');
+  const installer = readFileSync(new URL('../deploy/install-systemd.sh', import.meta.url), 'utf8');
+  const hard = [...unit.matchAll(/^ReadWritePaths=(?!-)(\S+)\s*$/gm)].map((match) => match[1]);
+  assert.ok(hard.includes('/var/lib/chordv-node-agent'), '状态目录应是硬性可写路径');
+  const created = [...installer.matchAll(/^install -d .*?((?:\/[^\s"'\\]+)+)\s*$/gm)].map((match) => match[1]);
+  for (const path of hard) {
+    assert.ok(
+      created.includes(path),
+      `ReadWritePaths=${path} 未由 install-systemd.sh 创建，必须加 "-" 前缀改为可选`,
+    );
+  }
+});
+
 test('健康检查解析的默认状态库路径与 loadConfig 一致', () => {
   // Diverging defaults would keep a root-run probe from dropping to the real
   // database owner, and the ownership guard would then reject a healthy agent.

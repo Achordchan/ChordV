@@ -250,6 +250,23 @@ export class AgentStore {
     this.db.prepare('DELETE FROM meta_v2 WHERE key = ?').run('inbound_state');
   }
 
+  /**
+   * Durable "the tag is gone; defer user provisioning" intent. The
+   * foreign-inbound cleanup clears the only tag users could be provisioned
+   * into, and the in-memory flag dies with the process that ran the cleanup —
+   * a restart before the redeploying ENSURE_INBOUND arrives must land on the
+   * same conclusion, or its first reconcile throws out of start() and the
+   * command can never be received. Cleared when a deployment completes.
+   */
+  isInboundAwaiting(): boolean {
+    return this.getMeta('inbound_awaiting') === '1';
+  }
+
+  setInboundAwaiting(awaiting: boolean): void {
+    if (awaiting) this.setMeta('inbound_awaiting', '1');
+    else this.db.prepare('DELETE FROM meta_v2 WHERE key = ?').run('inbound_awaiting');
+  }
+
   advanceConfigRevision(revision: string): void {
     const next = decimal(revision);
     if (BigInt(next) > BigInt(this.getConfigRevision())) this.setMeta('config_revision', next);

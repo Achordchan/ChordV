@@ -782,3 +782,121 @@ test('清空外来入站后仍能启动，用户等到入站重新部署才补�
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('清空外来入站后、重新部署前进程重启，重启后的启动不得向已删除的 tag 下发用户', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-foreign-restart-'));
+  const store = new AgentStore(join(directory, 'agent.db'), {
+    nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
+  });
+  const desired = user();
+  const snapshot: AgentConfigSnapshot = { nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [desired] };
+  store.applyConfigSnapshot(snapshot);
+  const requestDir = join(directory, 'xray');
+  const resultDir = join(directory, 'xray-out');
+  mkdirSync(requestDir, { recursive: true });
+  mkdirSync(resultDir, { recursive: true });
+  // The restart lands BETWEEN the cleanup and the redeployment: the tag died
+  // with the foreign inbound, and the in-memory "waiting for an inbound" flag
+  // died with the first process. The new process must reach the same
+  // conclusion from durable state alone — otherwise its first reconcile hits
+  // a tag that does not exist, start() throws, and the ENSURE_INBOUND that
+  // restores service can never arrive (systemd just keeps restarting).
+  let tagExists = true;
+  let helperDeployed = true;
+  let live: Array<{ email: string; uuid?: string }> = [];
+  let missingTagAttempts = 0;
+  const results: Array<{ status: string; error?: string }> = [];
+  const command = {
+    commandId: 'command-inbound-2',
+    type: 'ENSURE_INBOUND',
+    targetRevision: '2',
+    payload: {
+      inboundTag: 'test-in', listenPort: 443, dest: 'www.microsoft.com:443',
+      serverNames: ['www.microsoft.com'], flow: 'xtls-rprx-vision', fingerprint: 'chrome', spiderX: '/',
+    },
+  };
+  const config: AgentConfig = {
+    agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
+    databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: requestDir, inboundResultDir: resultDir, restartToleranceMs: 2_000,
+    sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
+  };
+  const xray: XrayAdapter = {
+    health: async () => undefined,
+    uptimeSeconds: async () => 1,
+    inboundLive: async () => tagExists,
+    readAbsoluteCounters: async () => [],
+    listUsers: async () => live,
+    ensureUser: async (target) => {
+      if (!tagExists) {
+        missingTagAttempts += 1;
+        throw new Error('入站 test-in 不存在');
+      }
+      live = [...live.filter((item) => item.email !== target.email), { email: target.email, uuid: target.uuid }];
+    },
+    removeUser: async (email) => { live = live.filter((item) => item.email !== email); },
+  };
+  const applier = {
+    status: async (requestId: string) => ({ requestId, ok: true, changed: false, restarted: false, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: helperDeployed, listenPort: 443, xrayVersion: '' }),
+    reset: async (requestId: string) => {
+      helperDeployed = false;
+      tagExists = false;
+      live = [];
+      return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listen: '', deployed: false, listenPort: 0, xrayVersion: '' };
+    },
+    apply: async (_spec: unknown, requestId: string) => {
+      helperDeployed = true;
+      tagExists = true;
+      return {
+        requestId, ok: true, changed: true, restarted: true,
+        realityPublicKey: 'k'.repeat(43), shortId: '0123456789abcdef', serverName: 'www.microsoft.com',
+        listen: '0.0.0.0', deployed: true, listenPort: 443, xrayVersion: 'Xray 1.8.24',
+      };
+    },
+  };
+
+  try {
+    // First process: clears the foreign inbound, then "goes down".
+    const first = new AgentRunner(config, store, {
+      getConfig: async () => snapshot,
+      heartbeat: async () => ({ accepted: true, ackThrough: '0', configRevision: '1' }),
+      uploadBatch: async () => ({ accepted: true, duplicate: false, ackThrough: '1' }),
+      reportCommandResult: async () => undefined,
+      consumeEvents: async (_handler: unknown, signal: AbortSignal) => {
+        await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+      },
+    } as unknown as AgentApiClient, xray, applier);
+    await first.start();
+    assert.equal(tagExists, false, '第一个进程应已清空外来入站');
+    await first.stop();
+
+    // Second process over the same durable state: the helper confirms nothing
+    // is deployed. Startup must defer user provisioning until the inbound is
+    // redeployed instead of throwing at the missing tag.
+    let delivered = false;
+    const second = new AgentRunner(config, store, {
+      getConfig: async () => snapshot,
+      whoami: async () => ({ observedIp: '203.0.113.9' }),
+      heartbeat: async () => ({ accepted: true, ackThrough: '0', configRevision: '1' }),
+      uploadBatch: async () => ({ accepted: true, duplicate: false, ackThrough: '1' }),
+      reportCommandResult: async (result: { status: string; error?: string }) => { results.push(result); },
+      consumeEvents: async (handler: (command: unknown) => Promise<void>, signal: AbortSignal) => {
+        if (!delivered) {
+          delivered = true;
+          await handler(command);
+        }
+        await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+      },
+    } as unknown as AgentApiClient, xray, applier);
+    await second.start();
+    await waitFor(() => results.length > 0, 5_000);
+    assert.equal(results[0]?.status, 'completed', `部署应成功：${results[0]?.error ?? ''}`);
+    assert.equal(missingTagAttempts, 0, '重启后不得向已删除的 tag 下发用户');
+    assert.deepEqual(live.map((item) => item.email), [desired.email], '入站部署完成后用户必须补齐');
+    await second.stop();
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

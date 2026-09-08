@@ -349,6 +349,12 @@ function testInstallerAndDownloadRoute() {
   assert.match(script, /Wants=network-online.target xray.service/);
   assert.equal(/^Requires=xray.service$/m.test(script), false);
   assert.match(script, /NoNewPrivileges=true/);
+  // The rendered unit may REQUIRE the handoff directory: this installer creates
+  // it in the same run. (The checked-in deploy/chordv-node-agent.service serves
+  // the agent-only install-systemd.sh and must keep that same path optional —
+  // a hard path the installer does not create would stop systemd from setting
+  // up the mount namespace at all.)
+  assert.match(script, /^ReadWritePaths=\/var\/lib\/chordv-xray\/requests$/m);
   // The installer's own staging cleanup must survive: the Xray section must not
   // install an EXIT trap of its own.
   assert.equal(/trap [^\n]*EXIT/.test(section), false);
