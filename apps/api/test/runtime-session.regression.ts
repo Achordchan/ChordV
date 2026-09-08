@@ -500,6 +500,16 @@ async function main() {
     /export async function runWithSubscriptionProvisioningLock/,
     "供给锁必须是独立锁键（不与 usage 锁共用键空间）"
   );
+  // 11) Connection-time provisioning must participate in the reset exclusion:
+  //    a client reconnecting during a reset's settle wait must not reactivate
+  //    the quiesced binding before the counter transaction. The provisioning
+  //    lock wraps the usage-locked connect body, preserving provisioning →
+  //    usage order.
+  assert.match(
+    runtimeSessionSource,
+    /return runWithSubscriptionProvisioningLock\(lockedSubscriptionId, \(\) =>\s*\n\s*runWithSubscriptionUsageLock\(lockedSubscriptionId, async \(\) => \{/,
+    "连接路径必须先拿供给锁再拿 usage 锁——重置期间重连不得复活静默绑定，锁序保持供给→usage"
+  );
 
   console.log("runtime session regression passed (connect 门不反转、供给资格共享判定、节点禁用联动绑定、删除绑定保留计量基线)");
 }

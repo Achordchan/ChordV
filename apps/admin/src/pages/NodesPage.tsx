@@ -276,7 +276,11 @@ export function PanelSyncQueueDrawer(props: {
     ? commandDetail?.queue?.jobs ?? []
     : props.nodeCommandQueue.jobs;
   const listedCommandTotal = sumNodeCommandSummaries(props.nodeCommandQueue.summaries, "nodes");
-  const hasFilter = hasLeaseRevocationQueueFilter(props.filter);
+  // The drawer's title and "show all" follow the COMBINED predicate: a
+  // team-only filter fetches the team's commands (hasNodeCommandQueueFilter)
+  // even though lease jobs have no team column, so it is still a filtered
+  // view. The lease-only predicate stays reserved for lease filtering.
+  const hasFilter = hasLeaseRevocationQueueFilter(props.filter) || hasNodeCommandQueueFilter(props.filter);
   const drawerTitle = hasFilter ? props.filter?.title ?? "当前对象待处理任务" : "后台同步任务";
 
   return (

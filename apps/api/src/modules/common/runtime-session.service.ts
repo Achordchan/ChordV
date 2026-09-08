@@ -241,7 +241,22 @@ export class RuntimeSessionService {
       }
 
       const lockedSubscriptionId = initialAccess.subscription.id;
-      return runWithSubscriptionUsageLock(lockedSubscriptionId, async () => {
+      // The provisioning lock OUTSIDE the usage one: the connect path
+      // provisions (ensurePanelClientBinding), so it must participate in the
+      // traffic-reset exclusion — a client reconnecting during a reset's
+      // settle wait must not reactivate the quiesced binding before the
+      // reset's counter transaction. Lock order stays provisioning → usage;
+      // a connect during a reset fails fast with a retry hint instead of
+      // breaking the quiescent accounting boundary.
+      // The provisioning lock OUTSIDE the usage one: the connect path
+      // provisions (ensurePanelClientBinding), so it must participate in the
+      // traffic-reset exclusion — a client reconnecting during a reset's
+      // settle wait must not reactivate the quiesced binding before the
+      // reset's counter transaction. Lock order stays provisioning → usage;
+      // a connect during a reset fails fast with a retry hint instead of
+      // breaking the quiescent accounting boundary.
+      return runWithSubscriptionProvisioningLock(lockedSubscriptionId, () =>
+        runWithSubscriptionUsageLock(lockedSubscriptionId, async () => {
       const access = await this.resolveSubscriptionAccessForUser(user.id);
       if (!access.subscription) {
         throw new NotFoundException("当前没有可用订阅");
@@ -290,7 +305,8 @@ export class RuntimeSessionService {
       await this.evictExceededUserLeases(user.id, concurrentLimit, 1);
 
       return this.connectWithManagedNode(node, user, access, request, policy, customRoutingRules);
-      });
+        })
+      );
     });
     } catch (error) {
       throwLocalSaveAsServiceUnavailable(error, "连接状态暂时不可用，请稍后重试。");

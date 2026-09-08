@@ -209,6 +209,11 @@ function testNodeCommandQueueShowsDirectProvisioning() {
     /export function hasNodeCommandQueueFilter\(filter\?: LeaseRevocationQueueFilter \| null\) \{\s*return Boolean\(filter\?\.nodeId \|\| filter\?\.subscriptionId \|\| filter\?\.userId \|\| filter\?\.teamId\);/,
     "team-only 过滤对节点命令必须算已过滤，否则团队视图会退回全局列表"
   );
+  assert.match(
+    nodesPageSource,
+    /const hasFilter = hasLeaseRevocationQueueFilter\(props\.filter\) \|\| hasNodeCommandQueueFilter\(props\.filter\);/,
+    "抽屉标题与「查看全部」必须用组合谓词——team-only 视图也是过滤视图，不得显示全局标题并隐藏返回入口"
+  );
   const translateSource = readFileSync(resolve(import.meta.dirname, "../src/utils/admin-translate.ts"), "utf8");
   assert.match(
     translateSource,
