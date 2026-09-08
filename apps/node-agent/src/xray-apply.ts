@@ -62,6 +62,13 @@ export interface ApplyDeps {
    */
   isListening(port: number): boolean;
   resolveListen(): string;
+  /**
+   * Resolves a fallback-target hostname for the address policy check. The
+   * agent supplies `dest`, and a public-looking name may resolve into this
+   * machine or its private perimeter (DNS rebinding), so the check cannot
+   * stop at syntax.
+   */
+  resolveDest(host: string): string[];
   generateKeys(): RealityKeys;
   now(): string;
 }
@@ -171,6 +178,83 @@ export function resolveListenAddress(readFile: (file: string) => string = (file)
     throw new Error('net.ipv6.bindv6only=1 会让入站只接受 IPv6：请将其设为 0，或在无 IPv6 的主机上部署');
   }
   return '::';
+}
+
+/**
+ * Whether an address would point the Reality fallback at this machine or its
+ * private perimeter. The fallback forwards whatever a NON-Reality client sends
+ * — from the public internet, unauthenticated — so a dest like 127.0.0.1:10085
+ * turns the node's public listener into a tunnel to the unauthenticated Xray
+ * gRPC API, and 169.254.169.254 into one to cloud metadata.
+ */
+export function isInternalDestAddress(address: string): boolean {
+  const trimmed = address.trim().replace(/^\[|\]$/g, '');
+  // An IPv4-mapped IPv6 address is an IPv4 address; judge the embedded one.
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(trimmed);
+  const value = mapped ? mapped[1] : trimmed;
+  const octets = value.split('.');
+  if (octets.length === 4 && octets.every((octet) => /^\d+$/.test(octet) && Number(octet) <= 255)) {
+    const [a, b] = octets.map(Number);
+    return a === 0 || a === 10 || a === 127 || a >= 224
+      || (a === 100 && b >= 64 && b <= 127)
+      || (a === 169 && b === 254)
+      || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168);
+  }
+  // Resolver-canonical IPv6 (input literals cannot contain ':' — the dest
+  // grammar forbids it), so prefix matching on the compressed form is exact
+  // for the ranges that matter.
+  const v6 = value.toLowerCase();
+  return v6 === '::' || v6 === '::1'
+    || /^f[cd]/.test(v6)      // fc00::/7 unique-local
+    || /^fe[89ab]/.test(v6)   // fe80::/10 link-local
+    || /^ff/.test(v6);        // ff00::/8 multicast
+}
+
+/**
+ * Address policy for the Reality fallback target. Syntax was checked in
+ * parseRequest; this is the boundary that decides WHERE the public listener
+ * may forward to, and it runs before anything is published so a refused dest
+ * costs nothing. A name is judged by EVERY address it resolves to — a mixed
+ * answer (one public, one loopback) is a rebinding attempt, not a pass.
+ */
+export function assertPublicDest(dest: string, resolveHost: (host: string) => string[]): void {
+  const separator = dest.lastIndexOf(':');
+  const host = dest.slice(0, separator);
+  if (host.toLowerCase() === 'localhost') {
+    throw new Error(`fallback 目标 ${dest} 指向本机回环地址，拒绝部署`);
+  }
+  if (isInternalDestAddress(host)) {
+    throw new Error(`fallback 目标 ${dest} 是回环/内网/保留地址，拒绝部署`);
+  }
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)) return;
+  const addresses = resolveHost(host);
+  if (addresses.length === 0 || addresses.some((address) => isInternalDestAddress(address))) {
+    throw new Error(`fallback 目标域名 ${host} 解析到回环/内网/保留地址（或无法解析），拒绝部署`);
+  }
+}
+
+/**
+ * Resolves a hostname through the SYSTEM resolver (getaddrinfo — /etc/hosts,
+ * nsswitch and all), the same source Xray itself uses for the dest.
+ * dns.lookup has no synchronous form, so the one-shot helper asks this very
+ * node binary to do it and reads the answer back. An empty answer means
+ * "unresolvable", which assertPublicDest treats as refuse-to-deploy.
+ */
+export function resolveHostAddresses(host: string): string[] {
+  const script = 'const dns=require("node:dns");'
+    + 'dns.lookup(process.argv[1],{all:true},(error,addresses)=>{'
+    + 'if(error)process.exit(1);'
+    + 'process.stdout.write(addresses.map((entry)=>entry.address).join("\\n"));'
+    + '});';
+  try {
+    return execFileSync(process.execPath, ['-e', script, host], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 /** Renders the inbound root will run. Built here from scratch, never copied. */
@@ -382,6 +466,14 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
   if (reserved.has(request.inboundTag)) {
     throw new Error(`入站 tag ${request.inboundTag} 已被其它配置片段占用，拒绝部署（它会顶掉那个入站）`);
   }
+
+  // Reality forwards whatever a non-Reality client sends to `dest` — from the
+  // public internet, unauthenticated. A dest pointing at this machine or its
+  // private perimeter exposes whatever listens there (the loopback Xray gRPC
+  // API, cloud metadata), and the agent supplies this string, so the address
+  // policy lives HERE, in root, ahead of every branch that could publish or
+  // declare a no-op.
+  assertPublicDest(request.dest, deps.resolveDest);
 
   const hash = requestHash(request);
   // A redelivered command must not rotate again: the agent may have crashed
@@ -660,6 +752,7 @@ function main(): void {
     },
     isListening: (port) => waitForListener(port, xrayBin),
     resolveListen: () => resolveListenAddress(),
+    resolveDest: resolveHostAddresses,
     generateKeys: () => ({
       ...parseX25519(execFileSync(xrayBin, ['x25519'], { encoding: 'utf8' })),
       shortId: randomBytes(8).toString('hex'),

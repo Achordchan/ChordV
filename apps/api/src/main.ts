@@ -7,6 +7,7 @@ import { DrainCancelledError, workLifecycle, withShutdownDeadline } from "./work
 import { promotionAdmission } from "./promotion-admission";
 import { SystemUpdateService } from "./modules/common/system-update.service";
 import { resolveCorsOrigin } from "./cors";
+import { resolveTrustProxy } from "./trust-proxy";
 import { forceHttpsMiddleware } from "./https-enforcement";
 import { LoggingExceptionFilter } from "./logging-exception.filter";
 import { assertAgentTokenPepperReadyForProduction } from "./modules/agent/agent.service";
@@ -77,9 +78,13 @@ async function bootstrap() {
     });
   }
   app.setGlobalPrefix("api");
+  // Applied in EVERY environment, not just HTTPS enforcement: whoami's
+  // observed address — what a node deploys as its serverHost — is resolved
+  // through this setting, and the proxy topology exists in dev too.
+  const trustProxy = resolveTrustProxy();
+  if (trustProxy) app.getHttpAdapter().getInstance().set("trust proxy", trustProxy);
   const forceHttps = (process.env.CHORDV_API_FORCE_HTTPS ?? "true").toLowerCase() === "true";
   if (process.env.NODE_ENV === "production" && forceHttps) {
-    app.getHttpAdapter().getInstance().set("trust proxy", 1);
     app.use(forceHttpsMiddleware);
   }
   app.useGlobalPipes(

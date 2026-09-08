@@ -132,6 +132,9 @@ importers:
       '@types/pg':
         specifier: ^8.20.0
         version: 8.20.0
+      express:
+        specifier: ^5.2.1
+        version: 5.2.1
       prisma:
         specifier: ^6.5.0
         version: 6.19.2(typescript@5.9.3)

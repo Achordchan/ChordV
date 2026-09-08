@@ -13,6 +13,9 @@ import {
   renderInbound,
   requestHash,
   isPortOwnedBy,
+  isInternalDestAddress,
+  assertPublicDest,
+  resolveHostAddresses,
   listeningSocketInodes,
   resolveListenAddress,
   type ApplyDeps,
@@ -105,11 +108,67 @@ function deps(root: string, overrides: Partial<ApplyDeps> = {}): ApplyDeps & { r
     restart: () => { state.restarts += 1; },
     isListening: () => true,
     resolveListen: () => '::',
+    // A public camouflage site for the default `www.microsoft.com` dest; the
+    // address-policy tests override this with rebinding-style answers.
+    resolveDest: () => ['203.0.113.10'],
     generateKeys: () => keys,
     now: () => '2026-09-07T00:00:00.000Z',
     ...overrides,
   }) as ApplyDeps & { restarts: number };
 }
+
+test('fallback 目标指向本机或内网时拒绝部署，DNS 重绑定也算', () => {
+  // The fallback forwards what a NON-Reality client sends — unauthenticated,
+  // from the public internet — so these addresses would tunnel into the
+  // machine: 127.0.0.1:10085 is the unauthenticated Xray gRPC API,
+  // 169.254.169.254 is cloud metadata.
+  for (const address of [
+    '127.0.0.1', '10.0.0.1', '172.16.0.1', '172.31.255.255', '192.168.1.1',
+    '169.254.169.254', '100.64.0.1', '0.0.0.0', '224.0.0.1', '240.0.0.1', '255.255.255.255',
+    '::', '::1', 'fc00::1', 'fd12:3456::1', 'fe80::1', 'ff02::1',
+    '::ffff:127.0.0.1', '::ffff:10.0.0.1', '[fe80::1]',
+  ]) {
+    assert.equal(isInternalDestAddress(address), true, `${address} 应视为内部地址`);
+  }
+  for (const address of ['8.8.8.8', '203.0.113.7', '172.32.0.1', '172.15.255.255', '100.128.0.1', '2001:db8::1', '::ffff:8.8.8.8']) {
+    assert.equal(isInternalDestAddress(address), false, `${address} 不应视为内部地址`);
+  }
+
+  const root = fs.mkdtempSync(join(tmpdir(), 'xray-apply-dest-'));
+  try {
+    const applyDeps = deps(root);
+    for (const dest of ['127.0.0.1:10085', 'localhost:10085', '10.0.0.5:443', '169.254.169.254:80']) {
+      assert.throws(() => applyRequest(request({ dest }), applyDeps), /回环|内网/, `应拒绝：${dest}`);
+    }
+    // Refused before anything is touched: no config, no state, no restart.
+    assert.equal(applyDeps.restarts, 0);
+    assert.equal(fs.existsSync(join(applyDeps.confDir, '50-inbound.json')), false);
+    assert.equal(fs.existsSync(applyDeps.stateFile), false);
+
+    // A name is judged by every address it resolves to. One public record
+    // plus one loopback record is a rebinding attempt, not a pass.
+    for (const [label, records] of [
+      ['mixed records', ['203.0.113.5', '127.0.0.1']],
+      ['private AAAA', ['2001:db8::1', 'fd00::1']],
+      ['unresolvable', []],
+    ] as const) {
+      const rebinding = deps(root, { resolveDest: () => [...records] });
+      assert.throws(() => applyRequest(request({ dest: 'camouflage.example:443' }), rebinding), /解析到/, `应拒绝：${label}`);
+    }
+    // The same name with only public records deploys.
+    const clean = deps(root, { resolveDest: () => ['203.0.113.5', '2001:db8::1'] });
+    assert.equal(applyRequest(request({ dest: 'camouflage.example:443' }), clean).changed, true);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('resolveHostAddresses 走系统解析器，hosts 文件里的 localhost 也算回环', () => {
+  // Exercises the real spawn+getaddrinfo path (offline-safe: /etc/hosts).
+  const addresses = resolveHostAddresses('localhost');
+  assert.ok(addresses.length >= 1, 'localhost 必须能解析');
+  assert.ok(addresses.every((address) => isInternalDestAddress(address)), 'localhost 的解析结果必须全部算内部地址');
+  assert.throws(() => assertPublicDest('localhost:443', resolveHostAddresses), /回环/);
+  assert.deepEqual(resolveHostAddresses('not-a-real-host.invalid'), []);
+});
 
 test('部署后写出配置与状态，重复同一规格完全不动 Xray', () => {
   const root = fs.mkdtempSync(join(tmpdir(), 'xray-apply-'));

@@ -75,8 +75,18 @@ export function normalizeInboundSpec(payload: Record<string, unknown>): Normaliz
   const dest = text(payload, "dest", INBOUND_DEFAULTS.dest);
   const separator = dest.lastIndexOf(":");
   if (separator <= 0) throw new BadRequestException(`入站参数 dest 必须是 host:port：${dest}`);
-  hostname(dest.slice(0, separator), "dest");
+  const destHost = dest.slice(0, separator);
+  hostname(destHost, "dest");
   port(Number(dest.slice(separator + 1)), "dest 端口", 0);
+  // A loopback/private fallback target turns the node's public listener into a
+  // tunnel to an internal service (the unauthenticated Xray gRPC API, cloud
+  // metadata). The root helper enforces this again at deploy time — including
+  // DNS rebinding, which only it can see from the node — so rejecting the
+  // obvious literals here turns an admin mistake into a 400 instead of a
+  // failed deployment.
+  if (destHost.toLowerCase() === "localhost" || (isIP(destHost) !== 0 && !isPublicUnicastAddress(destHost))) {
+    throw new BadRequestException(`入站参数 dest 不得指向回环或内网地址：${dest}`);
+  }
 
   const rawNames = payload.serverNames ?? [...INBOUND_DEFAULTS.serverNames];
   if (!Array.isArray(rawNames) || rawNames.length < 1 || rawNames.length > 8) {

@@ -12,6 +12,7 @@ import {
   SUPPORTED_FINGERPRINTS,
   parseInboundReport
 } from "../src/modules/agent/agent-inbound";
+import { DEFAULT_TRUSTED_PROXIES, resolveTrustProxy } from "../src/trust-proxy";
 import { isNodeOnboardingReady } from "../src/modules/common/node-onboarding-policy";
 
 const read = (relative: string) => readFileSync(path.resolve(__dirname, relative), "utf8");
@@ -66,6 +67,12 @@ function testSpecNormalization() {
     ["port not an integer", { listenPort: 443.5 }],
     ["dest without port", { dest: "www.microsoft.com" }],
     ["dest hostname invalid", { dest: "bad host:443" }],
+    // The Reality fallback forwards unauthenticated public traffic to `dest`:
+    // a loopback/private target would tunnel into the machine's own services.
+    ["dest loopback", { dest: "127.0.0.1:10085" }],
+    ["dest localhost", { dest: "localhost:443" }],
+    ["dest private", { dest: "10.0.0.5:443" }],
+    ["dest metadata", { dest: "169.254.169.254:80" }],
     ["empty serverNames", { serverNames: [] }],
     ["too many serverNames", { serverNames: Array(9).fill("a.example.com") }],
     ["serverName invalid", { serverNames: ["bad host"] }],
@@ -368,13 +375,59 @@ function testInstallerAndDownloadRoute() {
   assert.match(controller, /O_NOFOLLOW/);
 }
 
+/**
+ * whoami's observed address is what a node deploys as its serverHost, and in
+ * the supplied 1Panel topology it arrives through TWO appending proxies
+ * (openresty → admin nginx → api). This exercises the exact express/proxy-addr
+ * resolution main.ts configures, over a real socket: the walk must land on the
+ * agent's address past both proxy hops, and a peer outside the trusted set
+ * must be taken at socket value with its X-Forwarded-For ignored.
+ */
+async function testWhoamiAcrossProxyHops() {
+  assert.equal(resolveTrustProxy({}), DEFAULT_TRUSTED_PROXIES);
+  assert.equal(resolveTrustProxy({ CHORDV_API_TRUSTED_PROXIES: "false" }), undefined);
+  assert.equal(resolveTrustProxy({ CHORDV_API_TRUSTED_PROXIES: "10.0.0.0/8" }), "10.0.0.0/8");
+
+  const express = (await import("express")).default;
+  const ask = async (trust: string | undefined, headers: Record<string, string>): Promise<string> => {
+    const app = express();
+    if (trust !== undefined) app.set("trust proxy", trust);
+    app.get("/ip", (req, res) => res.send(req.ip ?? ""));
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+    try {
+      const port = (server.address() as { port: number }).port;
+      const response = await fetch(`http://127.0.0.1:${port}/ip`, { headers });
+      return (await response.text()).trim();
+    } finally {
+      server.close();
+    }
+  };
+  // Two hops, as deployed: the socket peer is the admin container, then the
+  // openresty-side address, then the VPS the agent dialed from. Trusting one
+  // hop (the old setting) would have resolved to 172.18.0.5.
+  assert.equal(await ask(DEFAULT_TRUSTED_PROXIES, { "x-forwarded-for": "203.0.113.9, 172.18.0.5" }), "203.0.113.9");
+  // A single-hop topology proxying straight to the api.
+  assert.equal(await ask(DEFAULT_TRUSTED_PROXIES, { "x-forwarded-for": "203.0.113.9" }), "203.0.113.9");
+  // The agent's own forged entry cannot pass the entries the proxies appended.
+  assert.equal(
+    await ask(DEFAULT_TRUSTED_PROXIES, { "x-forwarded-for": "198.51.100.1, 203.0.113.9, 172.18.0.5" }),
+    "203.0.113.9"
+  );
+  // A peer outside the trusted set is judged by its socket address alone.
+  assert.equal(await ask("10.0.0.0/8", { "x-forwarded-for": "203.0.113.9" }), "127.0.0.1");
+}
+
 function main() {
   testCommandTypeIsDeclaredEverywhere();
   testSpecNormalization();
   testPublicAddressPolicy();
   testReportValidation();
   testInstallerAndDownloadRoute();
-  return testWriteBackAndActivation().then(testDedupeScope).then(testDedupeReleaseIsInboundOnly);
+  return testWhoamiAcrossProxyHops()
+    .then(testWriteBackAndActivation)
+    .then(testDedupeScope)
+    .then(testDedupeReleaseIsInboundOnly);
 }
 
 main().then(() => console.log("agent inbound regression passed (命令声明齐全、规格与上报校验、写回与激活边界、安装脚本与分发路由)"));
