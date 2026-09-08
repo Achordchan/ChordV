@@ -25,6 +25,7 @@ import {
 } from "@tabler/icons-react";
 import { StatusBadge } from "../shared/StatusBadge";
 import { formatDateTimeWithYear } from "../../utils/admin-format";
+import { InboundDeploySection } from "./InboundDeploySection";
 import {
   agentStatusColor,
   nodeControlModeColor,
@@ -42,6 +43,7 @@ type NodeControlDrawerProps = {
   busy: boolean;
   onClose: () => void;
   onSwitchMode: (node: AdminNodeRecordDto, input: SwitchNodeControlModeInputDto) => Promise<boolean>;
+  onNodeRecordChanged: (node: AdminNodeRecordDto) => void;
 };
 
 type TransitionDefinition = {
@@ -137,6 +139,15 @@ export function NodeControlDrawer(props: NodeControlDrawerProps) {
 
             <PhaseSummary node={node} />
             <ControlHealth node={node} />
+
+            <Divider />
+
+            {/* Keyed by node id: the drawer reuses this component across node
+                switches, and a stale open modal (form values, a confirmed key
+                rotation) must never carry into the next node. */}
+            <InboundDeploySection key={node.id} node={node} onNodeChanged={props.onNodeRecordChanged} />
+
+            <Divider />
 
             <Stack gap="sm">
               <Text fw={600}>当前阶段</Text>

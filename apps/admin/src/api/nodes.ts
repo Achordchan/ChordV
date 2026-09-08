@@ -3,6 +3,7 @@ import type {
   AdminNodePanelInboundDto,
   AdminNodeRecordDto,
   AdminPanelSyncJobDto,
+  AgentCommandDto,
   CreateAgentNodeInputDto,
   CreateAgentNodeResultDto,
   ImportNodeInputDto,
@@ -143,5 +144,38 @@ export function deleteNode(nodeId: string) {
   return request<{ ok: boolean }>(`/admin/nodes/${nodeId}`, {
     method: "DELETE",
     timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
+  });
+}
+
+// R2-B inbound deployment: queue an ENSURE_INBOUND command for the node's
+// agent. The response is the QUEUED command (with its targetRevision), not the
+// deployment outcome — completion is observed by polling the node record until
+// inboundAppliedRevision reaches that revision.
+export function deployNodeInbound(nodeId: string, payload: Record<string, unknown>, expectedAppliedRevision: string) {
+  return request<AgentCommandDto>(`/admin/nodes/${nodeId}/agent-commands`, {
+    method: "POST",
+    // expectedInboundAppliedRevision is the compare-and-swap guard: the server
+    // rejects the enqueue when the node's applied revision moved past what
+    // this form was built from (another administrator deployed meanwhile).
+    body: JSON.stringify({ type: "ENSURE_INBOUND", payload, expectedInboundAppliedRevision: expectedAppliedRevision }),
+    timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
+  });
+}
+
+// The terminal outcome of one queued command: the deploy poll needs THIS
+// command's status — a higher applied revision alone can belong to a later
+// deployment while this one failed.
+export function fetchNodeCommandOutcome(nodeId: string, commandId: string) {
+  return request<{ status: string; lastError: string | null } | null>(`/admin/nodes/${nodeId}/agent-commands/${commandId}/outcome`, {
+    timeoutMs: ADMIN_READ_TIMEOUT_MS
+  });
+}
+
+// The COMPLETE spec of the currently applied deployment (the last applied
+// ENSURE_INBOUND job's payload). The node record is a lossy projection of it,
+// and the reissue form prefills/preserves from the real thing.
+export function fetchNodeInboundSpec(nodeId: string) {
+  return request<{ spec: Record<string, unknown> | null }>(`/admin/nodes/${nodeId}/inbound-spec`, {
+    timeoutMs: ADMIN_READ_TIMEOUT_MS
   });
 }

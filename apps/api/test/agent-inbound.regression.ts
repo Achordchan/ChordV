@@ -14,6 +14,7 @@ import {
 } from "../src/modules/agent/agent-inbound";
 import { DEFAULT_TRUSTED_PROXIES, resolveTrustProxy } from "../src/trust-proxy";
 import { isNodeOnboardingReady } from "../src/modules/common/node-onboarding-policy";
+import { toAdminNodeRecord } from "../src/modules/common/node-import.utils";
 
 const read = (relative: string) => readFileSync(path.resolve(__dirname, relative), "utf8");
 
@@ -265,6 +266,7 @@ function commandJobStore() {
   const rows: Array<Record<string, any>> = [];
   let clock = 0;
   let revision = 6n;
+  let applied = 12n;
   // Models the Node row lock: $transaction bodies run exclusively, so the
   // interleaved-request test can prove the service keeps its whole decision
   // inside the serialized section.
@@ -275,7 +277,9 @@ function commandJobStore() {
     /** One-shot pause for the next job INSERT, to interleave two requests. */
     gate: Promise<void> | null;
     gateHit: boolean;
-  } = { rows, prisma: null as unknown as Record<string, any>, gate: null, gateHit: false };
+    /** Simulates another administrator's deployment completing. */
+    applyDeployment: (value: bigint) => void;
+  } = { rows, prisma: null as unknown as Record<string, any>, gate: null, gateHit: false, applyDeployment: (value: bigint) => { applied = value; } };
   const prisma: Record<string, any> = {
     nodeAgent: { findFirst: async () => ({ id: "agent-1", agentId: "agent-1", nodeId: "node-1" }) },
     $queryRaw: async () => [],
@@ -290,7 +294,7 @@ function commandJobStore() {
         release();
       }
     },
-    node: { update: async () => ({ agentConfigRevision: ++revision }) },
+    node: { update: async () => ({ agentConfigRevision: ++revision, inboundAppliedRevision: applied }) },
     nodeCommandJob: {
       findUnique: async ({ where }: { where: { dedupeKey: string } }) =>
         rows.find((row) => row.dedupeKey === where.dedupeKey) ?? null,
@@ -351,6 +355,52 @@ async function testDedupeScope() {
   // A different spec is a different operation.
   await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: { listenPort: 8443 } } as never);
   assert.equal(store.rows.length, 3);
+}
+
+async function testGetCommandOutcome() {
+  // The admin deploy poll asks for the COMMAND's own terminal state: a higher
+  // node-level applied revision can belong to a later deployment while this
+  // command failed.
+  const found = new AgentService({
+    nodeCommandJob: { findFirst: async () => ({ status: "failed", lastError: "入站部署后未能确认生效" }) }
+  } as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
+  assert.deepEqual(
+    await found.getCommandOutcome("node-1", "command-1"),
+    { status: "failed", lastError: "入站部署后未能确认生效" }
+  );
+  // A missing row (history cleanup) is honestly null, not a guess.
+  const missing = new AgentService({
+    nodeCommandJob: { findFirst: async () => null }
+  } as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
+  assert.equal(await missing.getCommandOutcome("node-1", "gone"), null);
+}
+
+async function testInboundCasGuard() {
+  // An idle open form never learns that another administrator's deployment
+  // completed (no admin event, no polling) — the CLIENT-side revision gate
+  // cannot prevent that race. The enqueue must carry the form's expected
+  // applied revision and be rejected atomically when the node moved past it.
+  const store = commandJobStore();
+  const service = new AgentService(store.prisma as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
+
+  // Matching expectation: the command is created.
+  const fresh = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {}, expectedInboundAppliedRevision: "12" } as never);
+  assert.ok(fresh.commandId, "期望 revision 一致时正常入队");
+
+  // Stale expectation (another admin deployed to 13 meanwhile): rejected, and
+  // NOTHING is enqueued.
+  store.applyDeployment(13n);
+  const before = store.rows.length;
+  await assert.rejects(
+    () => service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: { listenPort: 8443 }, expectedInboundAppliedRevision: "12" } as never),
+    /节点部署已更新/,
+    "过期期望必须被拒绝"
+  );
+  assert.equal(store.rows.length, before, "被拒绝的提交不得创建任务");
+
+  // Absent expectation: no guard (backward compatible).
+  const unguarded = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
+  assert.ok(unguarded.commandId, "未携带期望值时不做 CAS 校验");
 }
 
 async function testDedupeInterveningDeployment() {
@@ -556,19 +606,85 @@ async function testWhoamiAcrossProxyHops() {
   assert.equal(await ask("10.0.0.0/8", { "x-forwarded-for": "203.0.113.9" }), "127.0.0.1");
 }
 
+function testAdminNodeRecordInboundFields() {
+  // The admin deploy flow displays exactly these fields, and its completion
+  // poll keys off inboundAppliedRevision — the serializer must carry them.
+  const base = {
+    id: "node-1", name: "node", region: "r", provider: "p", tags: [], recommended: false,
+    latencyMs: 0, probeLatencyMs: null, protocol: "vless", security: "reality",
+    serverHost: "203.0.113.7", serverPort: 443, serverName: "www.microsoft.com",
+    shortId: "0123456789abcdef", spiderX: "/",
+    subscriptionUrl: null, statsLastSyncedAt: null,
+    panelBaseUrl: null, panelApiBasePath: null, panelUsername: null, panelPassword: null,
+    panelInboundId: null, panelEnabled: false, panelStatus: "offline", panelLastSyncedAt: null, panelError: null,
+    probeStatus: "unknown", probeCheckedAt: null, probeError: null,
+    createdAt: new Date(0), updatedAt: new Date(0)
+  };
+  const deployed = toAdminNodeRecord({
+    ...base,
+    realityPublicKey: "k".repeat(43), flow: "xtls-rprx-vision", fingerprint: "chrome", inboundAppliedRevision: 12n
+  });
+  assert.equal(deployed.realityPublicKey, "k".repeat(43));
+  assert.equal(deployed.flow, "xtls-rprx-vision");
+  assert.equal(deployed.fingerprint, "chrome");
+  assert.equal(deployed.inboundAppliedRevision, "12");
+
+  // Placeholder node (registered, never deployed) and legacy rows without the
+  // columns must not surface undefined to the UI.
+  const placeholder = toAdminNodeRecord(base);
+  assert.deepEqual(
+    { realityPublicKey: placeholder.realityPublicKey, flow: placeholder.flow, fingerprint: placeholder.fingerprint, inboundAppliedRevision: placeholder.inboundAppliedRevision },
+    { realityPublicKey: "", flow: "", fingerprint: "", inboundAppliedRevision: "0" }
+  );
+  const legacy = toAdminNodeRecord({ ...base, inboundAppliedRevision: null });
+  assert.equal(legacy.inboundAppliedRevision, "0");
+}
+
+async function testGetInboundSpec() {
+  // The reissue form preserves fields it does not edit from the COMPLETE
+  // deployed spec — the last APPLIED job's payload. The node record is a
+  // lossy projection (one serverName, no dest, no inboundTag).
+  const spec = { ...INBOUND_DEFAULTS, serverNames: [...INBOUND_DEFAULTS.serverNames], rotateKeys: false, listenPort: 8443, dest: "proxy.example.org:8443" };
+  const run = async (node: { inboundAppliedRevision: bigint } | null, job: unknown) => {
+    const service = new AgentService({
+      node: { findUnique: async () => node },
+      nodeCommandJob: { findFirst: async () => job }
+    } as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
+    return service.getInboundSpec("node-1");
+  };
+  assert.deepEqual(await run({ inboundAppliedRevision: 12n }, { payload: spec }), { spec });
+  // Nothing applied yet: revision 0 (or no node at all) has no spec.
+  assert.deepEqual(await run({ inboundAppliedRevision: 0n }, { payload: spec }), { spec: null });
+  assert.deepEqual(await run(null, { payload: spec }), { spec: null });
+  // A NONZERO applied revision whose job row is gone (e.g. command history
+  // was cleaned up) must fail loudly: answering "no spec" — identical to a
+  // never-deployed node — would let the reissue form fall back to the lossy
+  // node record and silently drop SNIs / replace the dest / reset the tag.
+  await assert.rejects(
+    () => run({ inboundAppliedRevision: 12n }, null),
+    /部署规格记录缺失/,
+    "applied 但规格缺失必须报错而不是当作未部署"
+  );
+}
+
 function main() {
   testCommandTypeIsDeclaredEverywhere();
   testSpecNormalization();
   testPublicAddressPolicy();
   testReportValidation();
   testInstallerAndDownloadRoute();
+  testAdminNodeRecordInboundFields();
+  return testGetInboundSpec().then(() => {
   return testWhoamiAcrossProxyHops()
     .then(testWriteBackAndActivation)
     .then(testDedupeScope)
     .then(testDedupeInterveningDeployment)
+    .then(testInboundCasGuard)
+    .then(testGetCommandOutcome)
     .then(testDedupeInterveningWhileRunning)
     .then(testDedupeInterleavedRequests)
     .then(testDedupeReleaseIsInboundOnly);
+  });
 }
 
 main().then(() => console.log("agent inbound regression passed (命令声明齐全、规格与上报校验、写回与激活边界、安装脚本与分发路由)"));

@@ -3454,6 +3454,18 @@ export function App() {
                 onProbeNode={(nodeId) => void handleProbeNode(nodeId)}
                 onRefreshNode={(nodeId) => void handleRefreshNode(nodeId)}
                 onSwitchNodeControlMode={handleSwitchNodeControlMode}
+                onNodeRecordChanged={(record) => {
+                  // Apply the polled record IMMEDIATELY: the deploy flow has
+                  // already marked completion and re-enabled reissue, so the
+                  // drawer must see the new revision (and the deploy section
+                  // re-fetch its spec) even when the supplementary full-list
+                  // refresh below fails — otherwise a re-opened form would
+                  // preserve and re-submit the OLD settings.
+                  mergeSnapshot({ nodes: snapshot.nodes.map((item) => item.id === record.id ? record : item) });
+                  void fetchAdminNodes().then((updatedNodes) => {
+                    mergeSnapshot({ nodes: updatedNodes });
+                  }).catch(() => undefined);
+                }}
                 onOpenNodeDrawer={(nodeId) => openDrawer("node", nodeId)}
                 onDeleteNode={setDeleteNodeTarget}
                 onOpenAgentNodeCreate={() => { setAgentNodeResumeId(null); setAgentNodeCreateOpened(true); }}

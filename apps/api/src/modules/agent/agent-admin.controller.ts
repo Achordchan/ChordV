@@ -65,6 +65,13 @@ export class AgentAdminController {
     return this.service.listAgents(nodeId);
   }
 
+  // The complete spec of the currently applied ENSURE_INBOUND deployment; the
+  // admin reissue flow preserves the fields its form does not edit from it.
+  @Get(":nodeId/inbound-spec")
+  getInboundSpec(@Param("nodeId") nodeId: string) {
+    return this.service.getInboundSpec(nodeId);
+  }
+
   // Agent-native onboarding: mint (or re-mint, while still pending) the
   // one-time registration token that the install command carries. The
   // plaintext token is returned exactly once and never stored.
@@ -86,6 +93,14 @@ export class AgentAdminController {
   @Post(":nodeId/agent-commands")
   queueCommand(@Param("nodeId") nodeId: string, @Body() body: QueueAgentCommandDto) {
     return this.service.queueCommand(nodeId, body);
+  }
+
+  // The terminal outcome of one queued command; the admin deploy poll
+  // distinguishes "this command succeeded" from "a later deployment moved the
+  // node past it".
+  @Get(":nodeId/agent-commands/:commandId/outcome")
+  getCommandOutcome(@Param("nodeId") nodeId: string, @Param("commandId") commandId: string) {
+    return this.service.getCommandOutcome(nodeId, commandId);
   }
 
   @Post(":nodeId/control-mode")

@@ -310,6 +310,56 @@ export class AgentService {
     });
   }
 
+  /**
+   * The COMPLETE specification of the currently applied deployment — the last
+   * applied ENSURE_INBOUND job's payload. The node record is a LOSSY
+   * projection of it (one serverName, no dest, no inboundTag), and the admin
+   * reissue flow needs the whole thing to preserve fields its form does not
+   * edit instead of silently resetting them to the control-plane defaults.
+   * Null when the node has no applied deployment (or its parameters predate
+   * agent-native deployments, e.g. imported from a subscription URL).
+   */
+  async getInboundSpec(nodeId: string): Promise<{ spec: Record<string, unknown> | null }> {
+    const node = await this.prisma.node.findUnique({
+      where: { id: nodeId },
+      select: { inboundAppliedRevision: true }
+    });
+    if (!node || node.inboundAppliedRevision === 0n) return { spec: null };
+    const job = await this.prisma.nodeCommandJob.findFirst({
+      where: {
+        nodeId,
+        commandType: "ENSURE_INBOUND",
+        status: "completed",
+        targetRevision: node.inboundAppliedRevision
+      },
+      orderBy: [{ targetRevision: "desc" }, { createdAt: "desc" }],
+      select: { payload: true }
+    });
+    if (!job) {
+      // A nonzero applied revision means the current parameters came from an
+      // ENSURE_INBOUND command. Answering "no spec" here — the same as a node
+      // that was never deployed — would let the reissue form fall back to the
+      // lossy node record and silently drop SNIs, replace the dest and reset
+      // the tag. Fail loudly instead, so the UI keeps reissue disabled.
+      throw new BadRequestException("该节点的部署规格记录缺失（命令历史可能已被清理），无法安全地重新下发");
+    }
+    return { spec: job.payload as Record<string, unknown> };
+  }
+
+  /**
+   * The terminal outcome of a queued command, for the admin deploy flow's
+   * poll: a higher node-level applied revision alone does not prove THIS
+   * command succeeded — a later administrator's deployment can push the
+   * revision past a FAILED one. The command's own status is the truth.
+   */
+  async getCommandOutcome(nodeId: string, commandId: string): Promise<{ status: string; lastError: string | null } | null> {
+    const job = await this.prisma.nodeCommandJob.findFirst({
+      where: { id: commandId, nodeId },
+      select: { status: true, lastError: true }
+    });
+    return job ?? null;
+  }
+
   async queueCommand(nodeId: string, input: QueueAgentCommandDto): Promise<AgentCommandDto> {
     const agent = await this.prisma.nodeAgent.findFirst({
       where: { nodeId, revokedAt: null },
@@ -348,9 +398,20 @@ export class AgentService {
       const node = await tx.node.update({
         where: { id: nodeId },
         data: { agentConfigRevision: { increment: 1n } },
-        select: { agentConfigRevision: true }
+        select: { agentConfigRevision: true, inboundAppliedRevision: true }
       });
       const targetRevision = node.agentConfigRevision;
+      // Compare-and-swap for ENSURE_INBOUND: reject when the node's APPLIED
+      // revision moved past what the submitting form was built from. The check
+      // sits inside the same Node-row lock that serializes completions, so a
+      // deployment finishing concurrently cannot slip between the check and
+      // the enqueue; the transaction rollback also undoes the increment above.
+      if (input.type === "ENSURE_INBOUND" && input.expectedInboundAppliedRevision !== undefined
+        && input.expectedInboundAppliedRevision !== node.inboundAppliedRevision.toString()) {
+        throw new BadRequestException(
+          `节点部署已更新（当前部署 revision ${node.inboundAppliedRevision}，表单基于 ${input.expectedInboundAppliedRevision}），请刷新后重试`
+        );
+      }
       // Collapse an identical request only while the outstanding one is still
       // the NEWEST deployment for the node. When the operator went 443 → 8443
       // → 443 again with nothing completed yet, the outstanding 443 command
