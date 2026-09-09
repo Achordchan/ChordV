@@ -121,7 +121,7 @@ const regenerateBody = serviceText.match(
   /private async regeneratePrismaClient\(stagingDir: string\): Promise<void> \{([\s\S]*?)\n {2}\}/
 );
 assert.ok(regenerateBody, "regeneratePrismaClient must still exist");
-const removalIndex = regenerateBody[1].indexOf('removeDirSafe(path.join(root, ".prisma"))');
+const removalIndex = regenerateBody[1].indexOf("await this.removeDirSafe(generated)");
 const generateIndex = regenerateBody[1].indexOf('"prisma", "generate"');
 assert.ok(removalIndex > -1, "the stale generated client must be removed, not overwritten");
 assert.ok(generateIndex > -1, "the client must actually be regenerated");
@@ -129,6 +129,20 @@ assert.ok(
   removalIndex < generateIndex,
   "removal must precede generation: the hard links share inodes with the RUNNING release, " +
     "so generating over them would rewrite the client the live process has loaded"
+);
+// Deletion must stay scoped to generated output. The prisma CLI package keeps its
+// own engine copies next to it, outside any .prisma directory — that is what makes
+// regeneration work with no network, so nothing may widen this to the package dir.
+for (const removal of regenerateBody[1].matchAll(/removeDirSafe\(([^)]*)\)/g)) {
+  assert.equal(
+    removal[1].trim(),
+    "generated",
+    "regeneration may only delete generated .prisma output, never a package directory"
+  );
+}
+assert.ok(
+  regenerateBody[1].indexOf("listGeneratedEngines") < removalIndex,
+  "the engine inventory must be taken BEFORE the output is discarded, or there is nothing to compare against"
 );
 
 // ---------------------------------------------------------------------------
@@ -179,6 +193,37 @@ function makeStagedRelease(base: string, lockfile: string, name = "staging") {
 
 const LOCK = "lockfileVersion: '9.0'\nimporters:\n  .: {}\n";
 const OTHER_LOCK = `${LOCK}  # a dependency changed\n`;
+
+/**
+ * Regeneration must reproduce every query engine the discarded output held. The
+ * schema declares three binaryTargets while @prisma/engines ships only the install
+ * platform's, so the generated directory is the sole copy of the others inside a
+ * running release; producing fewer would leave a release that cannot open a
+ * connection on some hosts. Drive the real verification with a stubbed generator.
+ */
+function regenerationHarness(base: string, name: string, produce: string[]) {
+  const staging = path.join(base, name);
+  const generated = path.join(
+    staging,
+    "node_modules/.pnpm/@prisma+client@6.19.2/node_modules/.prisma/client"
+  );
+  mkdirSync(generated, { recursive: true });
+  for (const engine of ["libquery_engine-debian-openssl-3.0.x.so.node", "query_engine_bg.wasm"]) {
+    writeFileSync(path.join(generated, engine), "engine");
+  }
+  const instance = new SystemUpdateService({} as never, {} as never);
+  (instance as unknown as { runShell: (...args: unknown[]) => Promise<void> }).runShell = async () => {
+    mkdirSync(generated, { recursive: true });
+    for (const engine of produce) writeFileSync(path.join(generated, engine), "engine");
+  };
+  return {
+    run: () =>
+      (instance as unknown as { regeneratePrismaClient(dir: string): Promise<void> }).regeneratePrismaClient(
+        staging
+      ),
+    generated
+  };
+}
 
 async function main() {
 const base = mkdtempSync(path.join(tmpdir(), "chordv-hydration-"));
@@ -263,6 +308,28 @@ try {
       () => service(running).instance.hydrateRuntimeDependencies(staging),
       /缺少依赖目录/,
       "a running release without its dependency trees cannot hydrate an update"
+    );
+  }
+  // --- regeneration reproduces every engine the old output carried ---
+  {
+    const harness = regenerationHarness(base, "regen-ok", [
+      "libquery_engine-debian-openssl-3.0.x.so.node",
+      "query_engine_bg.wasm"
+    ]);
+    await harness.run();
+    assert.ok(
+      existsSync(path.join(harness.generated, "libquery_engine-debian-openssl-3.0.x.so.node")),
+      "a complete regeneration must be accepted"
+    );
+  }
+
+  // --- an engine went missing: refuse rather than promote a release that cannot connect ---
+  {
+    const harness = regenerationHarness(base, "regen-short", ["query_engine_bg.wasm"]);
+    await assert.rejects(
+      () => harness.run(),
+      /缺少查询引擎[\s\S]*libquery_engine-debian-openssl-3\.0\.x\.so\.node/,
+      "a regeneration that drops a query engine must fail the update, naming what is missing"
     );
   }
 } finally {

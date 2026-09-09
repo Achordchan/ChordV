@@ -700,11 +700,24 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    for (const root of roots) await this.removeDirSafe(path.join(root, ".prisma"));
+    // Record what the discarded output contained so the regenerated one can be
+    // held to it. The generated directory is the ONLY copy of some query engines
+    // in a running release — the schema declares three binaryTargets while
+    // @prisma/engines ships just the install platform's — so a regeneration that
+    // silently produced fewer would leave a release that cannot open a connection
+    // on some hosts. The prisma CLI package keeps its own copies OUTSIDE any
+    // .prisma directory, which is what lets this work with no network; verifying
+    // the result is the guard for the day that stops being true.
+    const expected = new Map<string, string[]>();
+    for (const root of roots) {
+      const generated = path.join(root, ".prisma");
+      const engines = await this.listGeneratedEngines(generated);
+      if (engines.length > 0) expected.set(generated, engines);
+      await this.removeDirSafe(generated);
+    }
 
     // Same invocation the migration helper uses, so both resolve the CLI through
-    // pnpm's workspace layout rather than a hard-coded store path. Offline: the
-    // query engines are already in the borrowed tree.
+    // pnpm's workspace layout rather than a hard-coded store path.
     await this.runShell(
       "pnpm",
       ["--filter", "@chordv/api", "exec", "prisma", "generate"],
@@ -713,6 +726,28 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       10 * 60 * 1000,
       stagingDir
     );
+
+    for (const [generated, engines] of expected) {
+      const produced = new Set(await this.listGeneratedEngines(generated));
+      const missing = engines.filter((engine) => !produced.has(engine));
+      if (missing.length > 0) {
+        throw new ServiceUnavailableException(
+          `重新生成的 Prisma 客户端缺少查询引擎（${missing.join("、")}），` +
+            "更新包无法在所有目标平台上运行，已中止。"
+        );
+      }
+    }
+  }
+
+  private async listGeneratedEngines(generatedDir: string): Promise<string[]> {
+    const clientDir = path.join(generatedDir, "client");
+    try {
+      const entries = await fs.readdir(clientDir);
+      return entries.filter((name) => name.startsWith("libquery_engine") || name.endsWith(".wasm")).sort();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
   }
 
   private async readLockfileDigest(releaseDir: string): Promise<string> {
