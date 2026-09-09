@@ -250,3 +250,81 @@ func TestMissingAncestorsReportsExactlyWhatWillBeCreated(t *testing.T) {
 		t.Fatalf("missingAncestors on an existing directory = %v, want none", made)
 	}
 }
+
+// TestUndurableDirectoryIsRolledBackSoARetryCannotForgetIt is the regression for
+// the retry hole.
+//
+// If a first write creates the data directory but cannot make its entry durable,
+// leaving that directory behind is worse than failing: the RETRY finds it
+// existing, has nothing new to sync, and reports success. Registration then
+// proceeds on that "success" and spends the one-time token, while a later power
+// loss can still take the directory — and with it the only copy of the secret
+// that makes the registration replayable. The node could never register again.
+//
+// So an unfinished provision is rolled back, and every attempt fails identically
+// until an operator provisions the directory properly.
+func TestUndurableDirectoryIsRolledBackSoARetryCannotForgetIt(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory read permission; this case is only meaningful unprivileged")
+	}
+	root := t.TempDir()
+	parent := filepath.Join(root, "lib")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Writable and searchable, NOT readable: creating the data directory
+	// succeeds, fsyncing the parent that gained it does not. (0311 gives this
+	// process the same effective rights a root-owned 0711 parent gives the
+	// unprivileged agent; a test cannot chown to root.)
+	if err := os.Chmod(parent, 0o311); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(parent, 0o700) })
+	if handle, err := os.Open(parent); err == nil {
+		handle.Close()
+		t.Skip("this platform does not enforce directory read permission here (macOS/APFS); exercised on Linux in CI")
+	}
+
+	data := filepath.Join(parent, "chordv-node-agent")
+	secret := filepath.Join(data, "credentials.json.pending")
+
+	first := WriteSecret(secret, map[string]string{"agentToken": "chordv_agent_x"})
+	if first == nil {
+		t.Fatal("the first write reported success without making the new directory durable")
+	}
+	// Nothing may be left behind — neither the half-durable directory nor a
+	// secret inside it.
+	if _, err := os.Stat(data); err == nil {
+		t.Fatal("a directory whose entry could not be made durable was left on disk")
+	}
+
+	second := WriteSecret(secret, map[string]string{"agentToken": "chordv_agent_x"})
+	if second == nil {
+		t.Fatal("the retry silently succeeded: the durability requirement was forgotten between attempts")
+	}
+	// And the failure must keep naming the directory an operator has to fix.
+	if !strings.Contains(second.Error(), parent) {
+		t.Fatalf("retry error does not name the offending directory: %v", second)
+	}
+}
+
+func TestProvisionedDirectorySurvivesForLaterWrites(t *testing.T) {
+	// The counterpart: once the directory exists durably, writes into it must not
+	// touch the ancestor at all — that is what the round-2 fix guaranteed.
+	root := t.TempDir()
+	parent := filepath.Join(root, "lib")
+	data := filepath.Join(parent, "chordv-node-agent")
+	if err := os.MkdirAll(data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o311); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(parent, 0o700) })
+
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := WriteSecret(filepath.Join(data, "credentials.json"), map[string]int{"attempt": attempt}); err != nil {
+			t.Fatalf("attempt %d into a pre-provisioned directory failed: %v", attempt, err)
+		}
+	}
+}

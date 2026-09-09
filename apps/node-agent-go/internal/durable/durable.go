@@ -71,70 +71,94 @@ func missingAncestors(directory string) []string {
 //
 // A level that already exists (another writer raced us) is kept exactly as it
 // is: only a directory this call actually created may have its mode rewritten,
-// or a deliberate operator permission would be silently undone.
-func makeDirs(chain []string) error {
-	for _, made := range chain {
-		switch err := os.Mkdir(made, DirMode); {
+// or a deliberate operator permission would be silently undone. The returned
+// list is what was ACTUALLY created, which is also the only thing that may be
+// rolled back.
+func makeDirs(chain []string) ([]string, error) {
+	var made []string
+	for _, directory := range chain {
+		switch err := os.Mkdir(directory, DirMode); {
 		case err == nil:
-			if err := os.Chmod(made, DirMode); err != nil {
-				return err
+			made = append(made, directory)
+			if err := os.Chmod(directory, DirMode); err != nil {
+				return made, err
 			}
 		case errors.Is(err, os.ErrExist):
 			continue
 		default:
+			return made, err
+		}
+	}
+	return made, nil
+}
+
+// provisionDir creates the target directory and makes its EXISTENCE durable,
+// before anything is written into it.
+//
+// The ordering matters and the rollback is the point. If the new directory's
+// entry cannot be made durable, everything this call created is removed again —
+// so the next attempt starts from the same state and fails the same way.
+//
+// Without the rollback, a first attempt that fails at the parent fsync still
+// leaves the directory on disk; the RETRY then finds it existing, syncs only
+// the leaf, and reports success. Registration would proceed on that "success",
+// spend the one-time token, and a later power loss could still take the
+// directory — and with it the recovery secret — leaving a node that can never
+// register again. A durability requirement that a retry can forget is not a
+// durability requirement.
+func provisionDir(directory string) (err error) {
+	made, err := makeDirs(missingAncestors(directory))
+	defer func() {
+		if err == nil || len(made) == 0 {
+			return
+		}
+		// Deepest first, and os.Remove (never RemoveAll): these directories were
+		// created empty moments ago, so a non-empty one means someone else is
+		// using it and it must be left alone.
+		for i := len(made) - 1; i >= 0; i-- {
+			_ = os.Remove(made[i])
+		}
+	}()
+	if err != nil {
+		return err
+	}
+	if len(made) == 0 {
+		// Pre-existing directory: no new entry, nothing to make durable, and no
+		// reason to touch an ancestor the agent may not even be allowed to read.
+		return nil
+	}
+	for _, directory := range made {
+		if err = SyncDir(directory); err != nil {
 			return err
 		}
+	}
+	// The one pre-existing directory involved: it gained the shallowest new
+	// entry. Name it precisely on failure — the fix is to provision the data
+	// directory ahead of time (which the installer does, as root).
+	parent := filepath.Dir(made[0])
+	if err = SyncDir(parent); err != nil {
+		return fmt.Errorf(
+			"无法 fsync 上级目录 %s（新建目录项需要对它有读权限才能确保持久化；"+
+				"请预先创建好数据目录再启动服务）: %w", parent, err)
 	}
 	return nil
 }
 
-// syncAfterWrite makes the new directory entries durable.
-//
-// A directory created by an earlier failed attempt can be VISIBLE without its
-// own entry being durable, so the directories this call created must be synced
-// too — along with the ONE pre-existing ancestor that gained the shallowest of
-// them.
-//
-// It deliberately stops there rather than walking to the filesystem root.
-// Ancestors above that gained no entry and are already durable, so syncing them
-// achieves nothing — while opening them requires READ permission, which a
-// hardened deployment need not grant: a root-owned 0711 parent is searchable but
-// not readable, and an unprivileged agent would fail there on every write
-// despite owning its own data directory outright.
-func syncAfterWrite(directory string, created []string) error {
-	if len(created) == 0 {
-		return SyncDir(directory)
-	}
-	for _, made := range created {
-		if err := SyncDir(made); err != nil {
-			return err
-		}
-	}
-	// The only pre-existing directory involved. If it is not readable, say so
-	// precisely: the alternative is a silently non-durable first boot, whose
-	// failure mode is a lost registration secret on a one-time token.
-	parent := filepath.Dir(created[0])
-	if err := SyncDir(parent); err != nil {
-		return fmt.Errorf("无法 fsync 上级目录 %s（新建目录项需要对它有读权限才能确保持久化）: %w", parent, err)
-	}
-	return nil
-}
-
-// WriteFile writes contents to file atomically and durably: exclusive temp file
-// with an explicit mode, fsync of the contents, atomic rename, then fsync of the
-// directory entries this call created. A reader therefore never observes a
-// partial file, and a crash leaves either the old file or the new one.
+// WriteFile writes contents to file atomically and durably: the directory is
+// provisioned and made durable first, then an exclusive temp file with an
+// explicit mode, fsync of the contents, atomic rename, and fsync of the
+// directory. A reader therefore never observes a partial file, and a crash
+// leaves either the old file or the new one — never a durable file inside a
+// directory that the same crash removes.
 func WriteFile(file string, contents []byte, mode os.FileMode) (err error) {
 	file, err = filepath.Abs(file)
 	if err != nil {
 		return err
 	}
 	directory := filepath.Dir(file)
-	// Recorded BEFORE creating anything: which directories are new decides both
-	// whose mode may be rewritten (only ours — a pre-existing directory belongs
-	// to the operator) and which entries still need an fsync afterwards.
-	created := missingAncestors(directory)
-	if err = makeDirs(created); err != nil {
+	// The directory's own existence is made durable BEFORE anything is written
+	// into it, so a file can never end up inside a directory a crash may remove.
+	if err = provisionDir(directory); err != nil {
 		return err
 	}
 	suffix := make([]byte, 8)
@@ -182,7 +206,9 @@ func WriteFile(file string, contents []byte, mode os.FileMode) (err error) {
 	if err = os.Rename(temporary, file); err != nil {
 		return err
 	}
-	return syncAfterWrite(directory, created)
+	// Only the leaf: it is the sole directory that gained an entry here, and it
+	// is the one directory the agent is guaranteed to own.
+	return SyncDir(directory)
 }
 
 // WriteSecret persists a JSON document with owner-only permissions. The
