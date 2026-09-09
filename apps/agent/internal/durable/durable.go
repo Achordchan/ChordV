@@ -92,7 +92,7 @@ func makeDirs(chain []string) ([]string, error) {
 	return made, nil
 }
 
-// provisionDir creates the target directory and makes its EXISTENCE durable,
+// EnsureDir creates the target directory and makes its EXISTENCE durable,
 // before anything is written into it.
 //
 // The ordering matters and the rollback is the point. If the new directory's
@@ -106,7 +106,7 @@ func makeDirs(chain []string) ([]string, error) {
 // directory — and with it the recovery secret — leaving a node that can never
 // register again. A durability requirement that a retry can forget is not a
 // durability requirement.
-func provisionDir(directory string) (err error) {
+func EnsureDir(directory string) (err error) {
 	made, err := makeDirs(missingAncestors(directory))
 	defer func() {
 		if err == nil || len(made) == 0 {
@@ -158,7 +158,7 @@ func WriteFile(file string, contents []byte, mode os.FileMode) (err error) {
 	directory := filepath.Dir(file)
 	// The directory's own existence is made durable BEFORE anything is written
 	// into it, so a file can never end up inside a directory a crash may remove.
-	if err = provisionDir(directory); err != nil {
+	if err = EnsureDir(directory); err != nil {
 		return err
 	}
 	suffix := make([]byte, 8)
