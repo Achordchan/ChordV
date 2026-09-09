@@ -1,7 +1,23 @@
-# ChordV Node Agent (Go)
+# ChordV Agent (Go)
 
 B1 阶段的节点 agent，移植自 `apps/node-agent`（TypeScript，3,423 行）。
 设计与分期见 `docs/prd/node-inband-coexist-go-agent.md`。
+
+## 关于目录名
+
+叫 `agent` 而不是 `node-agent-go`。
+
+旧目录名里的 **node 指的是「节点」**（`nodeId`、`NodeAgent`、`CHORDV_NODE_ID`、
+`Node` 模型），**不是 Node.js** —— Node.js 只是它当时的实现语言。正因如此，
+`node-agent-go` 会被读成「Node.js agent，用 Go 写的」，自相矛盾；而 P5 删掉
+TypeScript 版之后，`-go` 后缀也不再指代任何东西。
+
+`agent` 对齐 API 命名空间 `/api/agent/v1` 与服务用户 `chordv-agent`，名字里不含语言，
+因此 TypeScript 版退役后**不需要再改第二次名**。
+
+**部署侧的名字没有跟着改**：systemd 单元仍是 `chordv-node-agent.service`，
+数据目录仍是 `/var/lib/chordv-node-agent`。那些是已装机器上的既有事实，
+改动会破坏原地升级；仓库目录名与它们无关。
 
 ## 为什么是 Go
 

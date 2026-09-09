@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Achordchan/ChordV/apps/node-agent-go/internal/protocol"
+	"github.com/Achordchan/ChordV/apps/agent/internal/protocol"
 )
 
 // Timeouts match the Node agent's. The events stream is deliberately excluded:

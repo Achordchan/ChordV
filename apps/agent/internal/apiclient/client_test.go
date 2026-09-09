@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Achordchan/ChordV/apps/node-agent-go/internal/protocol"
+	"github.com/Achordchan/ChordV/apps/agent/internal/protocol"
 )
 
 func newTestClient(handler http.Handler) (*Client, func()) {
