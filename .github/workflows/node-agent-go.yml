@@ -1,0 +1,65 @@
+name: Node Agent (Go)
+
+# Checks for apps/node-agent-go, the Go port of the node agent (docs/prd/
+# node-inband-coexist-go-agent.md §5.1). It is a separate module from the pnpm
+# workspace, so nothing in the existing pipelines covers it.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/node-agent-go/**"
+      - ".github/workflows/node-agent-go.yml"
+  pull_request:
+    paths:
+      - "apps/node-agent-go/**"
+      - ".github/workflows/node-agent-go.yml"
+
+concurrency:
+  group: node-agent-go-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: apps/node-agent-go
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/node-agent-go/go.mod
+          # This module has zero third-party dependencies and therefore no
+          # go.sum; the default cache step would fail looking for one.
+          cache: false
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未经 gofmt 格式化：" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race ./...
+
+      # The whole point of choosing Go was a single binary with no runtime on the
+      # target VPS. CGO_ENABLED=0 is what delivers that, so it is verified for
+      # both architectures the control plane accepts at registration rather than
+      # discovered at install time on someone's arm64 box.
+      - name: Cross compile (static, both accepted architectures)
+        run: |
+          for arch in amd64 arm64; do
+            echo "== linux/$arch"
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build ./...
+          done
