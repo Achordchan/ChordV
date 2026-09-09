@@ -1,6 +1,6 @@
-name: Node Agent (Go)
+name: Agent (Go)
 
-# Checks for apps/node-agent-go, the Go port of the node agent (docs/prd/
+# Checks for apps/agent, the Go port of the node agent (docs/prd/
 # node-inband-coexist-go-agent.md §5.1). It is a separate module from the pnpm
 # workspace, so nothing in the existing pipelines covers it.
 
@@ -8,20 +8,20 @@ on:
   push:
     branches: [main]
     paths:
-      - "apps/node-agent-go/**"
-      - ".github/workflows/node-agent-go.yml"
+      - "apps/agent/**"
+      - ".github/workflows/agent-go.yml"
   pull_request:
     paths:
-      - "apps/node-agent-go/**"
-      - ".github/workflows/node-agent-go.yml"
+      - "apps/agent/**"
+      - ".github/workflows/agent-go.yml"
 
 concurrency:
-  group: node-agent-go-${{ github.ref }}
+  group: agent-go-${{ github.ref }}
   cancel-in-progress: true
 
 defaults:
   run:
-    working-directory: apps/node-agent-go
+    working-directory: apps/agent
 
 jobs:
   check:
@@ -33,7 +33,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: apps/node-agent-go/go.mod
+          go-version-file: apps/agent/go.mod
           # This module has zero third-party dependencies and therefore no
           # go.sum; the default cache step would fail looking for one.
           cache: false

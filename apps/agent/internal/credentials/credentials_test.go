@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Achordchan/ChordV/apps/node-agent-go/internal/agentcfg"
-	"github.com/Achordchan/ChordV/apps/node-agent-go/internal/durable"
-	"github.com/Achordchan/ChordV/apps/node-agent-go/internal/protocol"
+	"github.com/Achordchan/ChordV/apps/agent/internal/agentcfg"
+	"github.com/Achordchan/ChordV/apps/agent/internal/durable"
+	"github.com/Achordchan/ChordV/apps/agent/internal/protocol"
 )
 
 func newConfig(t *testing.T) *agentcfg.Config {

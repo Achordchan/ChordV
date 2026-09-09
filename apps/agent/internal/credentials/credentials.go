@@ -25,12 +25,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Achordchan/ChordV/apps/node-agent-go/internal/agentcfg"
-	"github.com/Achordchan/ChordV/apps/node-agent-go/internal/apiclient"
-	"github.com/Achordchan/ChordV/apps/node-agent-go/internal/durable"
-	"github.com/Achordchan/ChordV/apps/node-agent-go/internal/protocol"
-	"github.com/Achordchan/ChordV/apps/node-agent-go/internal/uuid"
-	"github.com/Achordchan/ChordV/apps/node-agent-go/internal/version"
+	"github.com/Achordchan/ChordV/apps/agent/internal/agentcfg"
+	"github.com/Achordchan/ChordV/apps/agent/internal/apiclient"
+	"github.com/Achordchan/ChordV/apps/agent/internal/durable"
+	"github.com/Achordchan/ChordV/apps/agent/internal/protocol"
+	"github.com/Achordchan/ChordV/apps/agent/internal/uuid"
+	"github.com/Achordchan/ChordV/apps/agent/internal/version"
 )
 
 // Credentials is the resolved identity every authenticated request carries.
