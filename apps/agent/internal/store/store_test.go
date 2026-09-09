@@ -580,3 +580,130 @@ func contains(haystack, needle string) bool {
 }
 
 func itoa(value int) string { return big.NewInt(int64(value)).String() }
+
+// --- idle suppression -------------------------------------------------------
+
+// TestIdleUsersProduceNoBatch is the reviewer's case: the previous no-movement
+// test only fed an EMPTY reading, which says nothing about the common one —
+// enabled users sitting idle while Xray keeps returning their unchanged
+// counters. The Node agent emitted a batch for every such tick: 17,280 a day at
+// a five-second interval, each an fsync under synchronous=FULL, all deltas zero.
+func TestIdleUsersProduceNoBatch(t *testing.T) {
+	store := newStore(t, "node-1", "boot-1")
+	seed(t, store, user("b1", "u1@chordv", "1", "1000000"))
+	if first := sampleAt(t, store, true, counter("u1@chordv", "5000", "7000")); first.Batch == nil {
+		t.Fatal("the user's first reading must be emitted — it is their baseline")
+	}
+	for tick := 0; tick < 5; tick++ {
+		if result := sampleAt(t, store, true, counter("u1@chordv", "5000", "7000")); result.Batch != nil {
+			t.Fatalf("tick %d emitted a batch for an idle user: %+v", tick, result.Batch)
+		}
+	}
+	// Sequence numbers are skipped, never burned: the control plane's contiguity
+	// check would stall permanently on a hole.
+	moved := sampleAt(t, store, true, counter("u1@chordv", "5001", "7000"))
+	if moved.Batch == nil || moved.Batch.Sequence != "2" {
+		t.Fatalf("after five idle ticks the next batch = %+v, want sequence 2", moved.Batch)
+	}
+}
+
+func TestIdleUsersStillHaveTheirBookkeepingRun(t *testing.T) {
+	store := newStore(t, "node-1", "boot-1")
+	seed(t, store, user("b1", "u1@chordv", "1", "100000000"))
+	sampleAt(t, store, false, counter("u1@chordv", "0", "0"))
+	sampleAt(t, store, false, counter("u1@chordv", "500", "500"))
+	if row := storedUser(t, store, "b1"); row.OfflineUsed != "1000" {
+		t.Fatalf("offline_used = %s, want 1000", row.OfflineUsed)
+	}
+	// Suppressing the SAMPLE must not suppress the row update. Settling the
+	// offline debt is a state change with no delta behind it, and skipping it
+	// would leave an idle user with a permanently shortened allowance the next
+	// time the backend goes away.
+	if result := sampleAt(t, store, true, counter("u1@chordv", "500", "500")); result.Batch != nil {
+		t.Fatalf("an idle tick emitted a batch: %+v", result.Batch)
+	}
+	if row := storedUser(t, store, "b1"); row.OfflineUsed != "0" {
+		t.Fatalf("offline_used = %s after reaching the backend on an idle tick, want 0", row.OfflineUsed)
+	}
+}
+
+func TestAResetIsEmittedEvenWithNoTrafficBehindIt(t *testing.T) {
+	store := newStore(t, "node-1", "boot-1")
+	seed(t, store, user("b1", "u1@chordv", "1", "1000000"))
+	sampleAt(t, store, true, counter("u1@chordv", "5000", "7000"))
+
+	// Counters reset to exactly zero: the delta is zero, but the generation bump
+	// is what explains the discontinuity in every later sample. Suppressing it
+	// would leave the control plane to discover a changed generation with no
+	// record of when it changed.
+	result := sampleAt(t, store, true, counter("u1@chordv", "0", "0"))
+	if result.Batch == nil {
+		t.Fatal("a counter reset with no traffic behind it was suppressed")
+	}
+	sample := result.Batch.Samples[0]
+	if sample.CounterGeneration != "1" || sample.UplinkDeltaBytes != "0" {
+		t.Fatalf("sample = %+v", sample)
+	}
+}
+
+func TestANewUsersBaselineIsEmittedOnALaterTick(t *testing.T) {
+	store := newStore(t, "node-1", "boot-1")
+	seed(t, store, user("b1", "u1@chordv", "1", "1000000"))
+	sampleAt(t, store, true, counter("u1@chordv", "5000", "7000"))
+
+	// A user added mid-boot has an uninitialised counter, so their first reading
+	// is a baseline and must go out — a boot-level "baseline already emitted"
+	// flag would have swallowed it.
+	seed(t, store, user("b2", "u2@chordv", "2", "1000000"))
+	result := sampleAt(t, store, true,
+		counter("u1@chordv", "5000", "7000"), counter("u2@chordv", "40", "60"))
+	if result.Batch == nil || len(result.Batch.Samples) != 1 {
+		t.Fatalf("batch = %+v, want exactly the new user's baseline", result.Batch)
+	}
+	if result.Batch.Samples[0].BindingID != "b2" || result.Batch.Samples[0].UplinkDeltaBytes != "0" {
+		t.Fatalf("sample = %+v", result.Batch.Samples[0])
+	}
+}
+
+// --- path handling ----------------------------------------------------------
+
+// TestDatabasePathWithURIMetacharacters covers a data directory whose name
+// contains characters that mean something in a URI. The path passes the
+// ownership and sidecar checks, and then a concatenated `file:` URI would open a
+// DIFFERENT file — or none — than the one that was checked.
+func TestDatabasePathWithURIMetacharacters(t *testing.T) {
+	for _, name := range []string{"agent#1", "agent?x", "agent%2e", "agent 1"} {
+		path := filepath.Join(t.TempDir(), name, "node-agent.db")
+		store, err := Open(path, Options{
+			BootID: "boot-1", NodeID: "node-1", DefaultOfflineAllowance: big.NewInt(1024),
+		})
+		if err != nil {
+			t.Fatalf("%s: writable open failed: %v", name, err)
+		}
+		seed(t, store, user("b1", "u1@chordv", "1", "1000000"))
+
+		// The service is running, so the WAL sidecars exist and the probe may open.
+		probe, err := Open(path, Options{
+			BootID: "probe", NodeID: "node-1", DefaultOfflineAllowance: big.NewInt(1024), ReadOnly: true,
+		})
+		if err != nil {
+			store.Close()
+			t.Fatalf("%s: health probe failed on a path it had already checked: %v", name, err)
+		}
+		snapshot, err := probe.HealthSnapshot()
+		if err != nil {
+			probe.Close()
+			store.Close()
+			t.Fatalf("%s: %v", name, err)
+		}
+		// Proof it opened the SAME database, not an empty one silently created
+		// at a truncated path.
+		if snapshot["desiredUsers"] != 1 || snapshot["bootId"] != "boot-1" {
+			probe.Close()
+			store.Close()
+			t.Fatalf("%s: probe read a different database: %v", name, snapshot)
+		}
+		probe.Close()
+		store.Close()
+	}
+}

@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -67,6 +68,23 @@ type SampleResult struct {
 	DisableEmails []string
 }
 
+// fileURI turns a filesystem path into a SQLite `file:` URI with the given
+// query.
+//
+// A path is NOT a DSN. modernc.org/sqlite splits the DSN at `?` and reads what
+// follows as parameters, so a database under a directory named `agent?x` does
+// not merely fail — sql.Open silently creates a file called `agent` and the
+// agent's whole state (users, unsettled metering batches, identity binding)
+// lives somewhere nobody will look. `#` truncates at the fragment and `%` is
+// read as an escape, both with the same shape of outcome. AGENT_DATABASE_PATH is
+// operator-configurable, so this is reachable by configuration alone.
+//
+// url.URL.String escapes all three, so the driver opens exactly the file whose
+// ownership and sidecars were checked.
+func fileURI(path, query string) string {
+	return (&url.URL{Scheme: "file", Path: path, RawQuery: query}).String()
+}
+
 // isoMillis matches JavaScript's Date#toISOString exactly — three fractional
 // digits and a literal Z. The control plane validates @IsDateString and the two
 // agents must produce byte-identical timestamps for the same instant.
@@ -82,7 +100,7 @@ func Open(path string, options Options) (*Store, error) {
 	if err := durable.EnsureDir(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", fileURI(path, ""))
 	if err != nil {
 		return nil, err
 	}
@@ -661,6 +679,15 @@ func (s *Store) RestoreBackendConfirmedUsers(users []protocol.DesiredUser) error
 
 // RecordSample folds one reading of Xray's absolute counters into local state
 // and, when anything moved, produces the batch to upload.
+//
+// A user whose counters did not move contributes nothing to the batch. The Node
+// agent emitted them anyway, which at a five-second interval is 17,280 batches a
+// day per node — every one of them an fsync, because this database runs
+// synchronous=FULL — carrying deltas of zero. Suppressing them changes no
+// accounting: deltas are additive, sequence numbers are still contiguous
+// (a batch is skipped, never a number), and the three things the control plane
+// actually needs — a user's first reading, traffic, and a counter reset — are
+// all still emitted. See folded.emit.
 func (s *Store) RecordSample(counters []protocol.AbsoluteCounter, sampledAt time.Time, backendOnline bool) (SampleResult, error) {
 	var result SampleResult
 	err := s.transact(func(tx *sql.Tx) error {
@@ -693,8 +720,18 @@ func (s *Store) RecordSample(counters []protocol.AbsoluteCounter, sampledAt time
 				enabled, isoMillis(sampledAt), row.BindingID); err != nil {
 				return err
 			}
-			samples = append(samples, sample.UsageSample)
+			// The row update above runs unconditionally — it is what settles the
+			// offline debt when the backend comes back, and what disables an
+			// exhausted user — but an idle user's sample carries nothing new.
+			if sample.emit {
+				samples = append(samples, sample.UsageSample)
+			}
 		}
+		// Written but never read, here and in the Node agent. It is kept so the
+		// two implementations leave an identical meta table: during the canary a
+		// node may be rolled back from this agent to the Node one on the SAME
+		// data directory, and an unfamiliar store is not what anyone wants to
+		// meet while rolling back.
 		if len(counters) > 0 {
 			if err := setMetaTx(tx, baselineKey(s.options.BootID), "1"); err != nil {
 				return err
@@ -738,10 +775,15 @@ func (s *Store) RecordSample(counters []protocol.AbsoluteCounter, sampledAt time
 	return result, err
 }
 
-// folded carries both the protocol sample and the columns to persist.
+// folded carries the protocol sample, the columns to persist, and whether the
+// sample carries anything the control plane does not already know.
 type folded struct {
 	protocol.UsageSample
 	generation, uplink, downlink, quota, offline string
+	// emit is false for an idle user whose counters have not moved since the
+	// last tick. Bookkeeping still runs for them; only the wire payload is
+	// suppressed. See RecordSample for why that is safe.
+	emit bool
 }
 
 // foldCounter is the heart of metering, and the one place a mistake silently
@@ -835,6 +877,11 @@ func foldCounter(row *userRow, counter protocol.AbsoluteCounter, backendOnline b
 		downlink:   currentDown.String(),
 		quota:      nextQuota.String(),
 		offline:    nextOffline.String(),
+		// Three things are worth telling the control plane, and idleness is not
+		// one of them: this user's first reading (their baseline), any traffic,
+		// and a counter reset (the generation bump explains the discontinuity
+		// that follows). Everything else repeats what it already has.
+		emit: !row.CounterInitialized || rolledBack || delta.Sign() > 0,
 	}, shouldDisable, nil
 }
 
@@ -1091,7 +1138,10 @@ func openReadOnly(path string, options Options) (*Store, error) {
 	if _, err := os.Stat(path + "-shm"); err != nil {
 		return nil, errors.New("本地状态库未处于运行状态（缺少 WAL 共享段），健康检查不创建任何文件")
 	}
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	// Build the URI rather than concatenating it (see fileURI): otherwise the
+	// probe would open a DIFFERENT file than the one whose ownership and WAL
+	// sidecar it just checked.
+	db, err := sql.Open("sqlite", fileURI(path, "mode=ro"))
 	if err != nil {
 		return nil, err
 	}
