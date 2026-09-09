@@ -18,7 +18,10 @@ type fakeXray struct {
 	live      []xray.LiveUser
 	calls     []string
 	ensureErr error
-	removeErr error
+	// ensureErrFor fails the install of ONE account, so a test can stop the loop
+	// partway and inspect what survived.
+	ensureErrFor string
+	removeErr    error
 	// removeErrFor fails the uninstall of ONE account, so a test can prove that a
 	// failure stops the caller from going on to erase the evidence.
 	removeErrFor string
@@ -37,6 +40,9 @@ func (f *fakeXray) ListUsers(context.Context) ([]xray.LiveUser, error) {
 }
 func (f *fakeXray) EnsureUser(_ context.Context, user protocol.DesiredUser) error {
 	f.calls = append(f.calls, "ensure:"+user.Email)
+	if f.ensureErrFor != "" && f.ensureErrFor == user.Email {
+		return errors.New("安装失败")
+	}
 	return f.ensureErr
 }
 func (f *fakeXray) RemoveUser(_ context.Context, email string) error {
@@ -790,5 +796,57 @@ func TestTheBindingIdWinsWhenTheEmailIsSimplyNew(t *testing.T) {
 	}
 	if stored, _ := state.UserByBindingID("b1"); stored == nil || stored.Email != "new@chordv" {
 		t.Fatalf("stored = %+v", stored)
+	}
+}
+
+// TestAFailureMidReconcileLeavesOwnershipEvidenceIntact covers the window the
+// pending-removal list itself could open.
+//
+// Clearing the notes up front means a failure while processing an EARLIER user
+// leaves a re-added account with neither a pending note nor a desired-user
+// record — and the next snapshot that omits it classifies it as unknown and,
+// under the panel-shared inbound, leaves it serving.
+func TestAFailureMidReconcileLeavesOwnershipEvidenceIntact(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	if err := state.RecordPendingRemoval([]string{"back@chordv"}); err != nil {
+		t.Fatal(err)
+	}
+	fake.live = []xray.LiveUser{{Email: "back@chordv"}}
+	// The FIRST user fails; the re-added one is never reached.
+	fake.ensureErrFor = "first@chordv"
+
+	result := run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users": []any{
+			map[string]any(userPayload("b1", "first@chordv")),
+			map[string]any(userPayload("b2", "back@chordv")),
+		},
+	}), true)
+	if result.Status != protocol.StatusFailed {
+		t.Fatalf("result = %+v", result)
+	}
+	// Exactly one of the two forms of evidence must survive; neither is a leak.
+	stored, _ := state.UserByBindingID("b2")
+	pending, _ := state.PendingRemovals()
+	if stored == nil && !contains(pending, "back@chordv") {
+		t.Fatal("a still-installed account was left with no ownership evidence at all")
+	}
+}
+
+func TestATerminalCommandWithoutATargetIsRefused(t *testing.T) {
+	processor, fake, _ := newProcessor(t, false)
+	// A binding this node no longer stores, sent without an email. optionalField
+	// happily returns "", and the adapter's contract says removing an account
+	// that is not installed SUCCEEDS — so an empty target would report success
+	// and mark the command permanently completed without touching anything.
+	for _, kind := range []protocol.CommandType{protocol.CommandDisableUser, protocol.CommandRemoveUser} {
+		result := run(t, processor, command("c-"+string(kind), kind, "3",
+			map[string]any{"bindingId": "b-unknown"}), true)
+		if result.Status != protocol.StatusFailed {
+			t.Fatalf("%s with no resolvable target was reported as done: %+v", kind, result)
+		}
+	}
+	if contains(fake.calls, "remove:") {
+		t.Fatalf("the adapter was called with an empty target: %v", fake.calls)
 	}
 }

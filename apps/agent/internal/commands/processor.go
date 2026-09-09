@@ -203,6 +203,16 @@ func (p *Processor) terminalUser(ctx context.Context, command protocol.Command, 
 			return err
 		}
 	}
+	// The adapter addresses accounts by email, and its contract says removing an
+	// account that is not installed SUCCEEDS — so an empty target would return
+	// success, mark the command permanently completed, and never touch the
+	// account it was meant to remove. A binding this node no longer stores, sent
+	// without an email, is exactly that case: it must come back as an actionable
+	// failure instead.
+	if email == "" {
+		return fmt.Errorf("命令 %s 未能确定要卸载的账号：本机没有 bindingId 的记录，payload 也未提供 email",
+			command.Type)
+	}
 	// Xray FIRST here, unlike ensureUser: until the account is uninstalled it is
 	// still carrying traffic, and a crash after the local delete would leave it
 	// serving with nothing left to notice it.
@@ -324,16 +334,9 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	for _, user := range users {
 		desired[user.Email] = true
 	}
-	// An account handed back a desired-user record of its own is no longer
-	// pending anything.
-	var settled []string
+	stillPending := make(map[string]bool, len(pending))
 	for _, email := range pending {
-		if desired[email] {
-			settled = append(settled, email)
-		}
-	}
-	if err := p.deps.Store.ClearPendingRemoval(settled); err != nil {
-		return err
+		stillPending[email] = true
 	}
 	// Renames are settled BEFORE anything is written, for the same reason
 	// ensureUser does it: the upsert below replaces the only durable record that
@@ -357,6 +360,18 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	for _, user := range users {
 		if err := p.deps.Store.UpsertDesiredUser(user); err != nil {
 			return err
+		}
+		// Only AFTER the desired-user record is durable. Dropping the pending
+		// note first would leave a re-added account with NEITHER form of
+		// ownership evidence if this loop then fails or the process dies — and
+		// the next snapshot that omits it would classify it as unknown and leave
+		// it serving. The opposite order is harmless: holding both for a moment
+		// just means the next reconcile clears it.
+		if stillPending[user.Email] {
+			if err := p.deps.Store.ClearPendingRemoval([]string{user.Email}); err != nil {
+				return err
+			}
+			delete(stillPending, user.Email)
 		}
 		if user.Enabled {
 			if err := p.deps.Xray.EnsureUser(ctx, user); err != nil {
@@ -389,7 +404,7 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	}
 	// A pending account that is no longer installed has nothing left to settle;
 	// keeping it would make the list grow without bound.
-	for _, email := range pending {
+	for email := range stillPending {
 		if !liveEmails[email] {
 			retired = append(retired, email)
 		}
