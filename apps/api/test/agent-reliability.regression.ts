@@ -4,6 +4,7 @@ import { AgentService } from "../src/modules/agent/agent.service";
 
 async function main() {
   await testDueCommandIsRepublished();
+  await testExhaustionInterleavings();
   await testRollbackStatusSurvivesHeartbeat();
   await testDirectCutoverStatusSurvivesHeartbeat();
   await testHeartbeatReturnsDesiredNodeRevision();
@@ -138,3 +139,63 @@ async function testHeartbeatReturnsDesiredNodeRevision() {
 }
 
 void main();
+
+async function testExhaustionInterleavings() {
+  for (const scenario of ["replacement", "completed", "uncovered", "remove", "raw-user", "node-wide", "other-binding", "older"] as const) {
+    const job: Record<string, any> = {
+      id: "old", nodeId: "node-1", bindingId: "binding-1", commandType: "ENSURE_USER",
+      targetRevision: 1n, status: "failed", attempts: 8, resolvedAt: null,
+      dedupeKey: "old-key"
+    };
+    let scanCount = 0;
+    let locked = false;
+    let degraded = false;
+    const replacements: Array<Record<string, any>> = [];
+    const tx = {
+      $queryRaw: async () => {
+        locked = true;
+        // The replacement commits after the candidate scan, before the sweep
+        // acquires Node: this is the review's missing interleaving.
+        if (scenario === "completed") job.status = "completed";
+        else if (scenario !== "uncovered") replacements.push({
+          nodeId: job.nodeId,
+          bindingId: scenario === "other-binding" ? "binding-2" :
+            ["raw-user", "node-wide"].includes(scenario) ? null : job.bindingId,
+          commandType: scenario === "remove" ? "REMOVE_USER" : job.commandType,
+          targetRevision: scenario === "older" ? 0n : 2n,
+          payload: scenario === "raw-user" ? { email: "other@example.test" } : {},
+          status: "completed"
+        });
+        return [];
+      },
+      nodeCommandJob: {
+        findFirst: async () => {
+          assert.equal(locked, true);
+          return job.status === "completed" ? null : job;
+        },
+        findMany: async ({ where }: { where: any }) => {
+          assert.equal(locked, true);
+          return replacements.filter(row => row.nodeId === where.nodeId && row.targetRevision > where.targetRevision.gt &&
+            where.OR.some((scope: any) => row.bindingId === scope.bindingId &&
+              (typeof scope.commandType === "string" ? row.commandType === scope.commandType : scope.commandType.in.includes(row.commandType))));
+        },
+        update: async ({ data }: { data: any }) => { Object.assign(job, data); return job; }
+      },
+      node: { updateMany: async () => { degraded = true; return { count: 1 }; } }
+    };
+    const service = new AgentEventsService({
+      nodeCommandJob: { findMany: async () => ++scanCount === 1 ? [{ ...job }] : [] },
+      $transaction: async (run: (value: typeof tx) => Promise<unknown>) => run(tx)
+    } as never);
+    await service.retryDueCommands();
+    if (scenario === "completed") {
+      assert.equal(job.status, "completed", "扫描后完成的命令不得被取消覆盖");
+      assert.equal(degraded, false);
+    } else {
+      const covered = ["replacement", "remove", "node-wide"].includes(scenario);
+      assert.equal(job.status, "cancelled");
+      assert.equal(job.resolvedAt instanceof Date, covered, scenario);
+      assert.equal(degraded, !covered, scenario);
+    }
+  }
+}

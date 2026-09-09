@@ -270,17 +270,7 @@ export const mockAdminTeams: AdminTeamRecordDto[] = [];
 
 export const mockAdminNodes: AdminNodeRecordDto[] = mockNodes.map((node) => ({
   ...node,
-  subscriptionUrl: null,
   statsLastSyncedAt: null,
-  panelBaseUrl: null,
-  panelApiBasePath: "/",
-  panelUsername: null,
-  hasPanelPassword: false,
-  panelInboundId: null,
-  panelEnabled: false,
-  panelStatus: "offline",
-  panelLastSyncedAt: null,
-  panelError: null,
   serverName: "aws.amazon.com",
   serverHost: `${(node.countryCode ?? resolveCountryCode({ region: node.region }) ?? node.region).toLowerCase()}.edge.chordv.app`,
   serverPort: 443,
@@ -409,8 +399,11 @@ export const mockAdminSnapshot: AdminSnapshotDto = {
   subscriptions: mockAdminSubscriptions,
   teams: mockAdminTeams,
   nodes: mockAdminNodes,
-  panelSyncJobs: [],
   leaseRevocationJobs: [],
+  nodeCommandQueue: {
+    jobs: [],
+    summaries: { nodes: [], subscriptions: [], users: [], teams: [] }
+  },
   announcements: mockAdminAnnouncements,
   policy: mockAdminPolicy,
   releases: mockAdminReleases

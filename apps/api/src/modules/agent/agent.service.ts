@@ -14,6 +14,7 @@ import { AgentEventsService } from "./agent-events.service";
 import { inboundSpecKey, normalizeInboundSpec, parseInboundReport, type NormalizedInboundSpec } from "./agent-inbound";
 import { ClientEventsPublisher } from "../common/client-events.publisher";
 import { PrismaService } from "../common/prisma.service";
+import { resolveExhaustedCommands } from "../common/node-command-job.utils";
 import { trafficGbNumberToBytes } from "../common/traffic-bytes.utils";
 import { runWithNodeAndSubscriptionUsageLocks, runWithNodeUsageLock } from "../common/usage-lock.utils";
 import { applyDirectBatch, type SubscriptionTransition } from "./agent-direct-metering";
@@ -449,22 +450,86 @@ export class AgentService {
           }
         }
       }
-      return tx.nodeCommandJob.upsert({
-        where: { dedupeKey },
-        update: {},
-        create: {
+      // An existing key means an idempotent REPLAY of an outstanding request
+      // (the upsert's update was empty): nothing new is ordered, so it must
+      // not resolve any exhausted failure — a replayed older command clearing
+      // a newer retry-exhausted row would hide an unresolved failure. The
+      // unique index still arbitrates concurrent same-key requests: the
+      // loser of the create race re-reads the winner's row.
+      const replayed = await tx.nodeCommandJob.findUnique({ where: { dedupeKey } });
+      if (replayed) {
+        return replayed;
+      }
+      // User commands carry their binding target in the payload: resolution
+      // must scope to THAT binding (ordering ENSURE_USER for one user must not
+      // clear other users' exhausted failures on the same node), and the new
+      // row must carry the ownership columns the admin queue aggregates by.
+      // A bindingId that does not belong to this node is rejected — otherwise
+      // the command would act on another node's user.
+      const payloadBindingId = typeof (payload as Record<string, unknown>).bindingId === "string"
+        ? (payload as Record<string, unknown>).bindingId as string
+        : null;
+      let bindingTarget: { id: string; subscriptionId: string; userId: string | null; teamId: string | null } | null = null;
+      if (payloadBindingId) {
+        const binding = await tx.panelClientBinding.findUnique({
+          where: { id: payloadBindingId },
+          select: { id: true, nodeId: true, subscriptionId: true, userId: true, teamId: true }
+        });
+        if (!binding || binding.nodeId !== nodeId) {
+          throw new BadRequestException("命令携带的用户绑定不属于该节点");
+        }
+        bindingTarget = binding;
+      }
+      // Exhausted (cancelled) failures resolve only under a genuinely NEW
+      // order, and only with a scope the new command actually covers:
+      // - a verified binding resolves that binding's exhausted rows;
+      // - a payload with NO user-targeting field (ENSURE_INBOUND,
+      //   RECONCILE_USERS, ...) resolves node+commandType-wide;
+      // - a user command targeted by email/userKey WITHOUT a bindingId
+      //   resolves NOTHING — node-wide would clear OTHER users' exhausted
+      //   failures on the same node.
+      // Only rows older than this new order can be resolved, which is
+      // structural here — the replacement is being created now.
+      if (bindingTarget) {
+        await resolveExhaustedCommands(tx, {
+          bindingId: bindingTarget.id,
+          nodeId,
+          commandType: input.type
+        });
+      } else if (!hasUserTargeting(payload)) {
+        await resolveExhaustedCommands(tx, { nodeId, commandType: input.type });
+      }
+      return await tx.nodeCommandJob.create({
+        data: {
           id: randomUUID(),
           dedupeKey,
           nodeId,
           agentId: agent.id,
           commandType: input.type,
           targetRevision,
-          payload: payload as Prisma.InputJsonValue
+          payload: payload as Prisma.InputJsonValue,
+          ...(bindingTarget
+            ? {
+                bindingId: bindingTarget.id,
+                subscriptionId: bindingTarget.subscriptionId,
+                userId: bindingTarget.userId,
+                teamId: bindingTarget.teamId
+              }
+            : {})
         }
       });
+    }).catch(async (error: unknown) => {
+      // PostgreSQL aborts the transaction on a uniqueness violation. Recover
+      // only after rollback, so revision allocation and failure resolution
+      // from the losing request cannot be committed as side effects of replay.
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        const replayed = await this.prisma.nodeCommandJob.findUnique({ where: { dedupeKey } });
+        if (replayed) return replayed;
+      }
+      throw error;
     });
     const command = serializeCommand(job);
-    this.events.publish(agent.id, command);
+    if (job.agentId) this.events.publish(job.agentId, command);
     return command;
   }
 
@@ -606,6 +671,16 @@ function serializeAgent(agent: NodeAgent): AdminNodeAgentDto {
     lastSeenAt: agent.lastSeenAt?.toISOString() ?? null,
     revokedAt: agent.revokedAt?.toISOString() ?? null
   };
+}
+
+function hasUserTargeting(payload: unknown) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return false;
+  }
+  return ["bindingId", "userKey", "email", "uuid"].some((key) => {
+    const value = Reflect.get(payload, key);
+    return typeof value === "string" && value.length > 0;
+  });
 }
 
 function serializeCommand(job: { id: string; commandType: NodeAgentCommandType; targetRevision: bigint; payload: Prisma.JsonValue; createdAt: Date }): AgentCommandDto {

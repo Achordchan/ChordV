@@ -11,22 +11,15 @@ import { resolveTrustProxy } from "./trust-proxy";
 import { forceHttpsMiddleware } from "./https-enforcement";
 import { LoggingExceptionFilter } from "./logging-exception.filter";
 import { assertAgentTokenPepperReadyForProduction } from "./modules/agent/agent.service";
-import {
-  assertNoPlaintextPanelPasswordsInProduction,
-  assertPanelPasswordCryptoReadyForProduction,
-  backfillPlaintextPanelPasswords
-} from "./modules/common/panel-password-crypto";
 
 async function bootstrap() {
   await assertPrismaMigrationBaselineOrExit();
   try {
-    assertPanelPasswordCryptoReadyForProduction();
     assertAgentTokenPepperReadyForProduction();
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
-  await backfillPanelPasswordsOrExit();
   const app = await NestFactory.create(AppModule, {
     cors: {
       origin: resolveCorsOrigin,
@@ -121,41 +114,6 @@ function readPositiveIntegerEnv(name: string, fallback: number) {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-
-async function backfillPanelPasswordsOrExit() {
-  if ((process.env.CHORDV_SKIP_PANEL_PASSWORD_BACKFILL ?? "").toLowerCase() === "true") {
-    if (process.env.NODE_ENV === "production" && (process.env.CHORDV_ALLOW_PLAINTEXT_PANEL_PASSWORD ?? "").toLowerCase() !== "true") {
-      console.error(
-        "CHORDV_SKIP_PANEL_PASSWORD_BACKFILL=true is not allowed in production unless CHORDV_ALLOW_PLAINTEXT_PANEL_PASSWORD=true."
-      );
-      process.exit(1);
-    }
-    return;
-  }
-  if (!process.env.DATABASE_URL?.trim()) {
-    return;
-  }
-  try {
-    const { PrismaClient } = await import("@prisma/client");
-    const prisma = new PrismaClient();
-    try {
-      const result = await backfillPlaintextPanelPasswords(prisma);
-      if (!result.skipped && (result.nodes > 0 || result.panelSyncJobs > 0)) {
-        console.log(
-          `Encrypted legacy plaintext panel passwords: nodes=${result.nodes}, panelSyncJobs=${result.panelSyncJobs}`
-        );
-      }
-      await assertNoPlaintextPanelPasswordsInProduction(prisma);
-    } finally {
-      await prisma.$disconnect().catch(() => undefined);
-    }
-  } catch (error) {
-    console.error(
-      `Panel password backfill failed: ${error instanceof Error ? error.message : String(error)}`
-    );
-    process.exit(1);
-  }
-}
 
 async function assertPrismaMigrationBaselineOrExit() {
 

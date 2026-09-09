@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Prisma } from "@prisma/client";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { AgentService } from "../src/modules/agent/agent.service";
@@ -295,6 +296,15 @@ function commandJobStore() {
       }
     },
     node: { update: async () => ({ agentConfigRevision: ++revision, inboundAppliedRevision: applied }) },
+    panelClientBinding: {
+      findUnique: async ({ where }: { where: { id: string } }) => {
+        const bindings: Record<string, Record<string, any>> = {
+          "binding-a": { id: "binding-a", nodeId: "node-1", subscriptionId: "sub-1", userId: "user-1", teamId: "team-1" },
+          "binding-b": { id: "binding-b", nodeId: "node-1", subscriptionId: "sub-2", userId: "user-2", teamId: null }
+        };
+        return bindings[where.id] ?? null;
+      }
+    },
     nodeCommandJob: {
       findUnique: async ({ where }: { where: { dedupeKey: string } }) =>
         rows.find((row) => row.dedupeKey === where.dedupeKey) ?? null,
@@ -305,7 +315,15 @@ function commandJobStore() {
       updateMany: async ({ where, data }: { where: Record<string, any>; data: Record<string, any> }) => {
         let count = 0;
         for (const row of rows) {
-          if (row.id === where.id && row.dedupeKey === where.dedupeKey) { Object.assign(row, data); count += 1; }
+          if (where.id !== undefined) {
+            if (row.id === where.id && row.dedupeKey === where.dedupeKey) { Object.assign(row, data); count += 1; }
+            continue;
+          }
+          // resolveExhaustedCommands' scope filters (binding or node+type).
+          const scopeMatches = where.bindingId !== undefined
+            ? row.bindingId === where.bindingId
+            : row.nodeId === where.nodeId && row.commandType === where.commandType;
+          if (scopeMatches && row.status === "cancelled" && row.resolvedAt == null) { Object.assign(row, data); count += 1; }
         }
         return { count };
       },
@@ -320,6 +338,22 @@ function commandJobStore() {
         }
         const row = { ...create, status: "pending", attempts: 0, createdAt: new Date(Date.UTC(2026, 0, 1) + ++clock * 60_000) };
         rows.push(row);
+        return row;
+      },
+      create: async ({ data }: { data: Record<string, any> }) => {
+        if (store.gate) {
+          const gate = store.gate;
+          store.gate = null;
+          store.gateHit = true;
+          await gate;
+        }
+        const row = { ...data, status: "pending", attempts: 0, createdAt: new Date(Date.UTC(2026, 0, 1) + ++clock * 60_000) };
+        rows.push(row);
+        return row;
+      },
+      findUniqueOrThrow: async ({ where }: { where: { dedupeKey: string } }) => {
+        const row = rows.find((item) => item.dedupeKey === where.dedupeKey);
+        if (!row) throw new Error("模拟唯一键冲突后未找到已提交的命令");
         return row;
       },
     },
@@ -373,6 +407,63 @@ async function testGetCommandOutcome() {
     nodeCommandJob: { findFirst: async () => null }
   } as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
   assert.equal(await missing.getCommandOutcome("node-1", "gone"), null);
+}
+
+async function testUserCommandResolutionIsBindingScoped() {
+  // Ordering ENSURE_USER for ONE user must resolve only THAT binding's
+  // exhausted failure: a node-scoped resolution would clear every other
+  // user's failed provisioning on the node without repairing anything.
+  const store = commandJobStore();
+  store.rows.push(
+    { id: "exhausted-a", dedupeKey: "old:a", nodeId: "node-1", commandType: "ENSURE_USER", status: "cancelled", resolvedAt: null, bindingId: "binding-a", subscriptionId: "sub-1", userId: "user-1", teamId: "team-1", targetRevision: 1n, createdAt: new Date(0) },
+    { id: "exhausted-b", dedupeKey: "old:b", nodeId: "node-1", commandType: "ENSURE_USER", status: "cancelled", resolvedAt: null, bindingId: "binding-b", subscriptionId: "sub-2", userId: "user-2", teamId: null, targetRevision: 2n, createdAt: new Date(1) }
+  );
+  const service = new AgentService(store.prisma as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
+
+  await service.queueCommand("node-1", { type: "ENSURE_USER", payload: { bindingId: "binding-a", email: "a@example.invalid", uuid: "u1" } } as never);
+
+  const exhaustedA = store.rows.find((row) => row.id === "exhausted-a");
+  const exhaustedB = store.rows.find((row) => row.id === "exhausted-b");
+  assert.ok(exhaustedA?.resolvedAt instanceof Date, "被重新下发的绑定，其耗尽失败应被解决");
+  assert.equal(exhaustedB?.resolvedAt ?? null, null, "其他用户绑定的耗尽失败不得被顺带解决");
+
+  const ordered = store.rows.find((row) => row.id !== "exhausted-a" && row.id !== "exhausted-b");
+  assert.deepEqual(
+    ordered && { bindingId: ordered.bindingId, subscriptionId: ordered.subscriptionId, userId: ordered.userId, teamId: ordered.teamId },
+    { bindingId: "binding-a", subscriptionId: "sub-1", userId: "user-1", teamId: "team-1" },
+    "用户命令必须带归属列（管理端按订阅/用户聚合依赖它们）"
+  );
+
+  // A binding that belongs to another node is refused, not silently executed.
+  await assert.rejects(
+    () => service.queueCommand("node-1", { type: "ENSURE_USER", payload: { bindingId: "binding-x", email: "x@example.invalid", uuid: "u2" } } as never),
+    /不属于该节点/,
+    "他节点的绑定不得被命令操作"
+  );
+
+  // A user command targeted by email WITHOUT a bindingId must resolve nothing:
+  // node-wide resolution would clear OTHER users' exhausted failures on the
+  // node (the agent addresses the user via findStored, but the control plane
+  // has not verified which binding is meant).
+  store.rows.push(
+    { id: "exhausted-c", dedupeKey: "old:c", nodeId: "node-1", commandType: "ENSURE_USER", status: "cancelled", resolvedAt: null, bindingId: "binding-c", subscriptionId: "sub-3", userId: "user-3", teamId: null, targetRevision: 3n, createdAt: new Date(2) }
+  );
+  await service.queueCommand("node-1", { type: "ENSURE_USER", payload: { email: "someone@example.invalid" } } as never);
+  assert.equal(
+    store.rows.find((row) => row.id === "exhausted-c")?.resolvedAt ?? null,
+    null,
+    "按 email 定位、无 bindingId 的用户命令不得做节点级解决"
+  );
+
+  // Genuinely target-less commands keep the node-wide scope.
+  store.rows.push(
+    { id: "exhausted-reconcile", dedupeKey: "old:reconcile", nodeId: "node-1", commandType: "RECONCILE_USERS", status: "cancelled", resolvedAt: null, targetRevision: 4n, createdAt: new Date(3) }
+  );
+  await service.queueCommand("node-1", { type: "RECONCILE_USERS", payload: {} } as never);
+  assert.ok(
+    store.rows.find((row) => row.id === "exhausted-reconcile")?.resolvedAt instanceof Date,
+    "无目标命令仍按节点+类型解决耗尽行"
+  );
 }
 
 async function testInboundCasGuard() {
@@ -614,9 +705,7 @@ function testAdminNodeRecordInboundFields() {
     latencyMs: 0, probeLatencyMs: null, protocol: "vless", security: "reality",
     serverHost: "203.0.113.7", serverPort: 443, serverName: "www.microsoft.com",
     shortId: "0123456789abcdef", spiderX: "/",
-    subscriptionUrl: null, statsLastSyncedAt: null,
-    panelBaseUrl: null, panelApiBasePath: null, panelUsername: null, panelPassword: null,
-    panelInboundId: null, panelEnabled: false, panelStatus: "offline", panelLastSyncedAt: null, panelError: null,
+    statsLastSyncedAt: null,
     probeStatus: "unknown", probeCheckedAt: null, probeError: null,
     createdAt: new Date(0), updatedAt: new Date(0)
   };
@@ -667,6 +756,63 @@ async function testGetInboundSpec() {
   );
 }
 
+async function testDedupeConflictAfterRollback() {
+  const conflict = new Prisma.PrismaClientKnownRequestError("duplicate", {
+    code: "P2002", clientVersion: "6.5.0", meta: { target: ["dedupeKey"] }
+  });
+  const winner = {
+    id: "winner", agentId: "winner-agent", commandType: "RECONCILE_USERS",
+    targetRevision: 7n, payload: {}, createdAt: new Date()
+  };
+  for (const failure of [conflict, new Error("database unavailable")]) {
+    for (const winnerExists of [true, false]) {
+      let rolledBack = false;
+      let revision = 0;
+      let resolved = false;
+      let reads = 0;
+      const published: unknown[] = [];
+      const tx = {
+        $queryRaw: async () => [],
+        node: { update: async () => ({ agentConfigRevision: ++revision, inboundAppliedRevision: 0n }) },
+        nodeCommandJob: {
+          findUnique: async () => null,
+          updateMany: async () => { resolved = true; return { count: 1 }; },
+          create: async () => { throw failure; },
+          findUniqueOrThrow: async () => { throw new Error("transaction is aborted"); }
+        }
+      };
+      const prisma = {
+        nodeAgent: { findFirst: async () => ({ id: "loser-agent" }) },
+        $transaction: async (run: (value: typeof tx) => Promise<unknown>) => {
+          try { return await run(tx); }
+          catch (error) { revision = 0; resolved = false; rolledBack = true; throw error; }
+        },
+        nodeCommandJob: { findUnique: async () => {
+          assert.equal(rolledBack, true, "冲突恢复必须在事务回滚后读取");
+          reads++;
+          return winnerExists ? winner : null;
+        } }
+      };
+      const service = new AgentService(prisma as never, {
+        publish: (agentId: string, command: unknown) => published.push({ agentId, command })
+      } as never, {} as never);
+      const request = service.queueCommand("loser-node", {
+        type: "RECONCILE_USERS", payload: {}, dedupeKey: "shared-key"
+      } as never);
+      if (failure === conflict && winnerExists) {
+        assert.equal((await request).commandId, winner.id);
+        assert.equal((published[0] as { agentId: string }).agentId, winner.agentId);
+      } else {
+        await assert.rejects(request, (error: unknown) => error === failure);
+        assert.equal(published.length, 0);
+      }
+      assert.equal(reads, failure === conflict ? 1 : 0);
+      assert.equal(revision, 0, "失败请求不能保留 revision 增量");
+      assert.equal(resolved, false, "失败请求不能清除未解决故障");
+    }
+  }
+}
+
 function main() {
   testCommandTypeIsDeclaredEverywhere();
   testSpecNormalization();
@@ -678,12 +824,14 @@ function main() {
   return testWhoamiAcrossProxyHops()
     .then(testWriteBackAndActivation)
     .then(testDedupeScope)
+    .then(testUserCommandResolutionIsBindingScoped)
     .then(testDedupeInterveningDeployment)
     .then(testInboundCasGuard)
     .then(testGetCommandOutcome)
     .then(testDedupeInterveningWhileRunning)
     .then(testDedupeInterleavedRequests)
-    .then(testDedupeReleaseIsInboundOnly);
+    .then(testDedupeReleaseIsInboundOnly)
+    .then(testDedupeConflictAfterRollback);
   });
 }
 

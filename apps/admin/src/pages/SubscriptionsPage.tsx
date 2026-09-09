@@ -2,6 +2,8 @@ import type { Dispatch, SetStateAction } from "react";
 import { Accordion, ActionIcon, Alert, Badge, Button, Card, Group, NumberInput, Paper, Select, SimpleGrid, Stack, Table, Tabs, Text } from "@mantine/core";
 import type {
   AdminLeaseRevocationJobDto,
+  AdminNodeCommandQueueDto,
+  AdminNodeCommandSummaryDto,
   AdminPlanRecordDto,
   AdminSubscriptionRecordDto,
   AdminTeamRecordDto,
@@ -24,11 +26,12 @@ import { MiniMetric } from "../features/shared/MiniMetric";
 import { RowActions } from "../features/shared/RowActions";
 import { SectionCard } from "../features/shared/SectionCard";
 import { StatusBadge } from "../features/shared/StatusBadge";
-import type { PanelSyncQueueFilter } from "../utils/admin-queue-filters";
+import type { LeaseRevocationQueueFilter } from "../utils/admin-queue-filters";
 import type { TeamSubscriptionFormState } from "../utils/admin-forms";
 import { applyPlanToTeamSubscriptionForm } from "../utils/admin-forms";
 import { summarizeAdminDiagnosticMessage, summarizeTeamUsage } from "../utils/admin-filters";
 import { formatDateTime, formatTrafficGb } from "../utils/admin-format";
+import { findNodeCommandSummary } from "../utils/node-command-summary";
 import {
   getRenewActionText,
   subscriptionStateColor,
@@ -70,6 +73,7 @@ type SubscriptionsPageProps = {
   resetTrafficBusyKey: string | null;
   allUsers: AdminUserRecordDto[];
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
+  nodeCommandQueue: AdminNodeCommandQueueDto;
   leaseRevocationRetryBusyKey: string | null;
   onOpenKickMemberModal: (teamId: string, memberId: string, memberName: string) => void;
   onRetryLeaseRevocationJob: (jobId: string) => void;
@@ -83,7 +87,7 @@ type SubscriptionsPageProps = {
   teamUsageLoadingByTeamId: Record<string, boolean>;
   teamUsageErrorByTeamId: Record<string, string | null>;
   onLoadTeamUsage: (teamId: string, options?: { force?: boolean }) => void;
-  onOpenPanelSyncQueue: (filter?: PanelSyncQueueFilter) => void;
+  onOpenLeaseRevocationQueue: (filter?: LeaseRevocationQueueFilter) => void;
 };
 
 export function SubscriptionsPage(props: SubscriptionsPageProps) {
@@ -161,10 +165,11 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                       ) : null}
                       <PanelSyncInlineStatus
                         item={item}
-                        onOpenPanelSyncQueue={() =>
-                          props.onOpenPanelSyncQueue({
+                        commandSummary={findNodeCommandSummary(props.nodeCommandQueue.summaries, "subscriptions", item.id)}
+                        onOpenLeaseRevocationQueue={() =>
+                          props.onOpenLeaseRevocationQueue({
+                            // Subscription-scoped like the badge above it.
                             subscriptionId: item.id,
-                            userId: item.userId ?? undefined,
                             title: `${item.userDisplayName ?? item.userEmail ?? "当前用户"} · ${item.planName}`
                           })
                         }
@@ -277,10 +282,12 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                         ) : null}
                         <PanelSyncInlineStatus
                           item={teamPanelSyncItem}
-                          onOpenPanelSyncQueue={() =>
-                            props.onOpenPanelSyncQueue({
+                          commandSummary={
+                            findNodeCommandSummary(props.nodeCommandQueue.summaries, "subscriptions", teamSubscriptionRecord?.id ?? currentSubscription?.id)
+                          }
+                          onOpenLeaseRevocationQueue={() =>
+                            props.onOpenLeaseRevocationQueue({
                               subscriptionId: teamSubscriptionRecord?.id ?? currentSubscription?.id,
-                              teamId: team.id,
                               title: `${team.name} · ${teamSubscriptionRecord?.planName ?? "Team 订阅"}`
                             })
                           }
@@ -447,11 +454,15 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                                               />
                                               <PanelSyncInlineStatus
                                                 item={userRecord}
-                                                onOpenPanelSyncQueue={() =>
-                                                  props.onOpenPanelSyncQueue({
-                                                    subscriptionId: currentSubscription?.id,
+                                                commandSummary={findNodeCommandSummary(props.nodeCommandQueue.summaries, "users", member.userId)}
+                                                onOpenLeaseRevocationQueue={() =>
+                                                  props.onOpenLeaseRevocationQueue({
+                                                    // User-only: the badge counts
+                                                    // that user's commands across
+                                                    // all ownerships; teamId
+                                                    // would intersect away the
+                                                    // previous team's failures.
                                                     userId: member.userId,
-                                                    teamId: team.id,
                                                     title: `${member.displayName} · ${team.name}`
                                                   })
                                                 }
@@ -612,15 +623,22 @@ function hasPanelSyncInlineData(item: PanelSyncInlineItem) {
 
 function PanelSyncInlineStatus(props: {
   item?: PanelSyncInlineItem;
-  onOpenPanelSyncQueue: () => void;
+  // Outstanding agent commands for this target: panel-era records carry no
+  // summary after a list refresh, so the indicator would otherwise vanish
+  // while provisioning is still pending.
+  commandSummary?: AdminNodeCommandSummaryDto | null;
+  onOpenLeaseRevocationQueue: () => void;
 }) {
   const summary = props.item?.panelSyncSummary;
-  if (props.item?.panelSyncStatus !== "pending" && (summary?.total ?? 0) === 0) {
+  const commandSummary = props.commandSummary ?? null;
+  if (props.item?.panelSyncStatus !== "pending" && (summary?.total ?? 0) === 0 && (commandSummary?.total ?? 0) === 0) {
     return null;
   }
-  const label = summary ? buildPanelSyncPendingLabel(summary) : "后台同步待处理";
+  const label = commandSummary
+    ? buildNodeCommandPendingLabel(commandSummary)
+    : summary ? buildPanelSyncPendingLabel(summary) : "后台同步待处理";
   const detail = [
-    summarizeAdminDiagnosticMessage(summary?.lastError, "面板同步任务失败，请稍后重试或查看服务器日志。"),
+    summarizeAdminDiagnosticMessage(commandSummary?.lastError ?? summary?.lastError, "后台同步任务失败，请稍后重试或查看服务器日志。"),
     summarizeAdminDiagnosticMessage(props.item?.panelSyncMessage, "后台同步状态待确认，请打开同步任务查看。")
   ]
     .filter(Boolean)
@@ -638,7 +656,7 @@ function PanelSyncInlineStatus(props: {
           leftSection={<IconListDetails size={12} />}
           onClick={(event) => {
             event.stopPropagation();
-            props.onOpenPanelSyncQueue();
+            props.onOpenLeaseRevocationQueue();
           }}
           title="查看后台同步任务"
         >
@@ -724,6 +742,15 @@ function buildPanelSyncPendingLabel(summary: { pending: number; running: number;
     summary.failed > 0 ? `待重试 ${summary.failed}` : null
   ].filter(Boolean);
   return parts.length > 0 ? `面板同步${parts.join(" / ")}` : "后台同步待处理";
+}
+
+function buildNodeCommandPendingLabel(summary: { pending: number; running: number; failed: number; total: number }) {
+  const parts = [
+    summary.pending > 0 ? `待执行 ${summary.pending}` : null,
+    summary.running > 0 ? `执行中 ${summary.running}` : null,
+    summary.failed > 0 ? `待重试 ${summary.failed}` : null
+  ].filter(Boolean);
+  return parts.length > 0 ? `节点命令${parts.join(" / ")}` : "后台同步待处理";
 }
 
 function buildPanelSyncInlineMessage(item: {

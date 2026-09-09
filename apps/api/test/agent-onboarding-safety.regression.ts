@@ -18,7 +18,7 @@ import { DevDataService } from "../src/modules/common/dev-data.service";
 async function nodeGuards() {
   const good = { id: "native", registrationStatus: "agent_ready", isActive: false, protocol: "vless", security: "reality",
     serverHost: "node.example.com", serverPort: 443, uuid: "uuid", realityPublicKey: "public-key", serverName: "example.com", fingerprint: "chrome",
-    panelEnabled: false, controlMode: "direct_primary", panelBaseUrl: null, panelApiBasePath: "/", panelUsername: null, panelPassword: null, panelInboundId: null };
+    controlMode: "direct_primary" };
   assert.equal(isNodeOnboardingReady(good), true);
   assert.equal(isNodeOnboardingReady({ registrationStatus: null }), true, "legacy validation remains separate");
   const invalid = [
@@ -30,8 +30,7 @@ async function nodeGuards() {
   for (const node of invalid) {
     assert.equal(isNodeOnboardingReady(node), false);
     const admin = Object.assign(Object.create(AdminNodeService.prototype), {
-      prisma: { node: { findUnique: async () => node, update: () => assert.fail("invalid node activation must not write") } },
-      resolveNodePanelEnabled: async () => false
+      prisma: { node: { findUnique: async () => node, update: () => assert.fail("invalid node activation must not write") } }
     }) as AdminNodeService;
     await assert.rejects(admin.updateNode(node.id, { isActive: true }), BadRequestException);
     const runtime = Object.assign(Object.create(RuntimeSessionService.prototype), {

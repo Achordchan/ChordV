@@ -61,8 +61,7 @@ export class AgentRegisterService {
           latencyMs: 0,
           controlMode: "direct_primary",
           controlStatus: "pending_register",
-          registrationStatus: "pending_register",
-          panelEnabled: false
+          registrationStatus: "pending_register"
         }
       });
       const expiresAt = new Date(Date.now() + REGISTER_TOKEN_TTL_MS);

@@ -197,9 +197,7 @@ export class DevDataBootstrapService {
         spiderX: "/",
         subscriptionUrl: null,
         probeStatus: "unknown",
-        panelApiBasePath: "/",
-        panelEnabled: false,
-        panelStatus: "offline"
+        controlMode: "direct_primary"
       }))
     });
 

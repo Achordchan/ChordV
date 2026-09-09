@@ -26,17 +26,23 @@ function createAdminNodeService(overrides: Record<string, unknown> = {}) {
   });
 }
 
-async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
-  let nodeDeleted = false;
-  let offlineCleanupCalled = false;
-  let remoteDeleteQueued = false;
-  let subscriptionPublishCount = 0;
-  const nodeUpdates: Array<Record<string, any>> = [];
+// Panel era is retired: deleteNode always revokes live leases, queues lease
+// revocation, then hard deletes the node row (per-node rows cascade), and
+// publishes node access / subscription refresh events. There is no more
+// remote panel cleanup path to fail, stall, or finalize.
+async function testDeleteNodeHardDeletesAfterLeaseRevocation() {
   const calls: string[] = [];
+  let nodeDeleted = false;
+  let subscriptionPublishCount = 0;
   const service = createAdminNodeService({
     clientEventsPublisher: {
-      resolveUserIdsForNodeAccess: async () => ["user_1"],
-      publishNodeAccessUpdatedToUsers: () => undefined,
+      resolveUserIdsForNodeAccess: async () => {
+        calls.push("resolve_event_targets");
+        return ["user_1"];
+      },
+      publishNodeAccessUpdatedToUsers: () => {
+        calls.push("publish_event");
+      },
       publishSubscriptionUpdated: async () => {
         subscriptionPublishCount += 1;
       }
@@ -44,36 +50,18 @@ async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
     runtimeSessionService: {
       revokeNodeLeases: async () => {
         calls.push("revoke_local_leases");
-        return 1;
+        return 2;
       },
       queueLeaseRevocationJobForNode: async () => {
         calls.push("queue_lease_revocation");
-      },
-      removePanelBindingsForNode: async () => {
-        remoteDeleteQueued = true;
-        calls.push("queue_panel_delete");
-        throw new Error("panel cleanup queue failed");
-      },
-      finalizeOfflineNodePanelCleanup: async () => {
-        offlineCleanupCalled = true;
-        calls.push("finalize_offline_cleanup");
-        return { bindingsDeleted: 1, abandonedAt: new Date() };
       }
     },
     prisma: {
-      panelClientBinding: {
-        findMany: async () => [{ subscriptionId: "sub_1" }]
-      },
       node: {
-        // Offline panel must finalize locally, hard-delete the node row, and keep used traffic untouched.
-        findUnique: async () => ({ id: "node_1", panelEnabled: true, panelStatus: "offline" }),
-        update: async (payload: Record<string, any>) => {
-          calls.push("local_update");
-          nodeUpdates.push(payload);
-          return {};
-        },
-        delete: async () => {
+        findUnique: async () => ({ id: "node_1", isActive: true }),
+        delete: async (payload: Record<string, any>) => {
           calls.push("hard_delete");
+          assert.equal(payload.where.id, "node_1");
           nodeDeleted = true;
         }
       }
@@ -84,86 +72,21 @@ async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
 
   assert.equal(result.ok, true);
   assert.equal(result.deleted, true);
-  assert.equal(result.panelSyncStatus, "synced");
-  assert.equal(offlineCleanupCalled, true, "offline panel delete must finalize local cleanup without waiting for remote panel");
-  assert.equal(remoteDeleteQueued, false, "offline panel delete must not keep queueing remote delete_client forever");
   assert.deepEqual(calls, [
-    "local_update",
+    "resolve_event_targets",
     "revoke_local_leases",
     "queue_lease_revocation",
-    "finalize_offline_cleanup",
-    "hard_delete"
+    "hard_delete",
+    "publish_event"
   ]);
-  assert.equal(nodeUpdates[0].data.isActive, false, "node must be marked offline before hard delete");
-  assert.equal(nodeUpdates[0].data.panelStatus, "offline");
-  assert.equal(nodeDeleted, true, "offline panel node must be hard-deleted after local finalize; traffic ledger uses SetNull");
-  assert.equal(subscriptionPublishCount, 1, "clients must refresh subscription metering after offline hard delete");
-}
-
-async function testDeleteNodeMarksBindingsDeletedWhenPanelDeleteQueuePartiallyFails() {
-  const calls: string[] = [];
-  const service = createAdminNodeService({
-    clientEventsPublisher: {
-      resolveUserIdsForNodeAccess: async () => [],
-      publishNodeAccessUpdatedToUsers: () => undefined
-    },
-    runtimeSessionService: {
-      revokeNodeLeases: async () => {
-        calls.push("revoke_local_leases");
-        return 0;
-      },
-      queueLeaseRevocationJobForNode: async () => {
-        calls.push("queue_lease_revocation");
-      },
-      removePanelBindingsForNode: async () => {
-        calls.push("queue_panel_delete");
-        return {
-          requested: 1,
-          updated: 0,
-          failed: [
-            {
-              bindingId: "binding_1",
-              nodeId: "node_1",
-              nodeName: "node",
-              panelClientEmail: "user@example.com",
-              error: "panel queue write failed"
-            }
-          ]
-        };
-      },
-      finalizeOfflineNodePanelCleanup: async () => {
-        calls.push("finalize_offline_cleanup");
-        return { bindingsDeleted: 1, abandonedAt: new Date() };
-      },
-      markPanelBindingsDeletedForNode: async () => {
-        calls.push("mark_deleted");
-        return 1;
-      }
-    },
-    prisma: {
-      node: {
-        // Online panel still queues remote delete; partial queue failure falls back to offline finalize.
-        findUnique: async () => ({ id: "node_1", panelEnabled: true, panelStatus: "online" }),
-        update: async () => ({})
-      }
-    }
-  });
-
-  const result = await service.deleteNode("node_1");
-
-  assert.equal(result.ok, true);
-  assert.equal(result.panelSyncStatus, "synced");
-  assert.deepEqual(calls, [
-    "revoke_local_leases",
-    "queue_lease_revocation",
-    "queue_panel_delete",
-    "finalize_offline_cleanup"
-  ]);
+  assert.equal(nodeDeleted, true, "node must be hard-deleted; traffic ledger uses SetNull");
+  assert.equal(subscriptionPublishCount, 1, "clients must refresh subscription metering after hard delete");
 }
 
 async function testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSave() {
   const calls: string[] = [];
   let publishedUserIds: string[] | null = null;
+  let nodeDeleted = false;
   const service = createAdminNodeService({
     logger: {
       warn: () => undefined
@@ -176,7 +99,8 @@ async function testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSav
       publishNodeAccessUpdatedToUsers: (userIds: string[]) => {
         calls.push("publish_event");
         publishedUserIds = userIds;
-      }
+      },
+      publishSubscriptionUpdated: async () => undefined
     },
     runtimeSessionService: {
       revokeNodeLeases: async () => {
@@ -185,19 +109,14 @@ async function testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSav
       },
       queueLeaseRevocationJobForNode: async () => {
         calls.push("queue_lease_revocation");
-      },
-      removePanelBindingsForNode: async () => {
-        calls.push("queue_panel_delete");
-        return { requested: 1, updated: 1, failed: [] };
       }
     },
     prisma: {
       node: {
-        findUnique: async () => ({ id: "node_1", panelEnabled: true, panelStatus: "online" }),
-        update: async (payload: Record<string, any>) => {
-          calls.push("local_update");
-          assert.equal(payload.data.isActive, false);
-          return {};
+        findUnique: async () => ({ id: "node_1", isActive: true }),
+        delete: async () => {
+          calls.push("hard_delete");
+          nodeDeleted = true;
         }
       }
     }
@@ -211,13 +130,13 @@ async function testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSav
   ]);
 
   assert.equal(result.ok, true);
-  assert.equal(result.panelSyncStatus, "pending");
+  assert.equal(result.deleted, true);
+  assert.equal(nodeDeleted, true, "stalled event target resolution must not block the hard delete");
   assert.deepEqual(calls, [
     "resolve_event_targets",
-    "local_update",
     "revoke_local_leases",
     "queue_lease_revocation",
-    "queue_panel_delete",
+    "hard_delete",
     "publish_event"
   ]);
   assert.deepEqual(publishedUserIds, []);
@@ -231,7 +150,8 @@ async function testDeleteNodePublishesAdminEventWhenClientTargetResolutionStalls
     },
     clientEventsPublisher: {
       resolveUserIdsForNodeAccess: async () => new Promise<string[]>(() => undefined),
-      publishNodeAccessUpdatedToUsers: () => undefined
+      publishNodeAccessUpdatedToUsers: () => undefined,
+      publishSubscriptionUpdated: async () => undefined
     },
     adminRuntimeEventsService: {
       publish: (event: Record<string, any>) => {
@@ -240,13 +160,12 @@ async function testDeleteNodePublishesAdminEventWhenClientTargetResolutionStalls
     },
     runtimeSessionService: {
       revokeNodeLeases: async () => 0,
-      queueLeaseRevocationJobForNode: async () => undefined,
-      removePanelBindingsForNode: async () => ({ requested: 1, updated: 1, failed: [] })
+      queueLeaseRevocationJobForNode: async () => undefined
     },
     prisma: {
       node: {
-        findUnique: async () => ({ id: "node_1", panelEnabled: true, panelStatus: "online" }),
-        update: async () => ({})
+        findUnique: async () => ({ id: "node_1", isActive: true }),
+        delete: async () => ({})
       }
     }
   });
@@ -259,14 +178,18 @@ async function testDeleteNodePublishesAdminEventWhenClientTargetResolutionStalls
   ]);
 
   assert.equal(result.ok, true);
+  assert.equal(result.deleted, true);
   assert.equal(adminEvents.length, 1);
   assert.equal(adminEvents[0].type, "node_access_updated");
   assert.equal(adminEvents[0].nodeId, "node_1");
 }
 
-async function testDeleteNodeReturnsWhenPanelCleanupStallsAfterLocalSave() {
+// Lease revocation is best-effort around the local delete: a revocation
+// failure must not abort the hard delete (remaining leases are revoked via
+// the queued lease revocation job and expiry).
+async function testDeleteNodeContinuesWhenLeaseRevocationFails() {
   const calls: string[] = [];
-  let publishedUserIds: string[] | null = null;
+  let nodeDeleted = false;
   const service = createAdminNodeService({
     logger: {
       warn: () => undefined
@@ -274,109 +197,25 @@ async function testDeleteNodeReturnsWhenPanelCleanupStallsAfterLocalSave() {
     clientEventsPublisher: {
       resolveUserIdsForNodeAccess: async () => {
         calls.push("resolve_event_targets");
-        return ["user_1"];
+        return [];
       },
-      publishNodeAccessUpdatedToUsers: (userIds: string[]) => {
+      publishNodeAccessUpdatedToUsers: () => {
         calls.push("publish_event");
-        publishedUserIds = userIds;
-      }
+      },
+      publishSubscriptionUpdated: async () => undefined
     },
     runtimeSessionService: {
       revokeNodeLeases: async () => {
         calls.push("revoke_local_leases");
-        return 0;
+        throw new Error("lease revoke failed");
       },
       queueLeaseRevocationJobForNode: async () => {
         calls.push("queue_lease_revocation");
-      },
-      removePanelBindingsForNode: async () => {
-        calls.push("queue_panel_delete");
-        return new Promise(() => undefined);
       }
     },
     prisma: {
       node: {
-        findUnique: async () => ({ id: "node_1", panelEnabled: true, panelStatus: "online" }),
-        update: async (payload: Record<string, any>) => {
-          calls.push("local_update");
-          assert.equal(payload.data.isActive, false);
-          assert.equal(payload.data.recommended, false);
-          assert.equal(payload.data.panelStatus, "offline");
-          return {};
-        }
-      }
-    }
-  });
-
-  const result = await Promise.race([
-    service.deleteNode("node_1"),
-    new Promise<never>((_resolve, reject) => {
-      setTimeout(() => reject(new Error("deleteNode waited for stalled panel cleanup")), 750);
-    })
-  ]);
-
-  assert.equal(result.ok, true);
-  assert.equal(result.panelSyncStatus, "pending");
-  assert.deepEqual(calls, [
-    "resolve_event_targets",
-    "local_update",
-    "revoke_local_leases",
-    "queue_lease_revocation",
-    "queue_panel_delete",
-    "publish_event"
-  ]);
-  assert.deepEqual(publishedUserIds, ["user_1"]);
-}
-
-async function testDeleteNodeOfflinePanelFinalizesWithoutRemoteQueueAndKeepsLocalTraffic() {
-  const calls: string[] = [];
-  let usedTrafficReads = 0;
-  let nodeDeleted = false;
-  let subscriptionPublishCount = 0;
-  const service = createAdminNodeService({
-    clientEventsPublisher: {
-      resolveUserIdsForNodeAccess: async () => ["user_1"],
-      publishNodeAccessUpdatedToUsers: () => undefined,
-      publishSubscriptionUpdated: async () => {
-        subscriptionPublishCount += 1;
-      }
-    },
-    runtimeSessionService: {
-      revokeNodeLeases: async () => {
-        calls.push("revoke_local_leases");
-        return 2;
-      },
-      queueLeaseRevocationJobForNode: async () => {
-        calls.push("queue_lease_revocation");
-      },
-      removePanelBindingsForNode: async () => {
-        calls.push("queue_panel_delete");
-        return { requested: 1, updated: 1, failed: [] };
-      },
-      finalizeOfflineNodePanelCleanup: async () => {
-        calls.push("finalize_offline_cleanup");
-        return { bindingsDeleted: 2, abandonedAt: new Date() };
-      }
-    },
-    prisma: {
-      subscription: {
-        findMany: async () => {
-          usedTrafficReads += 1;
-          return [{ id: "sub_1", usedTrafficGb: 42.5 }];
-        }
-      },
-      node: {
-        findUnique: async () => ({
-          id: "node_1",
-          panelEnabled: true,
-          panelStatus: "degraded"
-        }),
-        update: async (payload: Record<string, any>) => {
-          calls.push("local_update");
-          assert.equal(payload.data.isActive, false);
-          assert.equal(payload.data.panelStatus, "offline");
-          return {};
-        },
+        findUnique: async () => ({ id: "node_1", isActive: true }),
         delete: async () => {
           calls.push("hard_delete");
           nodeDeleted = true;
@@ -389,184 +228,18 @@ async function testDeleteNodeOfflinePanelFinalizesWithoutRemoteQueueAndKeepsLoca
 
   assert.equal(result.ok, true);
   assert.equal(result.deleted, true);
-  assert.equal(result.panelSyncStatus, "synced");
-  assert.ok(
-    String(result.panelSyncMessage ?? result.message ?? "").includes("已用流量保持不变") ||
-      String(result.panelSyncMessage ?? result.message ?? "").includes("已删除") ||
-      String(result.panelSyncMessage ?? result.message ?? "").includes("放弃重试")
-  );
+  assert.equal(nodeDeleted, true, "lease revocation failure must not block the hard delete");
   assert.deepEqual(calls, [
-    "local_update",
+    "resolve_event_targets",
     "revoke_local_leases",
     "queue_lease_revocation",
-    "finalize_offline_cleanup",
-    "hard_delete"
+    "hard_delete",
+    "publish_event"
   ]);
-  assert.equal(nodeDeleted, true);
-  assert.equal(subscriptionPublishCount, 1);
-  assert.equal(usedTrafficReads, 0, "delete must not rewrite subscription usedTrafficGb");
-}
-
-async function testFinalizeOfflineNodePanelCleanupAbandonsJobsAndResolvesMetering() {
-  const bindingUpdates: Array<Record<string, any>> = [];
-  const jobUpdates: Array<Record<string, any>> = [];
-  const incidentUpdates: Array<Record<string, any>> = [];
-  const snapshotDeletes: Array<Record<string, any>> = [];
-  const service = createRuntimeSessionService({
-    prisma: {
-      panelClientBinding: {
-        findMany: async () => [
-          {
-            id: "binding_1",
-            nodeId: "node_1",
-            subscriptionId: "sub_1",
-            userId: "user_1"
-          }
-        ],
-        updateMany: async (payload: Record<string, any>) => {
-          bindingUpdates.push(payload);
-          return { count: 1 };
-        }
-      },
-      panelSyncJob: {
-        updateMany: async (payload: Record<string, any>) => {
-          jobUpdates.push(payload);
-          return { count: 3 };
-        }
-      },
-      meteringIncident: {
-        updateMany: async (payload: Record<string, any>) => {
-          incidentUpdates.push(payload);
-          return { count: 2 };
-        }
-      },
-      trafficSnapshot: {
-        deleteMany: async (payload: Record<string, any>) => {
-          snapshotDeletes.push(payload);
-          return { count: 1 };
-        }
-      },
-      $transaction: async (ops: any) => {
-        if (Array.isArray(ops)) {
-          return Promise.all(ops);
-        }
-        return ops({
-          panelClientBinding: {
-            updateMany: async (payload: Record<string, any>) => {
-              bindingUpdates.push(payload);
-              return { count: 1 };
-            }
-          },
-          trafficSnapshot: {
-            deleteMany: async (payload: Record<string, any>) => {
-              snapshotDeletes.push(payload);
-              return { count: 1 };
-            }
-          }
-        });
-      }
-    }
-  });
-
-  const result = await service.finalizeOfflineNodePanelCleanup("node_1");
-
-  assert.equal(result.bindingsDeleted, 1);
-  assert.equal(bindingUpdates.length > 0, true);
-  assert.equal(bindingUpdates.some((item) => item.data?.status === "deleted"), true);
-  assert.equal(jobUpdates.length, 1);
-  assert.deepEqual(jobUpdates[0].where.status.in, ["pending", "running", "failed"]);
-  assert.equal(jobUpdates[0].data.status, "completed");
-  assert.equal(incidentUpdates.length, 1);
-  assert.equal(incidentUpdates[0].where.nodeId, "node_1");
-  assert.equal(incidentUpdates[0].data.status, "resolved");
-  assert.equal(snapshotDeletes.length >= 1, true, "only panel traffic snapshots are cleaned; subscription used traffic stays in ledger");
-}
-
-async function testPanelDeleteJobAbandonsAfterMaxAttemptsOnInactiveNode() {
-  const jobUpdates: Array<Record<string, any>> = [];
-  const bindingUpdates: Array<Record<string, any>> = [];
-  const incidentUpdates: Array<Record<string, any>> = [];
-  const service = createRuntimeSessionService({
-    logger: {
-      warn: () => undefined
-    },
-    xuiService: {
-      removeClient: async () => {
-        throw new Error("panel unreachable");
-      }
-    },
-    prisma: {
-      panelSyncJob: {
-        update: async (payload: Record<string, any>) => {
-          jobUpdates.push(payload);
-          return payload;
-        }
-      },
-      panelClientBinding: {
-        updateMany: async (payload: Record<string, any>) => {
-          bindingUpdates.push(payload);
-          return { count: 1 };
-        }
-      },
-      meteringIncident: {
-        updateMany: async (payload: Record<string, any>) => {
-          incidentUpdates.push(payload);
-          return { count: 1 };
-        }
-      },
-      trafficSnapshot: {
-        deleteMany: async () => ({ count: 1 })
-      },
-      node: {
-        update: async () => ({})
-      },
-      $transaction: async (ops: any[]) => Promise.all(ops)
-    }
-  });
-
-  await (service as any).runPanelSyncJob({
-    id: "job_1",
-    action: "delete_client",
-    attempts: 7,
-    bindingId: "binding_1",
-    subscriptionId: "sub_1",
-    userId: "user_1",
-    teamId: null,
-    nodeId: "node_1",
-    panelClientEmail: "user@example.com",
-    panelClientId: "uuid-1",
-    panelInboundId: 1,
-    panelBaseUrl: "https://panel.example",
-    panelApiBasePath: "/",
-    panelUsername: "admin",
-    panelPassword: "secret",
-    node: {
-      id: "node_1",
-      name: "offline-node",
-      flow: "",
-      isActive: false,
-      panelEnabled: true,
-      panelBaseUrl: "https://panel.example",
-      panelApiBasePath: "/",
-      panelUsername: "admin",
-      panelPassword: "secret",
-      panelInboundId: 1
-    },
-    binding: {
-      status: "deleted"
-    }
-  });
-
-  assert.equal(jobUpdates.length, 1);
-  assert.equal(jobUpdates[0].data.status, "completed");
-  assert.ok(String(jobUpdates[0].data.lastError ?? "").includes("停止重试") || String(jobUpdates[0].data.lastError ?? "").includes("不可达") || String(jobUpdates[0].data.lastError ?? "").includes("delete_client"));
-  assert.equal(bindingUpdates[0].data.status, "deleted");
-  assert.equal(incidentUpdates[0].data.status, "resolved");
 }
 
 async function testDeleteNodeMapsLocalSaveFailure() {
   let leaseQueued = false;
-  let panelCleanupStarted = false;
   let eventTargetsResolved = false;
   let accessPublished = false;
   const service = createAdminNodeService({
@@ -583,26 +256,16 @@ async function testDeleteNodeMapsLocalSaveFailure() {
       }
     },
     runtimeSessionService: {
+      revokeNodeLeases: async () => 0,
       queueLeaseRevocationJobForNode: async () => {
         leaseQueued = true;
-      },
-      removePanelBindingsForNode: async () => {
-        panelCleanupStarted = true;
-        return { requested: 0, updated: 0, failed: [] };
-      },
-      finalizeOfflineNodePanelCleanup: async () => {
-        panelCleanupStarted = true;
       }
     },
     prisma: {
       node: {
-        // Missing panel fields are treated as offline-safe delete.
-        findUnique: async () => ({ id: "node_1" }),
-        update: async () => {
-          throw new Error("server closed the connection unexpectedly");
-        },
+        findUnique: async () => ({ id: "node_1", isActive: true }),
         delete: async () => {
-          panelCleanupStarted = true;
+          throw new Error("server closed the connection unexpectedly");
         }
       }
     }
@@ -612,26 +275,21 @@ async function testDeleteNodeMapsLocalSaveFailure() {
     () => service.deleteNode("node_1"),
     (error) =>
       error instanceof ServiceUnavailableException &&
-      /节点删除保存失败/.test(error.message) &&
+      /节点删除失败/.test(error.message) &&
       !/HTTP 500/i.test(error.message),
     "node delete local save failures must return a controlled 503 instead of HTTP 500"
   );
-  assert.equal(leaseQueued, false);
-  assert.equal(panelCleanupStarted, false);
+  assert.equal(leaseQueued, true, "lease revocation job is queued before the hard delete attempt");
   assert.equal(eventTargetsResolved, true, "event target resolution may run before local save");
   assert.equal(accessPublished, false, "failed local save must not publish access/subscription events");
 }
 
 
 async function main() {
-  await testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails();
-  await testDeleteNodeMarksBindingsDeletedWhenPanelDeleteQueuePartiallyFails();
+  await testDeleteNodeHardDeletesAfterLeaseRevocation();
   await testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSave();
   await testDeleteNodePublishesAdminEventWhenClientTargetResolutionStalls();
-  await testDeleteNodeReturnsWhenPanelCleanupStallsAfterLocalSave();
-  await testDeleteNodeOfflinePanelFinalizesWithoutRemoteQueueAndKeepsLocalTraffic();
-  await testFinalizeOfflineNodePanelCleanupAbandonsJobsAndResolvesMetering();
-  await testPanelDeleteJobAbandonsAfterMaxAttemptsOnInactiveNode();
+  await testDeleteNodeContinuesWhenLeaseRevocationFails();
   await testDeleteNodeMapsLocalSaveFailure();
   console.log("offline panel delete regression checks passed");
 }

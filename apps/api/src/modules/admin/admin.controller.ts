@@ -52,12 +52,10 @@ import {
   CreateTeamSubscriptionDto,
   CreateUserDto,
   DeleteImageBedFileDto,
-  ImportNodeDto,
   KickTeamMemberDto,
   ListImageBedFilesDto,
   ListRuntimeComponentFailuresDto,
   ListReleasesDto,
-  ReadNodePanelInboundsDto,
   ReplySupportTicketAttachmentDto,
   ReplySupportTicketDto,
   ResetSubscriptionTrafficDto,
@@ -315,24 +313,23 @@ export class AdminController {
     return this.devDataService.listAdminNodes();
   }
 
-  @Get("nodes/panel-sync-jobs")
-  getPanelSyncJobs() {
-    return this.devDataService.listAdminPanelSyncJobs();
-  }
-
-  @Post("nodes/panel-sync-jobs/:jobId/retry")
-  retryPanelSyncJob(@Param("jobId") jobId: string) {
-    return this.devDataService.retryAdminPanelSyncJob(jobId);
-  }
-
-  @Post("nodes/:nodeId/panel-sync-jobs/retry")
-  retryPanelSyncJobsForNode(@Param("nodeId") nodeId: string) {
-    return this.devDataService.retryAdminPanelSyncJobsForNode(nodeId);
-  }
-
   @Get("nodes/lease-revocation-jobs")
   getLeaseRevocationJobs() {
     return this.devDataService.listAdminLeaseRevocationJobs();
+  }
+
+  @Get("nodes/node-command-jobs")
+  getNodeCommandJobs(
+    @Query("nodeId") nodeId?: string,
+    @Query("subscriptionId") subscriptionId?: string,
+    @Query("userId") userId?: string,
+    @Query("teamId") teamId?: string
+  ) {
+    return this.devDataService.getAdminNodeCommandQueue(
+      nodeId || subscriptionId || userId || teamId
+        ? { nodeId, subscriptionId, userId, teamId }
+        : undefined
+    );
   }
 
   @Post("nodes/lease-revocation-jobs/:jobId/retry")
@@ -345,24 +342,9 @@ export class AdminController {
     return this.devDataService.retryAdminLeaseRevocationJobsForNode(nodeId);
   }
 
-  @Post("nodes/import")
-  importNode(@Body() body: ImportNodeDto) {
-    return this.devDataService.importNodeFromSubscription(body);
-  }
-
-  @Post("nodes/panel-inbounds")
-  listNodePanelInbounds(@Body() body: ReadNodePanelInboundsDto) {
-    return this.devDataService.listNodePanelInbounds(body);
-  }
-
   @Patch("nodes/:nodeId")
   updateNode(@Param("nodeId") nodeId: string, @Body() body: UpdateNodeDto) {
     return this.devDataService.updateNode(nodeId, body);
-  }
-
-  @Post("nodes/:nodeId/refresh")
-  refreshNode(@Param("nodeId") nodeId: string) {
-    return this.devDataService.refreshNode(nodeId);
   }
 
   @Post("nodes/:nodeId/probe")

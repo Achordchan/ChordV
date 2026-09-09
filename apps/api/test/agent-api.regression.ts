@@ -301,7 +301,10 @@ function createMultiNodeExhaustionFixture(hasSecondAgent = true) {
       findMany: async () => hasSecondAgent ? [{ id: "agent-node-2", nodeId: "node-2", revokedAt: null }] : []
     },
     nodeCommandJob: {
-      upsert: async ({ create }: any) => { commands.push({ nodeId: create.nodeId, agentId: create.agentId }); return create; }
+      upsert: async ({ create }: any) => { commands.push({ nodeId: create.nodeId, agentId: create.agentId }); return create; },
+      updateMany: async () => ({ count: 0 }),
+      findUnique: async () => null,
+      create: async ({ data }: any) => { commands.push({ nodeId: data.nodeId, agentId: data.agentId }); return data; }
     },
     leaseRevocationJob: {
       upsert: async ({ create, update }: any) => { revocations.push({ create, update }); return create; }
@@ -386,7 +389,7 @@ function createDirectFixture() {
       update: async ({ data }: any) => { queryCounts.subscriptionUpdates += 1; Object.assign(subscription, data); return subscription; }
     },
     trafficLedger: { createMany: async () => ({ count: 0 }) },
-    nodeCommandJob: { upsert: async () => undefined },
+    nodeCommandJob: { upsert: async () => undefined, updateMany: async () => ({ count: 0 }), findUnique: async () => null, create: async ({ data }: any) => data },
     leaseRevocationJob: { upsert: async () => undefined }
   };
   return {

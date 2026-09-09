@@ -43,14 +43,6 @@ Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard
 Reflect.defineMetadata("design:paramtypes", [AuthSessionService], ClientAuthGuard);
 
 const devDataServiceStub = {
-  retryAdminPanelSyncJob: async (jobId: string) => {
-    calls.push({ route: "panel-job", value: jobId });
-    return [{ id: jobId, scope: "job" }];
-  },
-  retryAdminPanelSyncJobsForNode: async (nodeId: string) => {
-    calls.push({ route: "panel-node", value: nodeId });
-    return [{ nodeId, scope: "node" }];
-  },
   retryAdminLeaseRevocationJob: async (jobId: string) => {
     calls.push({ route: "lease-job", value: jobId });
     return [{ id: jobId, scope: "job" }];
@@ -61,51 +53,39 @@ const devDataServiceStub = {
   },
   updateSubscriptionNodeAccess: async (subscriptionId: string, body: unknown) => {
     calls.push({ route: "subscription-nodes", value: subscriptionId, body });
-    return { subscriptionId, body, panelSyncStatus: "pending" };
+    return { subscriptionId, body };
   },
   resetSubscriptionTraffic: async (subscriptionId: string, body: unknown) => {
     calls.push({ route: "subscription-reset-traffic", value: subscriptionId, body });
-    return { subscriptionId, body, panelSyncStatus: "pending" };
+    return { subscriptionId, body };
   },
   disconnectUser: async (userId: string) => {
     calls.push({ route: "user-disconnect", value: userId });
-    return { userId, panelSyncStatus: "pending" };
+    return { userId };
   },
   updateUser: async (userId: string, body: unknown) => {
     calls.push({ route: "user-update", value: userId, body });
-    return { id: userId, body, panelSyncStatus: "pending" };
+    return { id: userId, body };
   },
   updateTeam: async (teamId: string, body: unknown) => {
     calls.push({ route: "team-update", value: teamId, body });
-    return { id: teamId, body, panelSyncStatus: "pending" };
+    return { id: teamId, body };
   },
   updateNode: async (nodeId: string, body: unknown) => {
     calls.push({ route: "node-update", value: nodeId, body });
-    return { id: nodeId, body, panelSyncStatus: "pending" };
+    return { id: nodeId, body };
   },
   deleteNode: async (nodeId: string) => {
     calls.push({ route: "node-delete", value: nodeId });
-    return { ok: true, nodeId, panelSyncStatus: "pending" };
-  },
-  importNodeFromSubscription: async (body: unknown) => {
-    calls.push({ route: "node-import", value: "new", body });
-    return { id: "node_imported", body, panelStatus: "degraded" };
-  },
-  listNodePanelInbounds: async (body: unknown) => {
-    calls.push({ route: "node-panel-inbounds", value: "panel", body });
-    return [{ id: 1, remark: "inbound" }];
-  },
-  refreshNode: async (nodeId: string) => {
-    calls.push({ route: "node-refresh", value: nodeId });
-    return { id: nodeId, panelStatus: "degraded" };
+    return { ok: true, deleted: true };
   },
   probeNode: async (nodeId: string) => {
     calls.push({ route: "node-probe", value: nodeId });
-    return { id: nodeId, panelStatus: "degraded" };
+    return { id: nodeId };
   },
   probeAllNodes: async () => {
     calls.push({ route: "node-probe-all", value: "all" });
-    return [{ id: "node_1", panelStatus: "degraded" }];
+    return [{ id: "node_1" }];
   },
   createAnnouncement: async (body: unknown) => {
     calls.push({ route: "announcement-create", value: "new", body });
@@ -480,14 +460,6 @@ async function main() {
 
   try {
     const baseUrl = await app.getUrl();
-    assert.deepEqual(await requestJson(baseUrl, "/api/admin/nodes/panel-sync-jobs/job_1/retry"), {
-      status: 201,
-      body: [{ id: "job_1", scope: "job" }]
-    });
-    assert.deepEqual(await requestJson(baseUrl, "/api/admin/nodes/node_1/panel-sync-jobs/retry"), {
-      status: 201,
-      body: [{ nodeId: "node_1", scope: "node" }]
-    });
     assert.deepEqual(await requestJson(baseUrl, "/api/admin/nodes/lease-revocation-jobs/lease_job_1/retry"), {
       status: 201,
       body: [{ id: "lease_job_1", scope: "job" }]
@@ -503,7 +475,7 @@ async function main() {
       }),
       {
         status: 200,
-        body: { subscriptionId: "subscription_1", body: { nodeIds: ["node_1"] }, panelSyncStatus: "pending" }
+        body: { subscriptionId: "subscription_1", body: { nodeIds: ["node_1"] } }
       }
     );
     assert.deepEqual(
@@ -512,12 +484,12 @@ async function main() {
       }),
       {
         status: 201,
-        body: { subscriptionId: "subscription_1", body: { userId: "user_1" }, panelSyncStatus: "pending" }
+        body: { subscriptionId: "subscription_1", body: { userId: "user_1" } }
       }
     );
     assert.deepEqual(await requestJson(baseUrl, "/api/admin/users/user_1/disconnect"), {
       status: 201,
-      body: { userId: "user_1", panelSyncStatus: "pending" }
+      body: { userId: "user_1" }
     });
     assert.deepEqual(
       await requestJson(baseUrl, "/api/admin/users/user_1", {
@@ -526,7 +498,7 @@ async function main() {
       }),
       {
         status: 200,
-        body: { id: "user_1", body: { status: "disabled" }, panelSyncStatus: "pending" }
+        body: { id: "user_1", body: { status: "disabled" } }
       }
     );
     assert.deepEqual(
@@ -536,7 +508,7 @@ async function main() {
       }),
       {
         status: 200,
-        body: { id: "team_1", body: { status: "disabled" }, panelSyncStatus: "pending" }
+        body: { id: "team_1", body: { status: "disabled" } }
       }
     );
     assert.deepEqual(
@@ -546,7 +518,7 @@ async function main() {
       }),
       {
         status: 200,
-        body: { id: "node_1", body: { isActive: false }, panelSyncStatus: "pending" }
+        body: { id: "node_1", body: { isActive: false } }
       }
     );
     assert.deepEqual(
@@ -555,38 +527,16 @@ async function main() {
       }),
       {
         status: 200,
-        body: { ok: true, nodeId: "node_1", panelSyncStatus: "pending" }
+        body: { ok: true, deleted: true }
       }
     );
-    assert.deepEqual(
-      await requestJson(baseUrl, "/api/admin/nodes/import", {
-        body: { subscriptionUrl: "vless://node" }
-      }),
-      {
-        status: 201,
-        body: { id: "node_imported", body: { subscriptionUrl: "vless://node" }, panelStatus: "degraded" }
-      }
-    );
-    assert.deepEqual(
-      await requestJson(baseUrl, "/api/admin/nodes/panel-inbounds", {
-        body: { panelBaseUrl: "https://panel.example.com", panelUsername: "admin", panelPassword: "secret" }
-      }),
-      {
-        status: 201,
-        body: [{ id: 1, remark: "inbound" }]
-      }
-    );
-    assert.deepEqual(await requestJson(baseUrl, "/api/admin/nodes/node_1/refresh"), {
-      status: 201,
-      body: { id: "node_1", panelStatus: "degraded" }
-    });
     assert.deepEqual(await requestJson(baseUrl, "/api/admin/nodes/node_1/probe"), {
       status: 201,
-      body: { id: "node_1", panelStatus: "degraded" }
+      body: { id: "node_1" }
     });
     assert.deepEqual(await requestJson(baseUrl, "/api/admin/nodes/probe-all"), {
       status: 201,
-      body: [{ id: "node_1", panelStatus: "degraded" }]
+      body: [{ id: "node_1" }]
     });
     assert.deepEqual(
       await requestJson(baseUrl, "/api/admin/announcements", {
@@ -973,8 +923,6 @@ async function main() {
     );
 
     assert.deepEqual(calls, [
-      { route: "panel-job", value: "job_1" },
-      { route: "panel-node", value: "node_1" },
       { route: "lease-job", value: "lease_job_1" },
       { route: "lease-node", value: "node_1" },
       { route: "subscription-nodes", value: "subscription_1", body: { nodeIds: ["node_1"] } },
@@ -984,13 +932,6 @@ async function main() {
       { route: "team-update", value: "team_1", body: { status: "disabled" } },
       { route: "node-update", value: "node_1", body: { isActive: false } },
       { route: "node-delete", value: "node_1" },
-      { route: "node-import", value: "new", body: { subscriptionUrl: "vless://node" } },
-      {
-        route: "node-panel-inbounds",
-        value: "panel",
-        body: { panelBaseUrl: "https://panel.example.com", panelUsername: "admin", panelPassword: "secret" }
-      },
-      { route: "node-refresh", value: "node_1" },
       { route: "node-probe", value: "node_1" },
       { route: "node-probe-all", value: "all" },
       { route: "announcement-create", value: "new", body: { title: "公告", content: "内容", priority: "normal" } },

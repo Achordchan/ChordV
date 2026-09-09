@@ -517,17 +517,7 @@ export interface UpdateSubscriptionNodeAccessInputDto {
 }
 
 export interface AdminNodeRecordDto extends NodeSummaryDto {
-  subscriptionUrl: string | null;
   statsLastSyncedAt: string | null;
-  panelBaseUrl: string | null;
-  panelApiBasePath: string | null;
-  panelUsername: string | null;
-  hasPanelPassword: boolean;
-  panelInboundId: number | null;
-  panelEnabled: boolean;
-  panelStatus: XuiPanelStatus;
-  panelLastSyncedAt: string | null;
-  panelError: string | null;
   controlMode?: NodeControlMode;
   controlStatus?: string;
   // Agent-native onboarding state: null on legacy nodes.
@@ -555,44 +545,17 @@ export interface AdminNodeRecordDto extends NodeSummaryDto {
   probeLatencyMs: number | null;
   probeCheckedAt: string | null;
   probeError: string | null;
-  panelSyncTotalCount?: number;
-  panelSyncPendingCount?: number;
-  panelSyncRunningCount?: number;
-  panelSyncFailedCount?: number;
-  panelSyncLastError?: string | null;
-  panelSyncStatus?: "synced" | "pending";
-  panelSyncMessage?: string | null;
   message?: string | null;
   createdAt: string;
   updatedAt: string;
 }
 
-export type AdminPanelSyncJobStatus = "pending" | "running" | "failed" | "completed";
-export type AdminPanelSyncJobAction = "ensure_client" | "disable_client" | "delete_client" | "reset_client_traffic";
-
-export interface AdminPanelSyncJobDto {
-  id: string;
-  action: AdminPanelSyncJobAction;
-  status: AdminPanelSyncJobStatus;
-  nodeId: string;
-  nodeName: string;
-  subscriptionId: string;
-  userId: string | null;
-  teamId: string | null;
-  panelClientEmail: string;
-  attempts: number;
-  nextRunAt: string;
-  lockedAt: string | null;
-  lastError: string | null;
-  completedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
+export type AdminLeaseRevocationJobStatus = "pending" | "running" | "failed" | "completed";
 
 export interface AdminLeaseRevocationJobDto {
   id: string;
   reason: string;
-  status: AdminPanelSyncJobStatus;
+  status: AdminLeaseRevocationJobStatus;
   subscriptionId: string | null;
   userId: string | null;
   nodeId: string | null;
@@ -606,12 +569,52 @@ export interface AdminLeaseRevocationJobDto {
   updatedAt: string;
 }
 
-export interface AdminNodePanelInboundDto {
-  id: number;
-  remark: string;
-  port: number;
-  protocol: string;
-  clientCount: number;
+// Agent 命令队列：direct 轨的供给/禁用/删除命令（面板同步队列的替代）。
+// subscriptionId/userId 由命令 payload 的 bindingId 反查绑定得到，可能为空
+// （例如入站部署命令 ENSURE_INBOUND 不属于任何绑定）。
+export interface AdminNodeCommandJobDto {
+  id: string;
+  nodeId: string;
+  nodeName: string | null;
+  commandType: NodeAgentCommandType;
+  status: NodeAgentJobStatus;
+  attempts: number;
+  targetRevision: string;
+  subscriptionId: string | null;
+  userId: string | null;
+  lastError: string | null;
+  nextRunAt: string;
+  completedAt: string | null;
+  createdAt: string;
+}
+
+// Per-target aggregates of outstanding agent commands, computed server-side
+// (not from the paginated detail list) so a node/subscription is never shown
+// as synced because its commands fell off the first page.
+export interface AdminNodeCommandSummaryDto {
+  pending: number;
+  running: number;
+  failed: number;
+  total: number;
+  lastError: string | null;
+}
+
+export interface AdminNodeCommandSummaryEntryDto extends AdminNodeCommandSummaryDto {
+  key: string;
+}
+
+export interface AdminNodeCommandSummariesDto {
+  nodes: AdminNodeCommandSummaryEntryDto[];
+  subscriptions: AdminNodeCommandSummaryEntryDto[];
+  users: AdminNodeCommandSummaryEntryDto[];
+  teams: AdminNodeCommandSummaryEntryDto[];
+}
+
+// Detail list is paginated; summaries are exact. Consumers decide a target is
+// synced from the summaries, never from the page.
+export interface AdminNodeCommandQueueDto {
+  jobs: AdminNodeCommandJobDto[];
+  summaries: AdminNodeCommandSummariesDto;
 }
 
 export interface AdminAnnouncementRecordDto {
@@ -739,8 +742,8 @@ export interface AdminSnapshotDto {
   subscriptions: AdminSubscriptionRecordDto[];
   teams: AdminTeamRecordDto[];
   nodes: AdminNodeRecordDto[];
-  panelSyncJobs: AdminPanelSyncJobDto[];
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
+  nodeCommandQueue: AdminNodeCommandQueueDto;
   announcements: AdminAnnouncementRecordDto[];
   policy: AdminPolicyRecordDto;
   releases: AdminReleaseRecordDto[];
@@ -1044,23 +1047,6 @@ export interface ConvertSubscriptionToTeamResultDto {
   message: string;
 }
 
-export interface ImportNodeInputDto {
-  subscriptionUrl?: string;
-  name?: string;
-  countryCode?: string;
-  region?: string;
-  provider?: string;
-  tags?: string[];
-  isActive?: boolean;
-  recommended?: boolean;
-  panelBaseUrl?: string;
-  panelApiBasePath?: string;
-  panelUsername?: string;
-  panelPassword?: string;
-  panelInboundId?: number;
-  panelEnabled?: boolean;
-}
-
 export interface UpdateNodeInputDto {
   name?: string;
   countryCode?: string;
@@ -1069,13 +1055,6 @@ export interface UpdateNodeInputDto {
   tags?: string[];
   isActive?: boolean;
   recommended?: boolean;
-  subscriptionUrl?: string | null;
-  panelBaseUrl?: string | null;
-  panelApiBasePath?: string | null;
-  panelUsername?: string | null;
-  panelPassword?: string | null;
-  panelInboundId?: number | null;
-  panelEnabled?: boolean;
 }
 
 // Agent-native node creation (docs/prd/node-revision-agent-native.md, R1):
@@ -1322,21 +1301,6 @@ export interface UpdatePolicyInputDto {
 }
 
 export type NodeControlMode = "xui_primary" | "shadow_direct" | "direct_primary" | "rollback_pending";
-
-export interface SwitchNodeControlModeInputDto {
-  targetMode: NodeControlMode;
-  confirmDirect?: boolean;
-  confirmRollback?: boolean;
-  confirmXuiCalibrated?: boolean;
-}
-
-export interface SwitchNodeControlModeResultDto {
-  nodeId: string;
-  previousMode: NodeControlMode;
-  controlMode: NodeControlMode;
-  revision: string;
-  changed: boolean;
-}
 export type PanelClientSource = "xui" | "direct";
 export type NodeAgentCommandType =
   | "ENSURE_USER"

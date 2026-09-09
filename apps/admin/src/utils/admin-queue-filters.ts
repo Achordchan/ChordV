@@ -1,22 +1,39 @@
-import type { AdminLeaseRevocationJobDto, AdminPanelSyncJobDto } from "@chordv/shared";
+import type { AdminLeaseRevocationJobDto, AdminNodeCommandJobDto } from "@chordv/shared";
 
-export type PanelSyncQueueFilter = {
+export type LeaseRevocationQueueFilter = {
   title?: string;
   nodeId?: string;
   subscriptionId?: string;
   userId?: string;
   teamId?: string;
+  /**
+   * Lease jobs have no team column, so a team-scoped view narrows them by the
+   * team's actual subscription ids instead. Used by team-level entries; the
+   * command detail fetch keeps teamId (commands DO carry it).
+   */
+  teamSubscriptionIds?: string[];
 };
 
-export function hasPanelSyncQueueFilter(filter?: PanelSyncQueueFilter | null) {
+// Lease jobs expose no teamId column, so a team-only filter deliberately means
+// "do not narrow" for THEM. Command jobs DO carry teamId, and the server-side
+// detail fetch keys off this predicate — a team-only view must count as
+// filtered there or it would silently show the global command list.
+export function hasLeaseRevocationQueueFilter(filter?: LeaseRevocationQueueFilter | null) {
+  return Boolean(filter?.nodeId || filter?.subscriptionId || filter?.userId);
+}
+
+export function hasNodeCommandQueueFilter(filter?: LeaseRevocationQueueFilter | null) {
   return Boolean(filter?.nodeId || filter?.subscriptionId || filter?.userId || filter?.teamId);
 }
 
-export function filterPanelSyncJobs(jobs: AdminPanelSyncJobDto[], filter?: PanelSyncQueueFilter | null) {
-  if (!hasPanelSyncQueueFilter(filter)) {
+export function filterLeaseRevocationJobs(jobs: AdminLeaseRevocationJobDto[], filter?: LeaseRevocationQueueFilter | null) {
+  if (!hasLeaseRevocationQueueFilter(filter) && !filter?.teamSubscriptionIds) {
     return jobs;
   }
   return jobs.filter((job) => {
+    if (filter?.teamSubscriptionIds && !filter.teamSubscriptionIds.includes(job.subscriptionId ?? "")) {
+      return false;
+    }
     if (filter?.nodeId && job.nodeId !== filter.nodeId) {
       return false;
     }
@@ -26,15 +43,15 @@ export function filterPanelSyncJobs(jobs: AdminPanelSyncJobDto[], filter?: Panel
     if (filter?.userId && job.userId !== filter.userId) {
       return false;
     }
-    if (filter?.teamId && job.teamId !== filter.teamId) {
-      return false;
-    }
     return true;
   });
 }
 
-export function filterLeaseRevocationJobs(jobs: AdminLeaseRevocationJobDto[], filter?: PanelSyncQueueFilter | null) {
-  if (!hasPanelSyncQueueFilter(filter)) {
+// Direct provisioning (ENSURE/DISABLE/REMOVE_USER) lives in NodeCommandJob, so
+// a pending subscription/user must filter THAT list — the lease queue can only
+// ever show connection revocations.
+export function filterNodeCommandJobs(jobs: AdminNodeCommandJobDto[], filter?: LeaseRevocationQueueFilter | null) {
+  if (!hasLeaseRevocationQueueFilter(filter)) {
     return jobs;
   }
   return jobs.filter((job) => {

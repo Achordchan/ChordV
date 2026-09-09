@@ -2,39 +2,24 @@ import { isNodeOnboardingReady } from "./node-onboarding-policy";
 import { workLifecycle } from "../../work-lifecycle";
 import {
   BadRequestException,
-  HttpException,
   Injectable,
   Logger,
-  NotFoundException,
-  ServiceUnavailableException
+  NotFoundException
 } from "@nestjs/common";
 import type {
   AdminLeaseRevocationJobDto,
-  AdminNodePanelInboundDto,
+  AdminNodeCommandJobDto,
+  AdminNodeCommandSummariesDto,
+  AdminNodeCommandSummaryDto,
   AdminNodeRecordDto,
-  AdminPanelSyncJobDto,
-  ImportNodeInputDto,
   UpdateNodeInputDto
 } from "@chordv/shared";
-import { XuiService } from "../xui/xui.service";
-import { decryptPanelPassword, encryptPanelPassword } from "./panel-password-crypto";
 import { PrismaService } from "./prisma.service";
 import { RuntimeSessionService } from "./runtime-session.service";
 import { ClientEventsPublisher } from "./client-events.publisher";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
-import { createId } from "./release-center.utils";
 import { throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
-import {
-  fetchSubscriptionNode,
-  normalizePanelApiBasePath,
-  normalizeTags,
-  parseVlessLink,
-  probeNodeConnectivity,
-  readRuntimeInboundId,
-  resolveNodeCountry,
-  toAdminNodeRecord,
-  toNodeId
-} from "./node-import.utils";
+import { normalizeTags, probeNodeConnectivity, resolveNodeCountry, toAdminNodeRecord } from "./node-import.utils";
 
 export type AdminNodeProbeClock = {
   now: () => number;
@@ -45,30 +30,20 @@ const SYSTEM_ADMIN_NODE_PROBE_CLOCK: AdminNodeProbeClock = {
 
 const NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS = 300;
 const NODE_AFTER_SAVE_DEFERRED_EFFECT_DELAY_MS = 50;
-const DEFAULT_IMPORT_NODE_RUNTIME_READ_BUDGET_MS = 5_000;
-const DEFAULT_LIST_NODE_PANEL_INBOUNDS_BUDGET_MS = 5_000;
-const DEFAULT_REFRESH_NODE_RUNTIME_READ_BUDGET_MS = 30_000;
 const DEFAULT_BULK_NODE_PROBE_BUDGET_MS = 5_000;
 const DEFAULT_BULK_NODE_PROBE_REQUEST_BUDGET_MS = 45_000;
 const MAX_BULK_NODE_PROBE_REQUEST_BUDGET_MS = 45_000;
 const DEFAULT_BULK_NODE_PROBE_CONCURRENCY = 10;
 const BULK_NODE_PROBE_START_GUARD_MS = 5;
-const NODE_PANEL_SYNC_RECENT_ERROR_LIMIT = 500;
-const NODE_PANEL_SYNC_PENDING_MESSAGE = "本地节点变更已保存，面板同步将在后台继续重试。";
-const NODE_PANEL_SYNC_OFFLINE_ABANDONED_MESSAGE = "失联面板节点已删除。本地清理已完成，远端客户端清理已放弃重试，订阅已用流量保持不变。";
-const DEFAULT_PANEL_STATUS_FAILURE_THRESHOLD = 3;
-const PANEL_STATUS_HARD_FAILURE_PATTERN =
-  /账号或密码错误|用户名或密码|credential|unauthorized|401|403|登录接口不存在|入站信息为空|未找到入站/i;
-
+const NODE_COMMAND_JOB_PAGE_SIZE = 200;
+const NODE_COMMAND_ERROR_SAMPLE_SIZE = 500;
 
 @Injectable()
 export class AdminNodeService {
   private readonly logger = new Logger(AdminNodeService.name);
-  private panelProbeFailureCounts = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly xuiService: XuiService,
     private readonly runtimeSessionService: RuntimeSessionService,
     private readonly clientEventsPublisher: ClientEventsPublisher,
     private readonly adminRuntimeEventsService?: AdminRuntimeEventsService
@@ -88,163 +63,7 @@ export class AdminNodeService {
       }),
       "节点列表读取失败，请刷新后重试。"
     );
-    const { jobCounts, recentFailedJobs } = await this.readNodePanelSyncSummaryBestEffort();
-    const summaryByNode = new Map<
-      string,
-      { pending: number; running: number; failed: number; lastError: string | null }
-    >();
-    for (const job of jobCounts) {
-      const summary = summaryByNode.get(job.nodeId) ?? { pending: 0, running: 0, failed: 0, lastError: null };
-      if (job.status === "failed") {
-        summary.failed += job._count._all;
-      } else if (job.status === "running") {
-        summary.running += job._count._all;
-      } else {
-        summary.pending += job._count._all;
-      }
-      summaryByNode.set(job.nodeId, summary);
-    }
-    for (const job of recentFailedJobs) {
-      const summary = summaryByNode.get(job.nodeId);
-      if (!summary || summary.lastError) {
-        continue;
-      }
-      summary.lastError = job.lastError ?? summary.lastError;
-      summaryByNode.set(job.nodeId, summary);
-    }
-
-    return rows.map((row) => {
-      const record = toAdminNodeRecord(row);
-      const summary = summaryByNode.get(row.id);
-      return {
-        ...record,
-        panelSyncTotalCount: summary ? summary.pending + summary.running + summary.failed : 0,
-        panelSyncPendingCount: summary?.pending ?? 0,
-        panelSyncRunningCount: summary?.running ?? 0,
-        panelSyncFailedCount: summary?.failed ?? 0,
-        panelSyncLastError: summary?.lastError ?? null
-      };
-    });
-  }
-
-  private async readNodePanelSyncSummaryBestEffort() {
-    try {
-      const [jobCounts, recentFailedJobs] = await workLifecycle.all([
-        this.prisma.panelSyncJob.groupBy({
-          by: ["nodeId", "status"],
-          where: {
-            status: { in: ["pending", "running", "failed"] }
-          },
-          _count: { _all: true }
-        }),
-        this.prisma.panelSyncJob.findMany({
-          where: {
-            status: "failed",
-            lastError: { not: null }
-          },
-          select: {
-            nodeId: true,
-            lastError: true,
-            updatedAt: true
-          },
-          orderBy: [{ updatedAt: "desc" }],
-          take: NODE_PANEL_SYNC_RECENT_ERROR_LIMIT
-        })
-      ]);
-      return { jobCounts, recentFailedJobs };
-    } catch (error) {
-      this.logger.warn(`Node list loaded without panel sync summary: ${readAdminNodeErrorMessage(error)}`);
-      return { jobCounts: [], recentFailedJobs: [] };
-    }
-  }
-
-  async listPanelSyncJobs(): Promise<AdminPanelSyncJobDto[]> {
-    const rows = await runAdminNodeLocalOperation(
-      () => this.prisma.panelSyncJob.findMany({
-        where: {
-          status: { in: ["pending", "running", "failed"] }
-        },
-        include: {
-          node: {
-            select: {
-              name: true
-            }
-          }
-        },
-        orderBy: [{ status: "asc" }, { nextRunAt: "asc" }, { createdAt: "desc" }],
-        take: 200
-      }),
-      "面板同步队列读取失败，请刷新后重试。"
-    );
-
-    return rows.map((row) => ({
-      id: row.id,
-      action: row.action as AdminPanelSyncJobDto["action"],
-      status: row.status as AdminPanelSyncJobDto["status"],
-      nodeId: row.nodeId,
-      subscriptionId: row.subscriptionId,
-      userId: row.userId,
-      teamId: row.teamId,
-      nodeName: row.node?.name ?? "已删除节点",
-      panelClientEmail: row.panelClientEmail,
-      attempts: row.attempts,
-      nextRunAt: row.nextRunAt.toISOString(),
-      lockedAt: row.lockedAt?.toISOString() ?? null,
-      lastError: row.lastError,
-      completedAt: row.completedAt?.toISOString() ?? null,
-      createdAt: row.createdAt.toISOString(),
-      updatedAt: row.updatedAt.toISOString()
-    }));
-  }
-
-  async retryPanelSyncJob(jobId: string): Promise<AdminPanelSyncJobDto[]> {
-    const updated = await runAdminNodeLocalOperation(
-      () => this.prisma.panelSyncJob.updateMany({
-        where: {
-          id: jobId,
-          status: { in: ["pending", "failed"] }
-        },
-        data: {
-          status: "pending",
-          nextRunAt: new Date(),
-          lockedAt: null,
-          completedAt: null,
-          attempts: 0,
-          lastError: null
-        }
-      }),
-      "面板同步任务重试保存失败，请稍后重试。"
-    );
-    if (updated.count === 0) {
-      throw new NotFoundException("面板同步任务不存在或已完成");
-    }
-    this.publishSyncQueueUpdatedBestEffort({});
-    return this.listPanelSyncJobsAfterRetry();
-  }
-
-  async retryPanelSyncJobsForNode(nodeId: string): Promise<AdminPanelSyncJobDto[]> {
-    const updated = await runAdminNodeLocalOperation(
-      () => this.prisma.panelSyncJob.updateMany({
-        where: {
-          nodeId,
-          status: { in: ["pending", "failed"] }
-        },
-        data: {
-          status: "pending",
-          nextRunAt: new Date(),
-          lockedAt: null,
-          completedAt: null,
-          attempts: 0,
-          lastError: null
-        }
-      }),
-      "节点面板同步任务重试保存失败，请稍后重试。"
-    );
-    if (updated.count === 0) {
-      throw new NotFoundException("该节点暂无可重试的面板同步任务");
-    }
-    this.publishSyncQueueUpdatedBestEffort({ nodeId });
-    return this.listPanelSyncJobsAfterRetry();
+    return rows.map((row) => toAdminNodeRecord(row));
   }
 
   async listLeaseRevocationJobs(): Promise<AdminLeaseRevocationJobDto[]> {
@@ -291,6 +110,175 @@ export class AdminNodeService {
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString()
     }));
+  }
+
+  /**
+   * Active agent commands — the direct track's replacement for the retired
+   * panel sync queue. User commands carry their binding target as columns
+   * (denormalized at enqueue), so the queue can be filtered and aggregated per
+   * subscription/user/team without reading the payload JSON. The detail list
+   * is capped; when a target filter is given it applies SERVER-SIDE so an
+   * administrator can always inspect a known-busy target whose commands fall
+   * outside the global first page.
+   */
+  async listNodeCommandJobs(filter?: { nodeId?: string; subscriptionId?: string; userId?: string; teamId?: string }) {
+    // Scope constraints INTERSECT (AND), matching the lease queue's filter
+    // semantics: a team member's view supplies subscriptionId + userId +
+    // teamId together and means exactly that member, not everyone else's
+    // commands under the same team or subscription.
+    const scoped = {
+      ...(filter?.nodeId ? { nodeId: filter.nodeId } : {}),
+      ...(filter?.subscriptionId ? { subscriptionId: filter.subscriptionId } : {}),
+      ...(filter?.userId ? { userId: filter.userId } : {}),
+      ...(filter?.teamId ? { teamId: filter.teamId } : {})
+    };
+    const hasFilter = Object.keys(scoped).length > 0;
+    const rows = await runAdminNodeLocalOperation(
+      () => this.prisma.nodeCommandJob.findMany({
+        where: {
+          // "cancelled" here is RETRY-EXHAUSTED (retryDueCommands gave up
+          // after 8 attempts): the requested operation never happened, so it
+          // stays listed as an unresolved failure until a newer command for
+          // the same target resolves it (resolvedAt) or it is re-ordered.
+          // Superseded commands are excluded by their renamed dedupe keys.
+          OR: [
+            { status: { in: ["pending", "running", "failed"] } },
+            { status: "cancelled", resolvedAt: null }
+          ],
+          ...(hasFilter ? scoped : {})
+        },
+        orderBy: [{ status: "asc" }, { nextRunAt: "asc" }, { createdAt: "desc" }],
+        take: NODE_COMMAND_JOB_PAGE_SIZE,
+        include: { node: { select: { name: true } } }
+      }),
+      "节点命令队列读取失败，请刷新后重试。"
+    );
+
+    return rows.map((row) => ({
+      id: row.id,
+      nodeId: row.nodeId,
+      nodeName: row.node?.name ?? null,
+      commandType: row.commandType as AdminNodeCommandJobDto["commandType"],
+      status: row.status as AdminNodeCommandJobDto["status"],
+      attempts: row.attempts,
+      targetRevision: row.targetRevision.toString(),
+      subscriptionId: row.subscriptionId,
+      userId: row.userId,
+      lastError: row.lastError,
+      nextRunAt: row.nextRunAt.toISOString(),
+      completedAt: row.completedAt?.toISOString() ?? null,
+      createdAt: row.createdAt.toISOString()
+    }));
+  }
+
+  /**
+   * Exact outstanding-command counts per node/subscription/user/team. The
+   * detail list above is paginated, so it must never be the source of a
+   * "synced" verdict: a node with 300 queued users would otherwise read as
+   * synced once its commands fell off the first page.
+   */
+  async listNodeCommandSummaries(): Promise<AdminNodeCommandSummariesDto> {
+    const rows = await runAdminNodeLocalOperation(
+      () => this.prisma.nodeCommandJob.groupBy({
+        by: ["nodeId", "subscriptionId", "userId", "teamId", "status"],
+        where: {
+          // Cancelled = retry-exhausted and NOT yet resolved, an UNRESOLVED
+          // failure the operator must still see; resolved ones (a newer
+          // command took over the target) drop out. Superseded commands never
+          // carry the cancelled status.
+          OR: [
+            { status: { in: ["pending", "running", "failed"] } },
+            { status: "cancelled", resolvedAt: null }
+          ]
+        },
+        _count: { _all: true }
+      }),
+      "节点命令统计读取失败，请刷新后重试。"
+    );
+    const recentErrors = await this.listRecentNodeCommandErrors();
+
+    const nodes = new Map<string, AdminNodeCommandSummaryDto>();
+    const subscriptions = new Map<string, AdminNodeCommandSummaryDto>();
+    const users = new Map<string, AdminNodeCommandSummaryDto>();
+    const teams = new Map<string, AdminNodeCommandSummaryDto>();
+    const addCount = (map: Map<string, AdminNodeCommandSummaryDto>, key: string | null, status: string, count: number) => {
+      if (!key) {
+        return;
+      }
+      const summary = map.get(key) ?? { pending: 0, running: 0, failed: 0, total: 0, lastError: null };
+      if (status === "failed" || status === "cancelled") {
+        // Cancelled = retry-exhausted: it never completed, so it reads as a
+        // failure the operator still needs to resolve.
+        summary.failed += count;
+      } else if (status === "running") {
+        summary.running += count;
+      } else {
+        summary.pending += count;
+      }
+      summary.total += count;
+      map.set(key, summary);
+    };
+    const addError = (map: Map<string, AdminNodeCommandSummaryDto>, key: string | null, error: string | null) => {
+      if (!key || !error) {
+        return;
+      }
+      const summary = map.get(key) ?? { pending: 0, running: 0, failed: 0, total: 0, lastError: null };
+      summary.lastError = summary.lastError ?? error;
+      map.set(key, summary);
+    };
+
+    for (const row of rows) {
+      const count = row._count?._all ?? 0;
+      addCount(nodes, row.nodeId, row.status, count);
+      addCount(subscriptions, row.subscriptionId, row.status, count);
+      addCount(users, row.userId, row.status, count);
+      addCount(teams, row.teamId, row.status, count);
+    }
+    // Newest first: the first error seen for a target is the one to show.
+    for (const error of recentErrors) {
+      addError(nodes, error.nodeId, error.lastError);
+      addError(subscriptions, error.subscriptionId, error.lastError);
+      addError(users, error.userId, error.lastError);
+      addError(teams, error.teamId, error.lastError);
+    }
+
+    const toEntries = (map: Map<string, AdminNodeCommandSummaryDto>) =>
+      Array.from(map, ([key, summary]) => ({ key, ...summary })).sort((a, b) => a.key.localeCompare(b.key));
+    return {
+      nodes: toEntries(nodes),
+      subscriptions: toEntries(subscriptions),
+      users: toEntries(users),
+      teams: toEntries(teams)
+    };
+  }
+
+  private async listRecentNodeCommandErrors() {
+    try {
+      return await runAdminNodeLocalOperation(
+        () => this.prisma.nodeCommandJob.findMany({
+          where: {
+            OR: [
+              { status: { in: ["pending", "running", "failed"] } },
+              { status: "cancelled", resolvedAt: null }
+            ],
+            lastError: { not: null }
+          },
+          orderBy: { createdAt: "desc" },
+          take: NODE_COMMAND_ERROR_SAMPLE_SIZE,
+          select: {
+            nodeId: true,
+            subscriptionId: true,
+            userId: true,
+            teamId: true,
+            lastError: true
+          }
+        }),
+        "节点命令错误读取失败，请刷新后重试。"
+      );
+    } catch (error) {
+      this.logger.warn(`Node command summaries loaded without errors: ${readAdminNodeErrorMessage(error)}`);
+      return [];
+    }
   }
 
   async retryLeaseRevocationJob(jobId: string): Promise<AdminLeaseRevocationJobDto[]> {
@@ -343,16 +331,6 @@ export class AdminNodeService {
     return this.listLeaseRevocationJobsAfterRetry();
   }
 
-  private async listPanelSyncJobsAfterRetry(): Promise<AdminPanelSyncJobDto[]> {
-    try {
-      return await this.listPanelSyncJobs();
-    } catch (error) {
-      const message = `Panel sync retry was saved, but queue refresh failed: ${readAdminNodeErrorMessage(error)}`;
-      this.logger.warn(message);
-      return [];
-    }
-  }
-
   private async listLeaseRevocationJobsAfterRetry(): Promise<AdminLeaseRevocationJobDto[]> {
     try {
       return await this.listLeaseRevocationJobs();
@@ -360,301 +338,6 @@ export class AdminNodeService {
       const message = `Lease revocation retry was saved, but queue refresh failed: ${readAdminNodeErrorMessage(error)}`;
       this.logger.warn(message);
       return [];
-    }
-  }
-
-  async importNodeFromSubscription(input: ImportNodeInputDto): Promise<AdminNodeRecordDto> {
-    const panelBaseUrl = input.panelBaseUrl?.trim() || null;
-    const panelUsername = input.panelUsername?.trim() || null;
-    const panelPassword = input.panelPassword?.trim() || null;
-    const panelEnabled = await this.resolveNodePanelEnabled({
-      inputValue: input.panelEnabled,
-      currentValue: null,
-      panelBaseUrl,
-      panelUsername,
-      panelPassword,
-      applyXuiDefault: true
-    });
-    const imported = await this.resolveNodeRuntimeSource(input, panelEnabled);
-    const nodeId = toNodeId(imported.serverHost, imported.serverPort);
-    const current = await runAdminNodeLocalOperation(
-      () => this.prisma.node.findUnique({ where: { id: nodeId } }),
-      "节点信息读取失败，请稍后重试。"
-    );
-    const nextPanelBaseUrl = panelBaseUrl ?? current?.panelBaseUrl ?? null;
-    const nextPanelApiBasePath = normalizePanelApiBasePath(input.panelApiBasePath ?? current?.panelApiBasePath ?? "/");
-    const nextPanelUsername = panelUsername ?? current?.panelUsername ?? null;
-    const panelIdentityChanged = Boolean(
-      current &&
-        (
-          (panelBaseUrl !== null && panelBaseUrl !== (current.panelBaseUrl ?? null)) ||
-          normalizePanelApiBasePath(input.panelApiBasePath ?? current?.panelApiBasePath ?? "/") !==
-            normalizePanelApiBasePath(current.panelApiBasePath ?? "/") ||
-          (panelUsername !== null && panelUsername !== (current.panelUsername ?? null))
-        )
-    );
-    if (!panelPassword && panelIdentityChanged) {
-      throw new BadRequestException("面板地址、路径或账号已变更，请重新输入面板密码。");
-    }
-    const nextPanelPassword =
-      panelPassword ?? decryptPanelPassword(current?.panelPassword) ?? null;
-    const resolvedInboundId = readRuntimeInboundId(imported);
-    const nextPanelInboundId = input.panelInboundId ?? current?.panelInboundId ?? resolvedInboundId ?? null;
-    const nextCountry = resolveNodeCountry({
-      countryCode: input.countryCode,
-      region: input.region,
-      name: input.name?.trim() || imported.name,
-      host: imported.serverHost
-    });
-    const nextPanelEnabled = await this.resolveNodePanelEnabled({
-      inputValue: input.panelEnabled,
-      currentValue: current?.panelEnabled ?? null,
-      panelBaseUrl: nextPanelBaseUrl,
-      panelUsername: nextPanelUsername,
-      panelPassword: nextPanelPassword,
-      applyXuiDefault: true
-    });
-    const panelConnectionChanged = Boolean(
-      current?.panelEnabled &&
-      nextPanelEnabled &&
-      (
-        nextPanelBaseUrl !== current.panelBaseUrl ||
-        nextPanelApiBasePath !== current.panelApiBasePath ||
-        nextPanelUsername !== current.panelUsername ||
-        nextPanelPassword !== decryptPanelPassword(current.panelPassword) ||
-        nextPanelInboundId !== current.panelInboundId
-      )
-    );
-    const panelWillBeDisabled = Boolean(current?.panelEnabled && !nextPanelEnabled);
-    const nodeWillBeDisabled = Boolean(current?.isActive && input.isActive === false);
-
-    if ((input.isActive ?? current?.isActive ?? true) && !isNodeOnboardingReady({ ...current, ...imported })) {
-      throw new BadRequestException("节点尚未完成 Agent 注册或入站配置，不能启用。");
-    }
-    let row: any;
-    try {
-      row = await this.prisma.node.upsert({
-        where: { id: nodeId },
-        create: {
-          id: nodeId,
-          name: input.name?.trim() || imported.name,
-          countryCode: nextCountry.countryCode,
-          region: nextCountry.region,
-          provider: input.provider?.trim() || "自有节点",
-          tags: normalizeTags(input.tags, imported.name),
-          isActive: input.isActive ?? true,
-          recommended: input.recommended ?? true,
-          latencyMs: 0,
-          protocol: "vless",
-          security: "reality",
-          serverHost: imported.serverHost,
-          serverPort: imported.serverPort,
-          uuid: imported.uuid,
-          flow: imported.flow,
-          realityPublicKey: imported.realityPublicKey,
-          shortId: imported.shortId,
-          serverName: imported.serverName,
-          fingerprint: imported.fingerprint,
-          spiderX: imported.spiderX,
-          mldsa65Verify: imported.mldsa65Verify ?? "",
-          subscriptionUrl: input.subscriptionUrl?.trim() || null,
-          panelBaseUrl: nextPanelBaseUrl,
-          panelApiBasePath: nextPanelApiBasePath,
-          panelUsername: nextPanelUsername,
-          panelPassword: encryptPanelPassword(nextPanelPassword),
-          panelInboundId: nextPanelInboundId,
-          panelEnabled: nextPanelEnabled,
-          panelStatus: nextPanelEnabled ? current?.panelStatus ?? "offline" : "offline",
-          panelError: nextPanelEnabled ? current?.panelError ?? null : null
-        },
-        update: {
-          name: input.name?.trim() || imported.name,
-          countryCode: nextCountry.countryCode,
-          region: nextCountry.region,
-          provider: input.provider?.trim() || "自有节点",
-          tags: normalizeTags(input.tags, imported.name),
-          ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
-          recommended: input.recommended ?? true,
-          latencyMs: 0,
-          serverHost: imported.serverHost,
-          serverPort: imported.serverPort,
-          uuid: imported.uuid,
-          flow: imported.flow,
-          realityPublicKey: imported.realityPublicKey,
-          shortId: imported.shortId,
-          serverName: imported.serverName,
-          fingerprint: imported.fingerprint,
-          spiderX: imported.spiderX,
-          mldsa65Verify: imported.mldsa65Verify ?? "",
-          subscriptionUrl: input.subscriptionUrl?.trim() || null,
-          panelBaseUrl: nextPanelBaseUrl,
-          panelApiBasePath: nextPanelApiBasePath,
-          panelUsername: nextPanelUsername,
-          panelPassword: encryptPanelPassword(nextPanelPassword),
-          panelInboundId: nextPanelInboundId,
-          panelEnabled: nextPanelEnabled,
-          ...(!nextPanelEnabled ? { panelStatus: "offline", panelError: null } : {})
-        }
-      });
-    } catch (error) {
-      throwLocalSaveAsServiceUnavailable(error, "节点导入保存失败，请刷新节点列表后重试。");
-    }
-
-    let panelSyncPending = false;
-    if (current && panelConnectionChanged && !nodeWillBeDisabled) {
-      panelSyncPending = true;
-      await this.tryRunAfterLocalNodeSave("queue node lease revocation for panel config change", () =>
-        this.runtimeSessionService.queueLeaseRevocationJobForNode(nodeId, "node_panel_config_changed")
-      );
-      await this.tryRunAfterLocalNodeSave("queue old panel binding deletion for panel config change", async () => {
-        const result = await this.runtimeSessionService.removePanelBindingsForNode(nodeId, {
-          panelBaseUrl: current.panelBaseUrl,
-          panelApiBasePath: current.panelApiBasePath,
-          panelUsername: current.panelUsername,
-          // Keep ciphertext for PanelSyncJob snapshots; encrypt/decrypt only at storage/use edges.
-          panelPassword: current.panelPassword
-        });
-        if (result.failed.length > 0) {
-          await this.runtimeSessionService.markPanelBindingsDeletedForNode(nodeId);
-        }
-      });
-    }
-
-    if (current && (panelWillBeDisabled || nodeWillBeDisabled)) {
-      panelSyncPending = true;
-      await this.tryRunAfterLocalNodeSave("queue node lease revocation after node disable", () =>
-        this.runtimeSessionService.queueLeaseRevocationJobForNode(
-          nodeId,
-          nodeWillBeDisabled ? "node_disabled" : "node_panel_disabled"
-        )
-      );
-      await this.tryRunAfterLocalNodeSave("queue panel disable after node disable", () =>
-        this.runtimeSessionService.markPanelBindingsDisabledForNode(nodeId)
-      );
-    }
-
-    const record = await this.probeNodeAfterLocalImport(row);
-    if (current) {
-      if (row.isActive && row.panelEnabled && (!current.panelEnabled || panelConnectionChanged || (!current.isActive && input.isActive === true))) {
-        panelSyncPending = true;
-        await this.tryRunAfterLocalNodeSave("queue panel access sync after node import", () =>
-          this.runtimeSessionService.syncPanelAccessForNode(row.id)
-        );
-      }
-      await this.tryRunAfterLocalNodeSave("publish node access update after node import", () =>
-        this.publishNodeAccessUpdatedForNode(row.id)
-      );
-    }
-    return panelSyncPending ? withNodePanelSyncPending(record) : record;
-  }
-
-  async listNodePanelInbounds(input: {
-    panelBaseUrl: string;
-    panelApiBasePath?: string;
-    panelUsername: string;
-    panelPassword?: string;
-    nodeId?: string;
-  }): Promise<AdminNodePanelInboundDto[]> {
-    const panelBaseUrl = input.panelBaseUrl?.trim() || "";
-    const panelApiBasePath = normalizePanelApiBasePath(input.panelApiBasePath ?? "/");
-    const panelUsername = input.panelUsername?.trim() || "";
-    let panelPassword = input.panelPassword?.trim() || "";
-
-    // 复用已存密码时，必须使用完整已存连接配置，禁止把旧密码发到请求方提供的新地址。
-    if (!panelPassword && input.nodeId?.trim()) {
-      const node = await this.prisma.node.findUnique({
-        where: { id: input.nodeId.trim() },
-        select: {
-          panelBaseUrl: true,
-          panelApiBasePath: true,
-          panelUsername: true,
-          panelPassword: true
-        }
-      });
-      if (!node?.panelPassword?.trim()) {
-        throw new BadRequestException("面板密码不能为空。");
-      }
-      const storedBaseUrl = node.panelBaseUrl?.trim() || "";
-      const storedApiBasePath = normalizePanelApiBasePath(node.panelApiBasePath ?? "/");
-      const storedUsername = node.panelUsername?.trim() || "";
-      if (
-        storedBaseUrl !== panelBaseUrl ||
-        storedApiBasePath !== panelApiBasePath ||
-        storedUsername !== panelUsername
-      ) {
-        throw new BadRequestException("面板地址、路径或账号已变更，请重新输入面板密码。");
-      }
-      panelPassword = decryptPanelPassword(node.panelPassword) ?? "";
-    }
-    if (!panelPassword) {
-      throw new BadRequestException("面板密码不能为空。");
-    }
-    if (!panelBaseUrl || !panelUsername) {
-      throw new BadRequestException("面板地址和账号不能为空。");
-    }
-    const budgetMs = readListNodePanelInboundsBudgetMs();
-    const inbounds = await this.readNodePanelInboundsWithBudget(
-      this.xuiService.listInbounds({
-        id: createId("panel"),
-        panelBaseUrl,
-        panelApiBasePath,
-        panelUsername,
-        panelPassword,
-        panelInboundId: null,
-        panelRequestTimeoutMs: budgetMs,
-        panelAbortSignal: AbortSignal.timeout(budgetMs)
-      }, {
-        forceRelogin: true,
-        strictCredentialCheck: true
-      })
-    );
-
-    return inbounds;
-  }
-
-  private async readNodePanelInboundsWithBudget(runtimeTask: Promise<AdminNodePanelInboundDto[]>) {
-    void runtimeTask.catch((error) => {
-      this.logger?.warn(`Delayed 3x-ui inbound list read failed: ${readAdminNodeErrorMessage(error)}`);
-    });
-
-    try {
-      // Budget covers the WAITING window only: a slow or hung remote call is
-      // abandoned to its owner instead of holding a self-update drain work item.
-      return await workLifecycle.awaitWithBudget(runtimeTask, readListNodePanelInboundsBudgetMs(), () =>
-        new ServiceUnavailableException(
-          `3x-ui inbound list read timed out after ${readListNodePanelInboundsBudgetMs()}ms; panel may be offline or too slow`
-        )
-      );
-    } catch (error) {
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-      throw new ServiceUnavailableException(`3x-ui inbound list read failed: ${readAdminNodeErrorMessage(error)}`);
-    }
-  }
-
-  private async probeNodeAfterLocalImport(row: Parameters<typeof toAdminNodeRecord>[0]) {
-    const fallbackRecord = toAdminNodeRecord(row);
-    const probeTask = this.probeNode(row.id);
-    void probeTask.catch((error) => {
-      this.logger?.warn(
-        `Local node import saved, but delayed initial probe failed for ${row.id}: ${error instanceof Error ? error.message : String(error)}`
-      );
-    });
-
-    try {
-      // Budget covers the WAITING window only: a slow or hung remote call is
-      // abandoned to its owner instead of holding a self-update drain work item.
-      return await workLifecycle.awaitWithBudgetElse(probeTask, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS, () => {
-        this.logger?.warn(
-          `Local node import saved, but initial probe exceeded ${NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
-        );
-        return fallbackRecord;
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger?.warn(`Local node import saved, but initial probe failed for ${row.id}: ${message}`);
-      return fallbackRecord;
     }
   }
 
@@ -667,78 +350,7 @@ export class AdminNodeService {
       throw new NotFoundException("节点不存在");
     }
 
-    const nextPanelBaseUrl = input.panelBaseUrl !== undefined ? input.panelBaseUrl?.trim() || null : current.panelBaseUrl;
-    const nextPanelApiBasePath =
-      input.panelApiBasePath !== undefined ? normalizePanelApiBasePath(input.panelApiBasePath) : current.panelApiBasePath;
-    const nextPanelUsername = input.panelUsername !== undefined ? input.panelUsername?.trim() || null : current.panelUsername;
-    const panelIdentityChanged =
-      (input.panelBaseUrl !== undefined ? nextPanelBaseUrl !== current.panelBaseUrl : false) ||
-      (input.panelApiBasePath !== undefined ? nextPanelApiBasePath !== current.panelApiBasePath : false) ||
-      (input.panelUsername !== undefined ? nextPanelUsername !== current.panelUsername : false);
-    // Never reuse a stored password against a new panel address/path/username.
-    // Old credentials remain available only for cleanup of the previous panel binding.
-    let nextPanelPassword: string | null;
-    if (input.panelPassword !== undefined) {
-      nextPanelPassword = input.panelPassword?.trim() || null;
-    } else if (panelIdentityChanged) {
-      throw new BadRequestException("面板地址、路径或账号已变更，请重新输入面板密码。");
-    } else {
-      nextPanelPassword = decryptPanelPassword(current.panelPassword);
-    }
-    const nextPanelInboundId =
-      input.panelInboundId !== undefined ? input.panelInboundId : current.panelInboundId;
-    const nextPanelEnabled =
-      input.panelEnabled !== undefined
-        ? input.panelEnabled
-        : await this.resolveNodePanelEnabled({
-            inputValue: undefined,
-            currentValue: current.panelEnabled,
-            panelBaseUrl: nextPanelBaseUrl,
-            panelUsername: nextPanelUsername,
-            panelPassword: nextPanelPassword,
-            applyXuiDefault: false
-          });
-    const panelConfigTouched =
-      (input.panelBaseUrl !== undefined ? nextPanelBaseUrl !== current.panelBaseUrl : false) ||
-      (input.panelApiBasePath !== undefined ? nextPanelApiBasePath !== current.panelApiBasePath : false) ||
-      (input.panelUsername !== undefined ? nextPanelUsername !== current.panelUsername : false) ||
-      (input.panelPassword !== undefined ? nextPanelPassword !== decryptPanelPassword(current.panelPassword) : false) ||
-      (input.panelInboundId !== undefined ? nextPanelInboundId !== current.panelInboundId : false) ||
-      (input.panelEnabled !== undefined ? nextPanelEnabled !== current.panelEnabled : false);
-    const panelConnectionChanged =
-      current.panelEnabled &&
-      nextPanelEnabled &&
-      ((input.panelBaseUrl !== undefined ? nextPanelBaseUrl !== current.panelBaseUrl : false) ||
-        (input.panelApiBasePath !== undefined ? nextPanelApiBasePath !== current.panelApiBasePath : false) ||
-        (input.panelUsername !== undefined ? nextPanelUsername !== current.panelUsername : false) ||
-        (input.panelPassword !== undefined ? nextPanelPassword !== decryptPanelPassword(current.panelPassword) : false) ||
-        (input.panelInboundId !== undefined ? nextPanelInboundId !== current.panelInboundId : false));
-    const panelWillBeDisabled = current.panelEnabled && !nextPanelEnabled;
     const nodeWillBeDisabled = current.isActive && input.isActive === false;
-
-    let derived: ReturnType<typeof parseVlessLink> | Awaited<ReturnType<XuiService["getInboundRuntime"]>> | null = null;
-    let panelRuntimeError: string | null = null;
-    const nextSubscriptionUrl = typeof input.subscriptionUrl === "string" ? input.subscriptionUrl.trim() : "";
-    if (nextSubscriptionUrl) {
-      const runtime = await this.readSubscriptionNodeForNodeSaveBestEffort(nextSubscriptionUrl);
-      derived = runtime.derived;
-      panelRuntimeError = runtime.errorMessage;
-    } else if (nextPanelEnabled && panelConfigTouched) {
-      const runtime = await this.readPanelRuntimeForNodeSaveBestEffort({
-          id: current.id,
-          panelBaseUrl: nextPanelBaseUrl,
-          panelApiBasePath: nextPanelApiBasePath,
-          panelUsername: nextPanelUsername,
-          panelPassword: nextPanelPassword,
-          panelInboundId: nextPanelInboundId,
-          realityPublicKey: current.realityPublicKey
-      });
-      derived = runtime.derived;
-      panelRuntimeError = runtime.errorMessage;
-    }
-    const derivedInboundId = readRuntimeInboundId(derived);
-    const shouldPersistPanelEnabledByDefault = panelConfigTouched && input.panelEnabled === undefined && nextPanelEnabled !== current.panelEnabled;
-    const shouldPersistDerivedInboundId = input.panelInboundId === undefined && derivedInboundId !== null;
     const countryTouched = input.countryCode !== undefined || input.region !== undefined;
     const nextCountry = countryTouched
       ? resolveNodeCountry({
@@ -749,7 +361,9 @@ export class AdminNodeService {
         })
       : null;
 
-    if ((input.isActive ?? current.isActive) && !isNodeOnboardingReady({ ...current, ...derived })) {
+    // Connection parameters come from the agent's inbound report; enabling a
+    // node still requires a deployed inbound.
+    if ((input.isActive ?? current.isActive) && !isNodeOnboardingReady(current)) {
       throw new BadRequestException("节点尚未完成 Agent 注册或入站配置，不能启用。");
     }
     let row: any;
@@ -762,84 +376,29 @@ export class AdminNodeService {
           ...(input.provider !== undefined ? { provider: input.provider.trim() } : {}),
           ...(input.tags !== undefined ? { tags: normalizeTags(input.tags, input.name?.trim() || current.name) } : {}),
           ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
-          ...(input.recommended !== undefined ? { recommended: input.recommended } : {}),
-          ...(input.subscriptionUrl !== undefined ? { subscriptionUrl: nextSubscriptionUrl || null } : {}),
-          ...(input.panelBaseUrl !== undefined ? { panelBaseUrl: input.panelBaseUrl?.trim() || null } : {}),
-          ...(input.panelApiBasePath !== undefined ? { panelApiBasePath: normalizePanelApiBasePath(input.panelApiBasePath) } : {}),
-          ...(input.panelUsername !== undefined ? { panelUsername: input.panelUsername?.trim() || null } : {}),
-          ...(input.panelPassword !== undefined ? { panelPassword: encryptPanelPassword(input.panelPassword?.trim() || null) } : {}),
-          ...(input.panelInboundId !== undefined
-            ? { panelInboundId: input.panelInboundId }
-            : shouldPersistDerivedInboundId
-              ? { panelInboundId: derivedInboundId }
-              : {}),
-          ...(input.panelEnabled !== undefined
-            ? { panelEnabled: input.panelEnabled }
-            : shouldPersistPanelEnabledByDefault
-              ? { panelEnabled: nextPanelEnabled }
-              : {}),
-          ...(input.isActive === false || !nextPanelEnabled ? { panelStatus: "offline", panelError: null } : {}),
-          ...(panelRuntimeError ? { panelStatus: "degraded", panelError: panelRuntimeError } : {}),
-          ...(derived
-            ? {
-                serverHost: derived.serverHost,
-                serverPort: derived.serverPort,
-                uuid: derived.uuid,
-                flow: derived.flow,
-                realityPublicKey: derived.realityPublicKey,
-                shortId: derived.shortId,
-                serverName: derived.serverName,
-                fingerprint: derived.fingerprint,
-                spiderX: derived.spiderX,
-                mldsa65Verify: derived.mldsa65Verify ?? ""
-              }
-            : {})
+          ...(input.recommended !== undefined ? { recommended: input.recommended } : {})
         }
       });
     } catch (error) {
       throwLocalSaveAsServiceUnavailable(error, "节点保存失败，请刷新节点列表后重试。");
     }
 
-    let panelSyncPending = false;
-    if (panelConnectionChanged && !nodeWillBeDisabled) {
-      panelSyncPending = true;
-      await this.tryRunAfterLocalNodeSave("queue node lease revocation for panel config change", () =>
-        this.runtimeSessionService.queueLeaseRevocationJobForNode(nodeId, "node_panel_config_changed")
-      );
-      await this.tryRunAfterLocalNodeSave("queue old panel binding deletion for panel config change", async () => {
-        const result = await this.runtimeSessionService.removePanelBindingsForNode(nodeId, {
-          panelBaseUrl: current.panelBaseUrl,
-          panelApiBasePath: current.panelApiBasePath,
-          panelUsername: current.panelUsername,
-          // Keep ciphertext for PanelSyncJob snapshots; encrypt/decrypt only at storage/use edges.
-          panelPassword: current.panelPassword
-        });
-        if (result.failed.length > 0) {
-          await this.runtimeSessionService.markPanelBindingsDeletedForNode(nodeId);
-        }
-      });
-    }
-
-    if ((current.isActive && input.isActive === false) || panelWillBeDisabled) {
-      panelSyncPending = true;
+    if (nodeWillBeDisabled) {
       await this.tryRunAfterLocalNodeSave("queue node lease revocation after node disable", () =>
-        this.runtimeSessionService.queueLeaseRevocationJobForNode(
-          nodeId,
-          nodeWillBeDisabled ? "node_disabled" : "node_panel_disabled"
-        )
+        this.runtimeSessionService.queueLeaseRevocationJobForNode(nodeId, "node_disabled")
       );
-      await this.tryRunAfterLocalNodeSave("queue panel disable after node disable", () =>
+      // Disabling the node must also disable its bindings: getConfig does not
+      // check node.isActive, so previously issued credentials would keep
+      // working outside the managed client's lease handling.
+      await this.tryRunAfterLocalNodeSave("queue binding disable after node disable", () =>
         this.runtimeSessionService.markPanelBindingsDisabledForNode(nodeId)
       );
     } else if (!current.isActive && input.isActive === true) {
-      await this.tryRunAfterLocalNodeSave("clear pending panel disable jobs after node re-enable", () =>
-        this.runtimeSessionService.clearPendingPanelDisableJobsForNode(nodeId)
-      );
-    }
-    if (row.isActive && row.panelEnabled && (!current.panelEnabled || panelConnectionChanged || (!current.isActive && input.isActive === true))) {
-      panelSyncPending = true;
-      await this.tryRunAfterLocalNodeSave("queue panel access sync after node update", () =>
-        this.runtimeSessionService.syncPanelAccessForNode(nodeId)
+      // Re-enabling must restore the bindings the disable path took down:
+      // getConfig only serves ACTIVE bindings, so a config refresh alone
+      // never brings the old credentials back.
+      await this.tryRunAfterLocalNodeSave("queue direct access sync after node re-enable", () =>
+        this.runtimeSessionService.syncDirectAccessForNode(nodeId)
       );
     }
     const shouldPublishNodeUpdated =
@@ -848,271 +407,14 @@ export class AdminNodeService {
       countryTouched ||
       input.provider !== undefined ||
       input.tags !== undefined ||
-      input.recommended !== undefined ||
-      input.subscriptionUrl !== undefined ||
-      panelConfigTouched ||
-      Boolean(derived);
+      input.recommended !== undefined;
     if (shouldPublishNodeUpdated) {
       await this.tryRunAfterLocalNodeSave("publish node access update after node update", () =>
         this.publishNodeAccessUpdatedForNode(nodeId)
       );
     }
 
-    const record = toAdminNodeRecord(row);
-    return panelSyncPending ? withNodePanelSyncPending(record) : record;
-  }
-
-  private async readSubscriptionNodeForNodeSaveBestEffort(subscriptionUrl: string): Promise<{
-    derived: ReturnType<typeof parseVlessLink> | null;
-    errorMessage: string | null;
-  }> {
-    const runtimeTask = fetchSubscriptionNode(subscriptionUrl).then((derived) => {
-        return { derived, errorMessage: null };
-    });
-    void runtimeTask.catch((error) => {
-      this.logger?.warn(
-        `Local node subscription URL will be saved, but delayed subscription runtime read failed: ${readAdminNodeErrorMessage(error)}`
-      );
-    });
-
-    try {
-      // Budget covers the WAITING window only: a slow or hung remote call is
-      // abandoned to its owner instead of holding a self-update drain work item.
-      return await workLifecycle.awaitWithBudgetElse(runtimeTask, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS, () => {
-        const message = "subscription runtime read is still running in background";
-        this.logger?.warn(
-          `Local node subscription URL will be saved, but reading subscription runtime exceeded ${NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
-        );
-        return { derived: null, errorMessage: message };
-      });
-    } catch (error) {
-      const errorMessage = readAdminNodeErrorMessage(error);
-      this.logger?.warn(`Local node subscription URL will be saved, but reading subscription runtime failed: ${errorMessage}`);
-      return { derived: null, errorMessage };
-    }
-  }
-
-  async refreshNode(nodeId: string): Promise<AdminNodeRecordDto> {
-    const current = await runAdminNodeLocalOperation(
-      () => this.prisma.node.findUnique({ where: { id: nodeId } }),
-      "节点信息读取失败，请稍后重试。"
-    );
-    if (!current) {
-      throw new NotFoundException("节点不存在");
-    }
-    if (!current.panelEnabled && !current.subscriptionUrl) {
-      throw new BadRequestException("当前节点没有订阅地址");
-    }
-    let derived: ReturnType<typeof parseVlessLink> | Awaited<ReturnType<XuiService["getInboundRuntime"]>>;
-    try {
-      if (current.panelEnabled) {
-        const runtime = await this.readPanelRuntimeForNodeRefresh(current);
-        if (!runtime.derived) {
-          return this.markNodeRuntimeRefreshDegraded(
-            current,
-            runtime.errorMessage ?? "panel runtime refresh is still running in background"
-          );
-        }
-        derived = runtime.derived;
-      } else {
-        const runtime = await this.readSubscriptionNodeForNodeRefresh(current.subscriptionUrl!);
-        if (!runtime.derived) {
-          return this.markNodeRuntimeRefreshDegraded(
-            current,
-            runtime.errorMessage ?? "subscription runtime refresh is still running in background"
-          );
-        }
-        derived = runtime.derived;
-      }
-    } catch (error) {
-      return this.markNodeRuntimeRefreshDegraded(current, readAdminNodeErrorMessage(error));
-    }
-    const checkedAt = new Date();
-    let row: any;
-    try {
-      row = await this.prisma.node.update({
-        where: { id: nodeId },
-        data: {
-          serverHost: derived.serverHost,
-          serverPort: derived.serverPort,
-          uuid: derived.uuid,
-          flow: derived.flow,
-          realityPublicKey: derived.realityPublicKey,
-          shortId: derived.shortId,
-          serverName: derived.serverName,
-          fingerprint: derived.fingerprint,
-          spiderX: derived.spiderX,
-          mldsa65Verify: derived.mldsa65Verify ?? "",
-          panelStatus: current.panelEnabled ? "online" : current.panelStatus,
-          panelError: current.panelEnabled ? null : current.panelError,
-          panelLastSyncedAt: current.panelEnabled ? checkedAt : current.panelLastSyncedAt
-        }
-      });
-    } catch (error) {
-      throwLocalSaveAsServiceUnavailable(error, "节点刷新结果保存失败，请稍后重试。");
-    }
-
-    await this.tryRunAfterLocalNodeSave("publish node access update after node refresh", () =>
-      this.publishNodeAccessUpdatedForNode(nodeId)
-    );
     return toAdminNodeRecord(row);
-  }
-
-  private async readPanelRuntimeForNodeRefresh(current: {
-    id: string;
-    panelBaseUrl: string | null;
-    panelApiBasePath: string | null;
-    panelUsername: string | null;
-    panelPassword: string | null;
-    panelInboundId: number | null;
-    realityPublicKey: string;
-  }): Promise<{
-    derived: Awaited<ReturnType<XuiService["getInboundRuntime"]>> | null;
-    errorMessage: string | null;
-  }> {
-    const budgetMs = readRefreshNodeRuntimeBudgetMs();
-    const runtimeTask = this.xuiService
-      .getInboundRuntime({
-        id: current.id,
-        panelBaseUrl: current.panelBaseUrl,
-        panelApiBasePath: current.panelApiBasePath,
-        panelUsername: current.panelUsername,
-        panelPassword: decryptPanelPassword(current.panelPassword),
-        panelInboundId: current.panelInboundId,
-        realityPublicKey: current.realityPublicKey,
-        panelRequestTimeoutMs: budgetMs,
-        panelAbortSignal: AbortSignal.timeout(budgetMs)
-      })
-      .then((derived) => {
-        return { derived, errorMessage: null as string | null };
-      });
-
-    try {
-      // Budget covers the WAITING window only: a slow or hung remote call is
-      // abandoned to its owner instead of holding a self-update drain work item.
-      return await workLifecycle.awaitWithBudgetElse(runtimeTask, budgetMs, () => {
-        return {
-          derived: null,
-          errorMessage: `panel runtime refresh exceeded ${budgetMs}ms`
-        };
-      });
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      this.logger?.warn(`Node ${current.id} panel runtime refresh failed: ${errorMessage}`);
-      return { derived: null, errorMessage };
-    }
-  }
-
-  private async readSubscriptionNodeForNodeRefresh(subscriptionUrl: string): Promise<{
-    derived: ReturnType<typeof parseVlessLink> | null;
-    errorMessage: string | null;
-  }> {
-    const budgetMs = readRefreshNodeRuntimeBudgetMs();
-    const runtimeTask = fetchSubscriptionNode(subscriptionUrl).then((derived) => {
-        return { derived, errorMessage: null as string | null };
-    });
-
-    try {
-      // Budget covers the WAITING window only: a slow or hung remote call is
-      // abandoned to its owner instead of holding a self-update drain work item.
-      return await workLifecycle.awaitWithBudgetElse(runtimeTask, budgetMs, () => {
-        return {
-          derived: null,
-          errorMessage: `subscription runtime refresh exceeded ${budgetMs}ms`
-        };
-      });
-    } catch (error) {
-      return {
-        derived: null,
-        errorMessage: readAdminNodeErrorMessage(error)
-      };
-    }
-  }
-
-  private async markNodeRuntimeRefreshDegraded(current: any, errorMessage: string): Promise<AdminNodeRecordDto> {
-    const checkedAt = new Date();
-    const message = errorMessage || "node runtime refresh failed";
-    this.logger?.warn(`Node ${current.id} runtime refresh failed; keeping local runtime unchanged: ${message}`);
-    if (!current.isActive || !current.panelEnabled) {
-      return toAdminNodeRecord({
-        ...current,
-        panelStatus: "offline",
-        panelError: null,
-        updatedAt: checkedAt
-      });
-    }
-    const next = this.resolveTransientPanelFailure(current, message, "refresh");
-    if (next.panelStatus !== "degraded") {
-      return toAdminNodeRecord({
-        ...current,
-        panelStatus: next.panelStatus,
-        panelError: next.panelError,
-        updatedAt: checkedAt
-      });
-    }
-    try {
-      const row = await this.prisma.node.update({
-        where: { id: current.id },
-        data: {
-          panelStatus: next.panelStatus,
-          panelError: next.panelError
-        }
-      });
-      return toAdminNodeRecord(row);
-    } catch (error) {
-      this.logger?.warn(`Node ${current.id} runtime refresh fallback update failed: ${readAdminNodeErrorMessage(error)}`);
-      return toAdminNodeRecord({
-        ...current,
-        panelStatus: next.panelStatus,
-        panelError: next.panelError,
-        updatedAt: checkedAt
-      });
-    }
-  }
-
-  private async readPanelRuntimeForNodeSaveBestEffort(input: {
-    id: string;
-    panelBaseUrl: string | null;
-    panelApiBasePath: string | null;
-    panelUsername: string | null;
-    panelPassword: string | null;
-    panelInboundId: number | null;
-    realityPublicKey?: string | null;
-  }): Promise<{
-    derived: Awaited<ReturnType<XuiService["getInboundRuntime"]>> | null;
-    errorMessage: string | null;
-  }> {
-    const budgetMs = NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS;
-    const runtimeTask = this.xuiService.getInboundRuntime({
-      ...input,
-      panelRequestTimeoutMs: budgetMs,
-      panelAbortSignal: AbortSignal.timeout(budgetMs)
-    }).then((derived) => {
-        return { derived, errorMessage: null };
-    });
-    void runtimeTask.catch((error) => {
-      this.logger?.warn(
-        `Local node panel config will be saved, but delayed panel runtime read failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    });
-
-    try {
-      // Budget covers the WAITING window only: a slow or hung remote call is
-      // abandoned to its owner instead of holding a self-update drain work item.
-      return await workLifecycle.awaitWithBudgetElse(runtimeTask, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS, () => {
-        const message = "panel runtime read is still running in background";
-        this.logger?.warn(
-          `Local node panel config will be saved, but reading new panel runtime exceeded ${NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
-        );
-        return { derived: null, errorMessage: message };
-      });
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      this.logger?.warn(`Local node panel config will be saved, but reading new panel runtime failed: ${errorMessage}`);
-      return { derived: null, errorMessage };
-    }
   }
 
   async probeNode(nodeId: string): Promise<AdminNodeRecordDto> {
@@ -1142,47 +444,13 @@ export class AdminNodeService {
 
   private async probeNodeUnchecked(current: any): Promise<AdminNodeRecordDto> {
     const result = await probeNodeConnectivity(current.serverHost, current.serverPort, current.serverName, current.subscriptionUrl);
-    let panelStatus = current.panelStatus;
-    let panelError = current.panelError;
-    let panelLastSyncedAt = current.panelLastSyncedAt;
-    if (!current.isActive || !current.panelEnabled) {
-      this.panelProbeFailureCounts?.delete(current.id);
-      panelStatus = "offline";
-      panelError = null;
-    } else if (current.panelEnabled) {
-      try {
-        const panelProbeBudgetMs = readNodeProbeBudgetMs();
-        await this.xuiService.checkNodeHealth({
-          id: current.id,
-          panelBaseUrl: current.panelBaseUrl,
-          panelApiBasePath: current.panelApiBasePath,
-          panelUsername: current.panelUsername,
-          panelPassword: decryptPanelPassword(current.panelPassword),
-          panelInboundId: current.panelInboundId,
-          panelRequestTimeoutMs: panelProbeBudgetMs,
-          panelAbortSignal: AbortSignal.timeout(panelProbeBudgetMs)
-        });
-        this.panelProbeFailureCounts?.delete(current.id);
-        panelStatus = "online";
-        panelError = null;
-        panelLastSyncedAt = new Date();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "3x-ui 面板探测失败";
-        const next = this.resolveTransientPanelFailure(current, message, "probe");
-        panelStatus = next.panelStatus;
-        panelError = next.panelError;
-      }
-    }
     const checkedAt = new Date();
     const data = {
       probeStatus: result.status,
       probeLatencyMs: result.latencyMs,
       probeCheckedAt: checkedAt,
       probeError: result.error,
-      latencyMs: result.latencyMs ?? current.latencyMs,
-      panelStatus,
-      panelError,
-      panelLastSyncedAt
+      latencyMs: result.latencyMs ?? current.latencyMs
     };
     let row: any;
     try {
@@ -1204,10 +472,9 @@ export class AdminNodeService {
 
   private markNodeProbeTimedOut(current: any, timeoutMs: number) {
     const checkedAt = new Date();
-    // Timeout is not a confirmed panel outage. Keep current panel status and let the
-    // background probe finish; only consecutive confirmed failures should degrade.
+    // Timeout is not a confirmed outage; the background probe keeps going.
     this.logger.warn(
-      `Node ${current.id} probe exceeded ${timeoutMs}ms; keeping panelStatus=${current.panelStatus} while probe continues in background.`
+      `Node ${current.id} probe exceeded ${timeoutMs}ms; keeping previous result while probe continues in background.`
     );
     return toAdminNodeRecord({
       ...current,
@@ -1256,38 +523,10 @@ export class AdminNodeService {
     try {
       return await this.probeNodeWithBulkBudget(node.id, budgetMs);
     } catch (error) {
-      const message = readAdminNodeErrorMessage(error);
-      this.logger.warn(`Node ${node.id} bulk probe failed; continuing with remaining nodes: ${message}`);
-      const checkedAt = new Date();
-      if (!node.isActive || !node.panelEnabled) {
-        return toAdminNodeRecord({
-          ...node,
-          panelStatus: "offline",
-          panelError: null,
-          updatedAt: checkedAt
-        });
-      }
-      const next = this.resolveTransientPanelFailure(node, message, "bulk_probe");
-      // Only persist when threshold actually flips/keeps degraded; avoid noisy soft-fail writes.
-      if (next.panelStatus === "degraded" && (node.panelStatus !== "degraded" || node.panelError !== next.panelError)) {
-        try {
-          const row = await this.prisma.node.update({
-            where: { id: node.id },
-            data: {
-              panelStatus: next.panelStatus,
-              panelError: next.panelError
-            }
-          });
-          return toAdminNodeRecord(row);
-        } catch (updateError) {
-          this.logger.warn(`Node ${node.id} bulk probe fallback update failed: ${readAdminNodeErrorMessage(updateError)}`);
-        }
-      }
+      this.logger.warn(`Node ${node.id} bulk probe failed; continuing with remaining nodes: ${readAdminNodeErrorMessage(error)}`);
       return toAdminNodeRecord({
         ...node,
-        panelStatus: next.panelStatus,
-        panelError: next.panelError,
-        updatedAt: checkedAt
+        updatedAt: new Date()
       });
     }
   }
@@ -1312,9 +551,9 @@ export class AdminNodeService {
     requestBudgetMs: number,
     _checkedAt: Date
   ) {
-    // Skipping due to bulk budget is not a panel outage. Do not flip healthy panels to degraded.
+    // Skipping due to bulk budget is not a confirmed outage; nothing changes.
     this.logger.warn(
-      `Bulk node probe skipped ${nodes.length} nodes after ${requestBudgetMs}ms request budget; panelStatus left unchanged.`
+      `Bulk node probe skipped ${nodes.length} nodes after ${requestBudgetMs}ms request budget.`
     );
   }
 
@@ -1325,49 +564,11 @@ export class AdminNodeService {
   ) {
     return toAdminNodeRecord({
       ...node,
-      // Keep previous panel status; budget skip is not a confirmed failure.
       probeError: `bulk node probe request budget ${requestBudgetMs}ms exhausted before this node was probed`,
       updatedAt: checkedAt
     });
   }
 
-
-  private resolveTransientPanelFailure(
-    current: { id: string; panelStatus?: string | null; panelError?: string | null },
-    message: string,
-    source: string
-  ): { panelStatus: "online" | "degraded" | "offline"; panelError: string | null } {
-    const hardFailure = PANEL_STATUS_HARD_FAILURE_PATTERN.test(message);
-    if (!this.panelProbeFailureCounts) {
-      this.panelProbeFailureCounts = new Map();
-    }
-    const nextCount = (this.panelProbeFailureCounts.get(current.id) ?? 0) + 1;
-    this.panelProbeFailureCounts.set(current.id, nextCount);
-    const threshold = readPanelStatusFailureThreshold();
-    if (hardFailure || nextCount >= threshold) {
-      this.logger.warn(
-        `Node ${current.id} panel marked degraded after ${nextCount} consecutive ${source} failure(s): ${message}`
-      );
-      return {
-        panelStatus: "degraded",
-        panelError: message
-      };
-    }
-    this.logger.warn(
-      `Node ${current.id} panel ${source} failure ${nextCount}/${threshold} kept status=${current.panelStatus ?? "online"}: ${message}`
-    );
-    if (current.panelStatus === "degraded") {
-      return {
-        panelStatus: "degraded",
-        panelError: message
-      };
-    }
-    return {
-      // Soft failures must preserve the current state. Never promote offline to online without a successful probe.
-      panelStatus: ((current.panelStatus as "online" | "degraded" | "offline" | null) ?? "online"),
-      panelError: current.panelStatus === "offline" ? (current.panelError ?? null) : null
-    };
-  }
 
   async deleteNode(nodeId: string) {
     const current = await runAdminNodeLocalOperation(
@@ -1378,11 +579,6 @@ export class AdminNodeService {
       throw new NotFoundException("节点不存在");
     }
 
-    const offlinePanelDelete =
-      current.panelEnabled !== true ||
-      current.panelStatus === "offline" ||
-      current.panelStatus === "degraded";
-
     // Capture targets before hard delete removes node access rows.
     const userIds = await this.runAfterLocalNodeSaveWithBudget(
       "resolve node access event targets before node delete",
@@ -1390,95 +586,8 @@ export class AdminNodeService {
       () => this.clientEventsPublisher.resolveUserIdsForNodeAccess(nodeId)
     );
 
-    if (offlinePanelDelete) {
-      // Offline/degraded panels must never depend on remote delete_client.
-      // Await local cleanup, then hard-delete the node so admin/client both stop waiting.
-      try {
-        await this.prisma.node.update({
-          where: { id: current.id },
-          data: {
-            isActive: false,
-            recommended: false,
-            panelStatus: "offline",
-            panelError: "面板不可达，节点正在本地删除"
-          }
-        });
-      } catch (error) {
-        throwLocalSaveAsServiceUnavailable(error, "节点删除保存失败，请刷新节点列表后重试。");
-      }
-
-      try {
-        await this.runtimeSessionService.revokeNodeLeases(nodeId, "node_deleted");
-      } catch (error) {
-        this.logger?.warn(
-          `Offline node delete revoked leases with warning: ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
-      try {
-        await this.runtimeSessionService.queueLeaseRevocationJobForNode(nodeId, "node_deleted");
-      } catch (error) {
-        this.logger?.warn(
-          `Offline node delete queued lease revocation with warning: ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
-      try {
-        await this.runtimeSessionService.finalizeOfflineNodePanelCleanup(nodeId);
-      } catch (error) {
-        throwLocalSaveAsServiceUnavailable(error, "失联面板本地清理失败，节点未删除，请重试。");
-      }
-
-      try {
-        await this.prisma.node.delete({ where: { id: current.id } });
-      } catch (error) {
-        throwLocalSaveAsServiceUnavailable(error, "失联面板节点删除失败，请刷新节点列表后重试。");
-      }
-
-      this.publishAdminNodeAccessUpdatedBestEffort(nodeId);
-      try {
-        this.clientEventsPublisher.publishNodeAccessUpdatedToUsers(userIds, nodeId);
-      } catch (error) {
-        this.logger?.warn(
-          `Offline node delete completed, but node access publish failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`
-        );
-      }
-      for (const userId of userIds) {
-        try {
-          await this.clientEventsPublisher.publishSubscriptionUpdated({ userId });
-        } catch (error) {
-          this.logger?.warn(
-            `Offline node delete completed, but subscription refresh publish failed for ${userId}: ${
-              error instanceof Error ? error.message : String(error)
-            }`
-          );
-        }
-      }
-
-      return {
-        ok: true,
-        deleted: true,
-        panelSyncStatus: "synced" as const,
-        panelSyncMessage: NODE_PANEL_SYNC_OFFLINE_ABANDONED_MESSAGE,
-        message: NODE_PANEL_SYNC_OFFLINE_ABANDONED_MESSAGE
-      };
-    }
-
-    try {
-      await this.prisma.node.update({
-        where: { id: current.id },
-        data: {
-          isActive: false,
-          recommended: false,
-          panelStatus: "offline",
-          panelError: null
-        }
-      });
-    } catch (error) {
-      throwLocalSaveAsServiceUnavailable(error, "节点删除保存失败，请刷新节点列表后重试。");
-    }
-
-    // Online panels: local revoke first, then queue remote cleanup.
+    // No panel to clean up remotely anymore: revoke live client leases, then
+    // hard delete — per-node rows (bindings, agents, jobs, batches) cascade.
     await this.tryRunAfterLocalNodeSave("revoke local leases after node delete", () =>
       this.runtimeSessionService.revokeNodeLeases(nodeId, "node_deleted")
     );
@@ -1486,39 +595,35 @@ export class AdminNodeService {
       this.runtimeSessionService.queueLeaseRevocationJobForNode(nodeId, "node_deleted")
     );
 
-    let panelCleanupFinalizedLocally = false;
-    await this.tryRunAfterLocalNodeSave("queue panel binding deletion after node delete", async () => {
-      const result = await this.runtimeSessionService.removePanelBindingsForNode(nodeId);
-      if (result.failed.length > 0) {
-        await this.runtimeSessionService.finalizeOfflineNodePanelCleanup(nodeId);
-        panelCleanupFinalizedLocally = true;
-      }
-    });
+    try {
+      await this.prisma.node.delete({ where: { id: current.id } });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "节点删除失败，请刷新节点列表后重试。");
+    }
 
     this.publishAdminNodeAccessUpdatedBestEffort(nodeId);
     try {
       this.clientEventsPublisher.publishNodeAccessUpdatedToUsers(userIds, nodeId);
     } catch (error) {
       this.logger?.warn(
-        `Local node delete saved, but node access publish failed: ${error instanceof Error ? error.message : String(error)}`
+        `Node delete completed, but node access publish failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`
       );
     }
-
-    if (panelCleanupFinalizedLocally) {
-      return {
-        ok: true,
-        panelSyncStatus: "synced" as const,
-        panelSyncMessage: NODE_PANEL_SYNC_OFFLINE_ABANDONED_MESSAGE,
-        message: NODE_PANEL_SYNC_OFFLINE_ABANDONED_MESSAGE
-      };
+    for (const userId of userIds) {
+      try {
+        await this.clientEventsPublisher.publishSubscriptionUpdated({ userId });
+      } catch (error) {
+        this.logger?.warn(
+          `Node delete completed, but subscription refresh publish failed for ${userId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      }
     }
 
-    return {
-      ok: true,
-      panelSyncStatus: "pending" as const,
-      panelSyncMessage: NODE_PANEL_SYNC_PENDING_MESSAGE,
-      message: NODE_PANEL_SYNC_PENDING_MESSAGE
-    };
+    return { ok: true as const, deleted: true as const };
   }
 
   private async publishNodeAccessUpdatedForNode(nodeId: string) {
@@ -1653,85 +758,6 @@ export class AdminNodeService {
     }
   }
 
-  private async resolveNodeRuntimeSource(input: ImportNodeInputDto, panelEnabled: boolean) {
-    if (input.subscriptionUrl?.trim()) {
-      return this.readImportRuntimeWithBudget(
-        fetchSubscriptionNode(input.subscriptionUrl.trim()),
-        "subscription runtime read"
-      );
-    }
-
-    if (panelEnabled && input.panelBaseUrl && input.panelUsername && input.panelPassword) {
-      const budgetMs = readImportNodeRuntimeBudgetMs();
-      return this.readImportRuntimeWithBudget(
-        this.xuiService.getInboundRuntime({
-          id: createId("panel_runtime"),
-          panelBaseUrl: input.panelBaseUrl,
-          panelApiBasePath: input.panelApiBasePath ?? "/",
-          panelUsername: input.panelUsername,
-          panelPassword: input.panelPassword,
-          panelInboundId: input.panelInboundId ?? null,
-          panelRequestTimeoutMs: budgetMs,
-          panelAbortSignal: AbortSignal.timeout(budgetMs)
-        }),
-        "3x-ui panel runtime read"
-      );
-    }
-
-    throw new BadRequestException("请填写订阅地址，或完整配置 3x-ui 面板账号后读取入站并添加面板");
-  }
-
-  private async readImportRuntimeWithBudget<T>(runtimeTask: Promise<T>, label: string): Promise<T> {
-    const guardedTask = runtimeTask.then(
-      (result) => {
-        return result;
-      },
-      (error) => {
-        if (error instanceof HttpException) {
-          throw error;
-        }
-        throw new ServiceUnavailableException(
-          `${label} failed before local node import was saved: ${readAdminNodeErrorMessage(error)}`
-        );
-      }
-    );
-    void guardedTask.catch((error) => {
-      this.logger?.warn(
-        `Local node import failed before save because ${label} failed: ${readAdminNodeErrorMessage(error)}`
-      );
-    });
-
-    // Budget covers the WAITING window only: a slow or hung remote call is
-    // abandoned to its owner instead of holding a self-update drain work item.
-    return await workLifecycle.awaitWithBudget(guardedTask, readImportNodeRuntimeBudgetMs(), () =>
-      new BadRequestException(
-        `${label} timed out before local node import was saved; import failed and no node was saved`
-      )
-    );
-  }
-
-  private async resolveNodePanelEnabled(input: {
-    inputValue?: boolean;
-    currentValue: boolean | null;
-    panelBaseUrl: string | null;
-    panelUsername: string | null;
-    panelPassword: string | null;
-    applyXuiDefault: boolean;
-  }) {
-    if (input.inputValue !== undefined) {
-      return input.inputValue;
-    }
-    if (!input.applyXuiDefault) {
-      return input.currentValue ?? false;
-    }
-
-    const hasPanelConfig = Boolean(input.panelBaseUrl && input.panelUsername && input.panelPassword);
-    if (!hasPanelConfig) {
-      return input.currentValue ?? false;
-    }
-
-    return true;
-  }
 }
 
 function readAdminNodeErrorMessage(error: unknown) {
@@ -1744,15 +770,6 @@ async function runAdminNodeLocalOperation<T>(operation: () => Promise<T>, messag
   } catch (error) {
     throwLocalSaveAsServiceUnavailable(error, message);
   }
-}
-
-function withNodePanelSyncPending(record: AdminNodeRecordDto): AdminNodeRecordDto {
-  return {
-    ...record,
-    panelSyncStatus: "pending",
-    panelSyncMessage: NODE_PANEL_SYNC_PENDING_MESSAGE,
-    message: NODE_PANEL_SYNC_PENDING_MESSAGE
-  };
 }
 
 function readPositiveIntegerEnv(name: string, fallback: number) {
@@ -1771,17 +788,8 @@ function readBulkNodeProbeRequestBudgetMs() {
   );
 }
 
-function readImportNodeRuntimeBudgetMs() {
-  return readPositiveIntegerEnv("CHORDV_IMPORT_NODE_RUNTIME_READ_TIMEOUT_MS", DEFAULT_IMPORT_NODE_RUNTIME_READ_BUDGET_MS);
-}
 
-function readRefreshNodeRuntimeBudgetMs() {
-  return readPositiveIntegerEnv("CHORDV_REFRESH_NODE_RUNTIME_READ_TIMEOUT_MS", DEFAULT_REFRESH_NODE_RUNTIME_READ_BUDGET_MS);
-}
 
-function readListNodePanelInboundsBudgetMs() {
-  return readPositiveIntegerEnv("CHORDV_LIST_NODE_PANEL_INBOUNDS_TIMEOUT_MS", DEFAULT_LIST_NODE_PANEL_INBOUNDS_BUDGET_MS);
-}
 
 function readBulkNodeProbeConcurrency() {
   return readPositiveIntegerEnv("CHORDV_BULK_NODE_PROBE_CONCURRENCY", DEFAULT_BULK_NODE_PROBE_CONCURRENCY);
@@ -1791,6 +799,3 @@ function readNodeProbeBudgetMs() {
   return readPositiveIntegerEnv("CHORDV_NODE_PROBE_TIMEOUT_MS", readBulkNodeProbeBudgetMs());
 }
 
-function readPanelStatusFailureThreshold() {
-  return readPositiveIntegerEnv("CHORDV_PANEL_STATUS_FAILURE_THRESHOLD", DEFAULT_PANEL_STATUS_FAILURE_THRESHOLD);
-}

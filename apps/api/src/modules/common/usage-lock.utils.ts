@@ -6,6 +6,7 @@ import { Client as PgClient } from "pg";
 const SUBSCRIPTION_USAGE_LOCK_KEY_1 = 420_704;
 const SUBSCRIPTION_OWNER_LOCK_KEY_1 = 420_705;
 const NODE_USAGE_LOCK_KEY_1 = 420_706;
+const SUBSCRIPTION_PROVISIONING_LOCK_KEY_1 = 420_707;
 const DEFAULT_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS = 5_000;
 const DEFAULT_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS = 100;
 const localSubscriptionLocks = new Map<string, Promise<void>>();
@@ -43,6 +44,50 @@ export async function runWithSubscriptionUsageLock<T>(subscriptionId: string, ta
       await lockClient
         .query("select pg_advisory_unlock($1, $2)", [
           SUBSCRIPTION_USAGE_LOCK_KEY_1,
+          deriveSubscriptionAdvisoryLockKey(subscriptionId)
+        ])
+        .catch(() => undefined);
+    }
+    await lockClient.end().catch(() => undefined);
+  }
+}
+
+export async function runWithSubscriptionProvisioningLock<T>(subscriptionId: string, task: () => Promise<T>) {
+  // Separate from the usage lock ON PURPOSE: a traffic reset must exclude
+  // provisioning for its whole span but still let metering batches through —
+  // settlement itself requires the final batch to be accounted, which needs
+  // the usage lock. Lock order is always provisioning → usage.
+  const lockKey = `provisioning:${subscriptionId}`;
+  if (heldSubscriptionLocks.getStore()?.has(lockKey)) {
+    return task();
+  }
+
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    return runWithLocalSubscriptionLock(lockKey, task);
+  }
+
+  const lockClient = new PgClient({
+    connectionString,
+    connectionTimeoutMillis: readPositiveIntegerEnv(
+      "CHORDV_SUBSCRIPTION_LOCK_CONNECT_TIMEOUT_MS",
+      readSubscriptionLockWaitTimeoutMs()
+    )
+  });
+  let locked = false;
+  try {
+    await lockClient.connect();
+    await acquirePgSubscriptionLock(lockClient, "subscription provisioning", [
+      SUBSCRIPTION_PROVISIONING_LOCK_KEY_1,
+      deriveSubscriptionAdvisoryLockKey(subscriptionId)
+    ]);
+    locked = true;
+    return await runWithinHeldSubscriptionLock(lockKey, task);
+  } finally {
+    if (locked) {
+      await lockClient
+        .query("select pg_advisory_unlock($1, $2)", [
+          SUBSCRIPTION_PROVISIONING_LOCK_KEY_1,
           deriveSubscriptionAdvisoryLockKey(subscriptionId)
         ])
         .catch(() => undefined);

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { MeteringIncidentService } from "../src/modules/common/metering-incident.service";
-import { UsageSyncService } from "../src/modules/usage/usage-sync.service";
 import {
   METERING_REASON_NODE_UNAVAILABLE,
   METERING_REASON_SAMPLE_MISSING
@@ -37,9 +36,8 @@ async function testMeteringStateOnlyUsesCurrentlyConnectedOnlineNode() {
       node: {
         findFirst: async (payload: Record<string, any>) => {
           assert.equal(payload.where.id, "node_online_connected");
-          assert.equal(payload.where.panelStatus, "online");
           assert.equal(payload.where.isActive, true);
-          assert.equal(payload.where.panelEnabled, true);
+          assert.equal(payload.where.controlStatus, "online");
           return { id: "node_online_connected" };
         }
       },
@@ -137,64 +135,42 @@ async function testMeteringStateOnlyUsesCurrentlyConnectedOnlineNode() {
   assert.equal(okNoLease.meteringMessage, null);
 }
 
-async function testUsageSyncResolvesResidualIncidentsWithoutActiveLease() {
-  const updates: Array<Record<string, any>> = [];
-  const finds: Array<Record<string, any>> = [];
-  const service = createInstance<UsageSyncService>(UsageSyncService.prototype, {
-    logger: { warn: () => undefined, debug: () => undefined },
+async function testNodeUnavailableIncidentShowsRetryBanner() {
+  const service = createInstance<MeteringIncidentService>(MeteringIncidentService.prototype, {
     prisma: {
-      panelClientBinding: {
-        findMany: async () => []
-      },
       nodeSessionLease: {
-        findMany: async (payload: Record<string, any>) => {
-          finds.push(payload);
-          // only one residual open incident keeps an active lease
-          return [{ subscriptionId: "sub_live", nodeId: "node_live" }];
-        }
+        findMany: async () => [
+          {
+            nodeId: "node_degraded",
+            updatedAt: new Date(),
+            lastHeartbeatAt: new Date(),
+            createdAt: new Date()
+          }
+        ]
+      },
+      node: {
+        findFirst: async () => ({ id: "node_degraded" })
       },
       meteringIncident: {
         findMany: async () => [
-          { id: "inc_live", subscriptionId: "sub_live", nodeId: "node_live" },
-          { id: "inc_stale", subscriptionId: "sub_stale", nodeId: "node_live" },
-          { id: "inc_other", subscriptionId: "sub_live", nodeId: "node_other" }
-        ],
-        updateMany: async (payload: Record<string, any>) => {
-          updates.push(payload);
-          return { count: Array.isArray(payload.where?.id?.in) ? payload.where.id.in.length : 1 };
-        }
-      },
-      node: {
-        update: async () => undefined
+          {
+            reason: METERING_REASON_NODE_UNAVAILABLE,
+            createdAt: new Date(Date.now() - 3600_000),
+            openedAt: new Date(Date.now() - 3600_000)
+          }
+        ]
       }
-    },
-    xuiService: {
-      listNodeUsage: async () => []
     }
   });
 
-  await service["syncXuiUsage"]();
-
-  assert.equal(updates.length, 2, "must resolve unavailable-node residuals and no-lease residuals");
-  assert.equal(updates[0].where.status, "open");
-  assert.deepEqual(updates[0].where.node.OR, [
-    { isActive: false },
-    { panelEnabled: false },
-    { panelStatus: "offline" },
-    { panelStatus: "degraded" }
-  ]);
-  assert.equal(updates[0].data.status, "resolved");
-  assert.match(String(updates[0].data.detail ?? ""), /面板不可用/);
-
-  assert.deepEqual(updates[1].where.id.in.sort(), ["inc_other", "inc_stale"]);
-  assert.equal(updates[1].data.status, "resolved");
-  assert.match(String(updates[1].data.detail ?? ""), /无活跃连接/);
-  assert.equal(finds.length, 1);
+  const degraded = await service.getSubscriptionMeteringState("sub_1", "user_1");
+  assert.equal(degraded.meteringStatus, "degraded");
+  assert.match(String(degraded.meteringMessage ?? ""), /计量同步延迟/);
 }
 
 async function main() {
   await testMeteringStateOnlyUsesCurrentlyConnectedOnlineNode();
-  await testUsageSyncResolvesResidualIncidentsWithoutActiveLease();
+  await testNodeUnavailableIncidentShowsRetryBanner();
   console.log("metering offline banner regression checks passed");
 }
 

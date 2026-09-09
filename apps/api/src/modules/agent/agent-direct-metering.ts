@@ -2,7 +2,8 @@ import { BadRequestException, ConflictException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { buildSnapshotKey } from "../common/runtime-session.utils";
-import { createOrRefreshLeaseRevocationJob } from "../common/panel-sync-job.utils";
+import { createOrRefreshLeaseRevocationJob } from "../common/lease-revocation-job.utils";
+import { resolveExhaustedCommands } from "../common/node-command-job.utils";
 import { trafficBytesToGbNumber, trafficGbNumberToBytes } from "../common/traffic-bytes.utils";
 import { AgentUsageBatchDto } from "./agent.dto";
 
@@ -288,17 +289,29 @@ export async function disableDirectBindingsForSubscriptions(
     if (!targetAgentId) continue;
     for (const binding of nodeBindings) {
       const state = disabledSubscriptions.get(binding.subscriptionId)!.state;
-      await tx.nodeCommandJob.upsert({
-        where: { dedupeKey: `auto-disable:${binding.id}:${nodeRevision.agentConfigRevision.toString()}` },
-        update: {},
-        create: {
+      const dedupeKey = `auto-disable:${binding.id}:${nodeRevision.agentConfigRevision.toString()}`;
+      // An existing key is an idempotent replay (empty update): nothing new
+      // is ordered, so it must not resolve exhausted failures either.
+      const replayed = await tx.nodeCommandJob.findUnique({ where: { dedupeKey } });
+      if (replayed) {
+        continue;
+      }
+      // Re-managing the binding resolves any exhausted (cancelled) command
+      // for it: the new DISABLE_USER tells the story from now on.
+      await resolveExhaustedCommands(tx, { bindingId: binding.id, nodeId: bindingNodeId, commandType: "DISABLE_USER" });
+      await tx.nodeCommandJob.create({
+        data: {
           id: randomUUID(),
-          dedupeKey: `auto-disable:${binding.id}:${nodeRevision.agentConfigRevision.toString()}`,
+          dedupeKey,
           nodeId: bindingNodeId,
           agentId: targetAgentId,
           commandType: "DISABLE_USER",
           targetRevision: nodeRevision.agentConfigRevision,
-          payload: { bindingId: binding.id, email: binding.panelClientEmail, uuid: binding.panelClientId, reason: `subscription_${state}` }
+          payload: { bindingId: binding.id, email: binding.panelClientEmail, uuid: binding.panelClientId, reason: `subscription_${state}` },
+          bindingId: binding.id,
+          subscriptionId: binding.subscriptionId,
+          userId: binding.userId,
+          teamId: binding.teamId
         }
       });
     }

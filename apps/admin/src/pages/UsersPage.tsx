@@ -3,6 +3,8 @@ import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { Accordion, ActionIcon, Badge, Button, Divider, Drawer, Group, Paper, Select, Stack, Table, Tabs, Text, TextInput } from "@mantine/core";
 import type {
   AdminLeaseRevocationJobDto,
+  AdminNodeCommandQueueDto,
+  AdminNodeCommandSummaryDto,
   AdminSubscriptionRecordDto,
   AdminTeamRecordDto,
   AdminTeamUsageRecordDto,
@@ -26,10 +28,11 @@ import {
 import { DataTable } from "../features/shared/DataTable";
 import { SectionCard } from "../features/shared/SectionCard";
 import { StatusBadge } from "../features/shared/StatusBadge";
-import type { PanelSyncQueueFilter } from "../utils/admin-queue-filters";
+import type { LeaseRevocationQueueFilter } from "../utils/admin-queue-filters";
 import type { TeamFormState, TeamMemberFormState } from "../utils/admin-forms";
 import { summarizeAdminDiagnosticMessage, summarizeTeamUsage } from "../utils/admin-filters";
 import { formatDateTime, formatTrafficGb } from "../utils/admin-format";
+import { findNodeCommandSummary } from "../utils/node-command-summary";
 import { getRenewActionText, subscriptionStateColor, translateRole, translateSubscriptionState, translateUserStatus } from "../utils/admin-translate";
 
 type UsersPageProps = {
@@ -43,6 +46,7 @@ type UsersPageProps = {
   allSubscriptions: AdminSubscriptionRecordDto[];
   allUsers: AdminUserRecordDto[];
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
+  nodeCommandQueue: AdminNodeCommandQueueDto;
   leaseRevocationRetryBusyKey: string | null;
   teamUsageByTeamId: Record<string, AdminTeamUsageRecordDto[]>;
   teamUsageLoadingByTeamId: Record<string, boolean>;
@@ -84,7 +88,7 @@ type UsersPageProps = {
   onToggleTeamUserStatus: (userId: string, nextStatus: "active" | "disabled", displayName: string) => void;
   onDisconnectUser: (userId: string, displayName: string, source?: "personal" | "team-member") => void;
   onRetryLeaseRevocationJob: (jobId: string) => void;
-  onOpenPanelSyncQueue: (filter?: PanelSyncQueueFilter) => void;
+  onOpenLeaseRevocationQueue: (filter?: LeaseRevocationQueueFilter) => void;
 };
 
 type DetailTarget =
@@ -186,9 +190,14 @@ export function UsersPage(props: UsersPageProps) {
                         <StatusBadge color={item.status === "active" ? "green" : "gray"} label={`账号${translateUserStatus(item.status)}`} />
                         <PanelSyncInlineStatus
                           item={fullSubscription ?? item}
-                          onOpenPanelSyncQueue={() =>
-                            props.onOpenPanelSyncQueue({
-                              subscriptionId: subscriptionId ?? undefined,
+                          commandSummary={findNodeCommandSummary(props.nodeCommandQueue.summaries, "users", item.id)}
+                          onOpenLeaseRevocationQueue={() =>
+                            props.onOpenLeaseRevocationQueue({
+                              // USER-only scope, matching the badge above it: the
+                              // badge counts the user's outstanding commands
+                              // across all their subscriptions, so a filter
+                              // narrowed to the current subscription would show
+                              // a failure the drawer then hides.
                               userId: item.id,
                               title: item.displayName
                             })
@@ -244,10 +253,18 @@ export function UsersPage(props: UsersPageProps) {
                         <StatusBadge color={item.status === "active" ? "green" : "gray"} label={item.status === "active" ? "启用" : "停用"} />
                         <PanelSyncInlineStatus
                           item={item}
-                          onOpenPanelSyncQueue={() =>
-                            props.onOpenPanelSyncQueue({
-                              subscriptionId: item.currentSubscription?.id,
+                          commandSummary={findNodeCommandSummary(props.nodeCommandQueue.summaries, "teams", item.id)}
+                          onOpenLeaseRevocationQueue={() =>
+                            props.onOpenLeaseRevocationQueue({
+                              // Commands: TEAM scope (they carry teamId).
+                              // Lease revocations have no team column, so the
+                              // drawer narrows them by the team's subscription
+                              // ids instead — a bare teamId would show every
+                              // team's jobs under this team's title.
                               teamId: item.id,
+                              teamSubscriptionIds: props.allSubscriptions
+                                .filter((subscription) => subscription.teamId === item.id)
+                                .map((subscription) => subscription.id),
                               title: item.name
                             })
                           }
@@ -335,11 +352,15 @@ export function UsersPage(props: UsersPageProps) {
                                     />
                                     <PanelSyncInlineStatus
                                       item={userRecord}
-                                      onOpenPanelSyncQueue={() =>
-                                        props.onOpenPanelSyncQueue({
-                                          subscriptionId: item.currentSubscription?.id,
+                                      commandSummary={findNodeCommandSummary(props.nodeCommandQueue.summaries, "users", member.userId)}
+                                      onOpenLeaseRevocationQueue={() =>
+                                        props.onOpenLeaseRevocationQueue({
+                                          // Member-level badge counts that USER's
+                                          // commands across ALL teams — the
+                                          // server intersects filters, so
+                                          // teamId would hide commands from a
+                                          // previous personal/team subscription.
                                           userId: member.userId,
-                                          teamId: item.id,
                                           title: `${member.displayName} · ${item.name}`
                                         })
                                       }
@@ -390,6 +411,7 @@ export function UsersPage(props: UsersPageProps) {
         subscriptionById={subscriptionById}
         personalSubscriptionByUserId={personalSubscriptionByUserId}
         leaseRevocationJobs={props.leaseRevocationJobs}
+        nodeCommandQueue={props.nodeCommandQueue}
         leaseRevocationRetryBusyKey={props.leaseRevocationRetryBusyKey}
         teamUsageByTeamId={props.teamUsageByTeamId}
         teamUsageLoadingByTeamId={props.teamUsageLoadingByTeamId}
@@ -427,7 +449,7 @@ export function UsersPage(props: UsersPageProps) {
         onToggleTeamUserStatus={props.onToggleTeamUserStatus}
         onDisconnectUser={props.onDisconnectUser}
         onRetryLeaseRevocationJob={props.onRetryLeaseRevocationJob}
-        onOpenPanelSyncQueue={props.onOpenPanelSyncQueue}
+        onOpenLeaseRevocationQueue={props.onOpenLeaseRevocationQueue}
       />
     </Stack>
   );
@@ -471,6 +493,7 @@ type CustomerDetailDrawerProps = {
   subscriptionById: Map<string, AdminSubscriptionRecordDto>;
   personalSubscriptionByUserId: Map<string, AdminSubscriptionRecordDto>;
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
+  nodeCommandQueue: AdminNodeCommandQueueDto;
   leaseRevocationRetryBusyKey: string | null;
   teamUsageByTeamId: Record<string, AdminTeamUsageRecordDto[]>;
   teamUsageLoadingByTeamId: Record<string, boolean>;
@@ -513,7 +536,7 @@ type CustomerDetailDrawerProps = {
   onToggleTeamUserStatus: (userId: string, nextStatus: "active" | "disabled", displayName: string) => void;
   onDisconnectUser: (userId: string, displayName: string, source?: "personal" | "team-member") => void;
   onRetryLeaseRevocationJob: (jobId: string) => void;
-  onOpenPanelSyncQueue: (filter?: PanelSyncQueueFilter) => void;
+  onOpenLeaseRevocationQueue: (filter?: LeaseRevocationQueueFilter) => void;
 };
 
 function CustomerDetailDrawer(props: CustomerDetailDrawerProps) {
@@ -588,10 +611,10 @@ function CustomerDetailContent(props: CustomerDetailContentProps) {
           <Stack gap="sm">
             <PanelSyncInlineStatus
               item={fullSubscription ?? user}
-              onOpenPanelSyncQueue={() =>
+              commandSummary={findNodeCommandSummary(props.nodeCommandQueue.summaries, "users", user.id)}
+              onOpenLeaseRevocationQueue={() =>
                 openOutsideDetail(() =>
-                  props.onOpenPanelSyncQueue({
-                    subscriptionId: subscriptionId ?? undefined,
+                  props.onOpenLeaseRevocationQueue({
                     userId: user.id,
                     title: user.displayName
                   })
@@ -603,7 +626,11 @@ function CustomerDetailContent(props: CustomerDetailContentProps) {
               retryBusyKey={props.leaseRevocationRetryBusyKey}
               onRetryJob={props.onRetryLeaseRevocationJob}
             />
-            {!fullSubscription?.panelSyncSummary?.total && user.panelSyncStatus !== "pending" ? <Text size="sm" c="dimmed">暂无待处理任务</Text> : null}
+            {!fullSubscription?.panelSyncSummary?.total &&
+            user.panelSyncStatus !== "pending" &&
+            !findNodeCommandSummary(props.nodeCommandQueue.summaries, "users", user.id) ? (
+              <Text size="sm" c="dimmed">暂无待处理任务</Text>
+            ) : null}
           </Stack>
         </DrawerSection>
 
@@ -693,11 +720,14 @@ function CustomerDetailContent(props: CustomerDetailContentProps) {
           <Stack gap="sm">
             <PanelSyncInlineStatus
               item={team}
-              onOpenPanelSyncQueue={() =>
+              commandSummary={findNodeCommandSummary(props.nodeCommandQueue.summaries, "teams", team.id)}
+              onOpenLeaseRevocationQueue={() =>
                 openOutsideDetail(() =>
-                  props.onOpenPanelSyncQueue({
-                    subscriptionId: team.currentSubscription?.id,
+                  props.onOpenLeaseRevocationQueue({
                     teamId: team.id,
+                    teamSubscriptionIds: props.allSubscriptions
+                      .filter((subscription) => subscription.teamId === team.id)
+                      .map((subscription) => subscription.id),
                     title: team.name
                   })
                 )
@@ -847,12 +877,11 @@ function CustomerDetailContent(props: CustomerDetailContentProps) {
       <DrawerSection title="状态与同步">
         <PanelSyncInlineStatus
           item={userRecord}
-          onOpenPanelSyncQueue={() =>
+          commandSummary={findNodeCommandSummary(props.nodeCommandQueue.summaries, "users", member.userId)}
+          onOpenLeaseRevocationQueue={() =>
             openOutsideDetail(() =>
-              props.onOpenPanelSyncQueue({
-                subscriptionId: team.currentSubscription?.id,
+              props.onOpenLeaseRevocationQueue({
                 userId: member.userId,
-                teamId: team.id,
                 title: `${member.displayName} · ${team.name}`
               })
             )
@@ -1035,15 +1064,23 @@ function PanelSyncInlineStatus(props: {
     panelSyncMessage?: string | null;
     panelSyncSummary?: { pending: number; running: number; failed: number; total: number; lastError: string | null } | null;
   } | null;
-  onOpenPanelSyncQueue: () => void;
+  // Outstanding agent commands for this target. Panel-era records no longer
+  // carry a summary after a list refresh, so the inline indicator must also
+  // read the direct command aggregates or it disappears while provisioning is
+  // still pending.
+  commandSummary?: AdminNodeCommandSummaryDto | null;
+  onOpenLeaseRevocationQueue: () => void;
 }) {
   const summary = props.item?.panelSyncSummary;
-  if (props.item?.panelSyncStatus !== "pending" && (summary?.total ?? 0) === 0) {
+  const commandSummary = props.commandSummary ?? null;
+  if (props.item?.panelSyncStatus !== "pending" && (summary?.total ?? 0) === 0 && (commandSummary?.total ?? 0) === 0) {
     return null;
   }
-  const label = summary ? buildPanelSyncPendingLabel(summary) : "后台同步待处理";
+  const label = commandSummary
+    ? buildNodeCommandPendingLabel(commandSummary)
+    : summary ? buildPanelSyncPendingLabel(summary) : "后台同步待处理";
   const detail = [
-    summarizeAdminDiagnosticMessage(summary?.lastError, "面板同步任务失败，请稍后重试或查看服务器日志。"),
+    summarizeAdminDiagnosticMessage(commandSummary?.lastError ?? summary?.lastError, "后台同步任务失败，请稍后重试或查看服务器日志。"),
     summarizeAdminDiagnosticMessage(props.item?.panelSyncMessage, "后台同步状态待确认，请打开同步任务查看。")
   ]
     .filter(Boolean)
@@ -1061,7 +1098,7 @@ function PanelSyncInlineStatus(props: {
           leftSection={<IconListDetails size={12} />}
           onClick={(event) => {
             event.stopPropagation();
-            props.onOpenPanelSyncQueue();
+            props.onOpenLeaseRevocationQueue();
           }}
           title="查看后台同步任务"
         >
@@ -1271,4 +1308,13 @@ function buildPanelSyncPendingLabel(summary: { pending: number; running: number;
     summary.failed > 0 ? `待重试 ${summary.failed}` : null
   ].filter(Boolean);
   return parts.length > 0 ? `面板同步${parts.join(" / ")}` : "后台同步待处理";
+}
+
+function buildNodeCommandPendingLabel(summary: { pending: number; running: number; failed: number; total: number }) {
+  const parts = [
+    summary.pending > 0 ? `待执行 ${summary.pending}` : null,
+    summary.running > 0 ? `执行中 ${summary.running}` : null,
+    summary.failed > 0 ? `待重试 ${summary.failed}` : null
+  ].filter(Boolean);
+  return parts.length > 0 ? `节点命令${parts.join(" / ")}` : "后台同步待处理";
 }

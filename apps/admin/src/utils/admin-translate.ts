@@ -3,7 +3,8 @@ import type {
   AdminSubscriptionRecordDto,
   AnnouncementDisplayMode,
   AnnouncementLevel,
-  NodeControlMode,
+  NodeAgentCommandType,
+  NodeAgentJobStatus,
   SubscriptionState,
   UserRole,
   UserStatus
@@ -63,34 +64,6 @@ export function nodeProbeColor(status: AdminNodeRecordDto["probeStatus"]) {
   return "gray";
 }
 
-export function translatePanelStatus(status: AdminNodeRecordDto["panelStatus"], panelEnabled = true) {
-  if (status === "online") return "在线";
-  if (status === "degraded") return "异常";
-  if (status === "offline" && panelEnabled) return "面板失联";
-  return "未配置";
-}
-
-export function nodePanelColor(status: AdminNodeRecordDto["panelStatus"], panelEnabled = true) {
-  if (status === "online") return "green";
-  if (status === "degraded") return "yellow";
-  if (status === "offline" && panelEnabled) return "orange";
-  return "gray";
-}
-
-export function translateNodeControlMode(mode: NodeControlMode) {
-  if (mode === "shadow_direct") return "Agent 影子计量";
-  if (mode === "direct_primary") return "Agent 主控";
-  if (mode === "rollback_pending") return "回退处理中";
-  return "3X-UI 主控";
-}
-
-export function nodeControlModeColor(mode: NodeControlMode) {
-  if (mode === "shadow_direct") return "grape";
-  if (mode === "direct_primary") return "green";
-  if (mode === "rollback_pending") return "orange";
-  return "blue";
-}
-
 export function translateAgentStatus(status?: string | null) {
   if (status === "online" || status === "active") return "在线";
   if (status === "degraded") return "异常";
@@ -135,4 +108,32 @@ export function translateDisplayMode(mode: AnnouncementDisplayMode, countdownSec
   if (mode === "modal_confirm") return "确认弹窗";
   if (mode === "modal_countdown") return `倒计时确认 · ${countdownSeconds}s`;
   return "普通公告";
+}
+
+export function translateNodeCommandType(commandType: NodeAgentCommandType) {
+  if (commandType === "ENSURE_USER") return "下发用户";
+  if (commandType === "ENABLE_USER") return "启用用户";
+  if (commandType === "DISABLE_USER") return "停用用户";
+  if (commandType === "REMOVE_USER") return "删除用户";
+  if (commandType === "RECONCILE_USERS") return "对账用户";
+  if (commandType === "REFRESH_QUOTA") return "刷新配额";
+  return "部署入站";
+}
+
+export function translateNodeCommandStatus(status: NodeAgentJobStatus) {
+  if (status === "pending") return "待执行";
+  if (status === "running") return "执行中";
+  if (status === "failed") return "失败";
+  // Retry-exhausted: the operation never completed, so it is an unresolved
+  // failure (red), not a neutral "cancelled".
+  if (status === "cancelled") return "重试耗尽";
+  return "已完成";
+}
+
+export function nodeCommandStatusColor(status: NodeAgentJobStatus) {
+  if (status === "pending") return "yellow";
+  if (status === "running") return "blue";
+  if (status === "failed") return "red";
+  if (status === "cancelled") return "red";
+  return "green";
 }

@@ -5,15 +5,11 @@ import { IconBell, IconListDetails, IconMapPin, IconMessageCircle, IconUser, Ico
 import { CountryFlag } from "../components/CountryFlag";
 import { StatusBadge } from "../features/shared/StatusBadge";
 import { formatDateTime } from "../utils/admin-format";
+import { compactNodeStatus } from "../utils/node-status";
+import { sumNodeCommandSummaries } from "../utils/node-command-summary";
 import {
-  agentStatusColor,
-  nodeControlModeColor,
-  nodePanelColor,
-  nodeProbeColor,
   subscriptionStateColor,
   translateAgentStatus,
-  translateNodeControlMode,
-  translatePanelStatus,
   translateProbeStatus,
   translateSubscriptionState
 } from "../utils/admin-translate";
@@ -27,21 +23,15 @@ type OverviewPageProps = {
 };
 
 export function OverviewPage(props: OverviewPageProps) {
-  const backgroundSyncQueueCount = props.snapshot.panelSyncJobs.length + props.snapshot.leaseRevocationJobs.length;
+  // Both queues are "background sync": lease revocations and the direct
+  // provisioning commands that replaced panel synchronization.
+  const backgroundSyncQueueCount =
+    props.snapshot.leaseRevocationJobs.length + sumNodeCommandSummaries(props.snapshot.nodeCommandQueue.summaries, "nodes");
   const abnormalNodeCount = props.snapshot.nodes.filter((item) => {
     if (item.isActive === false) {
       return false;
     }
-    const controlMode = item.controlMode ?? "xui_primary";
-    const controlAbnormal = controlMode === "xui_primary"
-      ? item.panelStatus === "degraded" || (item.panelEnabled && item.panelStatus === "offline")
-      : !["online", "active"].includes(item.controlStatus ?? item.agent?.status ?? "unknown");
-    return (
-      controlAbnormal ||
-      (item.panelSyncPendingCount ?? 0) > 0 ||
-      (item.panelSyncRunningCount ?? 0) > 0 ||
-      (item.panelSyncFailedCount ?? 0) > 0
-    );
+    return item.probeStatus !== "healthy" || !["online", "active"].includes(item.controlStatus ?? item.agent?.status ?? "unknown");
   }).length;
 
   return (
@@ -208,8 +198,7 @@ function CompactNodeList({ items }: { items: AdminNodeRecordDto[] }) {
                   </Text>
                 </Group>
                 <Text size="xs" c="dimmed" lineClamp={1}>
-                  {buildNodeControlText(item)} · 探测：{translateProbeStatus(item.probeStatus)}
-                  {buildNodePanelSyncText(item)}
+                  {`Agent ${translateAgentStatus(item.controlStatus ?? item.agent?.status)}`} · 探测：{translateProbeStatus(item.probeStatus)}
                 </Text>
               </div>
               <StatusBadge color={status.color} label={status.label} />
@@ -219,54 +208,4 @@ function CompactNodeList({ items }: { items: AdminNodeRecordDto[] }) {
       })}
     </Stack>
   );
-}
-
-function compactNodeStatus(item: AdminNodeRecordDto) {
-  if (item.isActive === false) {
-    return { color: "gray", label: "已禁用" };
-  }
-
-  if (
-    (item.panelSyncPendingCount ?? 0) > 0 ||
-    (item.panelSyncRunningCount ?? 0) > 0 ||
-    (item.panelSyncFailedCount ?? 0) > 0
-  ) {
-    return { color: "yellow", label: "待同步" };
-  }
-
-  const controlMode = item.controlMode ?? "xui_primary";
-  if (controlMode !== "xui_primary") {
-    const status = item.controlStatus ?? item.agent?.status;
-    return {
-      color: status === "online" || status === "active" ? nodeControlModeColor(controlMode) : agentStatusColor(status),
-      label: status === "online" || status === "active" ? translateNodeControlMode(controlMode) : `Agent ${translateAgentStatus(status)}`
-    };
-  }
-
-  if (item.panelStatus === "degraded") {
-    return { color: nodePanelColor(item.panelStatus, item.panelEnabled), label: "面板异常" };
-  }
-
-  if (item.panelEnabled && item.panelStatus === "offline") {
-    return { color: nodePanelColor(item.panelStatus, item.panelEnabled), label: "面板失联" };
-  }
-
-  return { color: nodeProbeColor(item.probeStatus), label: translateProbeStatus(item.probeStatus) };
-}
-
-function buildNodeControlText(item: AdminNodeRecordDto) {
-  const controlMode = item.controlMode ?? "xui_primary";
-  if (controlMode === "xui_primary") {
-    return `3X-UI：${translatePanelStatus(item.panelStatus, item.panelEnabled)}`;
-  }
-  return `${translateNodeControlMode(controlMode)}：${translateAgentStatus(item.controlStatus ?? item.agent?.status)}`;
-}
-
-function buildNodePanelSyncText(item: AdminNodeRecordDto) {
-  const parts = [
-    (item.panelSyncPendingCount ?? 0) > 0 ? `待同步 ${item.panelSyncPendingCount}` : null,
-    (item.panelSyncRunningCount ?? 0) > 0 ? `执行中 ${item.panelSyncRunningCount}` : null,
-    (item.panelSyncFailedCount ?? 0) > 0 ? `待重试 ${item.panelSyncFailedCount}` : null
-  ].filter(Boolean);
-  return parts.length > 0 ? ` · 面板同步${parts.join(" / ")}` : "";
 }
