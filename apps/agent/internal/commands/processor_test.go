@@ -555,3 +555,104 @@ func index(values []string, want string) int {
 	}
 	return -1
 }
+
+// TestReconcileRetiresARenamedAccountBeforeOverwritingItsRecord covers the
+// rename-and-retry path.
+//
+// The upsert replaces the only durable record naming the old account. If the
+// install that follows fails — or the process dies — a later reconcile would see
+// the old account as one it has never heard of and, with unknown-user removal
+// off, leave it serving forever. So the retirement happens FIRST, while the
+// record still names it.
+func TestReconcileRetiresARenamedAccountBeforeOverwritingItsRecord(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	if err := state.UpsertDesiredUser(protocol.DesiredUser{
+		BindingID: "b1", Email: "old@chordv", UUID: "u1", Revision: "1",
+		Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fake.live = []xray.LiveUser{{Email: "old@chordv"}}
+	// The install fails, which is exactly when the ordering matters.
+	fake.ensureErr = errors.New("gRPC 断开")
+
+	recordStillNamedOld := false
+	fake.onRemove = func() {
+		if stored, err := state.UserByBindingID("b1"); err == nil && stored != nil && stored.Email == "old@chordv" {
+			recordStillNamedOld = true
+		}
+	}
+	payload := map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any(userPayload("b1", "new@chordv"))},
+	}
+	if result := run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", payload), true); result.Status != protocol.StatusFailed {
+		t.Fatalf("a failed install was reported as success: %+v", result)
+	}
+	if !contains(fake.calls, "remove:old@chordv") {
+		t.Fatalf("the renamed account was not retired: %v", fake.calls)
+	}
+	if !recordStillNamedOld {
+		t.Fatal("the record was overwritten BEFORE the old account was retired")
+	}
+
+	// The retry succeeds, and must not need the (now gone) old record to do the
+	// right thing.
+	fake.ensureErr = nil
+	fake.onRemove = nil
+	if result := run(t, processor, command("c2", protocol.CommandReconcileUsers, "6", payload), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("the retry failed: %+v", result)
+	}
+	if stored, _ := state.UserByBindingID("b1"); stored == nil || stored.Email != "new@chordv" {
+		t.Fatalf("stored = %+v", stored)
+	}
+}
+
+// TestPromotionInstallsUsersEvenWhenTheCallerThinksItCannotWrite covers the
+// handover. A RECONCILE_USERS carrying controlMode=direct_primary IS the grant;
+// deferring to the caller's stale view of the previous mode would persist the
+// new mode, report completed with an advanced revision, and install nobody.
+func TestPromotionInstallsUsersEvenWhenTheCallerThinksItCannotWrite(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	payload := map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any(userPayload("b1", "u1@chordv"))},
+	}
+	// writable=false: the node was observing until this very command.
+	result := run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", payload), false)
+	if result.Status != protocol.StatusCompleted {
+		t.Fatalf("result = %+v", result)
+	}
+	if !contains(fake.calls, "ensure:u1@chordv") {
+		t.Fatalf("the handover completed without installing anyone: %v", fake.calls)
+	}
+	if mode, _ := state.ControlMode(); mode != protocol.ModeDirectPrimary {
+		t.Fatalf("mode = %s", mode)
+	}
+}
+
+func TestAFailedHandoverDoesNotAdvanceAnything(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	fake.ensureErr = errors.New("gRPC 断开")
+	payload := map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any(userPayload("b1", "u1@chordv"))},
+	}
+	result := run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", payload), false)
+	if result.Status != protocol.StatusFailed {
+		t.Fatalf("result = %+v", result)
+	}
+	// Neither the mode nor the revision may move: the control plane treats both
+	// as evidence that the handover landed.
+	if mode, _ := state.ControlMode(); mode == protocol.ModeDirectPrimary {
+		t.Fatal("a failed handover still promoted the node")
+	}
+	if revision, _ := state.ConfigRevision(); revision != "0" {
+		t.Fatalf("a failed handover advanced the applied revision to %s", revision)
+	}
+	// And a redelivery must retry rather than return a cached success.
+	fake.ensureErr = nil
+	if retry := run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", payload), false); retry.Status != protocol.StatusCompleted {
+		t.Fatalf("the redelivery did not retry: %+v", retry)
+	}
+}

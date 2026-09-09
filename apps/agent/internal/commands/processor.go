@@ -92,7 +92,7 @@ func (p *Processor) apply(ctx context.Context, command protocol.Command, writabl
 	case protocol.CommandRemoveUser:
 		return nil, p.terminalUser(ctx, command, true)
 	case protocol.CommandReconcileUsers:
-		return nil, p.reconcileCommand(ctx, command, writable)
+		return nil, p.reconcileCommand(ctx, command)
 	case protocol.CommandRefreshQuota:
 		bindingID, err := stringField(command.Payload, "bindingId")
 		if err != nil {
@@ -218,7 +218,7 @@ func (p *Processor) terminalUser(ctx context.Context, command protocol.Command, 
 	return p.deps.Store.SetUserEnabled(stored.BindingID, false, command.TargetRevision)
 }
 
-func (p *Processor) reconcileCommand(ctx context.Context, command protocol.Command, writable bool) error {
+func (p *Processor) reconcileCommand(ctx context.Context, command protocol.Command) error {
 	current, err := p.deps.Store.ConfigSnapshot()
 	if err != nil {
 		return err
@@ -240,9 +240,18 @@ func (p *Processor) reconcileCommand(ctx context.Context, command protocol.Comma
 	if value, ok := command.Payload["controlMode"].(string); ok && protocol.IsControlMode(value) {
 		mode = protocol.ControlMode(value)
 	}
-	// The mode change lands with the users it authorises, so a node being handed
-	// the direct track installs them in the same command that grants it.
-	if writable && mode == protocol.ModeDirectPrimary {
+	// Write permission is resolved from the mode this command ESTABLISHES, not
+	// from the caller's view of the mode before it.
+	//
+	// A RECONCILE_USERS carrying controlMode=direct_primary IS the control plane
+	// handing this node the direct track — the grant and the users it authorises
+	// arrive together. Deferring to the caller's stale "not writable" would skip
+	// the installation, persist the new mode anyway, and report completed with an
+	// advanced applied revision: the control plane would believe the handover
+	// happened while no account was installed, and a redelivery would return the
+	// cached success instead of retrying. Replay is already blocked by the
+	// revision guard above, so an old command cannot grant anything.
+	if mode == protocol.ModeDirectPrimary {
 		if err := p.Reconcile(ctx, users); err != nil {
 			return err
 		}
@@ -297,6 +306,25 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	desired := make(map[string]bool, len(users))
 	for _, user := range users {
 		desired[user.Email] = true
+	}
+	// Renames are settled BEFORE anything is written, for the same reason
+	// ensureUser does it: the upsert below replaces the only durable record that
+	// names the old account. If the install that follows fails — or the process
+	// dies — the next reconcile would see the old account as one it has never
+	// heard of and, with unknown-user removal off, leave it serving forever.
+	previousEmail := make(map[string]string, len(recorded))
+	for _, user := range recorded {
+		previousEmail[user.BindingID] = user.Email
+	}
+	for _, user := range users {
+		old, known := previousEmail[user.BindingID]
+		if !known || old == user.Email {
+			continue
+		}
+		if err := p.deps.Xray.RemoveUser(ctx, old); err != nil {
+			return err
+		}
+		p.logf("[agent] 用户 %s 的 email 由 %s 变更为 %s，已卸载旧账号", user.BindingID, old, user.Email)
 	}
 	for _, user := range users {
 		if err := p.deps.Store.UpsertDesiredUser(user); err != nil {
