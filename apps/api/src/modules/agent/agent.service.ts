@@ -499,35 +499,37 @@ export class AgentService {
       } else if (!hasUserTargeting(payload)) {
         await resolveExhaustedCommands(tx, { nodeId, commandType: input.type });
       }
-      try {
-        return await tx.nodeCommandJob.create({
-          data: {
-            id: randomUUID(),
-            dedupeKey,
-            nodeId,
-            agentId: agent.id,
-            commandType: input.type,
-            targetRevision,
-            payload: payload as Prisma.InputJsonValue,
-            ...(bindingTarget
-              ? {
-                  bindingId: bindingTarget.id,
-                  subscriptionId: bindingTarget.subscriptionId,
-                  userId: bindingTarget.userId,
-                  teamId: bindingTarget.teamId
-                }
-              : {})
-          }
-        });
-      } catch (error) {
-        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-          return tx.nodeCommandJob.findUniqueOrThrow({ where: { dedupeKey } });
+      return await tx.nodeCommandJob.create({
+        data: {
+          id: randomUUID(),
+          dedupeKey,
+          nodeId,
+          agentId: agent.id,
+          commandType: input.type,
+          targetRevision,
+          payload: payload as Prisma.InputJsonValue,
+          ...(bindingTarget
+            ? {
+                bindingId: bindingTarget.id,
+                subscriptionId: bindingTarget.subscriptionId,
+                userId: bindingTarget.userId,
+                teamId: bindingTarget.teamId
+              }
+            : {})
         }
-        throw error;
+      });
+    }).catch(async (error: unknown) => {
+      // PostgreSQL aborts the transaction on a uniqueness violation. Recover
+      // only after rollback, so revision allocation and failure resolution
+      // from the losing request cannot be committed as side effects of replay.
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        const replayed = await this.prisma.nodeCommandJob.findUnique({ where: { dedupeKey } });
+        if (replayed) return replayed;
       }
+      throw error;
     });
     const command = serializeCommand(job);
-    this.events.publish(agent.id, command);
+    if (job.agentId) this.events.publish(job.agentId, command);
     return command;
   }
 

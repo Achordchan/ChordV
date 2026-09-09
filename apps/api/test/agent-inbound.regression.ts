@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Prisma } from "@prisma/client";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { AgentService } from "../src/modules/agent/agent.service";
@@ -755,6 +756,63 @@ async function testGetInboundSpec() {
   );
 }
 
+async function testDedupeConflictAfterRollback() {
+  const conflict = new Prisma.PrismaClientKnownRequestError("duplicate", {
+    code: "P2002", clientVersion: "6.5.0", meta: { target: ["dedupeKey"] }
+  });
+  const winner = {
+    id: "winner", agentId: "winner-agent", commandType: "RECONCILE_USERS",
+    targetRevision: 7n, payload: {}, createdAt: new Date()
+  };
+  for (const failure of [conflict, new Error("database unavailable")]) {
+    for (const winnerExists of [true, false]) {
+      let rolledBack = false;
+      let revision = 0;
+      let resolved = false;
+      let reads = 0;
+      const published: unknown[] = [];
+      const tx = {
+        $queryRaw: async () => [],
+        node: { update: async () => ({ agentConfigRevision: ++revision, inboundAppliedRevision: 0n }) },
+        nodeCommandJob: {
+          findUnique: async () => null,
+          updateMany: async () => { resolved = true; return { count: 1 }; },
+          create: async () => { throw failure; },
+          findUniqueOrThrow: async () => { throw new Error("transaction is aborted"); }
+        }
+      };
+      const prisma = {
+        nodeAgent: { findFirst: async () => ({ id: "loser-agent" }) },
+        $transaction: async (run: (value: typeof tx) => Promise<unknown>) => {
+          try { return await run(tx); }
+          catch (error) { revision = 0; resolved = false; rolledBack = true; throw error; }
+        },
+        nodeCommandJob: { findUnique: async () => {
+          assert.equal(rolledBack, true, "冲突恢复必须在事务回滚后读取");
+          reads++;
+          return winnerExists ? winner : null;
+        } }
+      };
+      const service = new AgentService(prisma as never, {
+        publish: (agentId: string, command: unknown) => published.push({ agentId, command })
+      } as never, {} as never);
+      const request = service.queueCommand("loser-node", {
+        type: "RECONCILE_USERS", payload: {}, dedupeKey: "shared-key"
+      } as never);
+      if (failure === conflict && winnerExists) {
+        assert.equal((await request).commandId, winner.id);
+        assert.equal((published[0] as { agentId: string }).agentId, winner.agentId);
+      } else {
+        await assert.rejects(request, (error: unknown) => error === failure);
+        assert.equal(published.length, 0);
+      }
+      assert.equal(reads, failure === conflict ? 1 : 0);
+      assert.equal(revision, 0, "失败请求不能保留 revision 增量");
+      assert.equal(resolved, false, "失败请求不能清除未解决故障");
+    }
+  }
+}
+
 function main() {
   testCommandTypeIsDeclaredEverywhere();
   testSpecNormalization();
@@ -772,7 +830,8 @@ function main() {
     .then(testGetCommandOutcome)
     .then(testDedupeInterveningWhileRunning)
     .then(testDedupeInterleavedRequests)
-    .then(testDedupeReleaseIsInboundOnly);
+    .then(testDedupeReleaseIsInboundOnly)
+    .then(testDedupeConflictAfterRollback);
   });
 }
 
