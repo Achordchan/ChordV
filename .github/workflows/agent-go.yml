@@ -34,9 +34,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: apps/agent/go.mod
-          # This module has zero third-party dependencies and therefore no
-          # go.sum; the default cache step would fail looking for one.
-          cache: false
+          cache-dependency-path: apps/agent/go.sum
 
       - name: gofmt
         run: |
@@ -49,6 +47,18 @@ jobs:
 
       - name: go vet
         run: go vet ./...
+
+      # The dependency set is the whole reason this agent can be a single static
+      # binary; an untidy or unverified one is how that quietly stops being true.
+      - name: Modules verified and tidy
+        run: |
+          go mod verify
+          go mod tidy
+          if ! git diff --quiet -- go.mod go.sum; then
+            echo "go.mod / go.sum 未 tidy，请在本地运行 go mod tidy 后提交：" >&2
+            git --no-pager diff -- go.mod go.sum >&2
+            exit 1
+          fi
 
       - name: Test
         run: go test -race ./...
