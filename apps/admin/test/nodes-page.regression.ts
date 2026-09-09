@@ -243,6 +243,12 @@ function testNodeCommandQueueShowsDirectProvisioning() {
     /const queueCount = props\.leaseRevocationJobs\.length\s*\n\s*\+ sumNodeCommandSummaries\(props\.nodeCommandQueue\.summaries, "nodes"\);/,
     "节点页同步任务按钮的计数必须含节点命令总数——与表头/概览口径一致"
   );
+  assert.doesNotMatch(
+    subscriptionsPageSource,
+    /findNodeCommandSummary\(props\.nodeCommandQueue\.summaries, "subscriptions", teamSubscriptionRecord\?\.id \?\? currentSubscription\?\.id\)\s*\?\?/,
+    "团队当前订阅徽章不得回退到团队汇总，否则与订阅抽屉范围不一致"
+  );
+
   // Team-scope lease filtering: a team-only drawer must not show other teams'
   // jobs — it narrows lease revocations by the team's subscription ids while
   // commands keep teamId.

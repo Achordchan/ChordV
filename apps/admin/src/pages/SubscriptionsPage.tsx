@@ -283,8 +283,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                         <PanelSyncInlineStatus
                           item={teamPanelSyncItem}
                           commandSummary={
-                            findNodeCommandSummary(props.nodeCommandQueue.summaries, "subscriptions", teamSubscriptionRecord?.id ?? currentSubscription?.id) ??
-                            findNodeCommandSummary(props.nodeCommandQueue.summaries, "teams", team.id)
+                            findNodeCommandSummary(props.nodeCommandQueue.summaries, "subscriptions", teamSubscriptionRecord?.id ?? currentSubscription?.id)
                           }
                           onOpenLeaseRevocationQueue={() =>
                             props.onOpenLeaseRevocationQueue({
