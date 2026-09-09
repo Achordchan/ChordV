@@ -292,6 +292,24 @@ func (s *Store) ConfigRevision() (string, error) {
 	return value, nil
 }
 
+// SnapshotRevision is the revision of the last FULL desired-state snapshot this
+// node applied.
+//
+// It is deliberately separate from ConfigRevision, which advances on every
+// completed command. Only a snapshot supersedes a per-binding instruction: if
+// binding A's install fails at revision 5 and binding B's succeeds at 6, A's
+// retry is still live work — the control plane never said anything new about A.
+// Comparing it against the global applied-revision watermark would skip it as
+// "already superseded" and cache that as a success, leaving A uninstalled for
+// good.
+func (s *Store) SnapshotRevision() (string, error) {
+	value, err := s.meta("snapshot_revision")
+	if err != nil || value == "" {
+		return "0", err
+	}
+	return value, nil
+}
+
 // AdvanceConfigRevision moves the watermark forward only.
 func (s *Store) AdvanceConfigRevision(revision string) error {
 	next, err := decimal.Normalize(revision)
@@ -368,6 +386,10 @@ func (s *Store) ApplyConfigSnapshot(snapshot protocol.ConfigSnapshot) (bool, err
 			return err
 		}
 		if err := setMetaTx(tx, "control_mode", string(snapshot.ControlMode)); err != nil {
+			return err
+		}
+		// The snapshot watermark moves ONLY here. See SnapshotRevision.
+		if err := setMetaTx(tx, "snapshot_revision", revision); err != nil {
 			return err
 		}
 		return setMetaTx(tx, "config_revision", revision)

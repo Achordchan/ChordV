@@ -213,6 +213,14 @@ B1 正是补上这一块：让 direct/agent 轨能在装着 3x-ui 的 VPS 上工
 - **P2**：面板入站接入 —— 建站手册（§5.2）+ 后台 vless 链接导入 + 入站 tag 校验 + 用户级 reconcile 实测。
   UUID 轮换（§5.4）可延后至 P4 之后，不阻断灰度。
 - **P3**：单节点灰度，跑满 §8 的 1–4。
+
+  **阻断前提（2026-09-10 补记）**：§5.2 的控制面改造必须先落地。现役控制面仍会下发
+  `ENSURE_INBOUND`，并依赖它的成功报告来填充节点的连接参数
+  （`agent.service.ts` 的 `applyInboundReport`），还用该命令的 dedupe key 做「未完成
+  操作」守卫、用 `expectedInboundAppliedRevision` 做 CAS。Go agent 不再部署入站，
+  这条命令必然失败 —— 一台在改造完成前就换上 Go agent 的节点会**在线、健康、
+  但谁也服务不了**，正是 `agent-install.controller.ts:314` 那条注释警告的状态。
+  顺序只能是：先改控制面（面板入站导入），再切 agent。
 - **P4**：三台原地切换（§8.5），稳定观察。
 - **P5**：收敛迁移 drop 面板列/表/枚举，版本线收口。
 

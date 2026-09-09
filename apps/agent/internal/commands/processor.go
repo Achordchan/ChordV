@@ -105,12 +105,26 @@ func (p *Processor) apply(ctx context.Context, command protocol.Command, writabl
 		return nil, p.deps.Store.UpdateQuota(bindingID, quota, command.TargetRevision)
 	case protocol.CommandEnsureInbound:
 		// B1 moved inbound ownership to the 3x-ui panel (PRD §3.1): the agent no
-		// longer deploys one. The replacement semantics — verify the configured
-		// tag is usable — arrive in P2 with the adapter that can check it.
-		// Failing loudly is the only honest answer for this build; reporting
+		// longer deploys one, and the replacement semantics — verify the
+		// configured tag is usable — arrive in P2 with the adapter that can check
+		// it. Failing is the only honest answer for this build; reporting
 		// "completed" would advance the node's applied revision for work that
 		// never happened.
-		return nil, errors.New("本构建不支持 ENSURE_INBOUND：B1 下入站由 3x-ui 面板创建，校验能力随 P2 提供")
+		//
+		// But the failure is NOT self-contained, and the message has to say so.
+		// The deployed control plane still queues these and depends on the report
+		// to populate the node's connection parameters (agent.service.ts
+		// applyInboundReport), guards concurrency with the command's dedupe key,
+		// and compare-and-swaps on expectedInboundAppliedRevision. A node moved
+		// to this agent before the §5.2 control-plane change lands would be
+		// online, healthy, and unable to serve anyone — which is precisely the
+		// state the installer's own comment warns about. That ordering is a
+		// blocking prerequisite for the canary, recorded in PRD §9/§10.
+		return nil, errors.New(
+			"本构建不支持 ENSURE_INBOUND：B1 下入站改由 3x-ui 面板创建，" +
+				"节点的连接参数应由后台导入面板入站的 vless 链接得到（PRD §5.2）。" +
+				"若本节点仍在用旧的入站下发流程，请先完成控制面侧改造再切换 agent，" +
+				"否则该节点会「在线但无法服务」")
 	default:
 		// A newer control plane talking to an older agent. Guessing is worse
 		// than refusing.
@@ -159,12 +173,19 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 }
 
 // staleForEnable reports whether this enable has already been superseded.
+//
+// Superseded means "a newer full snapshot, or a newer instruction about THIS
+// binding, has replaced it". It deliberately does NOT mean "some other command
+// has completed since": ConfigRevision advances on every completed command, so
+// comparing against it would treat a retry of binding A at revision 5 as
+// obsolete merely because binding B succeeded at 6 — and cache that skip as a
+// success, leaving A uninstalled permanently.
 func (p *Processor) staleForEnable(command protocol.Command, stored *protocol.DesiredUser) (bool, error) {
-	current, err := p.deps.Store.ConfigRevision()
+	snapshot, err := p.deps.Store.SnapshotRevision()
 	if err != nil {
 		return false, err
 	}
-	older, err := decimal.Less(command.TargetRevision, current)
+	older, err := decimal.Less(command.TargetRevision, snapshot)
 	if err != nil || older {
 		return older, err
 	}
@@ -233,7 +254,13 @@ func (p *Processor) reconcileCommand(ctx context.Context, command protocol.Comma
 	if err != nil {
 		return err
 	}
-	older, err := decimal.Less(command.TargetRevision, current.Revision)
+	// Against the SNAPSHOT watermark, for the same reason staleForEnable is:
+	// another binding's command completing does not make this snapshot stale.
+	snapshot, err := p.deps.Store.SnapshotRevision()
+	if err != nil {
+		return err
+	}
+	older, err := decimal.Less(command.TargetRevision, snapshot)
 	if err != nil {
 		return err
 	}
@@ -246,8 +273,18 @@ func (p *Processor) reconcileCommand(ctx context.Context, command protocol.Comma
 			return err
 		}
 	}
+	// An ABSENT controlMode means "keep whatever this node is on". A PRESENT one
+	// that this build does not recognise is a newer control plane speaking a
+	// vocabulary this agent does not have — quite possibly a new observation mode
+	// — and silently falling back to the stored mode would read an instruction it
+	// cannot understand as permission to keep writing to Xray. Refuse instead,
+	// exactly as an unknown command type is refused.
 	mode := current.ControlMode
-	if value, ok := command.Payload["controlMode"].(string); ok && protocol.IsControlMode(value) {
+	if raw, present := command.Payload["controlMode"]; present {
+		value, ok := raw.(string)
+		if !ok || !protocol.IsControlMode(value) {
+			return fmt.Errorf("无法识别的控制模式 %v，拒绝执行（可能是较新的控制面下发了本构建不认识的模式）", raw)
+		}
 		mode = protocol.ControlMode(value)
 	}
 	// Write permission is resolved from the mode this command ESTABLISHES, not

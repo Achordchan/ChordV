@@ -349,8 +349,18 @@ func TestEnsureInboundFailsLoudlyInThisBuild(t *testing.T) {
 	// B1 moved inbound ownership to the panel; the verification that replaces
 	// deployment arrives in P2. Reporting "completed" would advance the node's
 	// applied revision for work that never happened.
-	if result.Status != protocol.StatusFailed || !strings.Contains(result.Error, "P2") {
+	if result.Status != protocol.StatusFailed {
 		t.Fatalf("result = %+v", result)
+	}
+	// The deployed control plane still queues these and populates the node's
+	// connection parameters from the report, so this failure is not
+	// self-contained: the message has to name what the operator must do instead,
+	// or a node moved to this agent too early is simply "online and unable to
+	// serve anyone".
+	for _, needle := range []string{"面板", "vless", "无法服务"} {
+		if !strings.Contains(result.Error, needle) {
+			t.Fatalf("the refusal does not mention %q: %s", needle, result.Error)
+		}
 	}
 }
 
@@ -848,5 +858,101 @@ func TestATerminalCommandWithoutATargetIsRefused(t *testing.T) {
 	}
 	if contains(fake.calls, "remove:") {
 		t.Fatalf("the adapter was called with an empty target: %v", fake.calls)
+	}
+}
+
+// TestAnotherBindingsProgressDoesNotSupersedeAFailedInstall covers the trap of
+// using the global applied-revision watermark as a per-binding staleness gate.
+//
+// ConfigRevision advances on EVERY completed command. If A's install fails at
+// revision 5 and B's succeeds at 6, retrying A would look "already superseded"
+// — and be cached as a success. A stays uninstalled forever, and the control
+// plane is told it landed.
+func TestAnotherBindingsProgressDoesNotSupersedeAFailedInstall(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	fake.ensureErrFor = "a@chordv"
+	if result := run(t, processor, command("cA", protocol.CommandEnsureUser, "5", userPayload("bA", "a@chordv")), true); result.Status != protocol.StatusFailed {
+		t.Fatalf("setup: %+v", result)
+	}
+	// An unrelated binding moves the global watermark past A's revision.
+	if result := run(t, processor, command("cB", protocol.CommandEnsureUser, "6", userPayload("bB", "b@chordv")), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("setup: %+v", result)
+	}
+	if revision, _ := state.ConfigRevision(); revision != "6" {
+		t.Fatalf("ConfigRevision = %s, want the global watermark to have moved", revision)
+	}
+
+	fake.ensureErrFor = ""
+	fake.calls = nil
+	// A's retry is still live work: the control plane never said anything new
+	// about A.
+	if result := run(t, processor, command("cA2", protocol.CommandEnsureUser, "5", userPayload("bA", "a@chordv")), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("retry = %+v", result)
+	}
+	if !contains(fake.calls, "ensure:a@chordv") {
+		t.Fatalf("the retry was skipped as superseded: %v", fake.calls)
+	}
+}
+
+func TestAFullSnapshotStillSupersedesAnOlderPerUserCommand(t *testing.T) {
+	processor, fake, _ := newProcessor(t, false)
+	// The snapshot watermark is what a per-binding command must actually yield
+	// to — dropping the global check must not drop this one with it.
+	if result := run(t, processor, command("c1", protocol.CommandReconcileUsers, "10", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary), "users": []any{},
+	}), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("setup: %+v", result)
+	}
+	fake.calls = nil
+	result := run(t, processor, command("c2", protocol.CommandEnsureUser, "4", userPayload("b1", "ghost@chordv")), true)
+	if result.Status != protocol.StatusCompleted {
+		t.Fatalf("a superseded command should be a no-op, not a failure: %+v", result)
+	}
+	if contains(fake.calls, "ensure:ghost@chordv") {
+		t.Fatalf("a command older than the last full snapshot was applied: %v", fake.calls)
+	}
+}
+
+func TestAnUnrecognisedControlModeIsRefused(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	// Get the node onto the writable track first, so the refusal below is the
+	// only thing that can stop it writing.
+	if result := run(t, processor, command("c0", protocol.CommandReconcileUsers, "5", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary), "users": []any{},
+	}), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("setup: %+v", result)
+	}
+	fake.calls = nil
+
+	// A newer control plane introducing, say, an observation mode. Silently
+	// keeping the stored direct_primary would read an instruction this build
+	// cannot understand as permission to keep writing.
+	for name, raw := range map[string]any{
+		"unknown string": "observe_only",
+		"wrong type":     42,
+		"null":           nil,
+	} {
+		result := run(t, processor, command("c-"+name, protocol.CommandReconcileUsers, "6", map[string]any{
+			"controlMode": raw,
+			"users":       []any{map[string]any(userPayload("b1", "u1@chordv"))},
+		}), true)
+		if result.Status != protocol.StatusFailed {
+			t.Fatalf("%s was accepted: %+v", name, result)
+		}
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("an unrecognised mode still reached Xray: %v", fake.calls)
+	}
+	if mode, _ := state.ControlMode(); mode != protocol.ModeDirectPrimary {
+		t.Fatalf("the refusal changed the stored mode to %s", mode)
+	}
+	// An ABSENT mode still means "keep whatever this node is on".
+	if result := run(t, processor, command("c-absent", protocol.CommandReconcileUsers, "7", map[string]any{
+		"users": []any{map[string]any(userPayload("b1", "u1@chordv"))},
+	}), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("an absent controlMode was refused: %+v", result)
+	}
+	if !contains(fake.calls, "ensure:u1@chordv") {
+		t.Fatalf("calls = %v", fake.calls)
 	}
 }
