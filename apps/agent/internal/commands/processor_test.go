@@ -19,6 +19,9 @@ type fakeXray struct {
 	calls     []string
 	ensureErr error
 	removeErr error
+	// removeErrFor fails the uninstall of ONE account, so a test can prove that a
+	// failure stops the caller from going on to erase the evidence.
+	removeErrFor string
 	// onRemove runs at the moment of uninstall. Ordering between the store and
 	// Xray cannot be seen from the call log alone — store writes do not appear
 	// in it — so a test that cares about the interleaving observes the store
@@ -40,6 +43,9 @@ func (f *fakeXray) RemoveUser(_ context.Context, email string) error {
 	f.calls = append(f.calls, "remove:"+email)
 	if f.onRemove != nil {
 		f.onRemove()
+	}
+	if f.removeErrFor != "" && f.removeErrFor == email {
+		return errors.New("卸载失败")
 	}
 	return f.removeErr
 }
@@ -408,4 +414,144 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// --- ownership evidence -----------------------------------------------------
+
+// TestReconcileRemovesOmittedAccountsItHasARecordOf closes the gap the safe
+// default would otherwise leave open, WITHOUT touching the panel's accounts.
+//
+// A subscription revoked while the agent was offline arrives as a full
+// RECONCILE_USERS that simply omits the binding. Leaving it installed keeps
+// serving an account nobody is paying for — and ApplyConfigSnapshot then deletes
+// the only local record of it, so nothing would ever notice again. A stored
+// desired-user record is proof that the account is ours, which is exactly the
+// distinction the panel's accounts do not satisfy.
+func TestReconcileRemovesOmittedAccountsItHasARecordOf(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	for _, seeded := range []protocol.DesiredUser{
+		{BindingID: "b1", Email: "u1@chordv", UUID: "u1", Revision: "1", Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000"},
+		{BindingID: "b2", Email: "revoked@chordv", UUID: "u2", Revision: "1", Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000"},
+	} {
+		if err := state.UpsertDesiredUser(seeded); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fake.live = []xray.LiveUser{
+		{Email: "u1@chordv"},
+		{Email: "revoked@chordv"}, // ours, dropped from the new instruction
+		{Email: "someone@panel"},  // never ours
+	}
+	payload := map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any(userPayload("b1", "u1@chordv"))},
+	}
+	if result := run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", payload), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("result = %+v", result)
+	}
+	if !contains(fake.calls, "remove:revoked@chordv") {
+		t.Fatalf("a revoked account this node owned was left serving: %v", fake.calls)
+	}
+	if contains(fake.calls, "remove:someone@panel") {
+		t.Fatalf("an account this node never recorded was deleted: %v", fake.calls)
+	}
+	// And the snapshot did replace the set.
+	if stored, _ := state.UserByBindingID("b2"); stored != nil {
+		t.Fatal("the omitted binding kept its local record")
+	}
+}
+
+func TestAFailedUninstallStopsTheSnapshotFromErasingTheEvidence(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	if err := state.UpsertDesiredUser(protocol.DesiredUser{
+		BindingID: "b2", Email: "revoked@chordv", UUID: "u2", Revision: "1",
+		Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fake.live = []xray.LiveUser{{Email: "revoked@chordv"}}
+	fake.removeErrFor = "revoked@chordv"
+
+	result := run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any(userPayload("b1", "u1@chordv"))},
+	}), true)
+	if result.Status != protocol.StatusFailed {
+		t.Fatalf("a failed uninstall was reported as success: %+v", result)
+	}
+	// The record is the only proof the account is ours. Losing it while the
+	// account is still installed makes the leak permanent and invisible.
+	if stored, _ := state.UserByBindingID("b2"); stored == nil {
+		t.Fatal("the record was deleted even though the account is still installed")
+	}
+}
+
+// --- merging an existing user -----------------------------------------------
+
+func TestEnablingAnExhaustedUserAdoptsTheReplenishedQuota(t *testing.T) {
+	processor, _, state := newProcessor(t, false)
+	if err := state.UpsertDesiredUser(protocol.DesiredUser{
+		BindingID: "b1", Email: "u1@chordv", UUID: "u1", Revision: "1",
+		Enabled: false, QuotaRemainingBytes: "0", OfflineAllowanceBytes: "1000",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	payload := userPayload("b1", "u1@chordv")
+	payload["quotaRemainingBytes"] = "5000000"
+	payload["offlineAllowanceBytes"] = "2048"
+
+	if result := run(t, processor, command("c1", protocol.CommandEnableUser, "9", payload), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("result = %+v", result)
+	}
+	stored, _ := state.UserByBindingID("b1")
+	if stored == nil || !stored.Enabled {
+		t.Fatalf("stored = %+v", stored)
+	}
+	// Dropping the supplied quota would report success and then have the very
+	// next metering tick disable the user again, because the local remainder is
+	// still zero.
+	if stored.QuotaRemainingBytes != "5000000" {
+		t.Fatalf("quota = %s, want the replenished 5000000", stored.QuotaRemainingBytes)
+	}
+	if stored.OfflineAllowanceBytes != "2048" {
+		t.Fatalf("allowance = %s", stored.OfflineAllowanceBytes)
+	}
+}
+
+func TestChangingAUsersEmailUninstallsTheOldAccount(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	run(t, processor, command("c1", protocol.CommandEnsureUser, "2", userPayload("b1", "old@chordv")), true)
+	fake.calls = nil
+
+	renamed := userPayload("b1", "new@chordv")
+	if result := run(t, processor, command("c2", protocol.CommandEnsureUser, "3", renamed), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("result = %+v", result)
+	}
+	// The adapter addresses accounts by email and cannot infer the previous one.
+	// With unknown-user removal off, an orphan would keep serving forever with
+	// no desired-user record left to account for its traffic.
+	if !contains(fake.calls, "remove:old@chordv") {
+		t.Fatalf("the old account was left installed: %v", fake.calls)
+	}
+	if !contains(fake.calls, "ensure:new@chordv") {
+		t.Fatalf("calls = %v", fake.calls)
+	}
+	// Uninstall BEFORE the record is rewritten: afterwards nothing names the old
+	// account any more.
+	if index(fake.calls, "remove:old@chordv") > index(fake.calls, "ensure:new@chordv") {
+		t.Fatalf("the new account was installed before the old one was removed: %v", fake.calls)
+	}
+	stored, _ := state.UserByBindingID("b1")
+	if stored == nil || stored.Email != "new@chordv" {
+		t.Fatalf("stored = %+v", stored)
+	}
+}
+
+func index(values []string, want string) int {
+	for i, value := range values {
+		if value == want {
+			return i
+		}
+	}
+	return -1
 }

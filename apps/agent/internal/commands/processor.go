@@ -133,6 +133,22 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 	}
 	user.Enabled = true
 	user.Revision = command.TargetRevision
+	// A changed email is a NEW account as far as Xray is concerned — the adapter
+	// addresses accounts by email and cannot infer the previous one. Uninstall
+	// the old one FIRST, while the record that names it is still here: after the
+	// upsert below the old email is gone from the store, and with unknown-user
+	// removal off nothing would ever clean it up. It would keep serving, with no
+	// desired-user record left to account for its traffic.
+	//
+	// The metering baseline follows on its own: the new account's counters start
+	// at zero, which reads as a counter reset, so the next sample bumps the
+	// generation and bills the new account's traffic in full.
+	if stored != nil && stored.Email != user.Email {
+		if err := p.deps.Xray.RemoveUser(ctx, stored.Email); err != nil {
+			return err
+		}
+		p.logf("[agent] 用户 %s 的 email 由 %s 变更为 %s，已卸载旧账号", user.BindingID, stored.Email, user.Email)
+	}
 	// Store BEFORE Xray: a crash between the two leaves a user the store knows
 	// about but Xray does not, which the next reconcile repairs. The reverse
 	// leaves a user serving traffic that no local record accounts for.
@@ -239,26 +255,44 @@ func (p *Processor) reconcileCommand(ctx context.Context, command protocol.Comma
 
 // Reconcile makes Xray's installed accounts match the desired set.
 //
-// The final step — what to do about accounts that are live but NOT desired —
-// is where this deliberately departs from the Node agent.
+// The final step — what to do about accounts that are live but NOT desired — is
+// where this departs from the Node agent, and the reason is the topology rather
+// than the code.
 //
-// There, ChordV owned the whole inbound (`chordv-in`, created by the agent), so
-// a live account outside the desired set could only be ChordV's own leftover and
+// There, ChordV created and owned the whole inbound (`chordv-in`), so a live
+// account outside the desired set could only be ChordV's own leftover and
 // removing it was correct. Under B1 the inbound is created by an administrator
 // in the 3x-ui panel and is SHARED (PRD §3.1), so ListUsers also returns the
 // PANEL's accounts. Porting that step unchanged would have ChordV silently
-// delete the panel's users — a destructive, cross-boundary action produced
-// purely by the topology change, with no code change behind it.
+// delete the panel's users.
 //
-// So it is OFF by default: strangers are reported, not removed. The cost is that
-// a ChordV account deleted while the agent was down keeps serving until someone
-// notices. Closing that gap safely needs a way to tell "ours" from "theirs" —
-// an email namespace is the obvious candidate — which is a control-plane
-// decision, recorded as an open item in the PRD rather than assumed here.
+// The split that resolves it is ownership, and the STORE is the evidence:
+//
+//   - live, not desired, but this node has a desired-user record for it — ours,
+//     dropped from the latest instruction. It MUST be uninstalled: a
+//     subscription revoked while the agent was offline arrives exactly this way,
+//     and leaving it would keep serving an account nobody is paying for while
+//     ApplyConfigSnapshot goes on to delete the only local record of it.
+//   - live, not desired, and never in our records — could be the panel's.
+//     Reported, never touched. RemoveUnknownUsers overrides that for a
+//     deployment that can prove the inbound is not shared.
+//
+// The ownership snapshot is taken BEFORE the desired set is written, because
+// that write is what erases the evidence.
 func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser) error {
 	live, err := p.deps.Xray.ListUsers(ctx)
 	if err != nil {
 		return err
+	}
+	// Taken first: upserting the desired set below, and ApplyConfigSnapshot
+	// afterwards, both change what this node remembers owning.
+	recorded, err := p.deps.Store.ListDesiredUsers()
+	if err != nil {
+		return err
+	}
+	ours := make(map[string]bool, len(recorded))
+	for _, user := range recorded {
+		ours[user.Email] = true
 	}
 	desired := make(map[string]bool, len(users))
 	for _, user := range users {
@@ -278,25 +312,25 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 			return err
 		}
 	}
-	var strangers []string
+	var unknown []string
 	for _, installed := range live {
 		if desired[installed.Email] {
 			continue
 		}
-		strangers = append(strangers, installed.Email)
-	}
-	if len(strangers) == 0 {
-		return nil
-	}
-	if !p.deps.RemoveUnknownUsers {
-		p.logf("[agent] 入站中有 %d 个不在下发名单里的账号，未做处理（B1 下入站与 3x-ui 面板共用，"+
-			"删除它们可能会删掉面板自己的用户）：%v", len(strangers), strangers)
-		return nil
-	}
-	for _, email := range strangers {
-		if err := p.deps.Xray.RemoveUser(ctx, email); err != nil {
-			return err
+		if ours[installed.Email] || p.deps.RemoveUnknownUsers {
+			// Propagate a failure rather than swallowing it: the caller must not
+			// go on to replace the snapshot, which would delete the record that
+			// proves this account is ours.
+			if err := p.deps.Xray.RemoveUser(ctx, installed.Email); err != nil {
+				return err
+			}
+			continue
 		}
+		unknown = append(unknown, installed.Email)
+	}
+	if len(unknown) > 0 {
+		p.logf("[agent] 入站中有 %d 个本节点从未记录过的账号，未做处理（B1 下入站与 3x-ui 面板共用，"+
+			"它们可能属于面板）：%v", len(unknown), unknown)
 	}
 	return nil
 }
@@ -343,6 +377,18 @@ func (p *Processor) resolveUser(command protocol.Command, stored *protocol.Desir
 			return protocol.DesiredUser{}, err
 		}
 		user.Flow = flow
+	}
+	// An explicitly supplied quota is the control plane's newer word and must
+	// win — upsertDesiredUser only applies it when the command's revision is
+	// higher, so ordering is already enforced. Dropping it (as the Node agent
+	// does) makes re-enabling an exhausted user report success and then have the
+	// very next metering tick disable it again, because the local remainder is
+	// still zero.
+	if value, ok := command.Payload["quotaRemainingBytes"].(string); ok && value != "" {
+		user.QuotaRemainingBytes = value
+	}
+	if value, ok := command.Payload["offlineAllowanceBytes"].(string); ok && value != "" {
+		user.OfflineAllowanceBytes = value
 	}
 	return user, nil
 }
