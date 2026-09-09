@@ -670,6 +670,49 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
         await this.runShell("cp", ["-a", source, target], { ...process.env }, `复制运行时依赖（${relative}）`, 15 * 60 * 1000);
       }
     }
+
+    await this.regeneratePrismaClient(stagingDir);
+  }
+
+  /**
+   * The borrowed trees carry the Prisma client generated for the PREVIOUS schema.
+   * A schema change does not touch pnpm-lock.yaml — the release ships new models,
+   * new migrations and code compiled against them, while the lockfile is byte
+   * identical — so the digest gate above cannot catch this. Regenerate the client
+   * from the schema THIS release ships.
+   *
+   * The stale output must be unlinked first, not overwritten: the hard links share
+   * inodes with the release currently serving traffic, so generating over them
+   * would rewrite the client the live process has loaded. Removing the staged
+   * directory drops only this tree's references; the running release keeps its own.
+   *
+   * Failure fails the update, which is the safe direction — the alternative is
+   * promoting code whose queries reference columns its client does not know.
+   */
+  private async regeneratePrismaClient(stagingDir: string): Promise<void> {
+    const modules = path.join(stagingDir, "node_modules");
+    const roots = [modules];
+    const store = path.join(modules, ".pnpm");
+    try {
+      for (const entry of await fs.readdir(store, { withFileTypes: true })) {
+        if (entry.isDirectory()) roots.push(path.join(store, entry.name, "node_modules"));
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    for (const root of roots) await this.removeDirSafe(path.join(root, ".prisma"));
+
+    // Same invocation the migration helper uses, so both resolve the CLI through
+    // pnpm's workspace layout rather than a hard-coded store path. Offline: the
+    // query engines are already in the borrowed tree.
+    await this.runShell(
+      "pnpm",
+      ["--filter", "@chordv/api", "exec", "prisma", "generate"],
+      { ...process.env },
+      "重新生成 Prisma 客户端",
+      10 * 60 * 1000,
+      stagingDir
+    );
   }
 
   private async readLockfileDigest(releaseDir: string): Promise<string> {

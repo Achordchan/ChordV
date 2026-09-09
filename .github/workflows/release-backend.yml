@@ -29,6 +29,11 @@ on:
         required: false
         default: false
         type: boolean
+      slim_artifact:
+        description: "瘦身包：不打包 node_modules。仅当所有部署都已运行含 hydrateRuntimeDependencies 的版本时才可开启，旧安装端拿到瘦身包会装出没有依赖的目录并触发回滚"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: chordv-backend-release
@@ -142,23 +147,38 @@ jobs:
         if: steps.publication.outputs.mode == 'build'
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          SLIM: ${{ github.event.inputs.slim_artifact }}
         run: |
           set -euo pipefail
           mkdir -p dist-release
-          # Build output only — NO node_modules. Every install target already runs a
-          # release whose dependency trees are on the same volume, so the installer
-          # hard-links them into the staged tree instead of re-downloading a copy it
-          # already has (see hydrateRuntimeDependencies in system-update.service.ts).
-          # pnpm-lock.yaml ships so the installer can prove the graph is unchanged
-          # before reusing them; a lockfile change fails the update closed and the
-          # deployment must take a rebuilt image instead.
-          tar -czf "dist-release/chordv-backend-${VERSION}.tar.gz" \
-            SYSTEM_VERSION \
-            package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json \
-            scripts/prisma-migrate-with-baseline.mjs \
-            packages/shared/package.json packages/shared/dist \
-            apps/api/package.json apps/api/dist apps/api/prisma \
-            apps/admin/dist
+          # Paths every artifact carries. pnpm-lock.yaml is what lets a slim
+          # artifact's installer prove the dependency graph is unchanged before
+          # borrowing the running release's trees.
+          COMMON="SYSTEM_VERSION
+          package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json
+          scripts/prisma-migrate-with-baseline.mjs
+          packages/shared/package.json packages/shared/dist
+          apps/api/package.json apps/api/dist apps/api/prisma
+          apps/admin/dist"
+          if [ "$SLIM" = "true" ]; then
+            # Build output only. The installer hard-links node_modules from the
+            # release it is currently running and regenerates the Prisma client
+            # (see hydrateRuntimeDependencies in system-update.service.ts).
+            #
+            # DEFAULT OFF ON PURPOSE: installers older than that change extract and
+            # promote an archive verbatim. Handed a slim one they would run a tree
+            # with no node_modules, fail the health gate and roll back — leaving the
+            # deployment unable to update remotely at all. Only turn this on once
+            # EVERY deployment reports a version that hydrates.
+            echo "Packaging SLIM artifact; dependencies are borrowed at install time."
+            tar -czf "dist-release/chordv-backend-${VERSION}.tar.gz" $COMMON
+          else
+            echo "Packaging FAT artifact (bundled node_modules) for installer compatibility."
+            rm -rf apps/admin/node_modules apps/admin/src apps/api/src packages/shared/src
+            node scripts/prune-release-node-modules.mjs
+            tar -czf "dist-release/chordv-backend-${VERSION}.tar.gz" $COMMON \
+              node_modules packages/shared/node_modules apps/api/node_modules
+          fi
           cd dist-release
           sha256sum "chordv-backend-${VERSION}.tar.gz" > checksums.txt
           echo "SHA256:"; cat checksums.txt
