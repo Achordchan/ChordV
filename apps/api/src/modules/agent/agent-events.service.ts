@@ -72,22 +72,61 @@ export class AgentEventsService {
         // contract, not a lock on an outstanding operation. Both writes are one
         // transaction — a cancelled job that kept its key would be excluded
         // from every later sweep and would permanently block that deployment.
-        await this.prisma.$transaction(exhausted.map((job) => this.prisma.nodeCommandJob.update({
-          where: { id: job.id },
-          data: {
-            status: "cancelled",
-            lastError: "Agent 命令重试次数已达到上限",
-            ...(job.commandType === "ENSURE_INBOUND" ? { dedupeKey: `${job.dedupeKey}:cancelled:${job.id}` } : {})
-          }
-        })));
-        await this.prisma.node.updateMany({
-          where: {
-            id: { in: Array.from(new Set(exhausted.map((job) => job.nodeId))) },
-            controlStatus: { notIn: ["rollback_pending", "direct_cutover_pending"] }
-          },
-          data: { controlStatus: "degraded" }
-        });
-        this.logger.error(`已取消 ${exhausted.length} 个超过重试上限的 Agent 命令`);
+        let cancelledCount = 0;
+        for (const candidate of exhausted) {
+          if (workLifecycle.isDraining) break;
+          cancelledCount += await this.prisma.$transaction(async (tx) => {
+            // Enqueue and completion take Node first. Re-read after acquiring
+            // the same lock: the scan is only a candidate list, not authority
+            // to overwrite a command that completed while this sweep waited.
+            await tx.$queryRaw`SELECT id FROM "Node" WHERE id = ${candidate.nodeId} FOR UPDATE`;
+            const job = await tx.nodeCommandJob.findFirst({
+              where: {
+                id: candidate.id,
+                status: { in: ["pending", "running", "failed"] },
+                attempts: { gte: 8 }
+              }
+            });
+            if (!job) return 0;
+            const replacements = await tx.nodeCommandJob.findMany({
+              where: {
+                nodeId: job.nodeId,
+                targetRevision: { gt: job.targetRevision },
+                OR: [
+                  ...(job.bindingId ? [{ bindingId: job.bindingId, commandType: { in: [job.commandType, "REMOVE_USER" as const] } }] : []),
+                  { bindingId: null, commandType: job.commandType }
+                ]
+              },
+              select: { bindingId: true, payload: true }
+            });
+            // Match enqueue resolution: binding commands cover their binding;
+            // commands without a user target cover node + commandType. A raw
+            // email/UUID command without bindingId must not clear other users.
+            const superseded = replacements.some(replacement => replacement.bindingId ||
+              !["bindingId", "userKey", "email", "uuid"].some(key => {
+                const payload = replacement.payload;
+                return payload !== null && typeof payload === "object" && !Array.isArray(payload)
+                  && typeof payload[key] === "string" && payload[key].length > 0;
+              }));
+            await tx.nodeCommandJob.update({
+              where: { id: job.id },
+              data: {
+                status: "cancelled",
+                lastError: "Agent 命令重试次数已达到上限",
+                ...(superseded ? { resolvedAt: new Date() } : {}),
+                ...(job.commandType === "ENSURE_INBOUND" ? { dedupeKey: `${job.dedupeKey}:cancelled:${job.id}` } : {})
+              }
+            });
+            if (!superseded && !job.resolvedAt) {
+              await tx.node.updateMany({
+                where: { id: job.nodeId, controlStatus: { notIn: ["rollback_pending", "direct_cutover_pending"] } },
+                data: { controlStatus: "degraded" }
+              });
+            }
+            return 1;
+          });
+        }
+        if (cancelledCount > 0) this.logger.error(`已取消 ${cancelledCount} 个超过重试上限的 Agent 命令`);
       }
 
       const jobs = await this.prisma.nodeCommandJob.findMany({
