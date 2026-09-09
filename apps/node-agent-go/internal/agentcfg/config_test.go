@@ -185,3 +185,36 @@ func TestDerivedPathsHangOffTheCredentialsFile(t *testing.T) {
 		t.Fatalf("ArchiveCandidates = %v", archive)
 	}
 }
+
+func TestIntervalMillisMustFitInADuration(t *testing.T) {
+	// time.Duration is int64 NANOseconds. A perfectly valid positive integer in
+	// milliseconds can overflow the multiplication and come back NEGATIVE, which
+	// time.NewTicker then PANICS on — a config typo taking the agent down with a
+	// stack trace instead of a message naming the variable.
+	overflowing := []string{
+		"9223372036855",       // just past the representable range
+		"9223372036854775807", // math.MaxInt64
+		"999999999999999999",  //
+	}
+	for _, name := range []string{"AGENT_SAMPLE_INTERVAL_MS", "AGENT_HEARTBEAT_INTERVAL_MS", "AGENT_XRAY_RESTART_TOLERANCE_MS"} {
+		for _, value := range overflowing {
+			baseEnv(t)
+			t.Setenv(name, value)
+			config, err := Load()
+			if err == nil {
+				t.Fatalf("%s=%s produced %v instead of a configuration error", name, value, config)
+			}
+		}
+	}
+	// The boundary itself must still be accepted, so the check rejects only what
+	// genuinely cannot be represented.
+	baseEnv(t)
+	t.Setenv("AGENT_SAMPLE_INTERVAL_MS", "9223372036854")
+	config, err := Load()
+	if err != nil {
+		t.Fatalf("the largest representable interval was rejected: %v", err)
+	}
+	if config.SampleInterval <= 0 {
+		t.Fatalf("SampleInterval = %v, want a positive duration", config.SampleInterval)
+	}
+}

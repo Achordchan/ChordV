@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"strings"
 	"testing"
@@ -276,5 +277,134 @@ func TestReadEventStreamStopsWhenContextIsCancelled(t *testing.T) {
 	err := readEventStream(ctx, strings.NewReader("data: {}\n\n"), func(protocol.Command) error { return nil })
 	if err == nil {
 		t.Fatal("a cancelled context did not stop the stream")
+	}
+}
+
+// --- redirect safety -------------------------------------------------------
+
+// TestRedirectMustNotDowngradeCredentialTransport is the regression for the
+// review's security finding. net/http's shouldCopyHeaderOnRedirect compares only
+// the HOSTNAME, so an https://host → http://host redirect keeps Authorization
+// and puts the agent's long-lived bearer token on the wire in plaintext.
+func TestRedirectMustNotDowngradeCredentialTransport(t *testing.T) {
+	leaked := make(chan string, 4)
+	plaintext := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		leaked <- request.Header.Get("authorization")
+		writer.Write([]byte(`{}`))
+	}))
+	defer plaintext.Close()
+
+	secure := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		http.Redirect(writer, request, plaintext.URL+request.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer secure.Close()
+
+	client := New(Options{
+		BaseURL:    secure.URL, // https://127.0.0.1:<port>
+		Token:      "chordv_agent_secret",
+		AgentID:    "agent-1",
+		NodeID:     "node-1",
+		HTTPClient: secure.Client(), // trusts the test certificate
+	})
+
+	if _, err := client.GetConfig(context.Background()); err == nil {
+		t.Fatal("the agent followed a downgrading redirect instead of refusing it")
+	}
+	if _, err := client.Heartbeat(context.Background(), protocol.Heartbeat{}); err == nil {
+		t.Fatal("heartbeat followed a downgrading redirect")
+	}
+	if err := client.ConsumeEvents(context.Background(), func(protocol.Command) error { return nil }); err == nil {
+		t.Fatal("the event stream followed a downgrading redirect")
+	}
+	select {
+	case value := <-leaked:
+		t.Fatalf("the bearer token reached a plaintext endpoint: %q", value)
+	default:
+	}
+}
+
+// TestRegisterRedirectDoesNotReplayTheSecrets covers the worst case: a 307/308
+// replays the BODY, which during registration carries both the one-time
+// register token and the persistent secret this host will be known by.
+func TestRegisterRedirectDoesNotReplayTheSecrets(t *testing.T) {
+	leaked := make(chan string, 4)
+	plaintext := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		raw, _ := io.ReadAll(request.Body)
+		leaked <- string(raw)
+		writer.Write([]byte(`{"accepted":true,"agentId":"a","nodeId":"n"}`))
+	}))
+	defer plaintext.Close()
+
+	secure := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		http.Redirect(writer, request, plaintext.URL+request.URL.Path, http.StatusPermanentRedirect)
+	}))
+	defer secure.Close()
+
+	_, err := Register(context.Background(), secure.Client(), secure.URL, protocol.RegisterRequest{
+		RegisterToken: "one-time-secret",
+		AgentToken:    "chordv_agent_secret",
+	})
+	if err == nil {
+		t.Fatal("registration followed a downgrading redirect")
+	}
+	select {
+	case body := <-leaked:
+		t.Fatalf("registration secrets reached a plaintext endpoint: %s", body)
+	default:
+	}
+}
+
+func TestRedirectPolicyAllowsOnlyTheConfiguredControlPlane(t *testing.T) {
+	policy := redirectPolicy("https://v.achord.cn")
+	request := func(target string) *http.Request {
+		parsed, err := url.Parse(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &http.Request{URL: parsed}
+	}
+	// Same scheme and host: a benign proxy redirect (a trailing slash, a moved
+	// port behind the same name) must keep working.
+	for _, target := range []string{"https://v.achord.cn/api/agent/v1/config/", "https://V.ACHORD.CN:8443/x"} {
+		if err := policy(request(target), nil); err != nil {
+			t.Fatalf("policy rejected a same-origin redirect to %s: %v", target, err)
+		}
+	}
+	// A downgrade, a different host, or a hop to an attacker-chosen name must
+	// all be refused BEFORE the credentials are sent.
+	for _, target := range []string{
+		"http://v.achord.cn/api/agent/v1/config",
+		"https://evil.example/api/agent/v1/config",
+		"http://169.254.169.254/latest/meta-data",
+	} {
+		if err := policy(request(target), nil); err == nil {
+			t.Fatalf("policy allowed credentials to follow a redirect to %s", target)
+		}
+	}
+	// The hop limit still applies, or a redirect loop spins forever.
+	if err := policy(request("https://v.achord.cn/x"), make([]*http.Request, MaxRedirects)); err == nil {
+		t.Fatal("policy allowed an unbounded redirect chain")
+	}
+}
+
+func TestUsageBatchWithoutSamplesEncodesAnEmptyArray(t *testing.T) {
+	// AgentUsageBatchDto requires @IsArray(); a nil slice marshals to `null` and
+	// is rejected with a 400 the agent can only retry forever.
+	var body map[string]json.RawMessage
+	client, closeServer := newTestClient(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		raw, _ := io.ReadAll(request.Body)
+		json.Unmarshal(raw, &body)
+		writer.Write([]byte(`{"accepted":true,"duplicate":false,"ackThrough":"0"}`))
+	}))
+	defer closeServer()
+
+	_, err := client.UploadBatch(context.Background(), protocol.UsageBatch{
+		BootID: "boot-1", Sequence: "1", SampledAt: "2026-09-09T00:00:00.000Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(body["samples"]); got != "[]" {
+		t.Fatalf("samples encoded as %s, want []", got)
 	}
 }

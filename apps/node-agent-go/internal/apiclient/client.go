@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -63,16 +64,60 @@ type Client struct {
 	stream *http.Client
 }
 
+// MaxRedirects matches net/http's own default hop limit.
+const MaxRedirects = 10
+
+// redirectPolicy refuses any redirect that would carry credentials somewhere
+// the operator did not configure.
+//
+// net/http's default is not safe here. Its shouldCopyHeaderOnRedirect compares
+// only the HOSTNAME, so an https://host → http://host redirect keeps the
+// Authorization header and puts the agent's long-lived bearer token on the wire
+// in plaintext — and a 307/308 during registration replays the POST BODY, which
+// carries both the one-time register token and the agent's new secret. The
+// AssertSafeAPIBaseURL check in agentcfg constrains the CONFIGURED URL and says
+// nothing about where a response may redirect to.
+//
+// Scheme and hostname must both match the configured base. The port may differ:
+// credentials still stay on the same host under the same transport, and a
+// control plane moved to another port behind the same name is a legitimate
+// deployment. Anything else is refused BEFORE the request is issued, so the
+// credentials never leave this process.
+func redirectPolicy(baseURL string) func(*http.Request, []*http.Request) error {
+	base, parseErr := url.Parse(baseURL)
+	return func(request *http.Request, via []*http.Request) error {
+		if parseErr != nil {
+			return fmt.Errorf("无法解析控制面地址，拒绝跟随重定向: %w", parseErr)
+		}
+		if len(via) >= MaxRedirects {
+			return errors.New("控制面重定向次数过多")
+		}
+		if request.URL.Scheme != base.Scheme || !strings.EqualFold(request.URL.Hostname(), base.Hostname()) {
+			return fmt.Errorf(
+				"拒绝把 Agent 凭据跟随重定向到 %s://%s（已配置的控制面是 %s://%s）",
+				request.URL.Scheme, request.URL.Host, base.Scheme, base.Host)
+		}
+		return nil
+	}
+}
+
 // New builds a client. The caller supplies already-resolved credentials.
 func New(options Options) *Client {
-	httpClient := options.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: RequestTimeout}
+	base := options.HTTPClient
+	if base == nil {
+		base = &http.Client{Timeout: RequestTimeout}
 	}
+	// Shallow-copy rather than mutate: an injected client belongs to the caller
+	// (a test's TLS-trusting client, say), and silently rewriting its redirect
+	// policy would be a side effect it never asked for.
+	request := *base
+	request.CheckRedirect = redirectPolicy(options.BaseURL)
 	return &Client{
 		options: options,
-		http:    httpClient,
-		stream:  &http.Client{Transport: httpClient.Transport},
+		http:    &request,
+		// The stream deliberately drops the timeout but keeps the policy: an SSE
+		// connection is long-lived, not less sensitive.
+		stream: &http.Client{Transport: base.Transport, CheckRedirect: redirectPolicy(options.BaseURL)},
 	}
 }
 
@@ -95,9 +140,16 @@ func GenerateAgentToken() (string, error) {
 
 // Register performs the unauthenticated one-time-token exchange.
 func Register(ctx context.Context, client *http.Client, baseURL string, payload protocol.RegisterRequest) (protocol.RegisterResponse, error) {
-	if client == nil {
-		client = &http.Client{Timeout: RegisterTimeout}
+	base := client
+	if base == nil {
+		base = &http.Client{Timeout: RegisterTimeout}
 	}
+	// Registration is the MOST redirect-sensitive call in the agent: a 307/308
+	// replays the body, which here carries both the one-time register token and
+	// the persistent secret this host will be identified by from now on.
+	guarded := *base
+	guarded.CheckRedirect = redirectPolicy(baseURL)
+	client = &guarded
 	var result protocol.RegisterResponse
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -110,6 +162,9 @@ func Register(ctx context.Context, client *http.Client, baseURL string, payload 
 	request.Header.Set("content-type", "application/json")
 	response, err := client.Do(request)
 	if err != nil {
+		if response != nil {
+			response.Body.Close()
+		}
 		return result, fmt.Errorf("Agent 注册失败: %w", err)
 	}
 	defer response.Body.Close()
@@ -139,6 +194,12 @@ func (c *Client) do(ctx context.Context, method, path string, payload any, out a
 	c.applyAuth(request)
 	response, err := c.http.Do(request)
 	if err != nil {
+		// A CheckRedirect refusal is the one error path that still hands back a
+		// response, with its body OPEN (net/http keeps it for Go 1 compat). Not
+		// closing it leaks the connection on every refused redirect.
+		if response != nil {
+			response.Body.Close()
+		}
 		return err
 	}
 	defer response.Body.Close()
@@ -184,7 +245,16 @@ func (c *Client) Heartbeat(ctx context.Context, payload protocol.Heartbeat) (pro
 }
 
 // UploadBatch delivers one metering batch.
+//
+// A nil Samples slice marshals to JSON `null`, and the server's
+// AgentUsageBatchDto requires @IsArray() — so a batch built with valid metadata
+// but no samples would be rejected with a 400 that the agent can only retry
+// forever. An empty array is accepted, so normalise here rather than relying on
+// every caller to construct the slice.
 func (c *Client) UploadBatch(ctx context.Context, batch protocol.UsageBatch) (protocol.UsageBatchAck, error) {
+	if batch.Samples == nil {
+		batch.Samples = []protocol.UsageSample{}
+	}
 	var ack protocol.UsageBatchAck
 	err := c.do(ctx, http.MethodPost, "/api/agent/v1/usage-batches", batch, &ack)
 	return ack, err
@@ -217,6 +287,9 @@ func (c *Client) ConsumeEvents(ctx context.Context, onCommand func(protocol.Comm
 	request.Header.Set("x-chordv-node-id", c.options.NodeID)
 	response, err := c.stream.Do(request)
 	if err != nil {
+		if response != nil {
+			response.Body.Close()
+		}
 		return err
 	}
 	defer response.Body.Close()

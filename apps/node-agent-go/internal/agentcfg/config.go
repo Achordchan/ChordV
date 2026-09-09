@@ -8,6 +8,7 @@ package agentcfg
 import (
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"net/url"
 	"os"
@@ -241,8 +242,19 @@ func positiveDuration(name string, fallbackMillis int64) (time.Duration, error) 
 	if err != nil || value <= 0 {
 		return 0, fmt.Errorf("%s 必须是正整数", name)
 	}
+	// time.Duration is int64 NANOseconds, so a value that is a perfectly valid
+	// positive integer in milliseconds can still overflow the multiplication and
+	// come back NEGATIVE. That would then be handed to time.NewTicker, which
+	// panics on a non-positive duration — a config typo taking the agent down
+	// with a stack trace instead of a message naming the variable.
+	if value > maxDurationMillis {
+		return 0, fmt.Errorf("%s 超出可表示范围（最大 %d）", name, maxDurationMillis)
+	}
 	return time.Duration(value) * time.Millisecond, nil
 }
+
+// maxDurationMillis is the largest millisecond count time.Duration can hold.
+const maxDurationMillis = int64(math.MaxInt64) / int64(time.Millisecond)
 
 func absPath(value string) (string, error) { return filepath.Abs(value) }
 
