@@ -19,6 +19,7 @@ import { ReleaseCenterService } from "./release-center.service";
 import { RuntimeComponentsService } from "./runtime-components.service";
 import { RuntimeSessionService } from "./runtime-session.service";
 import { MeteringIncidentService } from "./metering-incident.service";
+import { MeteringRetentionService } from "./metering-retention.service";
 
 @Global()
 @Module({
@@ -33,6 +34,7 @@ import { MeteringIncidentService } from "./metering-incident.service";
     ClientEventsPublisher,
     ClientRoutingRuleService,
     MeteringIncidentService,
+    MeteringRetentionService,
     AuthSessionService,
     ClientRuntimeEventsService,
     ClientTicketService,
@@ -55,6 +57,7 @@ import { MeteringIncidentService } from "./metering-incident.service";
     ClientEventsPublisher,
     ClientRoutingRuleService,
     MeteringIncidentService,
+    MeteringRetentionService,
     AuthSessionService,
     ClientRuntimeEventsService,
     ClientTicketService,
