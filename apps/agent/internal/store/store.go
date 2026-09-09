@@ -94,6 +94,15 @@ func isoMillis(at time.Time) string {
 
 // Open prepares the store, applying the identity binding and boot bookkeeping.
 func Open(path string, options Options) (*Store, error) {
+	// Resolve BEFORE anything looks at the path. A relative path has no valid
+	// `file:` URI: url.URL renders `data/node-agent.db` as `file://data/…`,
+	// where SQLite reads `data` as an AUTHORITY rather than a directory and
+	// refuses to open. Resolving here also guarantees that the ownership check,
+	// the sidecar check and the URI all name one file.
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
 	if options.ReadOnly {
 		return openReadOnly(path, options)
 	}

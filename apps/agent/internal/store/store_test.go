@@ -707,3 +707,42 @@ func TestDatabasePathWithURIMetacharacters(t *testing.T) {
 		store.Close()
 	}
 }
+
+// TestRelativeDatabasePathOpens covers the shape the shipped .env uses:
+// AGENT_DATABASE_PATH=./data/node-agent.db. A relative path has no valid `file:`
+// URI — url.URL renders `data/node-agent.db` as `file://data/node-agent.db`,
+// where SQLite reads `data` as an AUTHORITY rather than a directory and refuses
+// to open. Every other path test here uses t.TempDir, which is absolute, so none
+// of them can see it.
+func TestRelativeDatabasePathOpens(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	store, err := Open("data/node-agent.db", Options{
+		BootID: "boot-1", NodeID: "node-1", DefaultOfflineAllowance: big.NewInt(1024),
+	})
+	if err != nil {
+		t.Fatalf("a relative database path could not be opened: %v", err)
+	}
+	seed(t, store, user("b1", "u1@chordv", "1", "1000000"))
+	if result := sampleAt(t, store, true, counter("u1@chordv", "10", "20")); result.Batch == nil {
+		t.Fatal("the store opened but does not work")
+	}
+
+	// The probe resolves the same way, so it inspects the file the service uses.
+	probe, err := Open("./data/node-agent.db", Options{
+		BootID: "probe", NodeID: "node-1", DefaultOfflineAllowance: big.NewInt(1024), ReadOnly: true,
+	})
+	if err != nil {
+		store.Close()
+		t.Fatalf("the read-only probe rejected a relative path: %v", err)
+	}
+	snapshot, err := probe.HealthSnapshot()
+	probe.Close()
+	store.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot["desiredUsers"] != 1 || snapshot["bootId"] != "boot-1" {
+		t.Fatalf("the probe read a different database: %v", snapshot)
+	}
+}
