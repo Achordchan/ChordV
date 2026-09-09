@@ -260,12 +260,15 @@ export interface AdminReleaseRecordDto {
 export interface AdminDownloadMirrorConfigDto {
   defaultMirrorPrefix: string | null;
   allowClientMirror: boolean;
+  /** Whether the backend routes its OWN update downloads through the mirror. */
+  useMirrorForSystemUpdate: boolean;
   updatedAt: string | null;
 }
 
 export interface UpdateAdminDownloadMirrorConfigInputDto {
   defaultMirrorPrefix?: string | null;
   allowClientMirror?: boolean;
+  useMirrorForSystemUpdate?: boolean;
 }
 
 export interface AdminRuntimeComponentRecordDto {

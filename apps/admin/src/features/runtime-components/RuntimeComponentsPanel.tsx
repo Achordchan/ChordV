@@ -129,6 +129,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
   const [mirrorConfig, setMirrorConfig] = useState<AdminDownloadMirrorConfigDto | null>(null);
   const [mirrorPrefixDraft, setMirrorPrefixDraft] = useState("");
   const [allowClientMirrorDraft, setAllowClientMirrorDraft] = useState(true);
+  const [useMirrorForSystemUpdateDraft, setUseMirrorForSystemUpdateDraft] = useState(true);
   const [mirrorSaving, setMirrorSaving] = useState(false);
   const [mirrorLoading, setMirrorLoading] = useState(false);
   const savingRef = useRef(false);
@@ -367,6 +368,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
       setMirrorConfig(config);
       setMirrorPrefixDraft(config.defaultMirrorPrefix ?? "");
       setAllowClientMirrorDraft(config.allowClientMirror);
+      setUseMirrorForSystemUpdateDraft(config.useMirrorForSystemUpdate);
     } catch (reason) {
       notifications.show({
         color: "red",
@@ -384,11 +386,13 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
       setMirrorSaving(true);
       const config = await updateAdminDownloadMirrorConfig({
         defaultMirrorPrefix: mirrorPrefixDraft.trim() || null,
-        allowClientMirror: allowClientMirrorDraft
+        allowClientMirror: allowClientMirrorDraft,
+        useMirrorForSystemUpdate: useMirrorForSystemUpdateDraft
       });
       setMirrorConfig(config);
       setMirrorPrefixDraft(config.defaultMirrorPrefix ?? "");
       setAllowClientMirrorDraft(config.allowClientMirror);
+      setUseMirrorForSystemUpdateDraft(config.useMirrorForSystemUpdate);
       notifications.show({
         color: "green",
         title: "客户端组件",
@@ -451,6 +455,13 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
             description="关闭后客户端只能使用后台全局镜像和源地址。"
             checked={allowClientMirrorDraft}
             onChange={(event) => setAllowClientMirrorDraft(event.currentTarget.checked)}
+            disabled={mirrorLoading || mirrorSaving}
+          />
+          <Switch
+            label="后台自更新也走镜像"
+            description="关闭后，后台下载自身更新包时直连源地址，不再经过镜像；客户端组件不受影响，仍按上方配置走镜像。服务器已能直连源站时关闭可少一跳。"
+            checked={useMirrorForSystemUpdateDraft}
+            onChange={(event) => setUseMirrorForSystemUpdateDraft(event.currentTarget.checked)}
             disabled={mirrorLoading || mirrorSaving}
           />
           {mirrorConfig?.updatedAt ? (
