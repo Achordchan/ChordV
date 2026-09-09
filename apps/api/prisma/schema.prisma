@@ -677,6 +677,7 @@ model NodeCommandJob {
   node            Node                 @relation(fields: [nodeId], references: [id], onDelete: Cascade)
   agent           NodeAgent?           @relation(fields: [agentId], references: [id], onDelete: SetNull)
 
+  @@index([bindingId, status, resolvedAt, commandType])
   @@index([nodeId, status, nextRunAt])
   @@index([agentId, status, nextRunAt])
   @@index([subscriptionId, status])
