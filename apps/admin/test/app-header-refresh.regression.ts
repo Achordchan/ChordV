@@ -110,7 +110,7 @@ function testHeaderRefreshDoesNotAlwaysLoadFullSnapshotFirst() {
 function testOverviewKeepsFullSnapshotRefresh() {
   assert.match(
     handleHeaderRefreshBody,
-    /if \(currentSection === "overview"\) {\s*await loadFullSnapshot\(\);\s*return;\s*}/,
+    /if \(currentSection === "overview"\) {\s*await loadFullSnapshot\(\);\s*if \(leaseRevocationQueueRef\.current\.opened\) \{\s*refreshNodeCommandQueueDetail\(leaseRevocationQueueRef\.current\.filter\);\s*\}\s*return;\s*}/,
     "overview header refresh can keep the full snapshot path"
   );
 }
@@ -531,3 +531,29 @@ testInlineAndDestructiveMutationsUseDbFirstActionHandling();
 testHighRiskMutationsReleaseBusyStateInFinally();
 
 console.log("admin app header refresh regression checks passed");
+
+assert.match(
+  handleHeaderRefreshBody,
+  /await loadSectionData\(currentSection, \{ force: true \}\);\s*if \(leaseRevocationQueueRef\.current\.opened\) \{\s*refreshNodeCommandQueueDetail\(leaseRevocationQueueRef\.current\.filter\)/,
+  "手动刷新完成后必须读取当前抽屉目标并刷新命令明细"
+);
+
+async function testManualRefreshReadsLatestDrawerTarget() {
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  for (const section of ["nodes", "overview"]) {
+    const queueRef = { current: { opened: true, filter: { nodeId: "old" } } };
+    const refreshed: unknown[] = [];
+    const load = async () => { queueRef.current.filter = { nodeId: "current" }; };
+    const refresh = new AsyncFunction(
+      "sectionRef", "loadFullSnapshot", "loadSectionData", "leaseRevocationQueueRef", "refreshNodeCommandQueueDetail",
+      handleHeaderRefreshBody
+    );
+    await refresh({ current: section }, load, load, queueRef, (filter: unknown) => refreshed.push(filter));
+    assert.deepEqual(refreshed, [{ nodeId: "current" }], "刷新必须使用请求完成后的当前目标");
+    refreshed.length = 0;
+    queueRef.current.opened = false;
+    await refresh({ current: section }, load, load, queueRef, (filter: unknown) => refreshed.push(filter));
+    assert.equal(refreshed.length, 0, "关闭抽屉后不得继续刷新明细");
+  }
+}
+void testManualRefreshReadsLatestDrawerTarget().catch(error => { console.error(error); process.exitCode = 1; });

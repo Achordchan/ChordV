@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { workLifecycle } from "../src/work-lifecycle";
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import { RuntimeSessionService } from "../src/modules/common/runtime-session.service";
@@ -321,6 +322,59 @@ async function main() {
   assert.equal(synced.length, 4, "周期重试持续进行");
   assert.equal(scannedCursors[1], "", "游标回绕后从头扫起");
 
+  const originalSync = (cronService as any).syncSubscriptionPanelAccessLocked;
+  const lifecycleState = workLifecycle as unknown as { draining: boolean };
+  const previousDraining = lifecycleState.draining;
+  try {
+    synced.length = 0;
+    (cronService as any).syncSubscriptionPanelAccessLocked = async (...args: unknown[]) => {
+      await originalSync(...args);
+      lifecycleState.draining = true;
+    };
+    await cron.retryPendingDirectProvisioning();
+    assert.equal(synced.length, 1, "首个订阅完成后进入排空，不得继续供给其他订阅");
+  } finally {
+    scannedCursors.pop();
+    lifecycleState.draining = previousDraining;
+    (cronService as any).syncSubscriptionPanelAccessLocked = originalSync;
+  }
+
+  // Exercise the actual chunk loop: a drain raised by the first committed
+  // chunk must leave the second transaction unopened and report pending work.
+  const chunkSubscription = {
+    ...baseSubscription, userId: "user-1",
+    user: { id: "user-1", status: "active", email: "test@example.test", displayName: "Test" },
+    nodeAccesses: ["node-1", "node-2"].map(id => ({ nodeId: id, node: { id, isActive: true } }))
+  };
+  let transactionCount = 0;
+  let ensuredCount = 0;
+  const chunkWriter = {
+    subscription: { findUnique: async () => chunkSubscription },
+    panelClientBinding: { findMany: async () => [] }
+  };
+  const chunkService = Object.assign(Object.create(RuntimeSessionService.prototype), {
+    prisma: {
+      ...chunkWriter,
+      $transaction: async (run: (tx: unknown) => Promise<number>) => {
+        transactionCount++;
+        const count = await run(chunkWriter);
+        lifecycleState.draining = true;
+        return count;
+      }
+    },
+    ensurePanelClientBinding: async () => { ensuredCount++; return { id: "binding" }; }
+  });
+  try {
+    const pendingCount = await chunkService.syncSubscriptionPanelAccessLocked("sub-chunk", {
+      ensureOnly: true, chunkSize: 1
+    });
+    assert.equal(transactionCount, 1, "排空期间不得启动下一块事务");
+    assert.equal(ensuredCount, 1);
+    assert.equal(pendingCount, 2, "未处理目标仍应计入待跟进数量");
+  } finally {
+    lifecycleState.draining = previousDraining;
+  }
+
   // Cursor advance: a full batch leaves the cursor at the last id, so a large
   // stuck population cannot starve subscriptions behind it.
   cron.directProvisioningRetryCursor = "sub_1";
@@ -433,7 +487,7 @@ async function main() {
   );
   assert.match(
     runtimeSessionSource,
-    /for \(let index = 0; index < provisioningPairs\.length; index \+= options\.chunkSize\) \{\s*\n\s*const chunk = provisioningPairs\.slice\(index, index \+ options\.chunkSize\);[\s\S]*?\$transaction\([\s\S]*?\{ timeout: DIRECT_PROVISIONING_TX_TIMEOUT_MS \}/,
+    /for \(let index = 0; index < provisioningPairs\.length; index \+= options\.chunkSize\) \{[\s\S]*?const chunk = provisioningPairs\.slice\(index, index \+ options\.chunkSize\);[\s\S]*?\$transaction\([\s\S]*?\{ timeout: DIRECT_PROVISIONING_TX_TIMEOUT_MS \}/,
     "供给目标必须按 chunkSize 分块、每块显式超时的事务提交"
   );
   assert.match(

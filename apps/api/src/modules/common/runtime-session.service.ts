@@ -703,6 +703,7 @@ export class RuntimeSessionService {
         ? subscriptions[subscriptions.length - 1]!.subscriptionId
         : "";
     for (const { subscriptionId } of subscriptions) {
+      if (workLifecycle.isDraining) return;
       if (this.directTrafficResetsInFlight.has(subscriptionId)) {
         continue;
       }
@@ -957,6 +958,12 @@ export class RuntimeSessionService {
       // across all chunks, so the reset exclusion is preserved.
       let provisioned = 0;
       for (let index = 0; index < provisioningPairs.length; index += options.chunkSize) {
+        // Finish the current atomic chunk, then leave the remaining targets
+        // discoverable by the durable retry scan after restart. Count deferred
+        // targets as pending so callers cannot report a completed sync.
+        if (workLifecycle.isDraining) {
+          return updatedBindingCount + provisioned + pendingSettlementTargetCount + provisioningPairs.length - index;
+        }
         const chunk = provisioningPairs.slice(index, index + options.chunkSize);
         provisioned += await runWithSubscriptionUsageLock(subscriptionId, () =>
           this.prisma.$transaction(

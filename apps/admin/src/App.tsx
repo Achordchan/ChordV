@@ -1358,6 +1358,9 @@ export function App() {
     const currentSection = sectionRef.current;
     if (currentSection === "overview") {
       await loadFullSnapshot();
+      if (leaseRevocationQueueRef.current.opened) {
+        refreshNodeCommandQueueDetail(leaseRevocationQueueRef.current.filter);
+      }
       return;
     }
     if (currentSection === "releases") {
@@ -1377,6 +1380,9 @@ export function App() {
       return;
     }
     await loadSectionData(currentSection, { force: true });
+    if (leaseRevocationQueueRef.current.opened) {
+      refreshNodeCommandQueueDetail(leaseRevocationQueueRef.current.filter);
+    }
   }
 
   async function handleRetryLeaseRevocationJob(jobId: string) {
