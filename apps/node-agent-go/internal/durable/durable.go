@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -37,35 +38,103 @@ func SyncDir(directory string) error {
 	return handle.Sync()
 }
 
-// syncChain syncs the directory and every ancestor up to the filesystem root.
-// A parent created by an earlier failed attempt can be VISIBLE without its own
-// directory entry being durable, so syncing only the immediate parent can leave
-// a durable file inside a directory that a crash removes.
-func syncChain(directory string) error {
+// missingAncestors lists the directories of path that do not exist yet,
+// shallowest first — i.e. exactly what a following MkdirAll will create.
+func missingAncestors(directory string) []string {
+	var missing []string
 	current := directory
 	for {
-		if err := SyncDir(current); err != nil {
-			return err
+		if _, err := os.Stat(current); err == nil {
+			break
 		}
+		missing = append(missing, current)
 		parent := filepath.Dir(current)
 		if parent == current {
-			return nil
+			break
 		}
 		current = parent
 	}
+	for left, right := 0, len(missing)-1; left < right; left, right = left+1, right-1 {
+		missing[left], missing[right] = missing[right], missing[left]
+	}
+	return missing
+}
+
+// makeDirs creates the given chain shallowest-first, fixing each level's mode
+// as it goes.
+//
+// This is os.MkdirAll's job, except that MkdirAll's mode is masked by umask —
+// and it does not stop there: under 0277 it creates the first level as 0500 and
+// then immediately fails trying to create the NEXT level inside it. A chmod pass
+// afterwards is therefore too late; the mode has to be fixed at each level
+// before descending.
+//
+// A level that already exists (another writer raced us) is kept exactly as it
+// is: only a directory this call actually created may have its mode rewritten,
+// or a deliberate operator permission would be silently undone.
+func makeDirs(chain []string) error {
+	for _, made := range chain {
+		switch err := os.Mkdir(made, DirMode); {
+		case err == nil:
+			if err := os.Chmod(made, DirMode); err != nil {
+				return err
+			}
+		case errors.Is(err, os.ErrExist):
+			continue
+		default:
+			return err
+		}
+	}
+	return nil
+}
+
+// syncAfterWrite makes the new directory entries durable.
+//
+// A directory created by an earlier failed attempt can be VISIBLE without its
+// own entry being durable, so the directories this call created must be synced
+// too — along with the ONE pre-existing ancestor that gained the shallowest of
+// them.
+//
+// It deliberately stops there rather than walking to the filesystem root.
+// Ancestors above that gained no entry and are already durable, so syncing them
+// achieves nothing — while opening them requires READ permission, which a
+// hardened deployment need not grant: a root-owned 0711 parent is searchable but
+// not readable, and an unprivileged agent would fail there on every write
+// despite owning its own data directory outright.
+func syncAfterWrite(directory string, created []string) error {
+	if len(created) == 0 {
+		return SyncDir(directory)
+	}
+	for _, made := range created {
+		if err := SyncDir(made); err != nil {
+			return err
+		}
+	}
+	// The only pre-existing directory involved. If it is not readable, say so
+	// precisely: the alternative is a silently non-durable first boot, whose
+	// failure mode is a lost registration secret on a one-time token.
+	parent := filepath.Dir(created[0])
+	if err := SyncDir(parent); err != nil {
+		return fmt.Errorf("无法 fsync 上级目录 %s（新建目录项需要对它有读权限才能确保持久化）: %w", parent, err)
+	}
+	return nil
 }
 
 // WriteFile writes contents to file atomically and durably: exclusive temp file
 // with an explicit mode, fsync of the contents, atomic rename, then fsync of the
-// parent chain. A reader therefore never observes a partial file, and a crash
-// leaves either the old file or the new one.
+// directory entries this call created. A reader therefore never observes a
+// partial file, and a crash leaves either the old file or the new one.
 func WriteFile(file string, contents []byte, mode os.FileMode) (err error) {
 	file, err = filepath.Abs(file)
 	if err != nil {
 		return err
 	}
 	directory := filepath.Dir(file)
-	if err = os.MkdirAll(directory, DirMode); err != nil {
+	// Recorded BEFORE creating anything: which directories are new decides both
+	// whose mode may be rewritten (only ours — a pre-existing directory belongs
+	// to the operator) and which entries still need an fsync afterwards.
+	created := missingAncestors(directory)
+	if err = makeDirs(created); err != nil {
 		return err
 	}
 	suffix := make([]byte, 8)
@@ -113,7 +182,7 @@ func WriteFile(file string, contents []byte, mode os.FileMode) (err error) {
 	if err = os.Rename(temporary, file); err != nil {
 		return err
 	}
-	return syncChain(directory)
+	return syncAfterWrite(directory, created)
 }
 
 // WriteSecret persists a JSON document with owner-only permissions. The
