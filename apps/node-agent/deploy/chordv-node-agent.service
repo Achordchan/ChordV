@@ -1,8 +1,8 @@
 [Unit]
 Description=ChordV Node Agent
-After=network-online.target xray.service
+After=network-online.target chordv-xray.service
 Wants=network-online.target
-Requires=xray.service
+Wants=chordv-xray.service
 
 [Service]
 Type=simple

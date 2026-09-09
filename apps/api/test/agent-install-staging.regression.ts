@@ -121,7 +121,7 @@ cp /test/curl /test-bin/curl
 export PATH=/test-bin:$PATH
 id chordv-agent >/dev/null 2>&1 || useradd --system chordv-agent
 printf '{"log":{}}' > /release/deploy/xray-base.json
-printf '{"api":{}}' > /release/deploy/xray-api.fragment.json
+printf '{"api":{},"inbounds":[{"tag":"api-in","listen":"127.0.0.1","port":10085}]}' > /release/deploy/xray-api.fragment.json
 printf 'console.log("helper");' > /release/dist/src/xray-apply.js
 # The section installs root-executed files from the ARCHIVE root downloaded,
 # never through the release tree the service user extracts.
@@ -135,36 +135,41 @@ sha256sum /tmp/xray.tgz | cut -d' ' -f1 > /tmp/xray.sha256
 # would point an operator's own service at a config directory with no
 # user-facing inbound and restart it.
 mkdir -p /etc/systemd/system
-printf '[Unit]\\nDescription=Someone else Xray\\n' > /etc/systemd/system/xray.service
+printf '[Unit]\\nDescription=Someone else Xray\\n' > /etc/systemd/system/chordv-xray.service
 TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh 2>/tmp/takeover.err && exit 96
-grep -q '不是由本安装脚本管理的 Xray 服务' /tmp/takeover.err
-grep -q 'Someone else Xray' /etc/systemd/system/xray.service
-[[ ! -e /usr/local/bin/xray ]]
-rm -f /etc/systemd/system/xray.service
+grep -q 'ChordV 专用服务名已被其他服务占用' /tmp/takeover.err
+grep -q 'Someone else Xray' /etc/systemd/system/chordv-xray.service
+[[ ! -e /opt/chordv-xray/bin/xray ]]
+rm -f /etc/systemd/system/chordv-xray.service
 
 # A vendor unit lives under /usr/lib; writing ours into /etc would override it
 # without ever touching the file the guard used to check.
 mkdir -p /usr/lib/systemd/system
-printf '[Unit]\\nDescription=Vendor Xray\\n' > /usr/lib/systemd/system/xray.service
+printf '[Unit]\\nDescription=Vendor Xray\\n' > /usr/lib/systemd/system/chordv-xray.service
 TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh 2>/tmp/vendor.err && exit 95
-grep -q '/usr/lib/systemd/system/xray.service' /tmp/vendor.err
-[[ ! -e /etc/systemd/system/xray.service ]]
-rm -f /usr/lib/systemd/system/xray.service
+grep -q '/usr/lib/systemd/system/chordv-xray.service' /tmp/vendor.err
+[[ ! -e /etc/systemd/system/chordv-xray.service ]]
+rm -f /usr/lib/systemd/system/chordv-xray.service
 
 # A drop-in is someone's deliberate customization of that service too.
-mkdir -p /etc/systemd/system/xray.service.d
+mkdir -p /etc/systemd/system/chordv-xray.service.d
 TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh 2>/tmp/dropin.err && exit 94
-grep -q 'xray.service.d' /tmp/dropin.err
-rmdir /etc/systemd/system/xray.service.d
+grep -q 'chordv-xray.service.d' /tmp/dropin.err
+rmdir /etc/systemd/system/chordv-xray.service.d
 
+mkdir -p /usr/local/bin
+printf 'original-xray-binary' > /usr/local/bin/xray
+printf '[Unit]\\nDescription=Legacy Xray\\n' > /etc/systemd/system/xray.service
 # A digest that does not match must abort before anything is installed.
 TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/dev/null bash /test/xray.sh 2>/tmp/xray.err && exit 99
 # Fail for the RIGHT reason: the digest check, not a missing tool upstream of it.
 grep -qi 'sha256sum' /tmp/xray.err
-[[ ! -e /usr/local/bin/xray ]]
+[[ ! -e /opt/chordv-xray/bin/xray ]]
 [[ ! -e /etc/chordv/xray/conf.d/00-base.json ]]
 
 TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh
+[[ "$(cat /usr/local/bin/xray)" == original-xray-binary ]]
+grep -q 'Legacy Xray' /etc/systemd/system/xray.service
 [[ "$(stat -c '%U:%G:%a' /etc/chordv/xray/conf.d/00-base.json)" == root:root:644 ]]
 [[ "$(stat -c '%U:%G:%a' /etc/chordv/xray/conf.d/10-api.json)" == root:root:644 ]]
 [[ ! -e /etc/chordv/xray/conf.d/50-inbound.json ]]
@@ -186,11 +191,11 @@ grep -q '符号链接' /tmp/symlink.err
 rm -f /var/lib/chordv-xray/requests
 TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh
 [[ "$(stat -c '%U:%a' /var/lib/chordv-xray/requests)" == chordv-agent:700 ]]
-[[ "$(stat -c '%a' /usr/local/bin/xray)" == 755 ]]
-grep -q 'ReadOnlyPaths=/etc/chordv/xray' /etc/systemd/system/xray.service
+[[ "$(stat -c '%a' /opt/chordv-xray/bin/xray)" == 755 ]]
+grep -q 'ReadOnlyPaths=/etc/chordv/xray' /etc/systemd/system/chordv-xray.service
 grep -q 'PathChanged=/var/lib/chordv-xray/requests/pending.json' /etc/systemd/system/chordv-xray-apply.path
 grep -q '/usr/local/lib/chordv/xray-apply.js' /etc/systemd/system/chordv-xray-apply.service
-grep -q 'chordv-managed: xray' /etc/systemd/system/xray.service
+grep -q 'chordv-managed: xray' /etc/systemd/system/chordv-xray.service
 # What root runs must come from the archive, not from the release tree: replace
 # the release copy with a marker and confirm it never reaches the helper path.
 printf 'ATTACKER' > /release/dist/src/xray-apply.js
@@ -198,7 +203,7 @@ TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh
 ! grep -q ATTACKER /usr/local/lib/chordv/xray-apply.js
 # Re-running the installer over its OWN unit is a normal upgrade — but it must
 # not overwrite a metering fragment the operator has tuned.
-printf '{"api":{"tag":"api"},"operator":true}' > /etc/chordv/xray/conf.d/10-api.json
+printf '{"api":{"tag":"api"},"operator":true,"inbounds":[{"tag":"api-in","listen":"127.0.0.1","port":11086}]}' > /etc/chordv/xray/conf.d/10-api.json
 TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh 2>/tmp/upgrade.err
 grep -q operator /etc/chordv/xray/conf.d/10-api.json
 grep -q '保留了本机已有' /tmp/upgrade.err

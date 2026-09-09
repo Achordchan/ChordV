@@ -615,25 +615,25 @@ function testInstallerAndDownloadRoute() {
   assert.match(section, /cmp -s "\$target" "\$source"/);
   assert.match(section, /PathChanged=\$REQUEST_DIR\/pending.json/);
   // The oneshot helper synchronously restarts Xray; ordering it after
-  // xray.service lets systemd hold that restart until this start job finishes.
+  // chordv-xray.service lets systemd hold that restart until this start job finishes.
   const applyUnit = section.slice(section.indexOf("chordv-xray-apply.service <<APPLYUNIT"), section.indexOf("APPLYUNIT\n\ncat"));
-  assert.equal(/After=xray.service/.test(applyUnit), false, "助手单元不得排在 xray.service 之后");
+  assert.equal(/After=chordv-xray.service/.test(applyUnit), false, "助手单元不得排在 chordv-xray.service 之后");
   assert.match(section, /ReadOnlyPaths=\/etc\/chordv\/xray/);
   // An operator's own Xray must not be taken over: replacing that unit points it
   // at a config directory with no user-facing inbound and restarts it.
   assert.match(section, /chordv-managed: xray/);
-  assert.match(section, /已存在不是由本安装脚本管理的 Xray 服务/);
+  assert.match(section, /ChordV 专用服务名已被其他服务占用/);
   // A vendor unit under /usr/lib or /lib is overridden by ours in /etc, so the
   // guard must ask systemd what it resolves rather than only looking in /etc.
-  assert.match(section, /systemctl show -p FragmentPath --value xray.service/);
-  assert.match(section, /\/usr\/lib\/systemd\/system\/xray.service/);
+  assert.match(section, /systemctl show -p FragmentPath --value chordv-xray.service/);
+  assert.match(section, /\/usr\/lib\/systemd\/system\/chordv-xray.service/);
   assert.match(section, /DropInPaths/);
   assert.match(section, /NoNewPrivileges=true/);
   // The agent unit keeps its hardening and now depends on Xray.
   // Ordering only: Requires= would stop the agent every time the helper
   // restarts Xray, killing the very command that asked for the restart.
-  assert.match(script, /Wants=network-online.target xray.service/);
-  assert.equal(/^Requires=xray.service$/m.test(script), false);
+  assert.match(script, /Wants=network-online.target chordv-xray.service/);
+  assert.equal(/^Requires=chordv-xray.service$/m.test(script), false);
   assert.match(script, /NoNewPrivileges=true/);
   // The rendered unit may REQUIRE the handoff directory: this installer creates
   // it in the same run. (The checked-in deploy/chordv-node-agent.service serves

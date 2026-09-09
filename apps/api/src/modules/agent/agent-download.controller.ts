@@ -19,6 +19,18 @@ const ALLOWED_ARCHES = new Set(["linux-x64", "linux-arm64"]);
 
 @Controller()
 export class AgentDownloadController {
+  @Get("agent-download/node/:name")
+  async downloadNode(@Param("name") name: string, @Res() response: Response) {
+    const digest = name.endsWith(".sha256");
+    const arch = digest ? name.slice(0, -".sha256".length) : name;
+    if (!ALLOWED_ARCHES.has(arch)) throw new BadRequestException("不支持的架构。");
+    const distDir = process.env.CHORDV_AGENT_DIST_DIR?.trim();
+    if (!distDir) throw new NotFoundException("该服务器未配置 Node 运行环境分发。");
+    const path = await import("node:path");
+    await sendArtifact(path.join(distDir, `node-20.19.0-${arch}.tar.gz${digest ? ".sha256" : ""}`),
+      digest ? "text/plain; charset=utf-8" : "application/gzip", `Node 运行环境（${arch}）`, response);
+  }
+
   @Get("agent-download/:arch")
   async download(@Param("arch") arch: string, @Res() response: Response) {
     if (!ALLOWED_ARCHES.has(arch)) throw new BadRequestException("不支持的架构。");

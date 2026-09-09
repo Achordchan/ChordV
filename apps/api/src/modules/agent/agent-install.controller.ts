@@ -2,6 +2,7 @@ import { Controller, Headers, HttpCode, Post, Body, Res } from "@nestjs/common";
 import { IsNotEmpty, IsString, MaxLength } from "class-validator";
 import type { Response } from "express";
 import { AgentRegisterService } from "./agent-register.service";
+import { renderNodeRuntimeBootstrap } from "./agent-node-runtime";
 
 /**
  * Renders the one-shot VPS install script for an agent-native node. UNAUTHENTICATED
@@ -181,7 +182,7 @@ fi
 if ! id "\$SERVICE_USER" >/dev/null 2>&1; then
   useradd --system --home /var/lib/chordv-node-agent --shell /usr/sbin/nologin "\$SERVICE_USER"
 fi
-for candidate in /usr/bin/node /usr/local/bin/node; do
+for candidate in /opt/chordv-node-runtime/v20.19.0/bin/node /usr/bin/node /usr/local/bin/node; do
   [[ -x "\$candidate" ]] || continue
   candidate="\$(readlink -f "\$candidate" 2>/dev/null || true)"
   case "\$candidate" in /usr/*|/opt/*) ;; *) continue ;; esac
@@ -191,10 +192,7 @@ for candidate in /usr/bin/node /usr/local/bin/node; do
     break
   fi
 done
-if [[ -z "\$NODE_BIN" ]]; then
-  echo "安装失败：未找到 Node.js 20.19.x（要求 20.19.x，可用 node --version 检查已安装版本）。请将 Node.js 20.19.x 安装到服务用户可访问的系统目录（/usr/bin 或 /usr/local/bin），不要使用 root 的 nvm 路径。" >&2
-  exit 1
-fi
+${renderNodeRuntimeBootstrap()}
 
 echo "==> 下载 ChordV Node Agent (\$ARCH)…"
 RELEASES_DIR="\$INSTALL_DIR/releases"
@@ -278,14 +276,15 @@ chown root:"\$SERVICE_USER" "\$ENV_FILE"
 chmod 0640 "\$ENV_FILE"
 
 ${renderXrayInstall()}
+printf '\\nXRAY_API_ADDRESS=127.0.0.1:%s\\n' "\$XRAY_API_PORT" >> "\$ENV_FILE"
 cat > /etc/systemd/system/chordv-node-agent.service <<UNIT
 [Unit]
 Description=ChordV Node Agent
 # Ordering only. Requires= would stop this service whenever xray is stopped —
 # and every changed ENSURE_INBOUND restarts xray, which would kill the agent
 # mid-command, before it can reconcile users or report the result.
-After=network-online.target xray.service
-Wants=network-online.target xray.service
+After=network-online.target chordv-xray.service
+Wants=network-online.target chordv-xray.service
 
 [Service]
 Type=simple
@@ -310,10 +309,10 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable xray.service chordv-xray-apply.path chordv-node-agent.service
+systemctl enable chordv-xray.service chordv-xray-apply.path chordv-node-agent.service
 # Xray comes up with base + metering fragment only; the inbound arrives later
 # as an ENSURE_INBOUND command, so a fresh host is healthy but serves nobody.
-systemctl restart xray.service
+systemctl restart chordv-xray.service
 systemctl start chordv-xray-apply.path
 
 echo "==> 启动 Agent（首次启动将使用注册令牌完成接入）…"
@@ -338,38 +337,53 @@ fi
 export function renderXrayInstall(): string {
   return `# --- chordv:xray-install:begin ---
 XRAY_MARKER="# chordv-managed: xray"
-XRAY_UNIT=/etc/systemd/system/xray.service
+XRAY_UNIT=/etc/systemd/system/chordv-xray.service
+if [[ -f /etc/systemd/system/xray.service ]] && grep -qF "\$XRAY_MARKER" /etc/systemd/system/xray.service; then
+  echo "安装失败：检测到旧版 ChordV 共用 xray.service；请先迁移旧 ChordV 服务，原服务未修改。" >&2
+  exit 1
+fi
 # This host may already run Xray for something else — an operator's own
 # deployment, or a leftover from before. Replacing that unit would point it at a
 # config directory holding no user-facing inbound and restart it, silently
 # taking the existing service offline. Only a unit this installer wrote may be
 # replaced; anything else requires a deliberate migration.
 refuse_takeover() {
-  echo "安装失败：本机已存在不是由本安装脚本管理的 Xray 服务（\$1）。" >&2
-  echo "如需交给 ChordV 托管：先备份现有 Xray 配置与单元、停止并禁用该服务，再重跑本命令；" >&2
+  echo "安装失败：ChordV 专用服务名已被其他服务占用（\$1）。" >&2
+  echo "请保留原服务并排查专用服务名冲突，不要停用原 3x-ui/Xray。" >&2
   echo "否则本次安装会用只含计量片段的配置目录替换它，现有代理服务将立即中断。" >&2
   exit 1
 }
 # A vendor package puts its unit under /usr/lib or /lib, where writing ours into
 # /etc would silently override it — so ask systemd which file it actually
 # resolves, and fall back to the known paths when systemd is unavailable.
-XRAY_FRAGMENT="\$(systemctl show -p FragmentPath --value xray.service 2>/dev/null || true)"
-XRAY_DROPINS="\$(systemctl show -p DropInPaths --value xray.service 2>/dev/null || true)"
+XRAY_FRAGMENT="\$(systemctl show -p FragmentPath --value chordv-xray.service 2>/dev/null || true)"
+XRAY_DROPINS="\$(systemctl show -p DropInPaths --value chordv-xray.service 2>/dev/null || true)"
 if [[ -n "\$XRAY_FRAGMENT" ]]; then
   if [[ -e "\$XRAY_FRAGMENT" ]] && ! grep -qF "\$XRAY_MARKER" "\$XRAY_FRAGMENT"; then refuse_takeover "\$XRAY_FRAGMENT"; fi
 else
-  for candidate in "\$XRAY_UNIT" /usr/lib/systemd/system/xray.service /lib/systemd/system/xray.service; do
+  for candidate in "\$XRAY_UNIT" /usr/lib/systemd/system/chordv-xray.service /lib/systemd/system/chordv-xray.service; do
     if [[ -e "\$candidate" ]] && ! grep -qF "\$XRAY_MARKER" "\$candidate"; then refuse_takeover "\$candidate"; fi
   done
 fi
 if [[ -n "\$XRAY_DROPINS" ]]; then refuse_takeover "\$XRAY_DROPINS"; fi
-for dropin in /etc/systemd/system/xray.service.d /usr/lib/systemd/system/xray.service.d /lib/systemd/system/xray.service.d; do
+for dropin in /etc/systemd/system/chordv-xray.service.d /usr/lib/systemd/system/chordv-xray.service.d /lib/systemd/system/chordv-xray.service.d; do
   if [[ -e "\$dropin" ]]; then refuse_takeover "\$dropin"; fi
 done
 
 XRAY_USER="chordv-xray"
-XRAY_BIN=/usr/local/bin/xray
+XRAY_BIN=/opt/chordv-xray/bin/xray
 XRAY_CONF_DIR=/etc/chordv/xray/conf.d
+for owned_path in /opt/chordv-xray /opt/chordv-xray/bin "\$XRAY_BIN" /etc/chordv /etc/chordv/xray "\$XRAY_CONF_DIR"; do
+  [[ ! -L "\$owned_path" ]] || { echo "安装失败：专用 Xray 路径不得为符号链接。" >&2; exit 1; }
+done
+# Use a dedicated management port and preserve a previously installed one.
+XRAY_API_PORT=11085
+if [[ -f "\$XRAY_CONF_DIR/10-api.json" ]]; then
+  XRAY_API_PORT="\$("\$NODE_BIN" -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")).inbounds?.find(x=>x.tag==="api-in");if(!p||p.listen!=="127.0.0.1"||!Number.isInteger(p.port)||p.port<1024||p.port>65535)process.exit(1);console.log(p.port)' "\$XRAY_CONF_DIR/10-api.json")"
+fi
+if ! systemctl is-active --quiet chordv-xray.service 2>/dev/null; then
+  "\$NODE_BIN" -e 'const s=require("net").createServer();s.once("error",()=>{console.error("安装失败：ChordV 管理端口被占用，原服务未修改。");process.exit(1)});s.listen(Number(process.argv[1]),"127.0.0.1",()=>s.close())' "\$XRAY_API_PORT"
+fi
 HELPER_DIR=/usr/local/lib/chordv
 # Both handoff directories live under a ROOT-owned parent. Putting the request
 # directory inside the agent's own data directory would let a compromised agent
@@ -397,6 +411,7 @@ curl -fsSL --connect-timeout 15 --max-time 60 \\
 ( cd "\$XRAY_STAGING" && printf '%s  xray.tar.gz\\n' "$(cut -d' ' -f1 < xray.sha256)" | sha256sum -c - )
 tar --no-same-owner --no-same-permissions -xzf "\$XRAY_STAGING/xray.tar.gz" -C "\$XRAY_STAGING"
 [[ -f "\$XRAY_STAGING/xray" ]] || { echo "安装失败：Xray 包中缺少 xray 可执行文件。" >&2; exit 1; }
+install -d -m 0755 -o root -g root /opt/chordv-xray /opt/chordv-xray/bin
 install -m 0755 -o root -g root "\$XRAY_STAGING/xray" "\$XRAY_BIN"
 "\$XRAY_BIN" version >/dev/null
 
@@ -416,6 +431,7 @@ for required in deploy/xray-base.json deploy/xray-api.fragment.json dist/src/xra
   [[ -f "\$TRUSTED_DIR/\$required" ]] || { echo "安装失败：Agent 包缺少 \$required。" >&2; exit 1; }
 done
 "\$NODE_BIN" --check "\$TRUSTED_DIR/dist/src/xray-apply.js"
+"\$NODE_BIN" -e 'const fs=require("fs");const p=process.argv[1];const c=JSON.parse(fs.readFileSync(p,"utf8"));const i=c.inbounds?.find(x=>x.tag==="api-in");if(!i)throw Error("缺少管理入站");i.port=Number(process.argv[2]);fs.writeFileSync(p,JSON.stringify(c,null,2)+"\\n")' "\$TRUSTED_DIR/deploy/xray-api.fragment.json" "\$XRAY_API_PORT"
 
 # Seed these only when absent. An operator may have tuned the API port, routing
 # or stats policy and pointed the agent at it; overwriting on every reinstall
@@ -476,13 +492,15 @@ XRAYUNIT
 cat > /etc/systemd/system/chordv-xray-apply.service <<APPLYUNIT
 [Unit]
 Description=Apply ChordV Xray inbound configuration
-# Deliberately NOT ordered after xray.service: this oneshot synchronously runs
+# Deliberately NOT ordered after chordv-xray.service: this oneshot synchronously runs
 # "systemctl restart xray", and an ordering dependency lets systemd hold that
 # restart until this start job finishes — which is waiting on the restart.
 
 [Service]
 Type=oneshot
 User=root
+Environment="CHORDV_XRAY_BIN=/opt/chordv-xray/bin/xray"
+Environment="CHORDV_XRAY_RESTART_CMD=systemctl restart chordv-xray.service"
 ExecStart=\${NODE_BIN@Q} \$HELPER_DIR/xray-apply.js
 PrivateTmp=true
 APPLYUNIT

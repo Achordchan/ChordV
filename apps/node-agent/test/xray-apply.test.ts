@@ -625,6 +625,18 @@ test('磁盘配置被换成别的密钥时，空转分支必须重新部署', ()
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('其它服务占用入站端口时不写配置、不重启', () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'xray-apply-port-conflict-'));
+  try {
+    const applyDeps = deps(root);
+    applyDeps.assertPortAvailable = () => { throw new Error('端口被其他服务占用'); };
+    assert.throws(() => applyRequest(request(), applyDeps), /端口被其他服务占用/);
+    assert.equal(fs.existsSync(join(applyDeps.confDir, '50-inbound.json')), false);
+    assert.equal(fs.existsSync(applyDeps.stateFile), false);
+    assert.equal(applyDeps.restarts, 0);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('拒绝占用其它配置片段已使用的入站 tag', () => {
   const root = fs.mkdtempSync(join(tmpdir(), 'xray-apply-tag-'));
   try {

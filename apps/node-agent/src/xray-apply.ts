@@ -76,6 +76,8 @@ export interface ApplyDeps {
    * window and must be about Xray's own socket.
    */
   isListening(port: number): boolean;
+  /** Refuse a listener owned by another service before any config write. */
+  assertPortAvailable?(port: number): void;
   resolveListen(): string;
   /**
    * Resolves a fallback-target hostname for the address policy check. The
@@ -653,6 +655,7 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
     throw new Error(`本机入站只能监听 ${listen}，无法满足节点对外地址所需的 ${request.requireListen}`);
   }
   const rendered = JSON.stringify(renderInbound({ ...request, dest: pinnedDest }, keys, listen), null, 2) + '\n';
+  deps.assertPortAvailable?.(request.listenPort);
   assertConfigValid(deps, rendered);
   // Journal BEFORE publishing. If the helper dies between publishing the config
   // and recording it, Xray serves the new inbound while the state file still
@@ -829,10 +832,10 @@ function main(): void {
   const resultDir = process.env.CHORDV_XRAY_RESULT_DIR?.trim() || '/var/lib/chordv-xray/results';
   const confDir = process.env.CHORDV_XRAY_CONF_DIR?.trim() || '/etc/chordv/xray/conf.d';
   const stateFile = process.env.CHORDV_XRAY_STATE_FILE?.trim() || '/etc/chordv/xray/inbound-state.json';
-  const xrayBin = process.env.CHORDV_XRAY_BIN?.trim() || '/usr/local/bin/xray';
+  const xrayBin = process.env.CHORDV_XRAY_BIN?.trim() || '/opt/chordv-xray/bin/xray';
   const agentUser = process.env.CHORDV_AGENT_USER?.trim() || 'chordv-agent';
   const xrayUser = process.env.CHORDV_XRAY_USER?.trim() || 'chordv-xray';
-  const restartCommand = process.env.CHORDV_XRAY_RESTART_CMD?.trim() || 'systemctl restart xray';
+  const restartCommand = process.env.CHORDV_XRAY_RESTART_CMD?.trim() || 'systemctl restart chordv-xray.service';
   const deps: ApplyDeps = {
     confDir,
     stateFile,
@@ -843,6 +846,11 @@ function main(): void {
       execFileSync(command, args, { stdio: 'pipe' });
     },
     isListening: (port) => waitForListener(port, xrayBin),
+    assertPortAvailable: (port) => {
+      if (listeningSocketInodes(port).length > 0 && !isPortOwnedBy(port, xrayBin)) {
+        throw new Error(`入站端口 ${port} 已被其他服务占用，请选择空闲端口；原服务未修改`);
+      }
+    },
     resolveListen: () => resolveListenAddress(),
     resolveDest: resolveHostAddresses,
     generateKeys: () => ({
