@@ -168,8 +168,8 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                         commandSummary={findNodeCommandSummary(props.nodeCommandQueue.summaries, "subscriptions", item.id)}
                         onOpenLeaseRevocationQueue={() =>
                           props.onOpenLeaseRevocationQueue({
+                            // Subscription-scoped like the badge above it.
                             subscriptionId: item.id,
-                            userId: item.userId ?? undefined,
                             title: `${item.userDisplayName ?? item.userEmail ?? "当前用户"} · ${item.planName}`
                           })
                         }
@@ -289,7 +289,6 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                           onOpenLeaseRevocationQueue={() =>
                             props.onOpenLeaseRevocationQueue({
                               subscriptionId: teamSubscriptionRecord?.id ?? currentSubscription?.id,
-                              teamId: team.id,
                               title: `${team.name} · ${teamSubscriptionRecord?.planName ?? "Team 订阅"}`
                             })
                           }
@@ -459,7 +458,6 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                                                 commandSummary={findNodeCommandSummary(props.nodeCommandQueue.summaries, "users", member.userId)}
                                                 onOpenLeaseRevocationQueue={() =>
                                                   props.onOpenLeaseRevocationQueue({
-                                                    subscriptionId: currentSubscription?.id,
                                                     userId: member.userId,
                                                     teamId: team.id,
                                                     title: `${member.displayName} · ${team.name}`

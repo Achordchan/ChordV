@@ -214,6 +214,35 @@ function testNodeCommandQueueShowsDirectProvisioning() {
     /const hasFilter = hasLeaseRevocationQueueFilter\(props\.filter\) \|\| hasNodeCommandQueueFilter\(props\.filter\);/,
     "抽屉标题与「查看全部」必须用组合谓词——team-only 视图也是过滤视图，不得显示全局标题并隐藏返回入口"
   );
+  // Badge-scope alignment: a USER-scoped badge counts that user's commands
+  // across ALL subscriptions, so its drawer filter must not narrow to the
+  // current subscription — it would hide the very failures the badge shows.
+  for (const [label, source] of [
+    ["users", usersPageSource],
+    ["subscriptions", subscriptionsPageSource]
+  ] as const) {
+    const inline = source.match(/<PanelSyncInlineStatus[\s\S]*?\/>/g) ?? [];
+    for (const block of inline) {
+      if (!block.includes(', "users",')) {
+        continue;
+      }
+      assert.doesNotMatch(
+        block,
+        /commandSummary=[\s\S]*?subscriptionId/,
+        `${label} 页的用户级命令徽章挂接的过滤不得再按订阅收窄（徽章按用户全部订阅计数）`
+      );
+    }
+  }
+  assert.match(
+    subscriptionsPageSource,
+    /commandSummary=\{findNodeCommandSummary\(props\.nodeCommandQueue\.summaries, "subscriptions", item\.id\)\}\s*\n\s*onOpenLeaseRevocationQueue=\{\(\) =>\s*\n\s*props\.onOpenLeaseRevocationQueue\(\{\s*\n\s*\/\/ Subscription-scoped like the badge above it\.[\s\S]*?subscriptionId: item\.id,\s*\n\s*title:/,
+    "订阅行徽章按订阅计数，过滤也按订阅——两者一致"
+  );
+  assert.match(
+    nodesPageSource,
+    /const queueCount = props\.leaseRevocationJobs\.length\s*\n\s*\+ sumNodeCommandSummaries\(props\.nodeCommandQueue\.summaries, "nodes"\);/,
+    "节点页同步任务按钮的计数必须含节点命令总数——与表头/概览口径一致"
+  );
   const translateSource = readFileSync(resolve(import.meta.dirname, "../src/utils/admin-translate.ts"), "utf8");
   assert.match(
     translateSource,

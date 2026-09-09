@@ -193,7 +193,11 @@ export function UsersPage(props: UsersPageProps) {
                           commandSummary={findNodeCommandSummary(props.nodeCommandQueue.summaries, "users", item.id)}
                           onOpenLeaseRevocationQueue={() =>
                             props.onOpenLeaseRevocationQueue({
-                              subscriptionId: subscriptionId ?? undefined,
+                              // USER-only scope, matching the badge above it: the
+                              // badge counts the user's outstanding commands
+                              // across all their subscriptions, so a filter
+                              // narrowed to the current subscription would show
+                              // a failure the drawer then hides.
                               userId: item.id,
                               title: item.displayName
                             })
@@ -252,7 +256,9 @@ export function UsersPage(props: UsersPageProps) {
                           commandSummary={findNodeCommandSummary(props.nodeCommandQueue.summaries, "teams", item.id)}
                           onOpenLeaseRevocationQueue={() =>
                             props.onOpenLeaseRevocationQueue({
-                              subscriptionId: item.currentSubscription?.id,
+                              // TEAM-only scope, matching the badge: commands are
+                              // counted per team, not per the current
+                              // subscription.
                               teamId: item.id,
                               title: item.name
                             })
@@ -344,7 +350,8 @@ export function UsersPage(props: UsersPageProps) {
                                       commandSummary={findNodeCommandSummary(props.nodeCommandQueue.summaries, "users", member.userId)}
                                       onOpenLeaseRevocationQueue={() =>
                                         props.onOpenLeaseRevocationQueue({
-                                          subscriptionId: item.currentSubscription?.id,
+                                          // Member-level badge counts that USER's
+                                          // commands; the filter must match.
                                           userId: member.userId,
                                           teamId: item.id,
                                           title: `${member.displayName} · ${item.name}`
@@ -601,7 +608,6 @@ function CustomerDetailContent(props: CustomerDetailContentProps) {
               onOpenLeaseRevocationQueue={() =>
                 openOutsideDetail(() =>
                   props.onOpenLeaseRevocationQueue({
-                    subscriptionId: subscriptionId ?? undefined,
                     userId: user.id,
                     title: user.displayName
                   })
@@ -711,7 +717,6 @@ function CustomerDetailContent(props: CustomerDetailContentProps) {
               onOpenLeaseRevocationQueue={() =>
                 openOutsideDetail(() =>
                   props.onOpenLeaseRevocationQueue({
-                    subscriptionId: team.currentSubscription?.id,
                     teamId: team.id,
                     title: team.name
                   })
@@ -866,7 +871,6 @@ function CustomerDetailContent(props: CustomerDetailContentProps) {
           onOpenLeaseRevocationQueue={() =>
             openOutsideDetail(() =>
               props.onOpenLeaseRevocationQueue({
-                subscriptionId: team.currentSubscription?.id,
                 userId: member.userId,
                 teamId: team.id,
                 title: `${member.displayName} · ${team.name}`

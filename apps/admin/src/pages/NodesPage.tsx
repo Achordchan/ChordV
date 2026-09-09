@@ -46,7 +46,14 @@ type NodesPageProps = {
 };
 
 export function NodesPage(props: NodesPageProps) {
-  const queueCount = props.leaseRevocationJobs.length;
+  // Same accounting as the header and overview counts: both queue kinds are
+  // outstanding work, so the button badge must not drop pending commands just
+  // because no revocation happens to be queued.
+  // Same accounting as the header and overview counts: both queue kinds are
+  // outstanding work, so the button badge must not drop pending commands just
+  // because no revocation happens to be queued.
+  const queueCount = props.leaseRevocationJobs.length
+    + sumNodeCommandSummaries(props.nodeCommandQueue.summaries, "nodes");
   const [controlNodeId, setControlNodeId] = useState<string | null>(null);
   const controlNode = props.nodes.find((node) => node.id === controlNodeId) ?? null;
 
