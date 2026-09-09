@@ -4,20 +4,20 @@ import { DrainableJob } from "../../work-lifecycle";
 import { PrismaService } from "./prisma.service";
 
 /**
- * Raw agent batches are forensic once they have been folded into TrafficLedger,
- * but nothing ever deleted them: a 17-user deployment accumulated 702,765 rows /
- * 1656 MB in 41 days (~40 MB/day), 98.6% of the whole database. Resolved metering
- * incidents grew the same way — 271,453 rows, all of them already closed.
+ * Metering history was written and never reclaimed: a 17-user deployment reached
+ * 702,765 NodeUsageBatch rows / 1656 MB and 271,453 MeteringIncident rows / 180 MB
+ * in 41 days — 98.6% of the whole database, against under 4 MB of real business
+ * data. ~40 MB/day, unbounded and unrelated to user count.
  */
-const DEFAULT_USAGE_BATCH_RETENTION_DAYS = 30;
+const DEFAULT_USAGE_PAYLOAD_RETENTION_DAYS = 30;
 const DEFAULT_INCIDENT_RETENTION_DAYS = 90;
 /**
- * Deleting is bounded per tick rather than "everything older than the cutoff":
- * the first run against an un-pruned database would otherwise be a single
- * multi-hundred-thousand-row statement holding locks while the API serves live
- * ingest. Chunked deletes let each statement commit and yield.
+ * Bounded per tick rather than "everything past the cutoff": the first run against
+ * an un-reclaimed database would otherwise be a single several-hundred-thousand-row
+ * statement holding locks while the API is still ingesting. Chunking lets each
+ * statement commit and yield.
  */
-const DELETE_CHUNK_ROWS = 5_000;
+const CHUNK_ROWS = 5_000;
 const MAX_CHUNKS_PER_TICK = 40;
 
 function readPositiveIntegerEnv(name: string, fallback: number) {
@@ -36,67 +36,80 @@ export class MeteringRetentionService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Hourly rather than daily on purpose: this deployment restarts itself for
-   * every backend update, and a once-a-day schedule can be skipped indefinitely
-   * by a restart that lands before it. An hourly tick with a bounded budget is
-   * self-healing — it drains a backlog over a few hours and then idles.
+   * Hourly rather than daily on purpose: this deployment restarts itself for every
+   * backend update, and a once-a-day schedule can be skipped indefinitely by a
+   * restart that lands before it. An hourly tick with a bounded budget is
+   * self-healing — it drains a backlog over a few hours, then idles at two
+   * statements per hour.
    */
   @Cron("0 17 * * * *")
   @DrainableJob()
-  async pruneExpiredMeteringHistory() {
-    const batches = await this.pruneUsageBatches();
+  async reclaimExpiredMeteringHistory() {
+    const payloads = await this.redactSettledUsagePayloads();
     const incidents = await this.pruneResolvedIncidents();
-    if (batches > 0 || incidents > 0) {
-      this.logger.log(`计量历史清理：删除 ${batches} 条用量批次、${incidents} 条已解决的计量异常`);
+    if (payloads > 0 || incidents > 0) {
+      this.logger.log(`计量历史回收：清空 ${payloads} 条已入账批次的原始载荷、删除 ${incidents} 条已解决的计量异常`);
     }
   }
 
   /**
-   * A batch is deletable once no future read path can reach it again.
+   * NodeUsageBatch rows are KEPT; only the raw `payload` blob is cleared.
    *
-   * Both readers — accountContiguousBatches and advanceAck in AgentService —
-   * scope their queries to the agent's CURRENT bootId and to `sequence >
-   * lastAckSequence`. The acknowledgement watermark lives on NodeAgent, not in
-   * this table, so a row at or below it is already settled, and a row belonging
-   * to a superseded bootId is unreachable regardless of its sequence (a boot
-   * change resets both watermarks to 0).
+   * Deleting the rows is not safe, and the reason is worth stating precisely: a
+   * batch's reachability is NOT decided by its age or by whether its bootId is the
+   * agent's current one. `ingestUsageBatchWithinNodeLock` adopts whatever bootId
+   * arrives and resets lastAckSequence to 0 — including a flip BACK to a boot it
+   * had already superseded, which `heartbeat` can do as well. The node-agent keeps
+   * a durable local queue, so a retry from an old boot after extended downtime is
+   * reachable in practice. Once the watermark is back at 0, contiguous
+   * acknowledgement has to walk from sequence 1 again; a deleted prefix leaves a
+   * permanent gap and that node's metering can never advance again.
    *
-   * Deleting such a row therefore cannot cause double-counting: a replay of a
-   * deleted batch no longer matches the (nodeId, bootId, sequence) uniqueness
-   * probe, so it is inserted anew — but accounting still filters on `sequence >
-   * lastAckSequence`, so it is never billed a second time, and the next tick
-   * prunes it again.
+   * Three readers also depend on these rows existing:
+   *   - accountContiguousBatches walks them for contiguity
+   *   - advanceAck does the same on the retired panel track
+   *   - assertDirectTerminalWatermarksSettled (runtime-session.service.ts) looks a
+   *     specific (nodeId, bootId, sequence) up and refuses the disable flow when it
+   *     is missing — a deleted row would wedge that flow, not merely slow it
+   * and the ingest de-duplication compares `payloadHash` on replay.
    *
-   * The one behaviour that does change: the ack for such a replay reports
-   * `duplicate: false` instead of `true`, and a replay carrying a DIFFERENT
-   * payload for an already-settled sequence no longer raises the payload-hash
-   * conflict. Neither affects the ledger, and agents advance on `ackThrough`.
+   * Clearing `payload` costs none of that: it is read ONLY inside
+   * `if (!batch.accountedAt)`, i.e. never for a row this method touches. Sequence,
+   * accountedAt and payloadHash all survive, so contiguity, the disable gate and
+   * replay conflict detection keep working byte for byte. The blob is 871 MB of
+   * the table's 1656 MB.
+   *
+   * Reclaiming the rows themselves needs a durable per-boot acknowledgement
+   * watermark so it can never regress to 0; that is a separate change to the
+   * billing-critical ingest path and is deliberately not in this one.
    */
-  private async pruneUsageBatches(): Promise<number> {
+  private async redactSettledUsagePayloads(): Promise<number> {
     const before = cutoff(
-      readPositiveIntegerEnv("CHORDV_USAGE_BATCH_RETENTION_DAYS", DEFAULT_USAGE_BATCH_RETENTION_DAYS)
+      readPositiveIntegerEnv("CHORDV_USAGE_PAYLOAD_RETENTION_DAYS", DEFAULT_USAGE_PAYLOAD_RETENTION_DAYS)
     );
-    let deleted = 0;
+    let redacted = 0;
     for (let chunk = 0; chunk < MAX_CHUNKS_PER_TICK; chunk += 1) {
-      const removed = await this.prisma.$executeRaw`
-        DELETE FROM "NodeUsageBatch"
+      const changed = await this.prisma.$executeRaw`
+        UPDATE "NodeUsageBatch"
+           SET "payload" = '{}'::jsonb
          WHERE id IN (
-           SELECT b.id
-             FROM "NodeUsageBatch" b
-             JOIN "NodeAgent" a ON a.id = b."agentId"
-            WHERE b."createdAt" < ${before}
-              AND (a."bootId" IS DISTINCT FROM b."bootId" OR b."sequence" <= a."lastAckSequence")
-            LIMIT ${DELETE_CHUNK_ROWS}
+           SELECT id
+             FROM "NodeUsageBatch"
+            WHERE "accountedAt" IS NOT NULL
+              AND "createdAt" < ${before}
+              AND "payload" <> '{}'::jsonb
+            LIMIT ${CHUNK_ROWS}
          )`;
-      deleted += removed;
-      if (removed < DELETE_CHUNK_ROWS) break;
+      redacted += changed;
+      if (changed < CHUNK_ROWS) break;
     }
-    return deleted;
+    return redacted;
   }
 
   /**
-   * Only closed incidents, and only after a window long enough to stay useful for
-   * dispute handling. Open incidents are live state and are never touched here.
+   * Incidents carry no acknowledgement semantics, so closed ones can go entirely.
+   * Only `resolved` rows, and only past a window long enough to stay useful for
+   * dispute handling; `open` incidents are live state and are never touched.
    */
   private async pruneResolvedIncidents(): Promise<number> {
     const before = cutoff(
@@ -111,10 +124,10 @@ export class MeteringRetentionService {
              FROM "MeteringIncident"
             WHERE status = 'resolved'
               AND COALESCE("resolvedAt", "updatedAt") < ${before}
-            LIMIT ${DELETE_CHUNK_ROWS}
+            LIMIT ${CHUNK_ROWS}
          )`;
       deleted += removed;
-      if (removed < DELETE_CHUNK_ROWS) break;
+      if (removed < CHUNK_ROWS) break;
     }
     return deleted;
   }

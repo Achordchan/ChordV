@@ -1,4 +1,4 @@
-# ChordV
+| `CHORDV_USAGE_PAYLOAD_RETENTION_DAYS` | 已入账批次原始载荷的保留天数，默认 `30`；只清空 `payload`，行本身保留 |# ChordV
 
 ChordV 是一套面向团队订阅、节点接入、客户端分发与流量计量的专有网络服务平台。当前代码采用 Agent 托管节点：ChordV 负责账户、套餐、授权、发布与审计，node-agent 管理 Xray 用户并采集流量，Xray 承载真实连接。
 
@@ -99,7 +99,7 @@ PATH=/opt/homebrew/bin:/usr/local/bin:$PATH VITE_API_BASE_URL=https://v.baymaxgr
 | `CHORDV_RELEASE_MAX_UPLOAD_BYTES` | 发布中心单文件上传上限 |
 | `CHORDV_SESSION_HEARTBEAT_INTERVAL_SECONDS` | 客户端会话心跳周期 |
 | `CHORDV_SESSION_GRACE_SECONDS` | 会话失联宽限时间 |
-| `CHORDV_USAGE_BATCH_RETENTION_DAYS` | 原始用量批次保留天数，默认 `30`；只清理已无法被任何读取路径触及的行 |
+| `CHORDV_USAGE_PAYLOAD_RETENTION_DAYS` | 原始用量批次保留天数，默认 `30`；只清理已无法被任何读取路径触及的行 |
 | `CHORDV_METERING_INCIDENT_RETENTION_DAYS` | 已解决计量异常的保留天数，默认 `90`；`open` 状态永不清理 |
 
 安全默认值：未配置 `CHORDV_JWT_SECRET` 时，API 只会在 `NODE_ENV=development`、`NODE_ENV=test` 或显式设置 `CHORDV_ALLOW_INSECURE_DEV_SECRET=true` 时使用开发密钥。`CHORDV_DEV_BOOTSTRAP` 默认不会自动执行，确需写入开发数据时必须显式设为 `true`。
