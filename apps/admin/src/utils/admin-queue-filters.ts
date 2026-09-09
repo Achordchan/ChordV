@@ -6,6 +6,12 @@ export type LeaseRevocationQueueFilter = {
   subscriptionId?: string;
   userId?: string;
   teamId?: string;
+  /**
+   * Lease jobs have no team column, so a team-scoped view narrows them by the
+   * team's actual subscription ids instead. Used by team-level entries; the
+   * command detail fetch keeps teamId (commands DO carry it).
+   */
+  teamSubscriptionIds?: string[];
 };
 
 // Lease jobs expose no teamId column, so a team-only filter deliberately means
@@ -21,10 +27,13 @@ export function hasNodeCommandQueueFilter(filter?: LeaseRevocationQueueFilter | 
 }
 
 export function filterLeaseRevocationJobs(jobs: AdminLeaseRevocationJobDto[], filter?: LeaseRevocationQueueFilter | null) {
-  if (!hasLeaseRevocationQueueFilter(filter)) {
+  if (!hasLeaseRevocationQueueFilter(filter) && !filter?.teamSubscriptionIds) {
     return jobs;
   }
   return jobs.filter((job) => {
+    if (filter?.teamSubscriptionIds && !filter.teamSubscriptionIds.includes(job.subscriptionId ?? "")) {
+      return false;
+    }
     if (filter?.nodeId && job.nodeId !== filter.nodeId) {
       return false;
     }

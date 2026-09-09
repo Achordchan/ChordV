@@ -458,8 +458,12 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                                                 commandSummary={findNodeCommandSummary(props.nodeCommandQueue.summaries, "users", member.userId)}
                                                 onOpenLeaseRevocationQueue={() =>
                                                   props.onOpenLeaseRevocationQueue({
+                                                    // User-only: the badge counts
+                                                    // that user's commands across
+                                                    // all ownerships; teamId
+                                                    // would intersect away the
+                                                    // previous team's failures.
                                                     userId: member.userId,
-                                                    teamId: team.id,
                                                     title: `${member.displayName} · ${team.name}`
                                                   })
                                                 }

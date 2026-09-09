@@ -256,10 +256,15 @@ export function UsersPage(props: UsersPageProps) {
                           commandSummary={findNodeCommandSummary(props.nodeCommandQueue.summaries, "teams", item.id)}
                           onOpenLeaseRevocationQueue={() =>
                             props.onOpenLeaseRevocationQueue({
-                              // TEAM-only scope, matching the badge: commands are
-                              // counted per team, not per the current
-                              // subscription.
+                              // Commands: TEAM scope (they carry teamId).
+                              // Lease revocations have no team column, so the
+                              // drawer narrows them by the team's subscription
+                              // ids instead — a bare teamId would show every
+                              // team's jobs under this team's title.
                               teamId: item.id,
+                              teamSubscriptionIds: props.allSubscriptions
+                                .filter((subscription) => subscription.teamId === item.id)
+                                .map((subscription) => subscription.id),
                               title: item.name
                             })
                           }
@@ -351,9 +356,11 @@ export function UsersPage(props: UsersPageProps) {
                                       onOpenLeaseRevocationQueue={() =>
                                         props.onOpenLeaseRevocationQueue({
                                           // Member-level badge counts that USER's
-                                          // commands; the filter must match.
+                                          // commands across ALL teams — the
+                                          // server intersects filters, so
+                                          // teamId would hide commands from a
+                                          // previous personal/team subscription.
                                           userId: member.userId,
-                                          teamId: item.id,
                                           title: `${member.displayName} · ${item.name}`
                                         })
                                       }
@@ -718,6 +725,9 @@ function CustomerDetailContent(props: CustomerDetailContentProps) {
                 openOutsideDetail(() =>
                   props.onOpenLeaseRevocationQueue({
                     teamId: team.id,
+                    teamSubscriptionIds: props.allSubscriptions
+                      .filter((subscription) => subscription.teamId === team.id)
+                      .map((subscription) => subscription.id),
                     title: team.name
                   })
                 )
@@ -872,7 +882,6 @@ function CustomerDetailContent(props: CustomerDetailContentProps) {
             openOutsideDetail(() =>
               props.onOpenLeaseRevocationQueue({
                 userId: member.userId,
-                teamId: team.id,
                 title: `${member.displayName} · ${team.name}`
               })
             )

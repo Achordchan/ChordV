@@ -458,6 +458,14 @@ export function App() {
   const nodeAccessSavingRef = useRef(false);
   const nodeAccessRequestSeqRef = useRef(0);
   const [leaseRevocationQueue, setLeaseRevocationQueue] = useState<LeaseRevocationQueueState>({ opened: false, filter: null });
+  // Mirrors leaseRevocationQueue for post-await reads: a queue refresh that
+  // started while target A was open must refresh whatever target is CURRENT
+  // when it finishes, not the (possibly stale) captured one.
+  const leaseRevocationQueueRef = useRef<LeaseRevocationQueueState>({ opened: false, filter: null });
+  const updateLeaseRevocationQueue = (next: LeaseRevocationQueueState) => {
+    leaseRevocationQueueRef.current = next;
+    setLeaseRevocationQueue(next);
+  };
   const [nodeCommandDetail, setNodeCommandDetail] = useState<{
     filterKey: string;
     queue: AdminNodeCommandQueueDto | null;
@@ -500,7 +508,7 @@ export function App() {
   };
 
   const openLeaseRevocationQueue = (filter?: LeaseRevocationQueueFilter) => {
-    setLeaseRevocationQueue({ opened: true, filter: filter ?? null });
+    updateLeaseRevocationQueue({ opened: true, filter: filter ?? null });
     // Keyed AND cleared on target change: switching targets must never keep
     // the previous target's commands on screen while (or after) loading.
     if (hasNodeCommandQueueFilter(filter)) {
@@ -512,7 +520,7 @@ export function App() {
   };
 
   const closeLeaseRevocationQueue = () => {
-    setLeaseRevocationQueue((current) => ({ ...current, opened: false }));
+    updateLeaseRevocationQueue({ ...leaseRevocationQueueRef.current, opened: false });
   };
 
   const selectSection = (nextSection: SectionKey) => {
@@ -1326,9 +1334,12 @@ export function App() {
       ...(nodeCommandQueueResult.ok ? { nodeCommandQueue: nodeCommandQueueResult.nodeCommandQueue } : {})
     });
     // An open filtered drawer must not keep showing commands the queue just
-    // reported as completed — refresh its target-scoped detail too.
-    if (leaseRevocationQueue.opened) {
-      refreshNodeCommandQueueDetail(leaseRevocationQueue.filter);
+    // reported as completed — refresh its target-scoped detail too. Read the
+    // CURRENT target from the ref: the administrator may have switched from
+    // A to B while these requests were in flight, and refreshing the stale A
+    // would invalidate B's in-flight detail and leave it loading forever.
+    if (leaseRevocationQueueRef.current.opened) {
+      refreshNodeCommandQueueDetail(leaseRevocationQueueRef.current.filter);
     }
     if (!nodesResult.ok || !leaseRevocationJobsResult.ok || !nodeCommandQueueResult.ok) {
       throw new Error(

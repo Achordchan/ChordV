@@ -243,6 +243,44 @@ function testNodeCommandQueueShowsDirectProvisioning() {
     /const queueCount = props\.leaseRevocationJobs\.length\s*\n\s*\+ sumNodeCommandSummaries\(props\.nodeCommandQueue\.summaries, "nodes"\);/,
     "节点页同步任务按钮的计数必须含节点命令总数——与表头/概览口径一致"
   );
+  // Team-scope lease filtering: a team-only drawer must not show other teams'
+  // jobs — it narrows lease revocations by the team's subscription ids while
+  // commands keep teamId.
+  const filtersSource = readFileSync(resolve(import.meta.dirname, "../src/utils/admin-queue-filters.ts"), "utf8");
+  assert.match(
+    filtersSource,
+    /teamSubscriptionIds\?\.\[\]\}|teamSubscriptionIds && !filter\.teamSubscriptionIds\.includes\(job\.subscriptionId \?\? ""\)/,
+    "撤销过滤必须支持按团队订阅集合收窄"
+  );
+  assert.match(
+    usersPageSource,
+    /teamId: item\.id,\s*\n\s*teamSubscriptionIds: props\.allSubscriptions[\s\S]*?teamId === item\.id[\s\S]*?\.map\(\(subscription\) => subscription\.id\)/,
+    "团队入口必须把该团队的订阅集合传给撤销过滤"
+  );
+  // Member-level badges count the user across ALL teams; teamId must not
+  // intersect the command filter.
+  for (const [label, source] of [
+    ["users", usersPageSource],
+    ["subscriptions", subscriptionsPageSource]
+  ] as const) {
+    const inline = source.match(/<PanelSyncInlineStatus[\s\S]*?\/>/g) ?? [];
+    for (const block of inline) {
+      if (!block.includes(', "users",')) {
+        continue;
+      }
+      assert.doesNotMatch(
+        block,
+        /commandSummary=[\s\S]*?teamId:/,
+        `${label} 页的用户级命令徽章挂接不得再带 teamId——徽章按用户全部归属计数，服务端会交集掉前团队的失败`
+      );
+    }
+  }
+  // Queue refresh must read the CURRENT drawer target after its awaits.
+  assert.match(
+    appSource,
+    /if \(leaseRevocationQueueRef\.current\.opened\) \{\s*\n\s*refreshNodeCommandQueueDetail\(leaseRevocationQueueRef\.current\.filter\);\s*\n\s*\}/,
+    "刷新完成时必须从 ref 读当前抽屉目标——闭包里的旧目标会让新目标永远停在加载中"
+  );
   const translateSource = readFileSync(resolve(import.meta.dirname, "../src/utils/admin-translate.ts"), "utf8");
   assert.match(
     translateSource,
@@ -283,8 +321,8 @@ function testNodeCommandQueueShowsDirectProvisioning() {
   );
   assert.match(
     appSource,
-    /if \(leaseRevocationQueue\.opened\) \{\s*refreshNodeCommandQueueDetail\(leaseRevocationQueue\.filter\);\s*\}/,
-    "队列刷新时必须一并刷新打开中的过滤明细"
+    /if \(leaseRevocationQueueRef\.current\.opened\) \{\s*refreshNodeCommandQueueDetail\(leaseRevocationQueueRef\.current\.filter\);\s*\}/,
+    "队列刷新时必须一并刷新打开中的过滤明细（且从 ref 读当前目标）"
   );
   assert.match(
     appSource,
