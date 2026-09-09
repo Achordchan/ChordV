@@ -9,7 +9,7 @@ import {
 } from "@nestjs/common";
 import { spawn } from "node:child_process";
 import { DrainCancelledError, workLifecycle } from "../../work-lifecycle";
-import { createPublicKey, verify as cryptoVerify } from "node:crypto";
+import { createHash, createPublicKey, verify as cryptoVerify } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -63,6 +63,16 @@ const SUPERVISOR_PHASES: ReadonlySet<string> = new Set([
 const APP_PHASES: ReadonlySet<string> = new Set(["checking", "downloading", "extracting", "draining"]);
 // Full union for validating whatever a row (or a phase.json override) carries.
 const KNOWN_PHASES: ReadonlySet<string> = new Set([...APP_PHASES, ...SUPERVISOR_PHASES]);
+// The dependency trees a release needs to run. pnpm's isolated layout keeps the
+// store at the root plus one node_modules per package, and shipping all three made
+// the artifact 82.7 MiB across 13,903 entries — almost entirely bytes the target
+// already has on disk. Slim tarballs carry build output only and borrow these from
+// the running release instead (see hydrateRuntimeDependencies).
+const RUNTIME_DEPENDENCY_DIRS = [
+  "node_modules",
+  "packages/shared/node_modules",
+  "apps/api/node_modules"
+] as const;
 // Progress is best-effort cosmetics: DB write failures are swallowed (never gate the
 // update itself), and byte progress is throttled to one write per window — a 3s poll
 // gains nothing from faster writes and each one is a DB round-trip on the operation row.
@@ -588,6 +598,8 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       try {
         await this.extractTarball(downloaded.absolutePath, stagingDir);
         await lock.assertHeld();
+        await this.hydrateRuntimeDependencies(stagingDir);
+        await lock.assertHeld();
         await this.removeDirSafe(finalDir);
         await fs.rename(stagingDir, finalDir);
       } catch (error) {
@@ -600,6 +612,162 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       return finalDir;
     } finally {
       await downloaded.cleanup().catch(() => undefined);
+    }
+  }
+
+  /**
+   * A slim release tarball ships no node_modules, so the staged tree cannot run
+   * until the runtime closure is rebuilt. Borrow it from the release currently
+   * serving traffic, which by definition has a working one.
+   *
+   * pnpm-lock.yaml gates this: it pins every resolved version in the workspace, so
+   * an identical digest means an identical node_modules would have been installed.
+   * A changed digest fails the update CLOSED — hydrating build output against the
+   * wrong dependency tree would surface as a module resolution failure only after
+   * the supervisor has already torn the old release down.
+   *
+   * Hard links make it instant and free: the trees are immutable at runtime and
+   * live on the same volume, and removing one release leaves the others intact
+   * because the inodes stay referenced.
+   *
+   * Archives that carry their own node_modules — anything published before this
+   * change — are left untouched, so a rollback to one still works.
+   */
+  private async hydrateRuntimeDependencies(stagingDir: string): Promise<void> {
+    if (await this.pathExists(path.join(stagingDir, "node_modules"))) return;
+
+    const runningDir = await this.resolveRunningReleaseDir();
+    const staged = await this.readLockfileDigest(stagingDir);
+    const running = await this.readLockfileDigest(runningDir);
+    if (staged !== running) {
+      throw new BadRequestException(
+        "更新包的依赖锁文件（pnpm-lock.yaml）与当前运行版本不一致，无法复用现有依赖。" +
+          "此类更新必须重新构建并部署镜像，不能走后台一键更新。"
+      );
+    }
+
+    for (const relative of RUNTIME_DEPENDENCY_DIRS) {
+      const source = path.join(runningDir, relative);
+      if (!(await this.pathExists(source))) {
+        throw new ServiceUnavailableException(
+          `当前运行版本缺少依赖目录（${source}），无法为更新包重建运行时依赖。`
+        );
+      }
+      const target = path.join(stagingDir, relative);
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      // -a keeps the relative workspace symlinks as symlinks (apps/api/node_modules/
+      // @chordv/shared -> ../../../packages/shared), so they resolve inside the NEW
+      // release rather than pointing back at the old one; -l hard-links the regular
+      // files, costing no disk and no copy time.
+      try {
+        await this.runShell("cp", ["-al", source, target], { ...process.env }, `重建运行时依赖（${relative}）`, 5 * 60 * 1000);
+      } catch (error) {
+        // Hard links need a single filesystem. A deployment that splits the releases
+        // volume still deserves a working update, so fall back to a real copy — but
+        // clear the partial tree first, or the retry would merge into it.
+        this.logger.warn(`硬链接依赖失败，改用复制（${relative}）：${this.describeError(error)}`);
+        await this.removeDirSafe(target);
+        await this.runShell("cp", ["-a", source, target], { ...process.env }, `复制运行时依赖（${relative}）`, 15 * 60 * 1000);
+      }
+    }
+
+    await this.regeneratePrismaClient(stagingDir);
+  }
+
+  /**
+   * The borrowed trees carry the Prisma client generated for the PREVIOUS schema.
+   * A schema change does not touch pnpm-lock.yaml — the release ships new models,
+   * new migrations and code compiled against them, while the lockfile is byte
+   * identical — so the digest gate above cannot catch this. Regenerate the client
+   * from the schema THIS release ships.
+   *
+   * The stale output must be unlinked first, not overwritten: the hard links share
+   * inodes with the release currently serving traffic, so generating over them
+   * would rewrite the client the live process has loaded. Removing the staged
+   * directory drops only this tree's references; the running release keeps its own.
+   *
+   * Failure fails the update, which is the safe direction — the alternative is
+   * promoting code whose queries reference columns its client does not know.
+   */
+  private async regeneratePrismaClient(stagingDir: string): Promise<void> {
+    const modules = path.join(stagingDir, "node_modules");
+    const roots = [modules];
+    const store = path.join(modules, ".pnpm");
+    try {
+      for (const entry of await fs.readdir(store, { withFileTypes: true })) {
+        if (entry.isDirectory()) roots.push(path.join(store, entry.name, "node_modules"));
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    // Record what the discarded output contained so the regenerated one can be
+    // held to it. The generated directory is the ONLY copy of some query engines
+    // in a running release — the schema declares three binaryTargets while
+    // @prisma/engines ships just the install platform's — so a regeneration that
+    // silently produced fewer would leave a release that cannot open a connection
+    // on some hosts. The prisma CLI package keeps its own copies OUTSIDE any
+    // .prisma directory, which is what lets this work with no network; verifying
+    // the result is the guard for the day that stops being true.
+    const expected = new Map<string, string[]>();
+    for (const root of roots) {
+      const generated = path.join(root, ".prisma");
+      const engines = await this.listGeneratedEngines(generated);
+      if (engines.length > 0) expected.set(generated, engines);
+      await this.removeDirSafe(generated);
+    }
+
+    // Same invocation the migration helper uses, so both resolve the CLI through
+    // pnpm's workspace layout rather than a hard-coded store path.
+    await this.runShell(
+      "pnpm",
+      ["--filter", "@chordv/api", "exec", "prisma", "generate"],
+      { ...process.env },
+      "重新生成 Prisma 客户端",
+      10 * 60 * 1000,
+      stagingDir
+    );
+
+    for (const [generated, engines] of expected) {
+      const produced = new Set(await this.listGeneratedEngines(generated));
+      const missing = engines.filter((engine) => !produced.has(engine));
+      if (missing.length > 0) {
+        throw new ServiceUnavailableException(
+          `重新生成的 Prisma 客户端缺少查询引擎（${missing.join("、")}），` +
+            "更新包无法在所有目标平台上运行，已中止。"
+        );
+      }
+    }
+  }
+
+  private async listGeneratedEngines(generatedDir: string): Promise<string[]> {
+    const clientDir = path.join(generatedDir, "client");
+    try {
+      const entries = await fs.readdir(clientDir);
+      return entries.filter((name) => name.startsWith("libquery_engine") || name.endsWith(".wasm")).sort();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+  }
+
+  private async readLockfileDigest(releaseDir: string): Promise<string> {
+    const lockfile = path.join(releaseDir, "pnpm-lock.yaml");
+    try {
+      return createHash("sha256").update(await fs.readFile(lockfile)).digest("hex");
+    } catch (error) {
+      throw new ServiceUnavailableException(
+        `无法读取依赖锁文件（${lockfile}），发布包可能不完整：${this.describeError(error)}`
+      );
+    }
+  }
+
+  private async pathExists(target: string): Promise<boolean> {
+    try {
+      await fs.stat(target);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
     }
   }
 
