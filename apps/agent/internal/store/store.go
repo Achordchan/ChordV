@@ -177,6 +177,10 @@ func (s *Store) migrate() error {
 			payload TEXT NOT NULL,
 			PRIMARY KEY (boot_id, sequence)
 		);
+		CREATE TABLE IF NOT EXISTS pending_removals_v2 (
+			email TEXT PRIMARY KEY,
+			recorded_at TEXT NOT NULL
+		);
 		CREATE TABLE IF NOT EXISTS commands_v2 (
 			command_id TEXT PRIMARY KEY,
 			command_type TEXT NOT NULL,
@@ -1029,6 +1033,71 @@ func (s *Store) OldestPendingSampledAt() (string, error) {
 		return "", err
 	}
 	return value.String, nil
+}
+
+// --- pending removals -------------------------------------------------------
+
+// RecordPendingRemoval remembers that an account WAS this node's, so it can
+// still be uninstalled after the desired-user record naming it is gone.
+//
+// A snapshot applied while this node may not write Xray (shadow_direct,
+// xui_primary, rollback_pending) erases the record of every account it drops,
+// yet those accounts stay installed in the shared inbound. Without this the next
+// promotion to direct_primary would classify them as accounts it has never heard
+// of — which, under the panel-shared inbound, means "leave them alone" — and a
+// revoked subscription would serve forever.
+//
+// The table is additive: the Node agent neither reads nor writes it, so a
+// rollback to that implementation on the same data directory still works.
+func (s *Store) RecordPendingRemoval(emails []string) error {
+	if len(emails) == 0 {
+		return nil
+	}
+	return s.transact(func(tx *sql.Tx) error {
+		for _, email := range emails {
+			if _, err := tx.Exec(
+				`INSERT INTO pending_removals_v2(email, recorded_at) VALUES(?, ?) ON CONFLICT(email) DO NOTHING`,
+				email, isoMillis(time.Now())); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// PendingRemovals lists accounts known to be this node's but no longer in the
+// desired set.
+func (s *Store) PendingRemovals() ([]string, error) {
+	rows, err := s.db.Query(`SELECT email FROM pending_removals_v2 ORDER BY rowid`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	emails := []string{}
+	for rows.Next() {
+		var email string
+		if err := rows.Scan(&email); err != nil {
+			return nil, err
+		}
+		emails = append(emails, email)
+	}
+	return emails, rows.Err()
+}
+
+// ClearPendingRemoval forgets accounts that have been dealt with — uninstalled,
+// or handed back a desired-user record of their own.
+func (s *Store) ClearPendingRemoval(emails []string) error {
+	if len(emails) == 0 {
+		return nil
+	}
+	return s.transact(func(tx *sql.Tx) error {
+		for _, email := range emails {
+			if _, err := tx.Exec(`DELETE FROM pending_removals_v2 WHERE email = ?`, email); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // --- commands ---------------------------------------------------------------

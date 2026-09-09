@@ -255,6 +255,13 @@ func (p *Processor) reconcileCommand(ctx context.Context, command protocol.Comma
 		if err := p.Reconcile(ctx, users); err != nil {
 			return err
 		}
+	} else if err := p.rememberDroppedOwnership(users); err != nil {
+		// This node may not write Xray right now, but the snapshot below still
+		// erases the records of everything this instruction drops — and those
+		// accounts stay installed in the shared inbound. Without a note of who
+		// they were, a later promotion would see accounts it has never heard of
+		// and, under the panel-shared inbound, leave them serving.
+		return err
 	}
 	_, err = p.deps.Store.ApplyConfigSnapshot(protocol.ConfigSnapshot{
 		NodeID: current.NodeID, Revision: command.TargetRevision, ControlMode: mode, Users: users,
@@ -303,9 +310,30 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	for _, user := range recorded {
 		ours[user.Email] = true
 	}
+	// Accounts whose record was erased by a snapshot applied while this node
+	// could not write Xray. They are still ours, and this is the only surviving
+	// evidence of it.
+	pending, err := p.deps.Store.PendingRemovals()
+	if err != nil {
+		return err
+	}
+	for _, email := range pending {
+		ours[email] = true
+	}
 	desired := make(map[string]bool, len(users))
 	for _, user := range users {
 		desired[user.Email] = true
+	}
+	// An account handed back a desired-user record of its own is no longer
+	// pending anything.
+	var settled []string
+	for _, email := range pending {
+		if desired[email] {
+			settled = append(settled, email)
+		}
+	}
+	if err := p.deps.Store.ClearPendingRemoval(settled); err != nil {
+		return err
 	}
 	// Renames are settled BEFORE anything is written, for the same reason
 	// ensureUser does it: the upsert below replaces the only durable record that
@@ -340,8 +368,10 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 			return err
 		}
 	}
-	var unknown []string
+	var unknown, retired []string
+	liveEmails := make(map[string]bool, len(live))
 	for _, installed := range live {
+		liveEmails[installed.Email] = true
 		if desired[installed.Email] {
 			continue
 		}
@@ -352,9 +382,20 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 			if err := p.deps.Xray.RemoveUser(ctx, installed.Email); err != nil {
 				return err
 			}
+			retired = append(retired, installed.Email)
 			continue
 		}
 		unknown = append(unknown, installed.Email)
+	}
+	// A pending account that is no longer installed has nothing left to settle;
+	// keeping it would make the list grow without bound.
+	for _, email := range pending {
+		if !liveEmails[email] {
+			retired = append(retired, email)
+		}
+	}
+	if err := p.deps.Store.ClearPendingRemoval(retired); err != nil {
+		return err
 	}
 	if len(unknown) > 0 {
 		p.logf("[agent] 入站中有 %d 个本节点从未记录过的账号，未做处理（B1 下入站与 3x-ui 面板共用，"+
@@ -363,6 +404,37 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	return nil
 }
 
+// rememberDroppedOwnership notes the accounts this snapshot is about to forget
+// while write access is elsewhere, so a later promotion can still retire them.
+func (p *Processor) rememberDroppedOwnership(users []protocol.DesiredUser) error {
+	recorded, err := p.deps.Store.ListDesiredUsers()
+	if err != nil {
+		return err
+	}
+	desired := make(map[string]bool, len(users))
+	for _, user := range users {
+		desired[user.Email] = true
+	}
+	var dropped []string
+	for _, user := range recorded {
+		// Covers both an omitted binding and a renamed one: either way this
+		// email is about to lose the record that names it.
+		if !desired[user.Email] {
+			dropped = append(dropped, user.Email)
+		}
+	}
+	return p.deps.Store.RecordPendingRemoval(dropped)
+}
+
+// findStored resolves the account a command addresses.
+//
+// The binding id is the IDENTITY; the email is an addressing convenience that
+// can be reassigned. Matching on "binding id OR email" therefore returns
+// whichever row happens to come first when a payload carries a binding id and an
+// email belonging to a DIFFERENT binding — and the caller then edits, or
+// uninstalls, the wrong account while reporting success. So the binding id wins
+// when present, and an email pointing somewhere else is a conflict rather than a
+// tie to break silently.
 func (p *Processor) findStored(payload map[string]any) (*protocol.DesiredUser, error) {
 	bindingID, _ := payload["bindingId"].(string)
 	email, _ := payload["email"].(string)
@@ -376,14 +448,24 @@ func (p *Processor) findStored(payload map[string]any) (*protocol.DesiredUser, e
 	if err != nil {
 		return nil, err
 	}
+	var byBinding, byEmail *protocol.DesiredUser
 	for index := range users {
-		if (bindingID != "" && users[index].BindingID == bindingID) ||
-			(email != "" && users[index].Email == email) {
-			found := users[index]
-			return &found, nil
+		if bindingID != "" && users[index].BindingID == bindingID {
+			byBinding = &users[index]
+		}
+		if email != "" && users[index].Email == email {
+			byEmail = &users[index]
 		}
 	}
-	return nil, nil
+	if bindingID == "" {
+		return byEmail, nil
+	}
+	if byEmail != nil && byEmail.BindingID != bindingID {
+		return nil, fmt.Errorf(
+			"命令的 bindingId %s 与 email %s 指向不同的账号（该 email 属于 %s），拒绝执行",
+			bindingID, email, byEmail.BindingID)
+	}
+	return byBinding, nil
 }
 
 // resolveUser merges the command's fields over the stored user, or builds a new

@@ -656,3 +656,139 @@ func TestAFailedHandoverDoesNotAdvanceAnything(t *testing.T) {
 		t.Fatalf("the redelivery did not retry: %+v", retry)
 	}
 }
+
+// TestOwnershipSurvivesASnapshotAppliedWithoutWriteAccess covers the sequence
+// that would otherwise leak an account forever:
+//
+//	shadow_direct → RECONCILE_USERS drops a binding → its record is erased,
+//	but nothing may uninstall it → later promotion sees an account it has
+//	never heard of → under the panel-shared inbound, leaves it serving.
+func TestOwnershipSurvivesASnapshotAppliedWithoutWriteAccess(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	if err := state.UpsertDesiredUser(protocol.DesiredUser{
+		BindingID: "b2", Email: "revoked@chordv", UUID: "u2", Revision: "1",
+		Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fake.live = []xray.LiveUser{{Email: "revoked@chordv"}, {Email: "someone@panel"}}
+
+	// Observing mode: the binding is dropped, and nothing may touch Xray.
+	observing := map[string]any{
+		"controlMode": string(protocol.ModeShadowDirect),
+		"users":       []any{map[string]any(userPayload("b1", "u1@chordv"))},
+	}
+	if result := run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", observing), false); result.Status != protocol.StatusCompleted {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("an observing node touched Xray: %v", fake.calls)
+	}
+	if stored, _ := state.UserByBindingID("b2"); stored != nil {
+		t.Fatal("the snapshot did not replace the user set")
+	}
+
+	// Promotion. The erased record is gone, but the ownership note is not.
+	promote := map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any(userPayload("b1", "u1@chordv"))},
+	}
+	if result := run(t, processor, command("c2", protocol.CommandReconcileUsers, "6", promote), false); result.Status != protocol.StatusCompleted {
+		t.Fatalf("result = %+v", result)
+	}
+	if !contains(fake.calls, "remove:revoked@chordv") {
+		t.Fatalf("the revoked account survived the promotion: %v", fake.calls)
+	}
+	if contains(fake.calls, "remove:someone@panel") {
+		t.Fatalf("the panel's account was deleted: %v", fake.calls)
+	}
+	// The note is consumed, or the list would grow forever.
+	if remaining, _ := state.PendingRemovals(); len(remaining) != 0 {
+		t.Fatalf("pending removals = %v, want none after the account was retired", remaining)
+	}
+}
+
+func TestAReaddedAccountClearsItsPendingRemoval(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	if err := state.UpsertDesiredUser(protocol.DesiredUser{
+		BindingID: "b1", Email: "u1@chordv", UUID: "u1", Revision: "1",
+		Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fake.live = []xray.LiveUser{{Email: "u1@chordv"}}
+	run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", map[string]any{
+		"controlMode": string(protocol.ModeShadowDirect), "users": []any{},
+	}), false)
+	if pending, _ := state.PendingRemovals(); len(pending) != 1 {
+		t.Fatalf("pending = %v, want the dropped account", pending)
+	}
+	// Re-subscribed before the promotion: the account must be installed, not
+	// retired, and the stale note must not outlive the decision.
+	run(t, processor, command("c2", protocol.CommandReconcileUsers, "6", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any(userPayload("b1", "u1@chordv"))},
+	}), false)
+	if contains(fake.calls, "remove:u1@chordv") {
+		t.Fatalf("a re-added account was retired: %v", fake.calls)
+	}
+	if pending, _ := state.PendingRemovals(); len(pending) != 0 {
+		t.Fatalf("pending = %v, want none", pending)
+	}
+}
+
+// --- identity resolution ----------------------------------------------------
+
+// TestAConflictingBindingAndEmailIsRefused: the binding id is the identity, the
+// email is reassignable. An "either matches" lookup returns whichever row comes
+// first, so a payload naming binding b1 with an email belonging to b2 could edit
+// — or uninstall — the wrong account and report success.
+func TestAConflictingBindingAndEmailIsRefused(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	for _, seeded := range []protocol.DesiredUser{
+		{BindingID: "b1", Email: "alice@chordv", UUID: "u1", Revision: "1", Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000"},
+		{BindingID: "b2", Email: "bob@chordv", UUID: "u2", Revision: "1", Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000"},
+	} {
+		if err := state.UpsertDesiredUser(seeded); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conflicting := map[string]any{"bindingId": "b1", "email": "bob@chordv", "uuid": "u1", "flow": protocol.FlowVision}
+
+	result := run(t, processor, command("c1", protocol.CommandEnsureUser, "5", conflicting), true)
+	if result.Status != protocol.StatusFailed || !strings.Contains(result.Error, "b2") {
+		t.Fatalf("a conflicting payload was executed: %+v", result)
+	}
+	result = run(t, processor, command("c2", protocol.CommandRemoveUser, "6", conflicting), true)
+	if result.Status != protocol.StatusFailed {
+		t.Fatalf("a conflicting terminal command was executed: %+v", result)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("a conflicting payload reached Xray: %v", fake.calls)
+	}
+	// Neither account may have moved.
+	for binding, email := range map[string]string{"b1": "alice@chordv", "b2": "bob@chordv"} {
+		stored, _ := state.UserByBindingID(binding)
+		if stored == nil || stored.Email != email || !stored.Enabled {
+			t.Fatalf("%s = %+v", binding, stored)
+		}
+	}
+}
+
+func TestTheBindingIdWinsWhenTheEmailIsSimplyNew(t *testing.T) {
+	processor, _, state := newProcessor(t, false)
+	if err := state.UpsertDesiredUser(protocol.DesiredUser{
+		BindingID: "b1", Email: "old@chordv", UUID: "u1", Revision: "1",
+		Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// An email nobody else owns is a rename, not a conflict.
+	result := run(t, processor, command("c1", protocol.CommandEnsureUser, "5", userPayload("b1", "new@chordv")), true)
+	if result.Status != protocol.StatusCompleted {
+		t.Fatalf("a legitimate rename was refused: %+v", result)
+	}
+	if stored, _ := state.UserByBindingID("b1"); stored == nil || stored.Email != "new@chordv" {
+		t.Fatalf("stored = %+v", stored)
+	}
+}
