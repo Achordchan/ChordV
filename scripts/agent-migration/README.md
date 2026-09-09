@@ -1,5 +1,7 @@
 # Agent 迁移核对工具
 
+> 历史工具：用于旧版 xui/shadow/direct 双轨迁移对账。R3（PR #17）已退役 3X-UI 主链路，下面的 shadow 准入输出不代表当前 Agent 原生节点已通过上线验收。当前迁移计划见 `docs/prd/node-revision-agent-native.md` 第 3 节；本目录保留用于离线历史证据核对。
+
 本目录只处理脱敏后的本地 JSON，不连接 ChordV、3X-UI、Xray 或生产服务器，也不读取账号、Cookie、Reality 私钥和 Agent 令牌。
 
 ## 三方用户核对
