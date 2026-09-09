@@ -145,6 +145,9 @@ func (s *Store) prepare() error {
 	if err := s.assertOwnIdentity(); err != nil {
 		return err
 	}
+	if err := s.backfillSnapshotRevision(); err != nil {
+		return err
+	}
 	return s.initializeBoot()
 }
 
@@ -176,6 +179,11 @@ func (s *Store) migrate() error {
 			sampled_at TEXT NOT NULL,
 			payload TEXT NOT NULL,
 			PRIMARY KEY (boot_id, sequence)
+		);
+		CREATE TABLE IF NOT EXISTS binding_tombstones_v2 (
+			binding_id TEXT PRIMARY KEY,
+			revision TEXT NOT NULL,
+			recorded_at TEXT NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS pending_removals_v2 (
 			email TEXT PRIMARY KEY,
@@ -209,6 +217,67 @@ func (s *Store) assertOwnIdentity() error {
 		return s.setMeta("node_id", s.options.NodeID)
 	}
 	return nil
+}
+
+// backfillSnapshotRevision gives an OLDER database a safe snapshot watermark.
+//
+// A database written before the watermark existed has none, and reading it as 0
+// would let a delayed per-binding command from long ago pass the staleness gate
+// and recreate a binding that a full snapshot has since removed. config_revision
+// is at least as high as any snapshot that database ever applied, so adopting it
+// errs toward REFUSING work: a wrongly-skipped install is repaired by the next
+// reconcile, whereas a resurrected revoked account is not.
+//
+// A brand-new database has config_revision "0" and is untouched by this.
+func (s *Store) backfillSnapshotRevision() error {
+	existing, err := s.meta("snapshot_revision")
+	if err != nil || existing != "" {
+		return err
+	}
+	applied, err := s.ConfigRevision()
+	if err != nil || applied == "0" {
+		return err
+	}
+	return s.setMeta("snapshot_revision", applied)
+}
+
+// RecordBindingTombstone remembers the revision at which a binding was DELETED.
+//
+// Deleting the desired-user row also deletes the revision that staleForEnable
+// compares against. Without a tombstone, an install that failed at revision 5,
+// followed by a REMOVE_USER at 6, lets the retry of that install pass every
+// guard and reinstall an account the control plane has revoked.
+func (s *Store) RecordBindingTombstone(bindingID, revision string) error {
+	normalized, err := decimal.Normalize(revision)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`
+		INSERT INTO binding_tombstones_v2(binding_id, revision, recorded_at) VALUES(?, ?, ?)
+		ON CONFLICT(binding_id) DO UPDATE SET revision = excluded.revision, recorded_at = excluded.recorded_at
+		WHERE CAST(excluded.revision AS INTEGER) > CAST(binding_tombstones_v2.revision AS INTEGER)`,
+		bindingID, normalized, isoMillis(time.Now()))
+	return err
+}
+
+// BindingTombstone reports the revision at which a binding was deleted, or "0".
+func (s *Store) BindingTombstone(bindingID string) (string, error) {
+	var revision string
+	switch err := s.db.QueryRow(
+		`SELECT revision FROM binding_tombstones_v2 WHERE binding_id = ?`, bindingID).Scan(&revision); {
+	case err == nil:
+		return revision, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return "0", nil
+	default:
+		return "0", err
+	}
+}
+
+// ClearBindingTombstone forgets a binding that has legitimately come back.
+func (s *Store) ClearBindingTombstone(bindingID string) error {
+	_, err := s.db.Exec(`DELETE FROM binding_tombstones_v2 WHERE binding_id = ?`, bindingID)
+	return err
 }
 
 func (s *Store) initializeBoot() error {

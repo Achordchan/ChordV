@@ -746,3 +746,65 @@ func TestRelativeDatabasePathOpens(t *testing.T) {
 		t.Fatalf("the probe read a different database: %v", snapshot)
 	}
 }
+
+func TestAnOlderDatabaseGetsASafeSnapshotWatermark(t *testing.T) {
+	// A database written before the watermark existed reads as 0, which would let
+	// a long-delayed per-binding command pass the staleness gate and recreate a
+	// binding a full snapshot has since removed. config_revision is at least as
+	// high as any snapshot that database applied, so adopting it errs toward
+	// REFUSING work — a wrongly-skipped install is repaired by the next reconcile,
+	// a resurrected revoked account is not.
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	first := openAt(t, path, "node-1", "boot-1")
+	if err := first.AdvanceConfigRevision("10"); err != nil {
+		t.Fatal(err)
+	}
+	// The pre-change shape: an applied revision on record, no watermark.
+	if _, err := first.db.Exec(`DELETE FROM meta_v2 WHERE key = 'snapshot_revision'`); err != nil {
+		t.Fatal(err)
+	}
+	first.Close()
+
+	second := openAt(t, path, "node-1", "boot-2")
+	watermark, err := second.SnapshotRevision()
+	if err != nil || watermark != "10" {
+		t.Fatalf("SnapshotRevision = %s, %v; want the conservative 10", watermark, err)
+	}
+}
+
+func TestABrandNewDatabaseStartsWithNoSnapshotWatermark(t *testing.T) {
+	// The backfill must not invent history: a fresh node has applied nothing, and
+	// starting it at anything but zero would reject the first real instructions.
+	store := newStore(t, "node-1", "boot-1")
+	watermark, err := store.SnapshotRevision()
+	if err != nil || watermark != "0" {
+		t.Fatalf("SnapshotRevision = %s, %v; want 0", watermark, err)
+	}
+}
+
+func TestBindingTombstonesOnlyMoveForward(t *testing.T) {
+	store := newStore(t, "node-1", "boot-1")
+	if err := store.RecordBindingTombstone("b1", "6"); err != nil {
+		t.Fatal(err)
+	}
+	// Commands can arrive out of order; an older deletion must not lower the bar
+	// that a stale install has to clear.
+	if err := store.RecordBindingTombstone("b1", "3"); err != nil {
+		t.Fatal(err)
+	}
+	if value, _ := store.BindingTombstone("b1"); value != "6" {
+		t.Fatalf("tombstone = %s, want 6", value)
+	}
+	if err := store.RecordBindingTombstone("b1", "9"); err != nil {
+		t.Fatal(err)
+	}
+	if value, _ := store.BindingTombstone("b1"); value != "9" {
+		t.Fatalf("tombstone = %s, want 9", value)
+	}
+	if err := store.ClearBindingTombstone("b1"); err != nil {
+		t.Fatal(err)
+	}
+	if value, _ := store.BindingTombstone("b1"); value != "0" {
+		t.Fatalf("tombstone = %s after clearing, want 0", value)
+	}
+}

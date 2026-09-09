@@ -956,3 +956,141 @@ func TestAnUnrecognisedControlModeIsRefused(t *testing.T) {
 		t.Fatalf("calls = %v", fake.calls)
 	}
 }
+
+// --- snapshot vs newer per-binding state ------------------------------------
+
+// TestADelayedSnapshotDoesNotUndoANewerIndividualCommand covers the hole the
+// snapshot watermark left open: it only moves when a snapshot lands, so a
+// reconcile from BEFORE an individual command still passes the gate.
+func TestADelayedSnapshotDoesNotUndoANewerIndividualCommand(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	run(t, processor, command("c1", protocol.CommandEnsureUser, "5", userPayload("b1", "u1@chordv")), true)
+	run(t, processor, command("c2", protocol.CommandDisableUser, "6",
+		map[string]any{"bindingId": "b1", "email": "u1@chordv"}), true)
+	fake.calls = nil
+	fake.live = []xray.LiveUser{}
+
+	// A reconcile from revision 5 — before the disable — carrying the stale
+	// Enabled flag. The store's per-row guard would reject the write, but Xray
+	// would already have been handed the account back.
+	if result := run(t, processor, command("c3", protocol.CommandReconcileUsers, "5", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any(userPayload("b1", "u1@chordv"))},
+	}), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("result = %+v", result)
+	}
+	if contains(fake.calls, "ensure:u1@chordv") {
+		t.Fatalf("a stale snapshot reinstalled a disabled account: %v", fake.calls)
+	}
+	if stored, _ := state.UserByBindingID("b1"); stored == nil || stored.Enabled {
+		t.Fatalf("stored = %+v", stored)
+	}
+}
+
+func TestADelayedSnapshotDoesNotRemoveABindingANewerCommandAdded(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	// Added at revision 9, by an individual command.
+	run(t, processor, command("c1", protocol.CommandEnsureUser, "9", userPayload("bNew", "new@chordv")), true)
+	fake.calls = nil
+	fake.live = []xray.LiveUser{{Email: "new@chordv"}}
+
+	// A snapshot from revision 5 knows nothing about it. Treating the omission
+	// as a revocation would uninstall a binding that is newer than the snapshot.
+	if result := run(t, processor, command("c2", protocol.CommandReconcileUsers, "5", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary), "users": []any{},
+	}), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("result = %+v", result)
+	}
+	if contains(fake.calls, "remove:new@chordv") {
+		t.Fatalf("a stale snapshot uninstalled a newer binding: %v", fake.calls)
+	}
+	if stored, _ := state.UserByBindingID("bNew"); stored == nil {
+		t.Fatal("a stale snapshot forgot a newer binding")
+	}
+}
+
+func TestAnEmptySnapshotStillRemovesEveryone(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	run(t, processor, command("c1", protocol.CommandEnsureUser, "5", userPayload("b1", "u1@chordv")), true)
+	fake.calls = nil
+	fake.live = []xray.LiveUser{{Email: "u1@chordv"}}
+
+	// "Remove everyone" carries no user to derive a revision from. Deriving the
+	// yardstick from the payload rather than the command would make this a no-op.
+	if result := run(t, processor, command("c2", protocol.CommandReconcileUsers, "6", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary), "users": []any{},
+	}), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("result = %+v", result)
+	}
+	if !contains(fake.calls, "remove:u1@chordv") {
+		t.Fatalf("an empty snapshot left the account installed: %v", fake.calls)
+	}
+	if stored, _ := state.UserByBindingID("b1"); stored != nil {
+		t.Fatal("an empty snapshot left the local record")
+	}
+}
+
+// --- tombstones -------------------------------------------------------------
+
+// TestARemovedBindingCannotBeResurrectedByAStaleInstall: deleting the row also
+// deletes the revision staleForEnable compares against.
+func TestARemovedBindingCannotBeResurrectedByAStaleInstall(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	fake.ensureErrFor = "u1@chordv"
+	if result := run(t, processor, command("c1", protocol.CommandEnsureUser, "5", userPayload("b1", "u1@chordv")), true); result.Status != protocol.StatusFailed {
+		t.Fatalf("setup: %+v", result)
+	}
+	if result := run(t, processor, command("c2", protocol.CommandRemoveUser, "6",
+		map[string]any{"bindingId": "b1", "email": "u1@chordv"}), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("setup: %+v", result)
+	}
+	fake.ensureErrFor = ""
+	fake.calls = nil
+
+	// The retry of the failed install. No stored row, and no snapshot has landed
+	// — only the tombstone stands between it and a revoked account coming back.
+	if result := run(t, processor, command("c3", protocol.CommandEnsureUser, "5", userPayload("b1", "u1@chordv")), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("result = %+v", result)
+	}
+	if contains(fake.calls, "ensure:u1@chordv") {
+		t.Fatalf("a revoked account was reinstalled by a stale retry: %v", fake.calls)
+	}
+	if stored, _ := state.UserByBindingID("b1"); stored != nil {
+		t.Fatalf("stored = %+v", stored)
+	}
+}
+
+func TestATombstoneIsRecordedEvenForAnAlreadyAbsentBinding(t *testing.T) {
+	processor, fake, _ := newProcessor(t, false)
+	// The row is already gone; the tombstone is the whole point of the command.
+	if result := run(t, processor, command("c1", protocol.CommandRemoveUser, "6",
+		map[string]any{"bindingId": "b1", "email": "u1@chordv"}), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("setup: %+v", result)
+	}
+	fake.calls = nil
+	if result := run(t, processor, command("c2", protocol.CommandEnsureUser, "5", userPayload("b1", "u1@chordv")), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("result = %+v", result)
+	}
+	if contains(fake.calls, "ensure:u1@chordv") {
+		t.Fatalf("calls = %v", fake.calls)
+	}
+}
+
+func TestANewerInstallStillBringsARemovedBindingBack(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	run(t, processor, command("c1", protocol.CommandRemoveUser, "6",
+		map[string]any{"bindingId": "b1", "email": "u1@chordv"}), true)
+	fake.calls = nil
+
+	// A genuine re-subscription at a higher revision. The tombstone must block
+	// stale work, not the control plane's newer word.
+	if result := run(t, processor, command("c2", protocol.CommandEnsureUser, "7", userPayload("b1", "u1@chordv")), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("result = %+v", result)
+	}
+	if !contains(fake.calls, "ensure:u1@chordv") {
+		t.Fatalf("a legitimate re-subscription was blocked: %v", fake.calls)
+	}
+	if tombstone, _ := state.BindingTombstone("b1"); tombstone != "0" {
+		t.Fatalf("the tombstone survived a legitimate return: %s", tombstone)
+	}
+}

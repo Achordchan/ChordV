@@ -169,6 +169,12 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 	if err := p.deps.Store.UpsertDesiredUser(user); err != nil {
 		return err
 	}
+	// The binding is legitimately back — at a revision newer than whatever
+	// deleted it, or staleForEnable would have stopped us. Keeping the tombstone
+	// would block nothing and grow forever.
+	if err := p.deps.Store.ClearBindingTombstone(user.BindingID); err != nil {
+		return err
+	}
 	return p.deps.Xray.EnsureUser(ctx, user)
 }
 
@@ -190,7 +196,23 @@ func (p *Processor) staleForEnable(command protocol.Command, stored *protocol.De
 		return older, err
 	}
 	if stored == nil {
-		return false, nil
+		// Deleting a binding also deletes the revision this function compares
+		// against, so a REMOVE_USER at 6 would leave a failed install at 5 free
+		// to pass every guard and reinstall a revoked account. The tombstone is
+		// what remains of that binding's history.
+		bindingID, _ := command.Payload["bindingId"].(string)
+		if bindingID == "" {
+			return false, nil
+		}
+		tombstone, err := p.deps.Store.BindingTombstone(bindingID)
+		if err != nil {
+			return false, err
+		}
+		newer, err := decimal.Less(tombstone, command.TargetRevision)
+		if err != nil {
+			return false, err
+		}
+		return !newer, nil
 	}
 	older, err = decimal.Less(command.TargetRevision, stored.Revision)
 	if err != nil || older {
@@ -240,6 +262,21 @@ func (p *Processor) terminalUser(ctx context.Context, command protocol.Command, 
 	if err := p.deps.Xray.RemoveUser(ctx, email); err != nil {
 		return err
 	}
+	if remove {
+		// Recorded even when this node had no record to delete: the point of the
+		// tombstone is to outlive the row, and a terminal command for a binding
+		// already absent is exactly the case where a delayed install would
+		// otherwise find nothing standing in its way.
+		bindingID, _ := command.Payload["bindingId"].(string)
+		if stored != nil {
+			bindingID = stored.BindingID
+		}
+		if bindingID != "" {
+			if err := p.deps.Store.RecordBindingTombstone(bindingID, command.TargetRevision); err != nil {
+				return err
+			}
+		}
+	}
 	if stored == nil {
 		return nil
 	}
@@ -286,6 +323,20 @@ func (p *Processor) reconcileCommand(ctx context.Context, command protocol.Comma
 			return fmt.Errorf("无法识别的控制模式 %v，拒绝执行（可能是较新的控制面下发了本构建不认识的模式）", raw)
 		}
 		mode = protocol.ControlMode(value)
+	}
+	// A snapshot older than an individual command that has ALREADY landed must
+	// not undo it, and the snapshot watermark cannot see that: it only moves when
+	// a snapshot lands, so a delayed reconcile at revision 5 passes the gate even
+	// though a DISABLE_USER at 6 has been applied. Reconcile would then hand Xray
+	// the snapshot's stale Enabled flag and reinstall the disabled account — the
+	// store's own per-row revision guard rejects the write, but Xray was already
+	// changed — and the omission cleanup would uninstall a binding a newer
+	// command had just added.
+	//
+	// So the snapshot is merged with anything newer BEFORE Xray is touched, and
+	// the merged set is what gets persisted too.
+	if users, err = p.mergeNewerBindings(users, command.TargetRevision); err != nil {
+		return err
 	}
 	// Write permission is resolved from the mode this command ESTABLISHES, not
 	// from the caller's view of the mode before it.
@@ -647,4 +698,63 @@ func optionalField(payload map[string]any, fields ...string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// mergeNewerBindings folds a snapshot together with any per-binding state that
+// is newer than it.
+//
+// Two directions, and both matter:
+//
+//   - a binding the snapshot CARRIES, whose stored revision is higher — the
+//     stored state wins, so a stale Enabled flag cannot reinstall an account a
+//     newer DISABLE_USER took down;
+//   - a binding the snapshot OMITS, whose stored revision is higher — it was
+//     added by a newer command, so it is kept rather than uninstalled and
+//     forgotten.
+//
+// Anything at or below the command's own target revision is left to the snapshot:
+// that is what a full reconcile is for. The COMMAND's revision is the yardstick,
+// not one derived from the payload — an empty snapshot ("remove everyone") carries
+// no user to derive it from, and falling back to zero would turn it into a no-op.
+func (p *Processor) mergeNewerBindings(users []protocol.DesiredUser, snapshotRevision string) ([]protocol.DesiredUser, error) {
+	recorded, err := p.deps.Store.ListDesiredUsers()
+	if err != nil {
+		return nil, err
+	}
+	stored := make(map[string]protocol.DesiredUser, len(recorded))
+	for _, user := range recorded {
+		stored[user.BindingID] = user
+	}
+	merged := make([]protocol.DesiredUser, 0, len(users))
+	carried := make(map[string]bool, len(users))
+	for _, user := range users {
+		carried[user.BindingID] = true
+		existing, known := stored[user.BindingID]
+		if !known {
+			merged = append(merged, user)
+			continue
+		}
+		newer, err := decimal.Less(user.Revision, existing.Revision)
+		if err != nil {
+			return nil, err
+		}
+		if newer {
+			merged = append(merged, existing)
+			continue
+		}
+		merged = append(merged, user)
+	}
+	for _, user := range recorded {
+		if carried[user.BindingID] {
+			continue
+		}
+		newer, err := decimal.Less(snapshotRevision, user.Revision)
+		if err != nil {
+			return nil, err
+		}
+		if newer {
+			merged = append(merged, user)
+		}
+	}
+	return merged, nil
 }
