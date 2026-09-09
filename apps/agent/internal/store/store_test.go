@@ -808,3 +808,48 @@ func TestBindingTombstonesOnlyMoveForward(t *testing.T) {
 		t.Fatalf("tombstone = %s after clearing, want 0", value)
 	}
 }
+
+func TestTombstoneComparisonIsExactBeyondInt64(t *testing.T) {
+	store := newStore(t, "node-1", "boot-1")
+	// Both of these saturate to the same value under SQLite's CAST … AS INTEGER,
+	// so a SQL-side comparison could not tell them apart — and the later deletion
+	// would fail to raise the floor, leaving an enable between the two revisions
+	// free to pass the staleness guard.
+	low := "9223372036854775808"  // int64 max + 1
+	high := "9223372036854775809" // int64 max + 2
+	if err := store.RecordBindingTombstone("b1", low); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordBindingTombstone("b1", high); err != nil {
+		t.Fatal(err)
+	}
+	if value, _ := store.BindingTombstone("b1"); value != high {
+		t.Fatalf("tombstone = %s, want %s", value, high)
+	}
+	// And the reverse direction must still be refused.
+	if err := store.RecordBindingTombstone("b1", low); err != nil {
+		t.Fatal(err)
+	}
+	if value, _ := store.BindingTombstone("b1"); value != high {
+		t.Fatalf("an older deletion lowered the floor to %s", value)
+	}
+}
+
+func TestAFreshDatabasePersistsItsZeroWatermark(t *testing.T) {
+	// Reading as zero is not enough: the key must EXIST, or the next open — after
+	// individual commands have moved config_revision but before any snapshot has
+	// arrived — mistakes this database for an old one and backfills the watermark
+	// from that per-command progress.
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	first := openAt(t, path, "node-1", "boot-1")
+	if err := first.AdvanceConfigRevision("6"); err != nil {
+		t.Fatal(err)
+	}
+	first.Close()
+
+	second := openAt(t, path, "node-1", "boot-2")
+	watermark, err := second.SnapshotRevision()
+	if err != nil || watermark != "0" {
+		t.Fatalf("SnapshotRevision = %s, %v; want 0 — no snapshot has ever been applied", watermark, err)
+	}
+}

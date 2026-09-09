@@ -1094,3 +1094,54 @@ func TestANewerInstallStillBringsARemovedBindingBack(t *testing.T) {
 		t.Fatalf("the tombstone survived a legitimate return: %s", tombstone)
 	}
 }
+
+// TestADelayedSnapshotCannotResurrectARevokedBinding: the snapshot watermark
+// only moves when a snapshot lands, so a reconcile from BEFORE a REMOVE_USER
+// still passes it. The tombstone is the only thing that knows better.
+func TestADelayedSnapshotCannotResurrectARevokedBinding(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	run(t, processor, command("c1", protocol.CommandEnsureUser, "5", userPayload("b1", "u1@chordv")), true)
+	run(t, processor, command("c2", protocol.CommandRemoveUser, "6",
+		map[string]any{"bindingId": "b1", "email": "u1@chordv"}), true)
+	fake.calls = nil
+	fake.live = []xray.LiveUser{}
+
+	if result := run(t, processor, command("c3", protocol.CommandReconcileUsers, "5", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any(userPayload("b1", "u1@chordv"))},
+	}), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("result = %+v", result)
+	}
+	if contains(fake.calls, "ensure:u1@chordv") {
+		t.Fatalf("a delayed snapshot reinstalled a revoked account: %v", fake.calls)
+	}
+	if stored, _ := state.UserByBindingID("b1"); stored != nil {
+		t.Fatalf("stored = %+v", stored)
+	}
+}
+
+// TestDisablingAnAbsentBindingStillLeavesEvidence: a disable whose row survives
+// is guarded by that row's revision, but a disable for a binding this node does
+// not store leaves nothing behind at all.
+func TestDisablingAnAbsentBindingStillLeavesEvidence(t *testing.T) {
+	processor, fake, _ := newProcessor(t, false)
+	if result := run(t, processor, command("c1", protocol.CommandDisableUser, "6",
+		map[string]any{"bindingId": "b1", "email": "u1@chordv"}), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("setup: %+v", result)
+	}
+	fake.calls = nil
+	// A delayed enable from before the disable must not restore access.
+	if result := run(t, processor, command("c2", protocol.CommandEnsureUser, "5", userPayload("b1", "u1@chordv")), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("result = %+v", result)
+	}
+	if contains(fake.calls, "ensure:u1@chordv") {
+		t.Fatalf("a delayed enable restored a disabled account: %v", fake.calls)
+	}
+	// A NEWER enable is still the control plane's newer word.
+	if result := run(t, processor, command("c3", protocol.CommandEnsureUser, "7", userPayload("b1", "u1@chordv")), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("result = %+v", result)
+	}
+	if !contains(fake.calls, "ensure:u1@chordv") {
+		t.Fatalf("a newer enable was blocked: %v", fake.calls)
+	}
+}

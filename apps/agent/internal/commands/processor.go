@@ -137,7 +137,11 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 	if err != nil {
 		return err
 	}
-	skip, err := p.staleForEnable(command, stored)
+	bindingID, _ := command.Payload["bindingId"].(string)
+	if stored != nil {
+		bindingID = stored.BindingID
+	}
+	skip, err := p.supersededBinding(bindingID, command.TargetRevision, stored)
 	if err != nil || skip {
 		return err
 	}
@@ -178,49 +182,58 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 	return p.deps.Xray.EnsureUser(ctx, user)
 }
 
-// staleForEnable reports whether this enable has already been superseded.
+// supersededBinding is the ONE place that decides whether an instruction about
+// a binding has been overtaken. Every path that could enable or reinstate an
+// account consults it.
 //
-// Superseded means "a newer full snapshot, or a newer instruction about THIS
-// binding, has replaced it". It deliberately does NOT mean "some other command
-// has completed since": ConfigRevision advances on every completed command, so
-// comparing against it would treat a retry of binding A at revision 5 as
-// obsolete merely because binding B succeeded at 6 — and cache that skip as a
-// success, leaving A uninstalled permanently.
-func (p *Processor) staleForEnable(command protocol.Command, stored *protocol.DesiredUser) (bool, error) {
+// It was previously spread across the callers, and each place that forgot one of
+// the three sources was a way for a revoked account to come back. The sources:
+//
+//   - the SNAPSHOT watermark — a newer full reconcile has replaced everything.
+//     Deliberately NOT the applied-revision watermark, which advances on every
+//     completed command: binding B succeeding at 6 says nothing about a retry
+//     for binding A at 5, and treating it as superseding would skip that retry
+//     and cache the skip as a success.
+//   - the binding's own stored revision — a newer instruction about THIS
+//     binding.
+//   - its TOMBSTONE — what remains after the row itself is deleted, and the only
+//     evidence left once a terminal command has run. Recorded at or below the
+//     target revision means superseded: a re-delivered enable must not undo the
+//     disable that the same revision produced.
+func (p *Processor) supersededBinding(bindingID, targetRevision string, stored *protocol.DesiredUser) (bool, error) {
 	snapshot, err := p.deps.Store.SnapshotRevision()
 	if err != nil {
 		return false, err
 	}
-	older, err := decimal.Less(command.TargetRevision, snapshot)
+	older, err := decimal.Less(targetRevision, snapshot)
 	if err != nil || older {
 		return older, err
 	}
-	if stored == nil {
-		// Deleting a binding also deletes the revision this function compares
-		// against, so a REMOVE_USER at 6 would leave a failed install at 5 free
-		// to pass every guard and reinstall a revoked account. The tombstone is
-		// what remains of that binding's history.
-		bindingID, _ := command.Payload["bindingId"].(string)
-		if bindingID == "" {
-			return false, nil
-		}
+	if bindingID != "" {
 		tombstone, err := p.deps.Store.BindingTombstone(bindingID)
 		if err != nil {
 			return false, err
 		}
-		newer, err := decimal.Less(tombstone, command.TargetRevision)
-		if err != nil {
-			return false, err
+		// "0" is the absence of a tombstone, not a terminal command at revision
+		// zero — the control plane's revisions are a counter that starts at one.
+		if tombstone != "0" {
+			newer, err := decimal.Less(tombstone, targetRevision)
+			if err != nil {
+				return false, err
+			}
+			if !newer {
+				return true, nil
+			}
 		}
-		return !newer, nil
 	}
-	older, err = decimal.Less(command.TargetRevision, stored.Revision)
+	if stored == nil {
+		return false, nil
+	}
+	older, err = decimal.Less(targetRevision, stored.Revision)
 	if err != nil || older {
 		return older, err
 	}
-	// Same revision, already disabled: a re-delivered enable must not undo the
-	// disable that the SAME revision produced.
-	return command.TargetRevision == stored.Revision && !stored.Enabled, nil
+	return targetRevision == stored.Revision && !stored.Enabled, nil
 }
 
 // terminalUser handles DISABLE_USER and REMOVE_USER, which differ only in
@@ -262,19 +275,20 @@ func (p *Processor) terminalUser(ctx context.Context, command protocol.Command, 
 	if err := p.deps.Xray.RemoveUser(ctx, email); err != nil {
 		return err
 	}
-	if remove {
-		// Recorded even when this node had no record to delete: the point of the
-		// tombstone is to outlive the row, and a terminal command for a binding
-		// already absent is exactly the case where a delayed install would
-		// otherwise find nothing standing in its way.
-		bindingID, _ := command.Payload["bindingId"].(string)
-		if stored != nil {
-			bindingID = stored.BindingID
-		}
-		if bindingID != "" {
-			if err := p.deps.Store.RecordBindingTombstone(bindingID, command.TargetRevision); err != nil {
-				return err
-			}
+	// Recorded for BOTH kinds, and even when this node had no row to act on.
+	//
+	// A disable whose row survives is guarded by that row's revision — but a
+	// disable for a binding this node does not store leaves no evidence at all,
+	// and a delayed enable at a lower revision would then restore access to an
+	// account the control plane just took down. The tombstone is a floor on the
+	// binding rather than a fact about the row, so it applies uniformly.
+	bindingID, _ := command.Payload["bindingId"].(string)
+	if stored != nil {
+		bindingID = stored.BindingID
+	}
+	if bindingID != "" {
+		if err := p.deps.Store.RecordBindingTombstone(bindingID, command.TargetRevision); err != nil {
+			return err
 		}
 	}
 	if stored == nil {
@@ -730,7 +744,17 @@ func (p *Processor) mergeNewerBindings(users []protocol.DesiredUser, snapshotRev
 	for _, user := range users {
 		carried[user.BindingID] = true
 		existing, known := stored[user.BindingID]
+		// A snapshot from before a terminal command still passes the watermark
+		// gate, so it can carry a binding that has since been revoked. Without
+		// this the reconcile below would reinstall it.
 		if !known {
+			superseded, err := p.supersededBinding(user.BindingID, user.Revision, nil)
+			if err != nil {
+				return nil, err
+			}
+			if superseded {
+				continue
+			}
 			merged = append(merged, user)
 			continue
 		}

@@ -235,9 +235,16 @@ func (s *Store) backfillSnapshotRevision() error {
 		return err
 	}
 	applied, err := s.ConfigRevision()
-	if err != nil || applied == "0" {
+	if err != nil {
 		return err
 	}
+	// A fresh database must PERSIST the zero, not just read as zero. Returning
+	// early here would leave the key absent, so the next open — after individual
+	// commands have moved config_revision but before any snapshot has arrived —
+	// would mistake this database for an old one and backfill the watermark from
+	// that per-command progress. A failed install at revision 5 followed by a
+	// success at 6 and a restart would then have its retry skipped and cached as
+	// completed: exactly the confusion the watermark exists to prevent.
 	return s.setMeta("snapshot_revision", applied)
 }
 
@@ -252,12 +259,36 @@ func (s *Store) RecordBindingTombstone(bindingID, revision string) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`
-		INSERT INTO binding_tombstones_v2(binding_id, revision, recorded_at) VALUES(?, ?, ?)
-		ON CONFLICT(binding_id) DO UPDATE SET revision = excluded.revision, recorded_at = excluded.recorded_at
-		WHERE CAST(excluded.revision AS INTEGER) > CAST(binding_tombstones_v2.revision AS INTEGER)`,
-		bindingID, normalized, isoMillis(time.Now()))
-	return err
+	// Compared in Go, not in SQL. SQLite's CAST … AS INTEGER saturates at the
+	// signed 64-bit maximum, so two protocol-valid revisions above it compare
+	// EQUAL and a later deletion could not raise the floor — leaving an enable
+	// between the two deletion revisions free to pass the staleness guard.
+	// Everything else in this agent already compares revisions with big.Int;
+	// reaching for a SQL cast here was the inconsistency.
+	return s.transact(func(tx *sql.Tx) error {
+		var current string
+		switch err := tx.QueryRow(
+			`SELECT revision FROM binding_tombstones_v2 WHERE binding_id = ?`, bindingID).Scan(&current); {
+		case errors.Is(err, sql.ErrNoRows):
+			current = ""
+		case err != nil:
+			return err
+		}
+		if current != "" {
+			order, err := decimal.Cmp(normalized, current)
+			if err != nil {
+				return err
+			}
+			if order <= 0 {
+				return nil
+			}
+		}
+		_, err := tx.Exec(`
+			INSERT INTO binding_tombstones_v2(binding_id, revision, recorded_at) VALUES(?, ?, ?)
+			ON CONFLICT(binding_id) DO UPDATE SET revision = excluded.revision, recorded_at = excluded.recorded_at`,
+			bindingID, normalized, isoMillis(time.Now()))
+		return err
+	})
 }
 
 // BindingTombstone reports the revision at which a binding was deleted, or "0".
