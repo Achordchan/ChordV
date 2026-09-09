@@ -249,7 +249,7 @@ docker compose -f deploy/1panel/chordv/docker-compose.yml up -d --build --force-
 
 ### 后台系统版本发布
 
-后台系统版本号维护在仓库根 [`SYSTEM_VERSION`](SYSTEM_VERSION)（独立于各 `package.json`，从 `0.0.1` 起）。发布由 GitHub Actions [`release-backend.yml`](.github/workflows/release-backend.yml) 完成：先跑回归测试，再构建可迁移的发布压缩包 + `checksums.txt` + `manifest.json`，发布到 `backend-v*` 的 GitHub Release，并把清单推送到 `backend-manifest` 分支（稳定 raw 地址，供实例检查更新）。发布包在打包前经 `scripts/prune-release-node-modules.mjs` 剪枝：只保留 apps/api 运行时依赖、`prisma` CLI（容器内跑迁移）及 `@chordv/shared` 的依赖闭包，并裁剪非 PostgreSQL 方言的 Prisma wasm 引擎；工作区链接、`.bin` 与 pnpm 状态文件保留以维持 `pnpm exec` 可用。剪枝逻辑由 `apps/api/test/prune-release-node-modules.regression.ts` 回归覆盖。运营后台在“全局加速镜像”里配置好 `https://ghfast.top/` 之类前缀后，实例即可通过左上角版本入口检查并一键更新。
+后台系统版本号维护在仓库根 [`SYSTEM_VERSION`](SYSTEM_VERSION)（独立于各 `package.json`，从 `0.0.1` 起）。发布由 GitHub Actions [`release-backend.yml`](.github/workflows/release-backend.yml) 完成：先跑回归测试，再构建可迁移的发布压缩包 + `checksums.txt` + `manifest.json`，发布到 `backend-v*` 的 GitHub Release，并把清单推送到 `backend-manifest` 分支（稳定 raw 地址，供实例检查更新）。发布包只装构建产物（`apps/api/dist`、`apps/admin/dist`、`packages/shared/dist`、`apps/api/prisma` 及少量根清单），**不再打包任何 `node_modules`**。安装端在解压后先比对包内与当前运行版本的 `pnpm-lock.yaml` 摘要，一致才把现有依赖树硬链接进新版本目录；锁文件有变则更新**失败关闭**，必须改走重建镜像部署。逻辑见 `system-update.service.ts` 的 `hydrateRuntimeDependencies`，由 `apps/api/test/release-dependency-hydration.regression.ts` 回归覆盖。运营后台在“全局加速镜像”里配置好 `https://ghfast.top/` 之类前缀后，实例即可通过左上角版本入口检查并一键更新。
 
 容器部署默认使用稳定清单地址：
 
