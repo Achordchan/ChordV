@@ -865,6 +865,13 @@ export class UpdateDownloadMirrorConfigDto {
     message: "allowClientMirror must be a boolean value"
   })
   allowClientMirror?: boolean;
+
+  @ValidateIf((_object, value) => value !== undefined)
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsIn([true, false, "true", "false"], {
+    message: "useMirrorForSystemUpdate must be a boolean value"
+  })
+  useMirrorForSystemUpdate?: boolean;
 }
 
 export class CreateRuntimeComponentDto {

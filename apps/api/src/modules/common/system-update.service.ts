@@ -1181,10 +1181,21 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  /**
+   * The mirror prefix THIS SERVER should use for its own update downloads, which
+   * is not necessarily the one it hands to clients.
+   *
+   * A single prefix serves two consumers with opposite needs: desktop clients
+   * fetching runtime components from GitHub over a network the mirror exists to
+   * work around, and this process fetching its own release archives. Once the
+   * backend sits somewhere with direct access, that hop is pure overhead on the
+   * server side while remaining essential on the client side — so the operator can
+   * turn it off here without taking it away from clients.
+   */
   private async resolveMirrorPrefix(): Promise<string | null> {
     try {
       const config = await this.downloadMirrorService.getEffectiveConfig();
-      return config.defaultMirrorPrefix;
+      return config.useMirrorForSystemUpdate ? config.defaultMirrorPrefix : null;
     } catch (error) {
       this.logger.warn(`Unable to read download mirror config: ${this.describeError(error)}`);
       return null;
