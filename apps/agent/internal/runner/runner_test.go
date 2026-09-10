@@ -1536,3 +1536,47 @@ func TestBacklogReplayAndHeartbeatShareServerBoot(t *testing.T) {
 		t.Fatalf("did not return to current boot: %s", a.boot)
 	}
 }
+
+func TestDemotionMetersBeforeDroppingLocalBinding(t *testing.T) {
+	h := newHarness(t)
+	u := user("b1", "a@example.com", "7", true, "1000")
+	h.seed(t, "7", protocol.ModeDirectPrimary, u)
+	r := h.build(t)
+	h.xray.counters = []protocol.AbsoluteCounter{{Email: u.Email, UplinkBytes: "0", DownlinkBytes: "0"}}
+	if err := r.sample(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h.xray.counters[0].UplinkBytes = "20"
+	h.api.config = protocol.ConfigSnapshot{NodeID: "node-1", Revision: "8", ControlMode: protocol.ModeShadowDirect}
+	if _, err := r.refreshConfig(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	batches, err := h.store.ListPendingBatches(0)
+	if err != nil || len(batches) != 2 || batches[1].Samples[0].UplinkDeltaBytes != "20" {
+		t.Fatalf("demotion lost usage: %+v %v", batches, err)
+	}
+}
+
+func TestPanelReplacementCountersDoNotChargePreviousBinding(t *testing.T) {
+	h := newHarness(t)
+	u := user("b1", "a@example.com", "7", true, "1000")
+	h.seed(t, "7", protocol.ModeDirectPrimary, u)
+	r := h.build(t)
+	h.xray.counters = []protocol.AbsoluteCounter{{Email: u.Email, UplinkBytes: "0", DownlinkBytes: "0"}}
+	if err := r.sample(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h.xray.live[0].UUID = "panel-replacement"
+	r.deps.Commands = commands.New(commands.Deps{Store: h.store, Xray: h.xray, Logf: func(string, ...any) {}})
+	h.xray.counters[0].UplinkBytes = "500"
+	if err := r.sample(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := h.store.UserByBindingID(u.BindingID)
+	if err != nil || stored.QuotaRemainingBytes != "1000" {
+		t.Fatalf("charged panel traffic: %+v %v", stored, err)
+	}
+	if pending, _ := h.store.PendingBatchCount(); pending != 1 {
+		t.Fatalf("queued panel delta: %d", pending)
+	}
+}

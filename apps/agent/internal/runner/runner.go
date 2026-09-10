@@ -319,7 +319,7 @@ func (r *Runner) applyRefreshedLocked(ctx context.Context, snapshot protocol.Con
 		r.current = current
 		return current, nil
 	}
-	if prepared.ControlMode == protocol.ModeDirectPrimary {
+	if current.ControlMode == protocol.ModeDirectPrimary || prepared.ControlMode == protocol.ModeDirectPrimary {
 		if err := r.sampleBeforeRemovalLocked(ctx, current, prepared); err != nil {
 			return protocol.ConfigSnapshot{}, err
 		}
@@ -532,6 +532,10 @@ func (r *Runner) sampleLocked(ctx context.Context) error {
 	counters, err := r.deps.Xray.ReadAbsoluteCounters(ctx)
 	if err != nil {
 		r.xrayHealthy = false
+		return err
+	}
+	counters, err = r.attributableCountersLocked(ctx, counters)
+	if err != nil {
 		return err
 	}
 	if !r.xrayHealthy {
@@ -866,4 +870,44 @@ func (r *Runner) ackLocked(bootID, through string) error {
 		r.settlementEpoch++
 	}
 	return err
+}
+
+// Counters are keyed only by email. Refuse a positively identified replacement
+// before folding it into the subscription. A missing/unknown identity cannot
+// prove a replacement (a removed account may leave a final stats reading).
+// This is not an atomic identity+counter read; the panel race remains in PRD §10.
+func (r *Runner) attributableCountersLocked(ctx context.Context, counters []protocol.AbsoluteCounter) ([]protocol.AbsoluteCounter, error) {
+	if len(counters) == 0 {
+		return counters, nil
+	}
+	live, err := r.deps.Xray.ListUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	users, err := r.deps.Store.ListDesiredUsers()
+	if err != nil {
+		return nil, err
+	}
+	wanted := make(map[string]string, len(users))
+	for _, user := range users {
+		wanted[user.Email] = user.UUID
+	}
+	installed := make(map[string]string, len(live))
+	for _, user := range live {
+		installed[user.Email] = user.UUID
+	}
+	filtered := make([]protocol.AbsoluteCounter, 0, len(counters))
+	for _, counter := range counters {
+		expected, known := wanted[counter.Email]
+		if !known {
+			continue
+		}
+		actual := installed[counter.Email]
+		if actual != "" && expected != "" && actual != expected {
+			r.errorf("账号 %s 的实时身份与 binding 不符，跳过计量", counter.Email)
+			continue
+		}
+		filtered = append(filtered, counter)
+	}
+	return filtered, nil
 }
