@@ -35,20 +35,20 @@ TypeScript 版之后，`-go` 后缀也不再指代任何东西。
 | P1-a | 协议类型、配置、凭据、持久化写、API 客户端（含 SSE） | 已完成 |
 | P1-b1 | sqlite 状态库（用户、计量批次、命令幂等） | 已完成 |
 | P1-b2 | 命令处理器 + Xray 适配器边界 | 已完成 |
-| P1-b3 | 主循环、入口 `cmd/chordv-agent/main.go` | 本次新增 |
-| P2 | 面板入站接入、入站 tag 校验、xray gRPC 适配器 | 未开始 |
+| P1-b3 | 主循环、入口 `cmd/chordv-agent/main.go` | 已完成 |
+| P2-a | 真实 Xray gRPC 适配器、只读 tag 校验、隔离实测 | 本次新增 |
+| P2-b | 后台 vless 导入、ENSURE_INBOUND 语义改造、接入手册 | 未开始 |
 
-**有入口，但仍不能替换正式节点。** P2 的 Xray gRPC 适配器尚未实现。默认启动在注册、
-创建状态库之前拒绝运行；只有 `AGENT_ALLOW_NO_XRAY=1` 才允许做协议联调。
-联调使用 `shadow_direct` 空节点；`direct_primary` 的首次配置需要真实适配器，当前会失败。
-联调心跳报告 Xray offline，`--health` 返回失败。这不是数据面灰度，不要替换线上服务。
+**已接入真实 Xray，但仍不可直接迁移正式节点。** P2-b 控制面入站导入和
+`ENSURE_INBOUND` 语义改造尚未完成。启动先只读校验目标 VLESS tag 与 StatsService，
+失败时不注册、不初始化状态库。占位适配器和 `AGENT_ALLOW_NO_XRAY` 已删除。
 
 ## 与控制面的关系
 
 线上协议**一个字节都不改**。`internal/protocol` 是
 `apps/node-agent/src/types.ts` 与服务端 `apps/api/src/modules/agent/agent.dto.ts`
 的逐字转写：灰度时如果协议也跟着变，就分不清是移植 bug 还是协议 bug。
-既有身份、路径和间隔变量沿用 Node 版；新增的三个显式开关见下文。部署脚本和真实适配器不在本 PR。
+既有身份、路径和间隔变量沿用 Node 版；两个所有权开关见下文。部署脚本和后台入站导入不在本 PR。
 
 ## 几条不能改的不变量
 
@@ -87,14 +87,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /path/to/chordv-agent ./cmd/ch
 
 | 变量 | 用途 | 限制 |
 | --- | --- | --- |
-| `AGENT_ALLOW_NO_XRAY=1` | 允许占位适配器构建做协议联调 | 只用非生产 shadow 节点；P2 实现后删除 |
 | `AGENT_REMOVE_UNKNOWN_USERS=1` | 删除不在期望集合中的未知账号 | **共享入站不可开**，会影响面板账号 |
 | `AGENT_ADOPT_EXISTING_ACCOUNTS=1` | 认领同名既有账号 | 仅明确确认属于 ChordV 的迁移环境 |
 
 循环分工：采样按 `AGENT_SAMPLE_INTERVAL_MS`（默认 5 秒），心跳按
 `AGENT_HEARTBEAT_INTERVAL_MS`（默认 15 秒），批次每秒最多取 100 个按序上传，
 SSE 结束或失败后等待 2 秒重连。所有数据库操作和 Xray 修改共用一把状态锁；
-控制面网络请求不占锁。Xray 操作需遵守 context 取消/超时约定，真实 gRPC 实现在 P2 验证。
+控制面网络请求不占锁。Xray 操作需遵守 context 取消/超时约定，真实 gRPC 每个公共操作共享最多 5 秒预算，服从调用方更短的期限。
 
 - **配置与命令：** HTTP 快照复用命令处理器的身份、模式、binding 历史和所有权规则，
   不伪造命令日志。SSE 模式切换由处理器决定，runner 不提前授予权限。
@@ -117,3 +116,40 @@ ack 尚未追上该条，下一轮重传，不能越过它切到新 boot。该�
 
 每轮上传另有 **10 秒总预算**（不是每条重新计时），到期保留未确认批次并释放网络锁，
 让心跳可以继续；单轮仍最多读取 100 条。关闭时服从更短的剩余退出预算。
+
+## P2-a 适配器与隔离验证
+
+依赖固定 `github.com/xtls/xray-core v1.260327.0`（Xray 26.3.27），因此最低 Go 版本为
+1.26。直接使用上游 protobuf 和 gRPC service；没有 Node SDK 或自行复制的 proto。
+
+- `XRAY_API_ADDRESS` 支持 `127.0.0.1:端口`、`[::1]:端口`、`localhost:端口`
+  （强制映射 loopback，不经 DNS），或 `unix:/绝对路径` / `unix:///绝对路径`。
+- API 无认证，**只能本机访问**。agent 不开 API 端口、不改防火墙、不读取面板配置。
+- `ValidateInbound` 读取 `ListInbounds` 的 proxy 类型并调用 tag 范围的 `GetInboundUsers`；
+  对空入站也能确认 VLESS，不创建探测账号。缺失 tag/非 VLESS/不支持的 RPC 明确失败。
+- `EnsureUser` 同 UUID **且同 flow** 才是无操作；否则按预期身份再读取后删除/添加。
+  `RemoveUser` 对已不存在账号成功，对身份不匹配拒绝；大小写别名和重复 UUID 拒绝。
+- 上游 VLESS validator 在 UUID 索引中屏蔽字节 6/7，适配器按同样的 key 排除已有账号冲突。
+  只接受规范 UUID，拒绝上游支持的短字符串哈希别名，避免本地 ownership 记录与真实 UUID 不同。
+- `QueryStats.Reset_` 固定 false，int64 直接转十进制字符串，不经浮点数；负计数拒绝。
+  只输出目标入站 live 用户的统计，首次使用前尚未注册的计数输出零。
+
+**面板配置前提：** StatsService、HandlerService 已开启；level 0 的
+`statsUserUplink` / `statsUserDownlink` 已开启。API 不能区分“尚无流量”与“计数策略未开启”，
+因此接入验收必须以实际流量验证，不能仅凭 Health 成功激活。API 客户端不会替面板开启策略。
+
+```bash
+go test -v ./internal/xray                 # 启动隔离真实 Xray 服务，自动清理
+go test -race ./...                        # 包含真实服务测试
+```
+
+真实服务测试覆盖：TCP API、Unix socket、uptime、空 VLESS 入站、错误 tag 的原生
+AddUser 报错、用户增删/重复调用、UUID/flow 变更、身份冲突，以及 VLESS loopback 到
+本地 echo 服务（上/下各 5 字节，连续读取不清零）。大于 JS 安全整数的精度和非目标
+账号过滤由真实 StatsService + 内存计数器验证。测试不接触任何生产服务器或外网目标。
+
+**边界：** 测试使用固定版本的真实 Xray，不等于已验证所有面板捆绑版本；P2-b 接入时
+仍须核对版本/RPC/统计策略。合法但指错入站的 tag 须由后台绑定导入端口解决。
+身份读取与修改/统计不具备 CAS；面板并发改写竞态沿用 PRD §10。已移除 live 用户的
+尾部计数不由全局 stats 猜测归属，删前采样仍是计量保障。当前 ENSURE_INBOUND 继续
+明确拒绝部署请求，不能把适配器可用误当作生产迁移已就绪。

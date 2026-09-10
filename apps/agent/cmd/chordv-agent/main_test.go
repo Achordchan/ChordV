@@ -19,11 +19,11 @@ func testConfig(t *testing.T) *agentcfg.Config {
 		CredentialsPath: filepath.Join(dir, "credentials.json"), OfflineAllowanceBytes: big.NewInt(1024)}
 }
 
-func TestStubRefusalPrecedesIdentityAndStateWrites(t *testing.T) {
+func TestInvalidXrayAddressPrecedesIdentityAndStateWrites(t *testing.T) {
 	config := testConfig(t)
-	t.Setenv(AcknowledgeNoXrayEnv, "")
+	config.XrayAPIAddress = "0.0.0.0:10085"
 	if err := serve(config); err == nil {
-		t.Fatal("placeholder binary started without consent")
+		t.Fatal("invalid Xray address accepted")
 	}
 	if _, err := os.Stat(filepath.Dir(config.DatabasePath)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("created state on refusal: %v", err)
@@ -33,7 +33,7 @@ func TestStubRefusalPrecedesIdentityAndStateWrites(t *testing.T) {
 func TestHealthDoesNotCreateAnUnstartedStore(t *testing.T) {
 	config := testConfig(t)
 	if healthCheck(config) {
-		t.Fatal("unstarted placeholder reported healthy")
+		t.Fatal("unstarted service reported healthy")
 	}
 	if _, err := os.Stat(filepath.Dir(config.DatabasePath)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("probe wrote files: %v", err)

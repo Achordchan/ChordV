@@ -10,7 +10,6 @@ package xray
 
 import (
 	"context"
-	"errors"
 
 	"github.com/Achordchan/ChordV/apps/agent/internal/protocol"
 )
@@ -53,10 +52,8 @@ type Expectation struct {
 	Absent bool
 }
 
-// Adapter is what the runner needs from Xray. The gRPC implementation lands in
-// P2 together with the panel-inbound onboarding; keeping it behind an interface
-// is what lets the protocol and metering layers be reviewed and tested without
-// dragging in xray-core's protobuf tree.
+// Adapter is the runner's Xray boundary. GRPC is the production implementation;
+// the interface keeps state/command tests independent of the upstream service.
 type Adapter interface {
 	// Health reports whether the control API answers at all.
 	Health(ctx context.Context) error
@@ -79,25 +76,4 @@ type Adapter interface {
 	// resetting it. Reset-on-read is what makes two readers steal from each
 	// other, and 3x-ui is the other reader.
 	ReadAbsoluteCounters(ctx context.Context) ([]protocol.AbsoluteCounter, error)
-}
-
-// ErrNotBuilt is what the placeholder adapter returns. It is a distinct error so
-// a caller can tell "this build cannot talk to Xray" from "Xray is down".
-var ErrNotBuilt = errors.New("本构建尚未包含 Xray gRPC 适配器（P2 提供）")
-
-// Unavailable is the placeholder used until P2 lands the real adapter. It fails
-// every call loudly rather than pretending to succeed: an agent that reported
-// users as provisioned without installing them would look healthy while serving
-// nobody.
-type Unavailable struct{}
-
-func (Unavailable) Health(context.Context) error                  { return ErrNotBuilt }
-func (Unavailable) UptimeSeconds(context.Context) (int64, error)  { return 0, ErrNotBuilt }
-func (Unavailable) ListUsers(context.Context) ([]LiveUser, error) { return nil, ErrNotBuilt }
-func (Unavailable) EnsureUser(context.Context, protocol.DesiredUser, Expectation) error {
-	return ErrNotBuilt
-}
-func (Unavailable) RemoveUser(context.Context, string, Expectation) error { return ErrNotBuilt }
-func (Unavailable) ReadAbsoluteCounters(context.Context) ([]protocol.AbsoluteCounter, error) {
-	return nil, ErrNotBuilt
 }
