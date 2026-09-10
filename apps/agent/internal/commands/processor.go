@@ -708,6 +708,30 @@ func (p *Processor) reconcileCommand(ctx context.Context, command protocol.Comma
 	if users, err = p.mergeNewerBindings(users, command.TargetRevision); err != nil {
 		return err
 	}
+	// SSE snapshots must respect the same unsettled local cutoffs as HTTP
+	// snapshots. Keep the original quota evidence as well as enabled=false.
+	pending, err := p.deps.Store.PendingBatchCount()
+	if err != nil {
+		return err
+	}
+	if pending > 0 {
+		for i, user := range users {
+			local, err := p.deps.Store.UserByBindingID(user.BindingID)
+			if err != nil {
+				return err
+			}
+			if local == nil || local.Enabled {
+				continue
+			}
+			offline, err := p.deps.Store.OfflineDisabled(user.BindingID)
+			if err != nil {
+				return err
+			}
+			if offline || local.QuotaRemainingBytes == "0" {
+				users[i] = *local
+			}
+		}
+	}
 	// Write permission is resolved from the mode this command ESTABLISHES, not
 	// from the caller's view of the mode before it.
 	//
@@ -1658,4 +1682,99 @@ func (p *Processor) expectation(email string, live []xray.LiveUser, observed boo
 		return xray.Expectation{}
 	}
 	return xray.Expectation{UUID: claims[email].UUID}
+}
+
+// UninstallExhausted takes down the accounts a metering tick has just disabled
+// for running out of quota.
+//
+// The runner cannot call the adapter for this itself. Under the panel-shared
+// inbound an address is only safe to act on while the account sitting there is
+// still the one this agent installed, and that judgement lives here — with the
+// claims, the pending-removal notes and the identity test. A bare RemoveUser
+// would delete whatever the panel happened to put at a freed address.
+//
+// The local record is deliberately left alone. RecordSample has already set
+// enabled = 0, and the account is disabled, not gone: the binding is still this
+// node's, and a top-up re-enables it by reinstalling the same identity. Forgetting
+// the claim here would make that reinstall look like a takeover of a stranger's
+// address and fail it.
+func (p *Processor) UninstallExhausted(ctx context.Context, emails []string) error {
+	if len(emails) == 0 {
+		return nil
+	}
+	live, err := p.deps.Xray.ListUsers(ctx)
+	if err != nil {
+		return err
+	}
+	ours, err := p.ownershipMap(live)
+	if err != nil {
+		return err
+	}
+	for _, email := range emails {
+		if !ours[email] {
+			// Not an error: the row is disabled either way, so the user stops
+			// being billed. Only the uninstall is skipped, and it is skipped
+			// because the account at that address is not the one we metered.
+			p.logf("[node-agent] 用量耗尽的 %s 当前不属于本节点，跳过卸载", email)
+			continue
+		}
+		if err := p.deps.Xray.RemoveUser(ctx, email, p.expectation(email, live, true)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PrepareSnapshot validates the full response before any Xray mutation and
+// merges binding history using the same rules as RECONCILE_USERS.
+func (p *Processor) PrepareSnapshot(snapshot protocol.ConfigSnapshot) (protocol.ConfigSnapshot, error) {
+	current, err := p.deps.Store.ConfigSnapshot()
+	if err != nil {
+		return snapshot, err
+	}
+	if snapshot.NodeID != current.NodeID {
+		return snapshot, errors.New("Agent 配置 nodeId 与本机凭据不一致")
+	}
+	if !protocol.IsControlMode(string(snapshot.ControlMode)) {
+		return snapshot, errors.New("Agent 配置 controlMode 无法识别")
+	}
+	if _, err := decimal.Normalize(snapshot.Revision); err != nil {
+		return snapshot, err
+	}
+	if err := distinctBindings(snapshot.Users); err != nil {
+		return snapshot, err
+	}
+	for _, user := range snapshot.Users {
+		if user.Flow != protocol.FlowNone && user.Flow != protocol.FlowVision {
+			return snapshot, fmt.Errorf("binding %s 的 flow 无法识别", user.BindingID)
+		}
+	}
+	snapshot.Users, err = p.mergeNewerBindings(snapshot.Users, snapshot.Revision)
+	return snapshot, err
+}
+
+// ApplySnapshot shares ownership cleanup with command reconciliation. HTTP
+// refreshes are not commands and must not manufacture command-log entries.
+func (p *Processor) ApplySnapshot(ctx context.Context, snapshot protocol.ConfigSnapshot) error {
+	var err error
+	if snapshot, err = p.PrepareSnapshot(snapshot); err != nil {
+		return err
+	}
+	current, err := p.deps.Store.ConfigRevision()
+	if err != nil {
+		return err
+	}
+	older, err := decimal.Less(snapshot.Revision, current)
+	if err != nil || older {
+		return err
+	}
+	if snapshot.ControlMode == protocol.ModeDirectPrimary {
+		if err := p.Reconcile(ctx, snapshot.Users); err != nil {
+			return err
+		}
+	} else if err := p.rememberDroppedOwnership(snapshot.Users); err != nil {
+		return err
+	}
+	_, err = p.deps.Store.ApplyConfigSnapshot(snapshot)
+	return err
 }

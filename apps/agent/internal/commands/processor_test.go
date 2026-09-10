@@ -2804,3 +2804,33 @@ func TestAReconfigurationAtTheSameRevisionIsPersisted(t *testing.T) {
 		t.Fatalf("Xray 装的是新参数，本地记录还停在旧的：%+v", stored)
 	}
 }
+
+func TestExhaustionLeavesPanelReplacementAlone(t *testing.T) {
+	p, fake, state := newStrictProcessor(t)
+	if err := state.RecordProvisioned("b1", "a@example.com", "our-uuid"); err != nil {
+		t.Fatal(err)
+	}
+	fake.live = []xray.LiveUser{{Email: "a@example.com", UUID: "panel-uuid"}}
+	if err := p.UninstallExhausted(context.Background(), []string{"a@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range fake.calls {
+		if call == "remove:a@example.com" {
+			t.Fatal("removed panel replacement")
+		}
+	}
+}
+
+func TestExhaustionCarriesExpectedIdentity(t *testing.T) {
+	p, fake, state := newStrictProcessor(t)
+	if err := state.RecordProvisioned("b1", "a@example.com", "our-uuid"); err != nil {
+		t.Fatal(err)
+	}
+	fake.live = []xray.LiveUser{{Email: "a@example.com", UUID: "our-uuid"}}
+	if err := p.UninstallExhausted(context.Background(), []string{"a@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := fake.expectFor["remove:a@example.com"]; got.UUID != "our-uuid" || got.Absent {
+		t.Fatalf("missing identity: %+v", got)
+	}
+}

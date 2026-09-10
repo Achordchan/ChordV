@@ -218,3 +218,19 @@ func TestIntervalMillisMustFitInADuration(t *testing.T) {
 		t.Fatalf("SampleInterval = %v, want a positive duration", config.SampleInterval)
 	}
 }
+
+func TestOwnershipSwitchesRequireOptIn(t *testing.T) {
+	baseEnv(t)
+	for _, value := range []string{"", "false", "1", "TRUE", "yes"} {
+		t.Setenv("AGENT_REMOVE_UNKNOWN_USERS", value)
+		t.Setenv("AGENT_ADOPT_EXISTING_ACCOUNTS", value)
+		config, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := value != "" && value != "false"
+		if config.RemoveUnknownUsers != want || config.AdoptExistingAccounts != want {
+			t.Fatalf("switch %q: %+v", value, config)
+		}
+	}
+}
