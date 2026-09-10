@@ -2767,3 +2767,40 @@ func TestAnAuthorizedAdoptionLeavesRecoveryEvidence(t *testing.T) {
 		})
 	}
 }
+
+// TestAReconfigurationAtTheSameRevisionIsPersisted keeps Xray and the store
+// telling the same story.
+//
+// A binding's revision is its own; `flow` comes from the NODE. So a fresh
+// snapshot can legitimately carry a changed flow — or a rotated uuid — at an
+// unchanged binding revision. Reconcile installs what the snapshot says; if the
+// store skipped the row as "not newer", the command would report success with
+// Xray and the record disagreeing about what is deployed.
+func TestAReconfigurationAtTheSameRevisionIsPersisted(t *testing.T) {
+	processor, fake, state := newStrictProcessor(t)
+	first := userPayload("b1", "u1@chordv")
+	first["revision"] = "5"
+	run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any(first)},
+	}), true)
+	fake.live = []xray.LiveUser{{Email: "u1@chordv", UUID: "uuid-b1"}}
+
+	// Same binding revision, different connection settings.
+	changed := userPayload("b1", "u1@chordv")
+	changed["revision"] = "5"
+	changed["flow"] = protocol.FlowNone
+	fake.calls = nil
+	run(t, processor, command("c2", protocol.CommandReconcileUsers, "6", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any(changed)},
+	}), true)
+
+	if !contains(fake.calls, "ensure:u1@chordv") {
+		t.Fatalf("新的连接参数没有装下去：%v", fake.calls)
+	}
+	stored, _ := state.UserByBindingID("b1")
+	if stored == nil || stored.Flow != protocol.FlowNone {
+		t.Fatalf("Xray 装的是新参数，本地记录还停在旧的：%+v", stored)
+	}
+}
