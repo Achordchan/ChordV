@@ -187,7 +187,11 @@ func (s *Store) migrate() error {
 		CREATE TABLE IF NOT EXISTS binding_tombstones_v2 (
 			binding_id TEXT PRIMARY KEY,
 			revision TEXT NOT NULL,
-			recorded_at TEXT NOT NULL
+			recorded_at TEXT NOT NULL,
+			-- The address the binding held when it was revoked. Deleting the row
+			-- also deletes the only other place that named it, so a REMOVE_USER
+			-- carrying nothing but a bindingId could not be retried after a crash.
+			email TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS pending_removals_v2 (
 			email TEXT PRIMARY KEY,
@@ -465,7 +469,16 @@ func (s *Store) provisionedFromHistory() (int, error) {
 			if superseded {
 				continue
 			}
+			// MERGED, not replaced — the same thing resolveUser does at
+			// execution time. An ENABLE_USER may legitimately carry only a
+			// bindingId and an email, and overwriting the known identity with ""
+			// would leave a claim nothing can contradict: a panel account that
+			// later reused the address would be accepted as ours and deleted by
+			// the next omission.
 			uuid, _ := payload["uuid"].(string)
+			if uuid == "" {
+				uuid = owned[id].uuid
+			}
 			owned[id] = held{email, uuid}
 			// The live path clears the tombstone when a binding legitimately
 			// comes back; the replay has to do the same or every later snapshot
@@ -545,6 +558,9 @@ func (s *Store) provisionedFromHistory() (int, error) {
 					enabled = value
 				}
 				uuid, _ := user["uuid"].(string)
+				if uuid == "" {
+					uuid = owned[id].uuid // merged, as above
+				}
 				if !enabled {
 					if current, had := owned[id]; had && current.email == email {
 						next[id] = current
@@ -626,11 +642,11 @@ func (s *Store) RecordBindingTombstone(bindingID, revision string) error {
 	// Everything else in this agent already compares revisions with big.Int;
 	// reaching for a SQL cast here was the inconsistency.
 	return s.transact(func(tx *sql.Tx) error {
-		return recordTombstoneTx(tx, bindingID, normalized)
+		return recordTombstoneTx(tx, bindingID, normalized, "")
 	})
 }
 
-func recordTombstoneTx(tx *sql.Tx, bindingID, normalized string) error {
+func recordTombstoneTx(tx *sql.Tx, bindingID, normalized, email string) error {
 	var current string
 	switch err := tx.QueryRow(
 		`SELECT revision FROM binding_tombstones_v2 WHERE binding_id = ?`, bindingID).Scan(&current); {
@@ -648,10 +664,16 @@ func recordTombstoneTx(tx *sql.Tx, bindingID, normalized string) error {
 			return nil
 		}
 	}
+	// An empty email never overwrites a remembered one: a snapshot omission knows
+	// the binding but not always the address, and the address is what a retry
+	// needs.
 	_, err := tx.Exec(`
-		INSERT INTO binding_tombstones_v2(binding_id, revision, recorded_at) VALUES(?, ?, ?)
-		ON CONFLICT(binding_id) DO UPDATE SET revision = excluded.revision, recorded_at = excluded.recorded_at`,
-		bindingID, normalized, isoMillis(time.Now()))
+		INSERT INTO binding_tombstones_v2(binding_id, revision, recorded_at, email) VALUES(?, ?, ?, ?)
+		ON CONFLICT(binding_id) DO UPDATE SET
+			revision = excluded.revision,
+			recorded_at = excluded.recorded_at,
+			email = CASE WHEN excluded.email = '' THEN binding_tombstones_v2.email ELSE excluded.email END`,
+		bindingID, normalized, isoMillis(time.Now()), email)
 	return err
 }
 
@@ -669,7 +691,7 @@ func recordTombstoneTx(tx *sql.Tx, bindingID, normalized string) error {
 //
 // Committing them together means a retry either finds the whole transition or
 // none of it, and in the "none" case does the work again.
-func (s *Store) ApplyTerminal(bindingID, revision string, remove bool) error {
+func (s *Store) ApplyTerminal(bindingID, revision, email string, remove bool) error {
 	normalized, err := decimal.Normalize(revision)
 	if err != nil {
 		return err
@@ -678,7 +700,7 @@ func (s *Store) ApplyTerminal(bindingID, revision string, remove bool) error {
 		if bindingID == "" {
 			return errors.New("终态命令缺少 bindingId")
 		}
-		if err := recordTombstoneTx(tx, bindingID, normalized); err != nil {
+		if err := recordTombstoneTx(tx, bindingID, normalized, email); err != nil {
 			return err
 		}
 		if remove {
@@ -717,6 +739,25 @@ func (s *Store) BindingTombstone(bindingID string) (string, error) {
 		return "0", nil
 	default:
 		return "0", err
+	}
+}
+
+// TombstonedEmail reports the address a revoked binding held, or "".
+//
+// It is the last place that address survives: the desired-user row is deleted by
+// a removal, so a redelivered REMOVE_USER carrying nothing but a bindingId — the
+// shape the control plane sends — would otherwise have no target at all and fail
+// forever.
+func (s *Store) TombstonedEmail(bindingID string) (string, error) {
+	var email string
+	switch err := s.db.QueryRow(
+		`SELECT email FROM binding_tombstones_v2 WHERE binding_id = ?`, bindingID).Scan(&email); {
+	case err == nil:
+		return email, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return "", nil
+	default:
+		return "", err
 	}
 }
 
@@ -931,25 +972,27 @@ func replaceDesiredUsersTx(tx *sql.Tx, users []protocol.DesiredUser, revision st
 			return err
 		}
 	}
-	rows, err := tx.Query(`SELECT binding_id FROM desired_users_v2`)
+	rows, err := tx.Query(`SELECT binding_id, email FROM desired_users_v2`)
 	if err != nil {
 		return err
 	}
-	var existing []string
+	type row struct{ id, email string }
+	var existing []row
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var current row
+		if err := rows.Scan(&current.id, &current.email); err != nil {
 			rows.Close()
 			return err
 		}
-		existing = append(existing, id)
+		existing = append(existing, current)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
 		return err
 	}
 	rows.Close()
-	for _, id := range existing {
+	for _, current := range existing {
+		id := current.id
 		if keep[id] {
 			continue
 		}
@@ -965,7 +1008,7 @@ func replaceDesiredUsersTx(tx *sql.Tx, users []protocol.DesiredUser, revision st
 		// tombstone that now makes every later instruction about the binding
 		// look superseded, so the stale enabled row is what a merge preserves —
 		// and the revoked account goes back in.
-		if err := recordTombstoneTx(tx, id, revision); err != nil {
+		if err := recordTombstoneTx(tx, id, revision, current.email); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(`DELETE FROM desired_users_v2 WHERE binding_id = ?`, id); err != nil {

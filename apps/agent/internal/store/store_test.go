@@ -879,7 +879,7 @@ func TestApplyTerminalRollsTheTombstoneBackWithTheRow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := state.ApplyTerminal("b1", "6", true); err == nil {
+	if err := state.ApplyTerminal("b1", "6", "u1@chordv", true); err == nil {
 		t.Fatal("ApplyTerminal 在行写入失败时仍然返回了成功")
 	}
 
@@ -895,7 +895,7 @@ func TestApplyTerminalRollsTheTombstoneBackWithTheRow(t *testing.T) {
 	if _, err := state.db.Exec(`DROP TRIGGER boom`); err != nil {
 		t.Fatal(err)
 	}
-	if err := state.ApplyTerminal("b1", "6", true); err != nil {
+	if err := state.ApplyTerminal("b1", "6", "u1@chordv", true); err != nil {
 		t.Fatal(err)
 	}
 	if tombstone, _ = state.BindingTombstone("b1"); tombstone != "6" {
@@ -1491,5 +1491,56 @@ func TestTheUpgradeReplayRecoversIdentity(t *testing.T) {
 	}
 	if claims["u1@chordv"].UUID != "uuid-b1" {
 		t.Fatalf("恢复的认领没有身份，任何账号都无法反驳它：%+v", claims)
+	}
+}
+
+// TestTheUpgradeReplayMergesPartialPayloads mirrors resolveUser.
+//
+// An ENABLE_USER may legitimately carry only a bindingId and an email; at
+// execution time the stored uuid is kept. A replay that replaced it with ""
+// would leave a claim nothing can contradict, so a panel account that later
+// reused the address would be accepted as ours and deleted by the next omission.
+func TestTheUpgradeReplayMergesPartialPayloads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+
+	finish := func(id string, kind protocol.CommandType, revision string, payload map[string]any) {
+		t.Helper()
+		if _, err := state.BeginCommand(protocol.Command{
+			CommandID: id, Type: kind, TargetRevision: revision, Payload: payload,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.CompleteCommand(protocol.CommandResult{
+			CommandID: id, Status: protocol.StatusCompleted,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	finish("c1", protocol.CommandEnsureUser, "1", map[string]any{
+		"bindingId": "b1", "email": "u1@chordv", "uuid": "uuid-b1",
+	})
+	// No uuid in this one — the payload shape the control plane may send.
+	finish("c2", protocol.CommandEnableUser, "2", map[string]any{
+		"bindingId": "b1", "email": "u1@chordv",
+	})
+
+	if _, err := state.db.Exec(`DELETE FROM provisioned_accounts_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`DELETE FROM meta_v2 WHERE key = 'provisioned_backfilled'`); err != nil {
+		t.Fatal(err)
+	}
+	state.Close()
+
+	reopened := openAt(t, path, "node-1", "boot-2")
+	claims, err := reopened.ProvisionedAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims["u1@chordv"].UUID != "uuid-b1" {
+		t.Fatalf("局部 payload 把已知身份抹掉了：%+v", claims)
 	}
 }

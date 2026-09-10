@@ -468,6 +468,19 @@ func (p *Processor) terminalUser(ctx context.Context, command protocol.Command, 
 		if email, err = optionalField(command.Payload, "email", "userKey"); err != nil {
 			return err
 		}
+		// Still nothing? Ask the TOMBSTONE, which remembers the address the
+		// binding held.
+		//
+		// This is the crash retry: ApplyTerminal deleted the desired row, the
+		// process died before Execute could save the completed result, and the
+		// redelivered command carries only a bindingId — the shape the control
+		// plane sends. Without this the retry has no target and fails forever,
+		// and the staleness guard deliberately does not skip it either.
+		if email == "" && bindingID != "" {
+			if email, err = p.deps.Store.TombstonedEmail(bindingID); err != nil {
+				return err
+			}
+		}
 	}
 	// The adapter addresses accounts by email, and its contract says removing an
 	// account that is not installed SUCCEEDS — so an empty target would return
@@ -553,7 +566,7 @@ func (p *Processor) terminalUser(ctx context.Context, command protocol.Command, 
 	if bindingID == "" {
 		return nil
 	}
-	return p.deps.Store.ApplyTerminal(bindingID, command.TargetRevision, remove)
+	return p.deps.Store.ApplyTerminal(bindingID, command.TargetRevision, email, remove)
 }
 
 func (p *Processor) reconcileCommand(ctx context.Context, command protocol.Command) error {

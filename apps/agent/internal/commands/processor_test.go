@@ -2336,3 +2336,32 @@ func TestAUUIDRotationSurvivesACrash(t *testing.T) {
 		t.Fatalf("轮换之后账号掉出了所有权，被吊销却仍在服务：%v", fake.calls)
 	}
 }
+
+// TestARemovalRetryFindsItsTargetAfterACrash covers the redelivery of a
+// REMOVE_USER that carries nothing but a bindingId — the shape the control plane
+// sends.
+//
+// ApplyTerminal deletes the desired row, which is the only other place the
+// address was written down. If the process dies before Execute saves the
+// completed result, the retry has no target at all and fails forever; the
+// staleness guard deliberately does not skip terminal commands either.
+func TestARemovalRetryFindsItsTargetAfterACrash(t *testing.T) {
+	processor, fake, state := newStrictProcessor(t)
+	seedOwned(t, state, protocol.DesiredUser{
+		BindingID: "b1", Email: "u1@chordv", UUID: "uuid-b1", Revision: "1",
+		Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
+	})
+	fake.live = []xray.LiveUser{{Email: "u1@chordv", UUID: "uuid-b1"}}
+
+	bindingOnly := map[string]any{"bindingId": "b1"}
+	run(t, processor, command("c1", protocol.CommandRemoveUser, "2", bindingOnly), true)
+
+	// The crash: the result never reached storage, so the redelivery does not
+	// hit the cached-result path and executes again. A fresh command id models
+	// the same thing without reaching into the commands table.
+	fake.calls = nil
+	result := run(t, processor, command("c1-retry", protocol.CommandRemoveUser, "2", bindingOnly), true)
+	if result.Status != protocol.StatusCompleted {
+		t.Fatalf("崩溃后的重投找不到目标，永远失败：%+v", result)
+	}
+}
