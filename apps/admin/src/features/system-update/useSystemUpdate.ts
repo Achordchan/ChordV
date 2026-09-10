@@ -38,7 +38,7 @@ export function useSystemUpdate(opened: boolean) {
 
   const stop = useCallback(() => { epoch.current++; stopObserver.current?.(); stopObserver.current = null; }, []);
   useEffect(() => {
-    mounted.current = true; clearCompletion();
+    mounted.current = true;
     return () => { mounted.current = false; stop(); refreshAbort.current?.abort(); };
   }, [stop]);
 
@@ -87,8 +87,9 @@ export function useSystemUpdate(opened: boolean) {
         setError(`操作记录已完成，但当前服务仍报告 v${status.currentVersion}，请重新确认版本。`);
         setRefreshRequired(true); return;
       }
-      const next = { operationId: operation.operationId, kind: operation.kind, status: operation.status, version: status.currentVersion, at: Date.now() };
+      const next = { operationId: operation.operationId, kind: operation.kind, status: operation.status, version: status.currentVersion, migrationApplied: operation.migrationApplied === true, at: Date.now() };
       setCompletion(next);
+      saveCompletion(next);
       if (operation.kind === "restart") {
         activeId.current = null; setBusy(null);
         notifications.show({ color: "teal", title: "服务已重启", message: `当前运行 v${status.currentVersion}` });
@@ -96,7 +97,6 @@ export function useSystemUpdate(opened: boolean) {
       }
       if (await waitForUpdatedPage(status.currentVersion, controller.signal)) {
         if (!valid()) return;
-        saveCompletion(next);
         window.location.reload();
       } else if (mounted.current && sequence === epoch.current) {
         setRefreshRequired(true);
@@ -137,7 +137,7 @@ export function useSystemUpdate(opened: boolean) {
     if (!mounted.current || activeId.current || mutation.current) return;
     const running = history.find(item => item.status === "running" || item.status === "pending");
     if (running) {
-      setCompletion(null); setObservedPhases(new Set(running.observedPhases ?? []));
+      clearCompletion(); setCompletion(null); setObservedPhases(new Set(running.observedPhases ?? []));
       setActiveOp(running); setBusy(running.kind); watchOperation(running.operationId);
     }
   }, [watchOperation]);
@@ -157,7 +157,7 @@ export function useSystemUpdate(opened: boolean) {
 
   const beginOperation = useCallback(async (kind: BusyKind, version?: string) => {
     if (mutation.current || activeId.current) return;
-    mutation.current = true; setBusy(kind); setError(""); setCompletion(null); setActiveOp(null); setObservedPhases(new Set());
+    clearCompletion(); mutation.current = true; setBusy(kind); setError(""); setCompletion(null); setActiveOp(null); setObservedPhases(new Set());
     checkEpoch.current++; setCheck(null); setChecking(false);
     try {
       const result = kind === "update" ? await startSystemUpdate(version) : kind === "rollback" ? await startSystemRollback(version) : await startSystemRestart();
@@ -179,5 +179,5 @@ export function useSystemUpdate(opened: boolean) {
   const canUpdate = Boolean(runtime?.enabled && !busy && !checking && check?.hasUpdate && check.release && !check.cached && !check.warning);
   return { runtime, check, checking, operations, versions, auxLoading, auxError, busy, connection, activeOp, finishing,
     refreshRequired, completion, observedPhases, error, canUpdate, runCheck, loadAux, beginOperation, reconnect, pause,
-    reloadPage: () => window.location.reload(), dismissCompletion: () => setCompletion(null), kindLabel };
+    reloadPage: () => window.location.reload(), dismissCompletion: () => { clearCompletion(); setCompletion(null); }, kindLabel };
 }

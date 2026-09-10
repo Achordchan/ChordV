@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { observeSystemOperation, parseOperationEvents } from '../src/features/system-update/operation-observer';
-import { waitForUpdatedPage } from '../src/features/system-update/page-refresh';
+import { waitForUpdatedPage, saveCompletion, readCompletion, clearCompletion, completionWarning } from '../src/features/system-update/page-refresh';
 import type { SystemUpdateOperationDto } from '@chordv/shared';
 
 const operation = (status: string, phase = 'extracting') => ({ operationId: 'op', kind: 'update', status, phase } as SystemUpdateOperationDto);
@@ -77,5 +77,29 @@ function streamResponse(signal: AbortSignal) {
   assert.equal(probes, 10, 'static readiness retries must terminate');
   const cancelled = new AbortController(); cancelled.abort();
   assert.equal(await waitForUpdatedPage('0.0.13', cancelled.signal, async () => assert.fail('closed panel must not probe')), false);
+}
+{
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
+  const values = new Map<string, string>();
+  Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, value: {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key)
+  } });
+  try {
+    const completed = { operationId: 'rollback-migration', kind: 'update' as const, status: 'rolled_back' as const,
+      version: '0.0.12', migrationApplied: true, at: Date.now() };
+    saveCompletion(completed);
+    const restored = readCompletion();
+    assert.deepEqual(restored, completed, 'migration evidence survives page reload');
+    assert.match(completionWarning(restored!)!, /数据库迁移未回滚/);
+    assert.deepEqual(readCompletion(), completed, 'reading the banner must not consume it before another reload');
+    assert.equal(completionWarning({ ...completed, migrationApplied: false }), null);
+    assert.equal(completionWarning({ ...completed, status: 'succeeded' }), null);
+    clearCompletion(); assert.equal(readCompletion(), null);
+  } finally {
+    if (previous) Object.defineProperty(globalThis, 'sessionStorage', previous);
+    else Reflect.deleteProperty(globalThis, 'sessionStorage');
+  }
 }
 console.log('system update observer and page-refresh regressions passed');

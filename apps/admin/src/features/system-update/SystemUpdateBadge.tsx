@@ -4,6 +4,7 @@ import { IconArrowUp, IconCheck, IconChevronDown, IconHistory, IconRefresh, Icon
 import { useSystemUpdate, type BusyKind } from "./useSystemUpdate";
 import { kindLabel, statusColor, statusLabel } from "./operation-presentation";
 import { OperationProgress } from "./OperationProgress";
+import { completionWarning } from "./page-refresh";
 import styles from "./SystemUpdate.module.css";
 
 type Confirmation = { kind: BusyKind; version?: string; title: string; body: string };
@@ -66,6 +67,7 @@ export function SystemUpdateBadge() {
             : inProgress && <OperationProgress operation={state.activeOp} kind={state.busy!} observed={state.observedPhases}
               connection={state.connection} onReconnect={state.reconnect} onPause={state.pause} />}
 
+          {state.completion && completionWarning(state.completion) && <Alert color="orange" p="sm"><Text size="xs">{completionWarning(state.completion)}</Text></Alert>}
           {!inProgress && state.completion && <Alert color={state.completion.status === 'rolled_back' ? 'orange' : 'teal'} p="sm"
             icon={<IconCheck size={17} />} withCloseButton onClose={state.dismissCompletion}>
             {state.completion.status === 'rolled_back' ? `更新未通过验证，已恢复到 v${state.completion.version}。` : `已完成${kindLabel(state.completion.kind)}，当前版本 v${state.completion.version}。`}

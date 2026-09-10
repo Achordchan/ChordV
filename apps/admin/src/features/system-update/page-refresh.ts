@@ -1,7 +1,7 @@
 import type { SystemUpdateOperationDto } from "@chordv/shared";
 
 const COMPLETION_KEY = "chordv:system-update:completion";
-export type UpdateCompletion = { operationId: string; kind: SystemUpdateOperationDto["kind"]; status: SystemUpdateOperationDto["status"]; version: string; at: number };
+export type UpdateCompletion = { operationId: string; kind: SystemUpdateOperationDto["kind"]; status: SystemUpdateOperationDto["status"]; version: string; migrationApplied: boolean; at: number };
 export function readCompletion(): UpdateCompletion | null {
   try {
     const value = JSON.parse(sessionStorage.getItem(COMPLETION_KEY) ?? "null");
@@ -37,4 +37,9 @@ export async function waitForUpdatedPage(version: string, signal: AbortSignal, p
     if (attempt < 9) await sleep(1000);
   }
   return false;
+}
+
+export function completionWarning(completion: UpdateCompletion): string | null {
+  return completion.status === "rolled_back" && completion.migrationApplied
+    ? "数据库迁移未回滚，请人工核对数据库与恢复版本的兼容性。" : null;
 }
