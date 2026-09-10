@@ -526,18 +526,15 @@ func (r *Runner) sample(ctx context.Context) error {
 }
 
 func (r *Runner) sampleLocked(ctx context.Context) error {
-	if err := r.checkXrayLocked(ctx); err != nil {
-		return err
-	}
-	if err := r.detectXrayRestartLocked(ctx); err != nil {
-		r.xrayHealthy = false
-		return err
-	}
 	counters, err := r.deps.Xray.ReadAbsoluteCounters(ctx)
 	if err != nil {
 		r.xrayHealthy = false
 		return err
 	}
+	if !r.xrayHealthy {
+		r.reconcilePending = true
+	}
+	r.xrayHealthy = true
 	// A store failure is NOT reported as Xray being unhealthy, which the Node
 	// agent did by wrapping the whole block in one catch. xrayStatus is what the
 	// control plane uses to decide whether this node can serve; answering
@@ -546,14 +543,23 @@ func (r *Runner) sampleLocked(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if r.current.ControlMode != protocol.ModeDirectPrimary {
-		return nil
+	if r.current.ControlMode == protocol.ModeDirectPrimary {
+		if err := r.deps.Commands.UninstallExhausted(ctx, result.DisableEmails); err != nil {
+			r.xrayHealthy = false
+			r.reconcilePending = true
+			return err
+		}
 	}
-	if err := r.deps.Commands.UninstallExhausted(ctx, result.DisableEmails); err != nil {
+	// Meter first. One conflicting account must not prevent the remaining
+	// installed users from being billed while recovery keeps retrying.
+	if err := r.checkXrayLocked(ctx); err != nil {
+		r.errorf("计量已保存，Xray 恢复待重试：%v", err)
+	} else if err := r.detectXrayRestartLocked(ctx); err != nil {
 		r.xrayHealthy = false
 		r.reconcilePending = true
-		return err
+		r.errorf("计量已保存，重启检测/恢复待重试：%v", err)
 	}
+
 	return nil
 }
 
@@ -735,7 +741,12 @@ func (r *Runner) execute(ctx context.Context, command protocol.Command) (protoco
 	}
 	writable := r.current.ControlMode == protocol.ModeDirectPrimary
 
-	if writable && (isTerminal(command.Type) || command.Type == protocol.CommandReconcileUsers) {
+	reconfigures, err := r.deps.Commands.ReconfiguresUser(command)
+	if err != nil {
+		return protocol.CommandResult{CommandID: command.CommandID, Status: protocol.StatusFailed, Error: err.Error()}, nil
+	}
+	if writable && (isTerminal(command.Type) || command.Type == protocol.CommandReconcileUsers || reconfigures) {
+
 		// The command is about to take an account down, and its counters die with
 		// it. Meter first, or the traffic since the last tick is unbilled.
 		//

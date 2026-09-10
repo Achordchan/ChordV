@@ -1788,3 +1788,20 @@ func (p *Processor) ApplySnapshot(ctx context.Context, snapshot protocol.ConfigS
 	_, err = p.deps.Store.ApplyConfigSnapshot(snapshot)
 	return err
 }
+
+// ReconfiguresUser shares command field resolution with execution so the runner
+// can take a final sample before an existing account loses its counters.
+func (p *Processor) ReconfiguresUser(command protocol.Command) (bool, error) {
+	if command.Type != protocol.CommandEnsureUser && command.Type != protocol.CommandEnableUser {
+		return false, nil
+	}
+	stored, err := p.findStored(command.Payload)
+	if err != nil || stored == nil || !stored.Enabled {
+		return false, err
+	}
+	next, err := p.resolveUser(command, stored)
+	if err != nil {
+		return false, err
+	}
+	return next.Email != stored.Email || next.UUID != stored.UUID || next.Flow != stored.Flow, nil
+}

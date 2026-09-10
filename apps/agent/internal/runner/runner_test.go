@@ -1354,3 +1354,58 @@ func TestReconnectReceivesCommandsAfterLocalRefreshFailure(t *testing.T) {
 		t.Fatalf("refresh never recovered: %s", revision)
 	}
 }
+
+func TestIndividualReconfigurationMetersBeforeMutation(t *testing.T) {
+	for _, field := range []string{"uuid", "email", "flow"} {
+		t.Run(field, func(t *testing.T) {
+			h := newHarness(t)
+			u := user("b1", "a@example.com", "7", true, "1000")
+			h.seed(t, "7", protocol.ModeDirectPrimary, u)
+			r := h.build(t)
+			h.xray.counters = []protocol.AbsoluteCounter{{Email: u.Email, UplinkBytes: "0", DownlinkBytes: "0"}}
+			if err := r.sample(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			h.xray.counters[0].UplinkBytes = "20"
+			payload := map[string]any{"bindingId": "b1", field: map[string]string{"uuid": "rotated", "email": "new@example.com", "flow": ""}[field]}
+			result, err := r.execute(context.Background(), commandOf("change", protocol.CommandEnsureUser, "8", payload))
+			if err != nil || result.Status != protocol.StatusCompleted {
+				t.Fatalf("change: %+v %v", result, err)
+			}
+			batches, err := h.store.ListPendingBatches(0)
+			if err != nil || len(batches) != 2 || batches[1].Samples[0].UplinkDeltaBytes != "20" {
+				t.Fatalf("lost pre-change usage: %+v %v", batches, err)
+			}
+		})
+	}
+}
+
+func TestRecoveryConflictDoesNotBlockOtherUsersMetering(t *testing.T) {
+	h := newHarness(t)
+	a := user("a", "a@example.com", "7", true, "1000")
+	b := user("b", "b@example.com", "7", true, "10")
+	h.seed(t, "7", protocol.ModeDirectPrimary, a, b)
+	r := h.build(t)
+	h.xray.counters = []protocol.AbsoluteCounter{{Email: b.Email, UplinkBytes: "0", DownlinkBytes: "0"}}
+	if err := r.sample(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// A panel replacement contradicts A's ownership; B still serves traffic.
+	h.xray.live[0].UUID = "panel-replacement"
+	r.deps.Commands = commands.New(commands.Deps{Store: h.store, Xray: h.xray, Logf: func(string, ...any) {}})
+	r.reconcilePending = true
+	h.xray.counters[0].UplinkBytes = "20"
+	if err := r.sample(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := h.store.UserByBindingID("b")
+	if err != nil || stored.Enabled || stored.QuotaRemainingBytes != "0" {
+		t.Fatalf("B unmetered: %+v %v", stored, err)
+	}
+	if !r.reconcilePending {
+		t.Fatal("lost conflicting recovery intent")
+	}
+	if !contains(h.xray.log(), "remove:"+b.Email) {
+		t.Fatal("B quota not enforced")
+	}
+}
