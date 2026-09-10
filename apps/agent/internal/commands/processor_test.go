@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/big"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,9 @@ type fakeXray struct {
 	// expectations records what each mutation was told to expect, so a test can
 	// check that the processor passes its belief down to the adapter.
 	expectations []xray.Expectation
+	// expectFor is the same, keyed by the call it accompanied, because calls
+	// include reads and expectations do not — the two slices do not line up.
+	expectFor map[string]xray.Expectation
 }
 
 func (f *fakeXray) Health(context.Context) error                 { return nil }
@@ -42,16 +46,22 @@ func (f *fakeXray) ListUsers(context.Context) ([]xray.LiveUser, error) {
 	return f.live, nil
 }
 func (f *fakeXray) EnsureUser(_ context.Context, user protocol.DesiredUser, expect xray.Expectation) error {
-	f.expectations = append(f.expectations, expect)
+	f.note("ensure:"+user.Email, expect)
 	f.calls = append(f.calls, "ensure:"+user.Email)
+	if err := f.enforceExpectation(user.Email, expect); err != nil {
+		return err
+	}
 	if f.ensureErrFor != "" && f.ensureErrFor == user.Email {
 		return errors.New("安装失败")
 	}
 	return f.ensureErr
 }
 func (f *fakeXray) RemoveUser(_ context.Context, email string, expect xray.Expectation) error {
-	f.expectations = append(f.expectations, expect)
+	f.note("remove:"+email, expect)
 	f.calls = append(f.calls, "remove:"+email)
+	if err := f.enforceExpectation(email, expect); err != nil {
+		return err
+	}
 	if f.onRemove != nil {
 		f.onRemove()
 	}
@@ -2557,5 +2567,106 @@ func TestMutationsCarryWhatTheAgentExpected(t *testing.T) {
 	}), true)
 	if len(fake.expectations) != 1 || fake.expectations[0].UUID != "uuid-b1" {
 		t.Fatalf("卸载没有带上它认领的身份：%+v", fake.expectations)
+	}
+}
+
+// enforceExpectation is the adapter contract, applied for real.
+//
+// A fake that accepts any expectation cannot catch the mistake this parameter
+// exists to prevent — telling the adapter to expect an ABSENT account for an
+// ordinary update, a uuid rotation, or a retry after a crash, every one of which
+// finds its own account already there. So the fake refuses the contradiction the
+// way a conforming adapter must.
+func (f *fakeXray) note(call string, expect xray.Expectation) {
+	f.expectations = append(f.expectations, expect)
+	if f.expectFor == nil {
+		f.expectFor = map[string]xray.Expectation{}
+	}
+	f.expectFor[call] = expect
+}
+
+func (f *fakeXray) enforceExpectation(email string, expect xray.Expectation) error {
+	var present *xray.LiveUser
+	for i := range f.live {
+		if f.live[i].Email == email {
+			present = &f.live[i]
+			break
+		}
+	}
+	if expect.Absent && present != nil {
+		return fmt.Errorf("适配器契约：调用方声称 %s 上没有账号，实际有一个（uuid=%q）", email, present.UUID)
+	}
+	if expect.UUID != "" && present != nil && present.UUID != "" && present.UUID != expect.UUID {
+		return fmt.Errorf("适配器契约：调用方期望 %s 上是 %q，实际是 %q", email, expect.UUID, present.UUID)
+	}
+	return nil
+}
+
+// TestAnUpdateExpectsItsOwnAccountToBeThere separates two questions the
+// expectation used to conflate.
+//
+// "Not a takeover" is not "nothing is there". An ordinary update, a uuid
+// rotation, and the retry of an install whose claim never committed all find
+// their OWN account at that address — telling the adapter to expect it absent
+// would have a conforming adapter refuse every one of them.
+func TestAnUpdateExpectsItsOwnAccountToBeThere(t *testing.T) {
+	processor, fake, _ := newStrictProcessor(t)
+	run(t, processor, command("c1", protocol.CommandEnsureUser, "5", userPayload("b1", "u1@chordv")), true)
+	fake.live = []xray.LiveUser{{Email: "u1@chordv", UUID: "uuid-b1"}}
+
+	for name, payload := range map[string]map[string]any{
+		"an ordinary update": userPayload("b1", "u1@chordv"),
+		"a uuid rotation": func() map[string]any {
+			rotated := userPayload("b1", "u1@chordv")
+			rotated["uuid"] = "rotated-uuid"
+			return rotated
+		}(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake.expectations = nil
+			result := run(t, processor, command("c-"+name, protocol.CommandEnsureUser, "6", payload), true)
+			if result.Status != protocol.StatusCompleted {
+				t.Fatalf("对自己已有账号的写入被适配器契约拒了：%+v", result)
+			}
+			if len(fake.expectations) != 1 {
+				t.Fatalf("expectations = %+v", fake.expectations)
+			}
+			if fake.expectations[0].Absent {
+				t.Fatal("声称这个地址是空的，而账号正是本节点自己的")
+			}
+			if fake.expectations[0].UUID != "uuid-b1" {
+				t.Fatalf("没有把观察到的身份传下去：%+v", fake.expectations[0])
+			}
+		})
+	}
+}
+
+// TestAReconcileInstallCarriesTheObservedIdentity is the same rule on the
+// snapshot path.
+//
+// ListUsers already said what sits at each address. Dropping that identity hands
+// the adapter an empty expectation for exactly the accounts it could otherwise
+// protect: if the panel replaces one between the reading and the install, a late
+// re-check with nothing to compare cannot refuse.
+func TestAReconcileInstallCarriesTheObservedIdentity(t *testing.T) {
+	processor, fake, state := newStrictProcessor(t)
+	seedOwned(t, state, protocol.DesiredUser{
+		BindingID: "b1", Email: "u1@chordv", UUID: "uuid-b1", Revision: "1",
+		Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
+	})
+	fake.live = []xray.LiveUser{{Email: "u1@chordv", UUID: "uuid-b1"}}
+	fake.expectations = nil
+
+	run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any(userPayload("b1", "u1@chordv"))},
+	}), true)
+
+	install, made := fake.expectFor["ensure:u1@chordv"]
+	if !made {
+		t.Fatalf("没有安装调用：%v", fake.calls)
+	}
+	if install.Absent || install.UUID != "uuid-b1" {
+		t.Fatalf("安装没有带上观察到的身份：%+v", install)
 	}
 }

@@ -171,9 +171,11 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 	// a working account offline and overwrite the record that names it, and only
 	// then refuse — leaving the user off, with no retry able to put them back.
 	//
-	// takeover is nil when the address is free, so the intent may be recorded
-	// later; otherwise the collision has already been authorised or refused here.
-	takeover, err := p.preflightCollision(ctx, user)
+	// `observed` is what lives at that address right now — the expectation the
+	// adapter re-checks before it writes. `takeover` is the separate question of
+	// whether proceeding means claiming an account this agent has no record of;
+	// by the time it comes back true, the collision has already been authorised.
+	observed, takeover, err := p.preflightCollision(ctx, user)
 	if err != nil {
 		return err
 	}
@@ -200,7 +202,7 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 			p.logf("[agent] 用户 %s 的 email 由 %s 变更为 %s，但旧账号不是本节点装的（可能属于面板），未卸载",
 				user.BindingID, stored.Email, user.Email)
 		} else {
-			if err := p.deps.Xray.RemoveUser(ctx, stored.Email, p.expectation(stored.Email)); err != nil {
+			if err := p.deps.Xray.RemoveUser(ctx, stored.Email, p.expectation(stored.Email, nil)); err != nil {
 				return err
 			}
 			if err := p.deps.Store.ForgetProvisioned([]string{stored.Email}); err != nil {
@@ -238,16 +240,17 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 	// unclaimed, unmetered and permanent. So an INTENT goes down first, which is
 	// weaker than a claim and cannot be mistaken for one.
 	//
-	// Only for a FREE address, which the preflight above has already determined:
-	// an intent is settled later by finding this agent's own uuid at that
-	// address, and an address that already had an account cannot answer that
-	// question.
+	// Never for a TAKEOVER: an intent is settled later by finding this agent's
+	// own uuid at that address, and an address that already carried somebody
+	// else's account cannot answer that question. A free address records a fresh
+	// intent; an address this agent already owns records the replacement identity
+	// beside the claim, which is what makes a rotation recoverable.
 	if !takeover {
 		if err := p.deps.Store.RecordProvisionIntent(user.BindingID, user.Email, user.UUID); err != nil {
 			return err
 		}
 	}
-	if err := p.deps.Xray.EnsureUser(ctx, user, xray.Expectation{Absent: !takeover}); err != nil {
+	if err := p.deps.Xray.EnsureUser(ctx, user, observed); err != nil {
 		return err
 	}
 	if err := p.deps.Store.RecordProvisioned(user.BindingID, user.Email, user.UUID); err != nil {
@@ -267,10 +270,18 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 // preflightCollision settles what to do about the address a user is about to
 // take, before any step that cannot be undone. It reports whether the install is
 // a TAKEOVER of an account this agent has no record of.
-func (p *Processor) preflightCollision(ctx context.Context, user protocol.DesiredUser) (bool, error) {
+// It reports two DIFFERENT things, and conflating them was a bug: what the agent
+// OBSERVED at that address (the expectation the adapter re-checks), and whether
+// proceeding means TAKING OVER an account this agent has no record of.
+//
+// "Not a takeover" is not "nothing is there". An ordinary update, a uuid
+// rotation, and the retry of an install whose claim never committed all find
+// their own account sitting at that address — telling the adapter to expect it
+// ABSENT would have every one of them refused.
+func (p *Processor) preflightCollision(ctx context.Context, user protocol.DesiredUser) (xray.Expectation, bool, error) {
 	live, err := p.deps.Xray.ListUsers(ctx)
 	if err != nil {
-		return false, err
+		return xray.Expectation{}, false, err
 	}
 	// Intents FIRST, exactly as the terminal path does. A crash between a
 	// successful install and its claim leaves the account carrying only an
@@ -279,18 +290,23 @@ func (p *Processor) preflightCollision(ctx context.Context, user protocol.Desire
 	// Every retry, until an unrelated reconcile happened to run or someone turned
 	// adoption on.
 	if err := p.resolveIntents(live); err != nil {
-		return false, err
+		return xray.Expectation{}, false, err
+	}
+	observed := xray.Expectation{Absent: true}
+	for _, account := range live {
+		if account.Email == user.Email {
+			observed = xray.Expectation{UUID: account.UUID}
+			break
+		}
 	}
 	owned, err := p.owns(ctx, user.Email)
 	if err != nil || owned {
-		return false, err
+		return observed, false, err
 	}
-	for _, account := range live {
-		if account.Email == user.Email {
-			return true, p.collision(user)
-		}
+	if observed.Absent {
+		return observed, false, nil
 	}
-	return false, nil
+	return observed, true, p.collision(user)
 }
 
 // collision decides what to do about a desired account whose email already names
@@ -578,7 +594,7 @@ func (p *Processor) terminalUser(ctx context.Context, command protocol.Command, 
 	// still carrying traffic, and a crash after the local delete would leave it
 	// serving with nothing left to notice it.
 	if uninstall {
-		if err := p.deps.Xray.RemoveUser(ctx, email, p.expectation(email)); err != nil {
+		if err := p.deps.Xray.RemoveUser(ctx, email, p.expectation(email, live)); err != nil {
 			return err
 		}
 	}
@@ -1050,6 +1066,23 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	// quadratic in the size of the inbound, and allocated a map of the whole
 	// inbound for every desired user before a single install ran.
 	liveNow := liveEmails(live)
+	// The IDENTITY beside the presence. ListUsers already told us what sits at
+	// each address, and dropping it here would hand the adapter an empty
+	// expectation for exactly the accounts it could otherwise protect: if the
+	// panel replaces one between this reading and the install, a late re-check
+	// with nothing to compare cannot refuse.
+	liveUUID := make(map[string]string, len(live))
+	for _, account := range live {
+		liveUUID[account.Email] = account.UUID
+	}
+	// The rename pass below frees addresses, and an address it frees is no longer
+	// occupied by the time the install pass reaches it. Keeping the stale reading
+	// would tell the adapter to expect an account that this very reconcile has
+	// just removed.
+	released := func(email string) {
+		delete(liveNow, email)
+		delete(liveUUID, email)
+	}
 	// Taken first: upserting the desired set below, and ApplyConfigSnapshot
 	// afterwards, both change what this node remembers owning.
 	recorded, err := p.deps.Store.ListDesiredUsers()
@@ -1134,11 +1167,12 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 				user.BindingID, old, user.Email)
 			continue
 		}
-		if err := p.deps.Xray.RemoveUser(ctx, old, p.expectation(old)); err != nil {
+		if err := p.deps.Xray.RemoveUser(ctx, old, p.expectation(old, live)); err != nil {
 			return err
 		}
 		// The old email is gone for good; the new one is claimed by the install
 		// pass below.
+		released(old)
 		if err := p.deps.Store.ForgetProvisioned([]string{old}); err != nil {
 			return err
 		}
@@ -1197,7 +1231,8 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 					return err
 				}
 			}
-			if err := p.deps.Xray.EnsureUser(ctx, user, xray.Expectation{Absent: !liveNow[user.Email]}); err != nil {
+			expect := xray.Expectation{Absent: !liveNow[user.Email], UUID: liveUUID[user.Email]}
+			if err := p.deps.Xray.EnsureUser(ctx, user, expect); err != nil {
 				return err
 			}
 			if err := p.deps.Store.RecordProvisioned(user.BindingID, user.Email, user.UUID); err != nil {
@@ -1218,7 +1253,7 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 				user.BindingID, user.Email)
 			continue
 		}
-		if err := p.deps.Xray.RemoveUser(ctx, user.Email, p.expectation(user.Email)); err != nil {
+		if err := p.deps.Xray.RemoveUser(ctx, user.Email, p.expectation(user.Email, live)); err != nil {
 			return err
 		}
 		// Disabled, so it is no longer installed — but the RECORD stays, and so
@@ -1592,7 +1627,18 @@ func (p *Processor) mergeNewerBindings(users []protocol.DesiredUser, snapshotRev
 // expectation is what this agent believes lives at an address, for the adapter
 // to re-check as late as it can. See xray.Expectation for why this narrows the
 // race rather than closing it.
-func (p *Processor) expectation(email string) xray.Expectation {
+//
+// The OBSERVED identity wins over the claimed one wherever a caller has a
+// ListUsers reading to hand: the claim says what this agent installed, the
+// reading says what is there, and the adapter's job is to notice that those have
+// diverged. Falling back to the claim keeps callers that have no reading from
+// sending an empty expectation, which refuses nothing.
+func (p *Processor) expectation(email string, live []xray.LiveUser) xray.Expectation {
+	for _, account := range live {
+		if account.Email == email {
+			return xray.Expectation{UUID: account.UUID}
+		}
+	}
 	claims, err := p.deps.Store.ProvisionedAccounts()
 	if err != nil {
 		return xray.Expectation{}
