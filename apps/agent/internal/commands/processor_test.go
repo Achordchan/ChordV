@@ -1422,3 +1422,80 @@ func TestReconcileRefusesDuplicatesFromADirectCall(t *testing.T) {
 		t.Fatalf("拒绝之前就动了 Xray：%v", fake.calls)
 	}
 }
+
+// TestARenameValidatesBeforeUninstallingTheOldAccount is about the ORDER of two
+// steps that already both existed.
+//
+// The store validates a user's decimals inside UpsertDesiredUser, which the
+// rename path reaches only after the old account has been uninstalled. A
+// malformed quota therefore takes a working account down and then fails — on
+// this attempt and on every retry, because the payload does not change. The
+// command must be rejected with the service untouched.
+func TestARenameValidatesBeforeUninstallingTheOldAccount(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	run(t, processor, command("c1", protocol.CommandEnsureUser, "6", userPayload("b1", "old@chordv")), true)
+
+	fake.calls = nil
+	payload := userPayload("b1", "new@chordv")
+	payload["quotaRemainingBytes"] = "-1"
+	result := run(t, processor, command("c2", protocol.CommandEnsureUser, "7", payload), true)
+	if result.Status != protocol.StatusFailed {
+		t.Fatalf("非法配额被接受了：%+v", result)
+	}
+	for _, call := range fake.calls {
+		if strings.HasPrefix(call, "remove:") {
+			t.Fatalf("在校验失败之前就把旧账号卸载了：%v", fake.calls)
+		}
+	}
+	users, err := state.ListDesiredUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, user := range users {
+		if user.BindingID == "b1" && user.Email != "old@chordv" {
+			t.Fatalf("记录被改坏了：%+v", user)
+		}
+	}
+}
+
+// TestASnapshotOmissionLeavesARevocationFloor makes a snapshot's omission leave
+// the same evidence a terminal command does.
+//
+// Applying the snapshot deletes the omitted row, so without a floor the
+// binding's entire history is gone: an enable at the snapshot's own revision
+// finds neither a row nor a tombstone and reinstalls what the snapshot revoked.
+func TestASnapshotOmissionLeavesARevocationFloor(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	run(t, processor, command("c1", protocol.CommandEnsureUser, "6", userPayload("b1", "u1@chordv")), true)
+
+	// A snapshot at 7 that no longer names b1.
+	run(t, processor, command("c2", protocol.CommandReconcileUsers, "7", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{},
+	}), true)
+	if floor, _ := state.BindingTombstone("b1"); floor != "7" {
+		t.Fatalf("快照遗漏没有留下吊销下限：%s", floor)
+	}
+
+	// An ENSURE_USER at the snapshot's own revision must not undo it.
+	fake.calls = nil
+	run(t, processor, command("c3", protocol.CommandEnsureUser, "7", userPayload("b1", "u1@chordv")), true)
+	for _, call := range fake.calls {
+		if strings.HasPrefix(call, "ensure:") {
+			t.Fatalf("同 revision 的启用把被快照吊销的账号装了回去：%v", fake.calls)
+		}
+	}
+
+	// A genuinely newer instruction still gets through.
+	fake.calls = nil
+	run(t, processor, command("c4", protocol.CommandEnsureUser, "8", userPayload("b1", "u1@chordv")), true)
+	installed := false
+	for _, call := range fake.calls {
+		if call == "ensure:u1@chordv" {
+			installed = true
+		}
+	}
+	if !installed {
+		t.Fatalf("吊销下限挡住了更新的启用：%v", fake.calls)
+	}
+}

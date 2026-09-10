@@ -151,6 +151,13 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 	}
 	user.Enabled = true
 	user.Revision = command.TargetRevision
+	// Before the uninstall below, not after: the store validates these fields
+	// inside UpsertDesiredUser, which runs only once the old account is already
+	// gone. A malformed quota would otherwise take a working account down and
+	// then fail — on this attempt and on every retry.
+	if err := validateUser(user); err != nil {
+		return err
+	}
 	// A changed email is a NEW account as far as Xray is concerned — the adapter
 	// addresses accounts by email and cannot infer the previous one. Uninstall
 	// the old one FIRST, while the record that names it is still here: after the
@@ -452,10 +459,52 @@ func (p *Processor) reconcileCommand(ctx context.Context, command protocol.Comma
 		// and, under the panel-shared inbound, leave them serving.
 		return err
 	}
+	// A snapshot that OMITS a binding is a revocation, and it has to leave the
+	// same evidence a terminal command does.
+	//
+	// ApplyConfigSnapshot below deletes the omitted rows. Without a floor, the
+	// binding's whole history is gone: an enable arriving at the snapshot's own
+	// revision finds neither a row nor a tombstone, passes the strict
+	// older-than checks, and reinstalls the account the snapshot just revoked.
+	// The individual terminal path has always recorded this floor even when it
+	// had no row to act on; a snapshot omission is the same event arriving in
+	// bulk.
+	//
+	// Recorded on BOTH tracks. Whether this node may write Xray does not change
+	// what the control plane just said about the binding — and an observing node
+	// that is later promoted would otherwise carry a gap in its evidence.
+	if err := p.recordOmissionFloors(users, command.TargetRevision); err != nil {
+		return err
+	}
 	_, err = p.deps.Store.ApplyConfigSnapshot(protocol.ConfigSnapshot{
 		NodeID: current.NodeID, Revision: command.TargetRevision, ControlMode: mode, Users: users,
 	})
 	return err
+}
+
+// recordOmissionFloors tombstones every binding this snapshot drops.
+//
+// The set handed in is the MERGED one, so a binding kept by mergeNewerBindings
+// because a newer command added it is not in the dropped list — only bindings
+// the control plane genuinely stopped naming.
+func (p *Processor) recordOmissionFloors(users []protocol.DesiredUser, revision string) error {
+	recorded, err := p.deps.Store.ListDesiredUsers()
+	if err != nil {
+		return err
+	}
+	kept := make(map[string]bool, len(users))
+	for _, user := range users {
+		kept[user.BindingID] = true
+	}
+	for _, user := range recorded {
+		if kept[user.BindingID] {
+			continue
+		}
+		if err := p.deps.Store.RecordBindingTombstone(user.BindingID, revision); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Reconcile makes Xray's installed accounts match the desired set.
@@ -484,6 +533,42 @@ func (p *Processor) reconcileCommand(ctx context.Context, command protocol.Comma
 //
 // The ownership snapshot is taken BEFORE the desired set is written, because
 // that write is what erases the evidence.
+// validateUser checks everything the store will check, BEFORE the caller does
+// anything it cannot take back.
+//
+// The store validates a user's decimals inside UpsertDesiredUser, which runs
+// AFTER the rename path has already uninstalled the old account. So a snapshot
+// carrying, say, quotaRemainingBytes "-1" takes a working account down, fails,
+// and fails again on every retry: a malformed field turns into an outage that
+// only the control plane can end. Checking first turns it back into a rejected
+// command with the service untouched.
+func validateUser(user protocol.DesiredUser) error {
+	if user.BindingID == "" {
+		return errors.New("目标用户缺少 bindingId")
+	}
+	if user.Email == "" {
+		return fmt.Errorf("binding %s 缺少 email", user.BindingID)
+	}
+	if user.UUID == "" {
+		return fmt.Errorf("binding %s 缺少 uuid", user.BindingID)
+	}
+	for field, value := range map[string]string{
+		"revision":            user.Revision,
+		"quotaRemainingBytes": user.QuotaRemainingBytes,
+	} {
+		if _, err := decimal.Normalize(value); err != nil {
+			return fmt.Errorf("binding %s 的 %s 非法：%w", user.BindingID, field, err)
+		}
+	}
+	// Empty means "use the agent default", which the store substitutes.
+	if user.OfflineAllowanceBytes != "" {
+		if _, err := decimal.Normalize(user.OfflineAllowanceBytes); err != nil {
+			return fmt.Errorf("binding %s 的 offlineAllowanceBytes 非法：%w", user.BindingID, err)
+		}
+	}
+	return nil
+}
+
 // distinctBindings refuses a desired set that names the same binding, or the
 // same account, twice.
 //
@@ -503,6 +588,9 @@ func distinctBindings(users []protocol.DesiredUser) error {
 	bindings := make(map[string]bool, len(users))
 	emails := make(map[string]string, len(users))
 	for _, user := range users {
+		if err := validateUser(user); err != nil {
+			return err
+		}
 		if bindings[user.BindingID] {
 			return fmt.Errorf("目标用户集里 bindingId %s 出现了多次", user.BindingID)
 		}
