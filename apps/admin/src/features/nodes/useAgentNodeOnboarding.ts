@@ -72,6 +72,8 @@ export function useAgentNodeOnboarding(opened: boolean, initialNode: AdminNodeRe
       }
     };
     unsubscribe.current = subscribeAdminRuntimeEvents(event => {
+      // AdminRuntimeEventsService sends an unscoped node_access_updated every
+      // time stream() opens, including reconnects with no replay history.
       if (event.type === "node_access_updated" && (!event.nodeId || event.nodeId === nodeId)) void refresh();
     });
     deadline.current = window.setTimeout(() => {

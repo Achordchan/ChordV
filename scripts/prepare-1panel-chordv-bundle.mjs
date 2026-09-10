@@ -19,6 +19,13 @@ const copyTargets = [
   "docs/prd/backend-self-update.md",
   ".env.example",
   "scripts/prisma-migrate-with-baseline.mjs",
+  "scripts/install-go-agent.sh",
+  // The seed image compiles Go from this standalone build context. Keep the
+  // allowlist at build inputs so local handoff notes and binaries stay out.
+  "apps/agent/go.mod",
+  "apps/agent/go.sum",
+  "apps/agent/cmd",
+  "apps/agent/internal",
   "apps/api/package.json",
   "apps/api/tsconfig.json",
   "apps/api/src",

@@ -151,12 +151,25 @@ try {
     writeFileSync(path.join(fixture, deploy, name, "private-sentinel"), "must not ship");
   }
   writeFileSync(path.join(fixture, deploy, ".env"), "PRIVATE_SECRET=must-not-ship\n");
+  mkdirSync(path.join(fixture, "apps/agent"), { recursive: true });
+  writeFileSync(path.join(fixture, "apps/agent/HANDOFF-ONE-CLICK.md"), "PRIVATE_HANDOFF=must-not-ship\n");
   const packaged = spawnSync(process.execPath, [path.join(root, "scripts/prepare-1panel-chordv-bundle.mjs")], {
     cwd: fixture, encoding: "utf8"
   });
   assert.equal(packaged.status, 0, packaged.stderr);
   const bundle = path.join(fixture, ".deploy/chordv-1panel-bundle");
   assert.equal(readFileSync(path.join(bundle, deploy, "docker-compose.yml"), "utf8"), compose);
+  for (const required of ["apps/agent/go.mod", "apps/agent/go.sum", "apps/agent/cmd/chordv-agent/main.go",
+    "apps/agent/internal/onboarding/inspect.go", "scripts/install-go-agent.sh"]) {
+    assert.equal(existsSync(path.join(bundle, required)), true, `standalone Docker context requires ${required}`);
+    assert.equal(readFileSync(path.join(bundle, required), "utf8"), read(required));
+  }
+  assert.equal(existsSync(path.join(bundle, "apps/agent/HANDOFF-ONE-CLICK.md")), false, "local handoff notes must not ship");
+  if (process.env.CHORDV_TEST_BUNDLE_DOCKER === "1") {
+    const built = spawnSync("docker", ["build", "--target", "agent-build", "-f", `${deploy}/Dockerfile.api`, "."],
+      { cwd: bundle, encoding: "utf8", timeout: 180_000 });
+    assert.equal(built.status, 0, built.stdout + built.stderr);
+  }
   for (const name of [".env", "api-state", "api-public-state", "api-backups", "postgres-data", "releases"]) {
     assert.equal(existsSync(path.join(bundle, deploy, name)), false, `${name} must not ship`);
   }

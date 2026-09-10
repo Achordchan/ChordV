@@ -29,6 +29,7 @@
 - 发行工作流构建双架构 Go 程序并写入版本、Git 提交、校验和；后台包内含 `agent-go-dist` 与安装脚本。下载目录从正在运行的发布树定位，避免读取旧容器挂载或可变 current 链接。
 - 本地未提交构建使用实际 Go 源码的 SHA-256 指纹，不将其标记成干净 HEAD 对应的字节；正式 CI 的干净构建使用 Git 提交。
 - 新建后台镜像同样构建并携带 Go 产物。可通过构建参数 `CHORDV_SOURCE_COMMIT` 指定 Git 提交；未提供 Git 元数据时，镜像明确使用 `source-sha256:...` 源码指纹，不冒充某次提交。
+- 现有 1Panel 独立后台部署包也包含 Go 的 go.mod/go.sum、cmd、internal 及安装脚本；白名单不打包 agent 目录中的本地交接文档。这是后台构建输入，不要求节点 VPS 使用 1Panel。
 - 原有后台包整体签名、自更新健康门控和回退流程保持不变。本次没有签发或发布正式更新清单。
 
 ## 3. 已执行验证
@@ -46,9 +47,12 @@
 | `node scripts/build-go-agent.mjs <临时产物目录>` | linux amd64 / arm64 静态编译通过；版本、源码提交及哈希写入产物 |
 | `docker build --target agent-build -f deploy/1panel/chordv/Dockerfile.api -t chordv-go-seed-test .` | 新建镜像的 Go 构建阶段通过，双架构校验和通过，运行 arm64 `--build-info` 返回版本及源码指纹 |
 | `tsx test/system-update-deployment.regression.ts` / `tsx test/runtime-release-contract.regression.ts` | 自更新部署与运行目录契约回归通过 |
+| `CHORDV_TEST_BUNDLE_DOCKER=1 ... tsx test/system-update-deployment.regression.ts` | 从实际生成的独立部署包构建 agent-build 阶段通过，确认 Go 构建输入和安装模板齐全，私有交接文档未打包 |
 | `git diff --check` | 无空白错误 |
 
 本机 Node 为 20.20.2，项目声明 20.19.x，产生 engine 警告；真实隔离联调使用 Node 20.19.0。管理端保留原有大体积 chunk 提示，本次没有扩展做打包优化。
+
+SSE 重连回归使用真实 AdminRuntimeEventsService 的初始事件、真实客户端 SSE 解析函数和接入 watcher：连接断开期间完成校验，在新服务实例（无回放缓存）重连后，仍由无 nodeId 的 node_access_updated 触发读取并显示完成。该事件本来就在服务端每次 stream() 建立时发送，不需要将 keepalive 转成轮询。
 
 ### 完整本地接入联调
 
@@ -66,12 +70,14 @@
 
 ### 反向行为验证
 
-在独立临时副本中分别撤掉以下逻辑，再运行对应测试；四次都因**业务断言失败**被捕获，未把构建或测试框架错误计入通过：
+在独立临时副本中分别撤掉以下逻辑，再运行对应测试；六次都因**业务断言失败**被捕获，未把构建或测试框架错误计入通过：
 
 - 去掉 `tunnel` 识别 → 实际面板监听测试失败。
 - 去掉进程互斥锁 → 第二个 writer 被错误接受，测试失败。
 - 禁用自动 tag 匹配 → 不同命名规则的实际入站无法匹配，测试失败。
 - 去掉注册事务中的校验任务创建 → PostgreSQL 回滚测试发现注册不再随排队失败回滚，测试失败。
+- 使用缺少 Go 输入的旧独立部署包生成器 → 必需构建文件断言失败。
+- 去掉服务端连接建立时的节点刷新事件 → 断线期间完成任务的重连回归失败。
 
 ## 4. 尚未执行与发布门槛
 
@@ -137,6 +143,7 @@
 | --- | --- |
 | `scripts/install-go-agent.sh` | root 预检、校验下载、服务用户预检、受限 systemd 服务、身份保护、重复执行及提升恢复 |
 | `scripts/build-go-agent.mjs` | 双架构静态编译、版本和提交注入、哈希与清单生成 |
+| `scripts/prepare-1panel-chordv-bundle.mjs` | 补齐独立后台部署包的 Go 构建输入和安装模板，继续排除本地交接资料 |
 | `.github/workflows/release-backend.yml` | 后台发行中验证/构建 Go，并把 Go 产物与脚本纳入自更新包 |
 | `deploy/1panel/chordv/Dockerfile.api` | 为新建 seed 镜像构建并携带同样的 Go 产物与脚本 |
 | `.gitignore` | 排除本地生成的 `agent-go-dist` |
@@ -153,6 +160,7 @@
 | `apps/api/test/agent-register.regression.ts` | 移除已退役的 Node 安装渲染断言，保留注册、重放、凭据测试 |
 | `apps/api/test/agent-inbound.regression.ts` | 移除已退役的第二套 Xray 安装断言，保留入站命令与并发回归 |
 | `apps/api/test/agent-install-runtime.regression.ts` | 删除旧 Node runtime 专用测试 |
+| `apps/api/test/system-update-deployment.regression.ts` | 检查生成部署包的必需 Go 文件及私有资料隔离，可直接构建该包的 agent-build 阶段 |
 
 ### 测试夹具、前端与 Go 回归
 
