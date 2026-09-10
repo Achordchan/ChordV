@@ -314,20 +314,20 @@ func (s *Store) backfillProvisioned() error {
 	if err != nil {
 		return err
 	}
+	// The desired set is deliberately NOT a source any more.
+	//
+	// A direct-source binding proves that the control plane WANTS this node to
+	// serve that address. It does not prove that the account living there was
+	// installed by this agent: the row survives a disable, and it survives an
+	// install that was refused or that failed. If the panel has taken the address
+	// in the meantime, adopting the row walks straight past the collision
+	// protection that is on by default, and a later omission deletes their
+	// account.
+	//
+	// The command log is the honest source, and it is complete: every desired row
+	// in a Go-agent database arrived through a command, so anything the replay
+	// cannot account for is something this agent has no business claiming.
 	if mode == protocol.ModeDirectPrimary {
-		result, err := s.db.Exec(`
-			INSERT INTO provisioned_accounts_v2(email, binding_id, recorded_at)
-			SELECT email, binding_id, ? FROM desired_users_v2
-			WHERE email NOT LIKE ? || '%'
-			ON CONFLICT(email) DO NOTHING`, isoMillis(time.Now()), reassignPlaceholder)
-		if err != nil {
-			return err
-		}
-		adopted, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
-		recovered += int(adopted)
 		return s.setMeta("provisioned_backfilled", "1")
 	}
 	var rows int
@@ -1761,14 +1761,17 @@ func (s *Store) ApplyDesiredUsers(users []protocol.DesiredUser) error {
 // account Xray does not have — which the adapter contract says succeeds. The
 // opposite order risks an installed account nothing claims, which under a shared
 // inbound serves forever.
-func (s *Store) RecordProvisioned(bindingID, email string) error {
+func (s *Store) RecordProvisioned(bindingID, email, uuid string) error {
 	if email == "" {
 		return nil
 	}
+	// The uuid travels with the claim: an address alone cannot say whether the
+	// account sitting there is still the one this agent installed. See
+	// ProvisionedAccounts.
 	_, err := s.db.Exec(`
-		INSERT INTO provisioned_accounts_v2(email, binding_id, recorded_at, state) VALUES(?, ?, ?, 'owned')
-		ON CONFLICT(email) DO UPDATE SET binding_id = excluded.binding_id, state = 'owned'`,
-		email, bindingID, isoMillis(time.Now()))
+		INSERT INTO provisioned_accounts_v2(email, binding_id, recorded_at, state, uuid) VALUES(?, ?, ?, 'owned', ?)
+		ON CONFLICT(email) DO UPDATE SET binding_id = excluded.binding_id, state = 'owned', uuid = excluded.uuid`,
+		email, bindingID, isoMillis(time.Now()), uuid)
 	return err
 }
 
@@ -1840,22 +1843,31 @@ func (s *Store) ForgetProvisioned(emails []string) error {
 	})
 }
 
-// ProvisionedAccounts lists the emails this agent has installed.
-func (s *Store) ProvisionedAccounts() ([]string, error) {
-	rows, err := s.db.Query(`SELECT email FROM provisioned_accounts_v2 WHERE state = 'owned' ORDER BY rowid`)
+// ProvisionedAccounts maps each email this agent has installed to the uuid it
+// installed there.
+//
+// The uuid is what keeps a RETAINED claim honest. A claim deliberately survives
+// a disable — the record stays and a later enable puts the same account back —
+// but while it is disabled the address is free, and the panel may reuse it. An
+// email-only claim would then read as permission to overwrite, and later to
+// delete, somebody else's account.
+//
+// An empty uuid means "cannot tell", which callers treat as no contradiction.
+func (s *Store) ProvisionedAccounts() (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT email, uuid FROM provisioned_accounts_v2 WHERE state = 'owned' ORDER BY rowid`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	emails := []string{}
+	claims := map[string]string{}
 	for rows.Next() {
-		var email string
-		if err := rows.Scan(&email); err != nil {
+		var email, uuid string
+		if err := rows.Scan(&email, &uuid); err != nil {
 			return nil, err
 		}
-		emails = append(emails, email)
+		claims[email] = uuid
 	}
-	return emails, rows.Err()
+	return claims, rows.Err()
 }
 
 // --- commands ---------------------------------------------------------------

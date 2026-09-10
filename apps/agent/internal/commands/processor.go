@@ -192,7 +192,7 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 	// uninstalling it here would walk straight past the protection that keeps
 	// the shared inbound safe.
 	if stored != nil && stored.Email != user.Email {
-		owned, err := p.owns(stored.Email)
+		owned, err := p.owns(ctx, stored.Email)
 		if err != nil {
 			return err
 		}
@@ -250,14 +250,14 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 	if err := p.deps.Xray.EnsureUser(ctx, user); err != nil {
 		return err
 	}
-	return p.deps.Store.RecordProvisioned(user.BindingID, user.Email)
+	return p.deps.Store.RecordProvisioned(user.BindingID, user.Email, user.UUID)
 }
 
 // preflightCollision settles what to do about the address a user is about to
 // take, before any step that cannot be undone. It reports whether the install is
 // a TAKEOVER of an account this agent has no record of.
 func (p *Processor) preflightCollision(ctx context.Context, user protocol.DesiredUser) (bool, error) {
-	owned, err := p.owns(user.Email)
+	owned, err := p.owns(ctx, user.Email)
 	if err != nil || owned {
 		return false, err
 	}
@@ -480,15 +480,23 @@ func (p *Processor) terminalUser(ctx context.Context, command protocol.Command, 
 	// The local bookkeeping below still runs: the binding really is revoked, and
 	// the tombstone must be recorded whether or not anything was uninstalled.
 	uninstall := true
-	owned, err := p.owns(email)
+	live, err := p.deps.Xray.ListUsers(ctx)
+	if err != nil {
+		return err
+	}
+	// Intents FIRST. A crash between a successful install and its claim leaves
+	// the account carrying only an INTENT — and the ownership test below ignores
+	// intents, so the uninstall would be skipped while this command went on to
+	// delete the intent and the desired row. The account would then be live, with
+	// every piece of evidence that could ever identify it gone.
+	if err := p.resolveIntents(live); err != nil {
+		return err
+	}
+	owned, err := p.owns(ctx, email)
 	if err != nil {
 		return err
 	}
 	if !owned && !p.deps.AdoptExistingAccounts {
-		live, err := p.deps.Xray.ListUsers(ctx)
-		if err != nil {
-			return err
-		}
 		for _, account := range live {
 			if account.Email == email {
 				p.logf("[agent] 命令 %s 跳过卸载：email %s 上的活账号不是本节点装的（可能属于面板）",
@@ -706,35 +714,89 @@ func (p *Processor) resolveIntents(live []xray.LiveUser) error {
 		if account.UUID == "" || intent.UUID == "" || account.UUID != intent.UUID {
 			continue
 		}
-		if err := p.deps.Store.RecordProvisioned(intent.BindingID, email); err != nil {
+		if err := p.deps.Store.RecordProvisioned(intent.BindingID, email, intent.UUID); err != nil {
 			return err
 		}
 	}
 	return p.deps.Store.ForgetProvisioned(abandoned)
 }
 
-// owns reports whether this agent installed the account, by the same two pieces
-// of evidence Reconcile's ownership map is built from.
-func (p *Processor) owns(email string) (bool, error) {
-	provisioned, err := p.deps.Store.ProvisionedAccounts()
+// ownershipMap is the one place ownership is decided, for a given view of Xray.
+//
+// A claim is by email, but an email is only an ADDRESS. A claim deliberately
+// survives a disable — the record stays and a later enable puts the same account
+// back — and while the account is disabled the address is free for the panel to
+// reuse. Reading the retained claim as permission would then overwrite, and
+// later delete, somebody else's account.
+//
+// So a claim is contradicted when the account living at that address today
+// carries a different uuid. Either uuid being unknown ("" — an adapter that
+// cannot report one) is not a contradiction: the claim stands, which is the
+// behaviour every path had before identity existed.
+func (p *Processor) ownershipMap(live []xray.LiveUser) (map[string]bool, error) {
+	claims, err := p.deps.Store.ProvisionedAccounts()
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	for _, candidate := range provisioned {
-		if candidate == email {
-			return true, nil
+	installed := make(map[string]string, len(live))
+	for _, account := range live {
+		installed[account.Email] = account.UUID
+	}
+	ours := make(map[string]bool, len(claims))
+	for email, claimed := range claims {
+		present, live := installed[email]
+		if live && present != "" && claimed != "" && present != claimed {
+			// Somebody else is at this address now.
+			continue
 		}
+		ours[email] = true
 	}
+	// Accounts whose record was erased by a snapshot applied while this node
+	// could not write Xray. They are still ours, and this is the only surviving
+	// evidence of it.
 	pending, err := p.deps.Store.PendingRemovals()
 	if err != nil {
+		return nil, err
+	}
+	for _, email := range pending {
+		ours[email] = true
+	}
+	return ours, nil
+}
+
+// owns answers the same question for one address, fetching Xray's view only when
+// a claim exists to be contradicted.
+func (p *Processor) owns(ctx context.Context, email string) (bool, error) {
+	claims, err := p.deps.Store.ProvisionedAccounts()
+	if err != nil {
 		return false, err
 	}
-	for _, candidate := range pending {
-		if candidate == email {
-			return true, nil
+	claimed, held := claims[email]
+	if !held {
+		pending, err := p.deps.Store.PendingRemovals()
+		if err != nil {
+			return false, err
+		}
+		for _, candidate := range pending {
+			if candidate == email {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	if claimed == "" {
+		return true, nil
+	}
+	live, err := p.deps.Xray.ListUsers(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, account := range live {
+		if account.Email == email {
+			return account.UUID == "" || account.UUID == claimed, nil
 		}
 	}
-	return false, nil
+	return true, nil
 }
 
 // validateUser checks everything the store will check, BEFORE the caller does
@@ -819,6 +881,10 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	if err != nil {
 		return err
 	}
+	// Indexed ONCE. Rebuilding it per user made the collision preflight below
+	// quadratic in the size of the inbound, and allocated a map of the whole
+	// inbound for every desired user before a single install ran.
+	liveNow := liveEmails(live)
 	// Taken first: upserting the desired set below, and ApplyConfigSnapshot
 	// afterwards, both change what this node remembers owning.
 	recorded, err := p.deps.Store.ListDesiredUsers()
@@ -836,8 +902,8 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	// silently, with RemoveUnknownUsers off and no warning, because as far as
 	// that map is concerned they were ours all along.
 	//
-	// "This agent called EnsureUser for this email" is the fact none of that can
-	// manufacture.
+	// "This agent installed the account at this email, and it still carries the
+	// identity we installed" is the fact none of that can manufacture.
 	//
 	// Unresolved INTENTS are settled first, against what Xray actually holds. An
 	// intent was only written when the address named no live account, so finding
@@ -847,23 +913,13 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	if err := p.resolveIntents(live); err != nil {
 		return err
 	}
-	provisioned, err := p.deps.Store.ProvisionedAccounts()
+	ours, err := p.ownershipMap(live)
 	if err != nil {
 		return err
 	}
-	ours := make(map[string]bool, len(provisioned))
-	for _, email := range provisioned {
-		ours[email] = true
-	}
-	// Accounts whose record was erased by a snapshot applied while this node
-	// could not write Xray. They are still ours, and this is the only surviving
-	// evidence of it.
 	pending, err := p.deps.Store.PendingRemovals()
 	if err != nil {
 		return err
-	}
-	for _, email := range pending {
-		ours[email] = true
 	}
 	desired := make(map[string]bool, len(users))
 	for _, user := range users {
@@ -882,7 +938,7 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	// have to take over the panel's address is not a snapshot this node can apply
 	// halfway.
 	for _, user := range users {
-		if !user.Enabled || !liveEmails(live)[user.Email] || ours[user.Email] {
+		if !user.Enabled || !liveNow[user.Email] || ours[user.Email] {
 			continue
 		}
 		if err := p.collision(user); err != nil {
@@ -948,10 +1004,6 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	// So each branch below hands the claim over before letting go of it: an
 	// enabled user gets a provisioning record first, a disabled one keeps the
 	// note until its uninstall has actually succeeded.
-	liveNow := make(map[string]bool, len(live))
-	for _, account := range live {
-		liveNow[account.Email] = true
-	}
 	clearPending := func(email string) error {
 		if !stillPending[email] {
 			return nil
@@ -983,7 +1035,7 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 			if err := p.deps.Xray.EnsureUser(ctx, user); err != nil {
 				return err
 			}
-			if err := p.deps.Store.RecordProvisioned(user.BindingID, user.Email); err != nil {
+			if err := p.deps.Store.RecordProvisioned(user.BindingID, user.Email, user.UUID); err != nil {
 				return err
 			}
 			if err := clearPending(user.Email); err != nil {
@@ -1048,7 +1100,7 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	//
 	// Nothing is lost by releasing it: a claim only earns its keep while the
 	// account still exists to be retired.
-	for _, email := range provisioned {
+	for email := range ours {
 		if !desired[email] && !liveEmails[email] {
 			retired = append(retired, email)
 		}
@@ -1090,7 +1142,7 @@ func (p *Processor) rememberDroppedOwnership(users []protocol.DesiredUser) error
 		return err
 	}
 	ours := make(map[string]bool, len(provisioned))
-	for _, email := range provisioned {
+	for email := range provisioned {
 		ours[email] = true
 	}
 	var dropped []string

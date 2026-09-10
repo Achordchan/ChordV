@@ -313,7 +313,9 @@ func TestTerminalCommandsUninstallBeforeForgetting(t *testing.T) {
 	}
 	run(t, processor, command("c2", protocol.CommandRemoveUser, "3",
 		map[string]any{"bindingId": "b1", "email": "u1@chordv"}), true)
-	if len(fake.calls) == 0 || fake.calls[0] != "remove:u1@chordv" {
+	// The ownership check may read Xray first; what matters is that the uninstall
+	// is the first thing that CHANGES anything.
+	if !contains(fake.calls, "remove:u1@chordv") {
 		t.Fatalf("calls = %v", fake.calls)
 	}
 	if !recordPresentDuringRemove {
@@ -1515,7 +1517,7 @@ func seedOwned(t *testing.T, state *store.Store, users ...protocol.DesiredUser) 
 		if err := state.UpsertDesiredUser(user); err != nil {
 			t.Fatal(err)
 		}
-		if err := state.RecordProvisioned(user.BindingID, user.Email); err != nil {
+		if err := state.RecordProvisioned(user.BindingID, user.Email, user.UUID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2058,7 +2060,7 @@ func TestAnAuthorizedAdoptionStillInstalls(t *testing.T) {
 		t.Fatalf("批准接管之后没有真正安装：%v", fake.calls)
 	}
 	provisioned, _ := state.ProvisionedAccounts()
-	if len(provisioned) != 1 || provisioned[0] != "u1@chordv" {
+	if _, held := provisioned["u1@chordv"]; !held || len(provisioned) != 1 {
 		t.Fatalf("批准接管之后没有认领：%v —— 之后的遗漏清理会放着它不管", provisioned)
 	}
 }
@@ -2154,5 +2156,76 @@ func TestARenameToAnOccupiedAddressLeavesTheUserOnline(t *testing.T) {
 				t.Fatalf("命令被拒绝了，记录却已被改写：%+v", stored)
 			}
 		})
+	}
+}
+
+// TestATerminalCommandResolvesIntentsFirst covers the account that exists but
+// carries only an intent.
+//
+// A crash between a successful install and its claim leaves exactly that. The
+// ownership test ignores intents, so a REMOVE_USER would skip the uninstall and
+// then delete both the intent and the desired row — leaving the account live
+// with every piece of evidence that could ever identify it gone.
+func TestATerminalCommandResolvesIntentsFirst(t *testing.T) {
+	processor, fake, state := newStrictProcessor(t)
+	seedOwned(t, state, protocol.DesiredUser{
+		BindingID: "b1", Email: "u1@chordv", UUID: "uuid-b1", Revision: "1",
+		Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
+	})
+	// Back to the crash state: installed, but only an intent.
+	if err := state.ForgetProvisioned([]string{"u1@chordv"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.RecordProvisionIntent("b1", "u1@chordv", "uuid-b1"); err != nil {
+		t.Fatal(err)
+	}
+	fake.live = []xray.LiveUser{{Email: "u1@chordv", UUID: "uuid-b1"}}
+	fake.calls = nil
+
+	run(t, processor, command("c1", protocol.CommandRemoveUser, "2", map[string]any{
+		"bindingId": "b1", "email": "u1@chordv",
+	}), true)
+	if !contains(fake.calls, "remove:u1@chordv") {
+		t.Fatalf("只有意图的账号没被卸载，而证据已经被删光：%v", fake.calls)
+	}
+}
+
+// TestARetainedClaimIsCheckedAgainstIdentity follows an address after a disable.
+//
+// The claim deliberately survives a disable — the record stays and a later
+// enable puts the same account back — but while the account is disabled the
+// address is FREE, and the panel may reuse it. Reading the retained claim as
+// permission would overwrite, and later delete, somebody else's account.
+func TestARetainedClaimIsCheckedAgainstIdentity(t *testing.T) {
+	processor, fake, state := newStrictProcessor(t)
+	seedOwned(t, state, protocol.DesiredUser{
+		BindingID: "b1", Email: "shared@chordv", UUID: "uuid-b1", Revision: "1",
+		Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
+	})
+	// The claim carries the identity this agent installed.
+	if err := state.RecordProvisioned("b1", "shared@chordv", "uuid-b1"); err != nil {
+		t.Fatal(err)
+	}
+	// The account was disabled and the panel has since taken the address.
+	fake.live = []xray.LiveUser{{Email: "shared@chordv", UUID: "made-by-the-panel"}}
+	fake.calls = nil
+
+	// A re-enable must not overwrite it...
+	result := run(t, processor, command("c1", protocol.CommandEnsureUser, "2",
+		userPayload("b1", "shared@chordv")), true)
+	if result.Status != protocol.StatusFailed {
+		t.Fatalf("保留的认领被当成了覆盖别人账号的许可：%+v", result)
+	}
+	if contains(fake.calls, "ensure:shared@chordv") {
+		t.Fatalf("面板账号的凭据被覆盖了：%v", fake.calls)
+	}
+
+	// ...and a removal must not delete it.
+	fake.calls = nil
+	run(t, processor, command("c2", protocol.CommandRemoveUser, "3", map[string]any{
+		"bindingId": "b1", "email": "shared@chordv",
+	}), true)
+	if contains(fake.calls, "remove:shared@chordv") {
+		t.Fatalf("面板账号被当成本节点的删掉了：%v", fake.calls)
 	}
 }

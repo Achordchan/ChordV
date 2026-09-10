@@ -1005,22 +1005,18 @@ func TestAnOmissionFloorCannotOutliveItsDeletion(t *testing.T) {
 	}
 }
 
-// TestAnUpgradeKeepsProvisioningEvidenceOnADirectNode covers the database that
-// existed before provisioned_accounts_v2 did.
+// TestAnUpgradeDoesNotClaimDesiredRowsOnItsOwn is the boundary of the migration.
 //
-// Starting that table empty loses ownership of accounts the agent really did
-// install: the first snapshot that omits a revoked binding sees a stranger,
-// leaves it serving (unknown-user removal is off), and snapshot replacement then
-// deletes the only record of it. Nothing afterwards can revoke it.
+// A direct-source binding proves the control plane WANTS this node to serve that
+// address. It does not prove that the account living there was installed by this
+// agent: the row survives a disable, and it survives an install that was refused
+// or that failed. Adopting rows would walk straight past the collision
+// protection that is on by default, and a later omission would delete a panel
+// account that had taken the address.
 //
-// direct_primary is the one mode where the desired set IS the provisioning
-// record — getConfig filters it to source === "direct" — so it is the only mode
-// that may be adopted.
-func TestAnUpgradeKeepsProvisioningEvidenceOnADirectNode(t *testing.T) {
-	for mode, want := range map[protocol.ControlMode][]string{
-		protocol.ModeDirectPrimary: {"u1@chordv"},
-		protocol.ModeShadowDirect:  {},
-	} {
+// Recovery comes from the command log instead — see the replay tests.
+func TestAnUpgradeDoesNotClaimDesiredRowsOnItsOwn(t *testing.T) {
+	for _, mode := range []protocol.ControlMode{protocol.ModeDirectPrimary, protocol.ModeShadowDirect} {
 		t.Run(string(mode), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "node-agent.db")
 			state := openAt(t, path, "node-1", "boot-1")
@@ -1048,13 +1044,8 @@ func TestAnUpgradeKeepsProvisioningEvidenceOnADirectNode(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(got) != len(want) {
-				t.Fatalf("升级后的供给凭据 = %v，want %v", got, want)
-			}
-			for i := range want {
-				if got[i] != want[i] {
-					t.Fatalf("升级后的供给凭据 = %v，want %v", got, want)
-				}
+			if len(got) != 0 {
+				t.Fatalf("升级仅凭 desired 记录就认领了账号：%v", got)
 			}
 		})
 	}
@@ -1109,7 +1100,7 @@ func TestAnUpgradeRecoversOwnershipFromTheCommandLog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0] != "ours@chordv" {
+	if _, held := got["ours@chordv"]; !held || len(got) != 1 {
 		t.Fatalf("升级后的供给凭据 = %v，want 仅 [ours@chordv]（面板账号不得被认领）", got)
 	}
 }
@@ -1195,7 +1186,7 @@ func TestTheUpgradeReplayHonorsReleases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0] != "moved@chordv" {
+	if _, held := got["moved@chordv"]; !held || len(got) != 1 {
 		t.Fatalf("升级后的供给凭据 = %v，want 仅 [moved@chordv]："+
 			"recycled@chordv 已被移除（面板可能已重用该地址），kept@chordv 已被改名释放", got)
 	}
@@ -1243,7 +1234,7 @@ func TestTheUpgradeReplayIncludesEnableCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0] != "after@chordv" {
+	if _, held := got["after@chordv"]; !held || len(got) != 1 {
 		t.Fatalf("升级后的供给凭据 = %v，want 仅 [after@chordv]：ENABLE_USER 改名释放了 before@chordv", got)
 	}
 }
@@ -1403,7 +1394,7 @@ func TestTheUpgradeReplayHonorsPerBindingFloors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0] != "kept@chordv" {
+	if _, held := got["kept@chordv"]; !held || len(got) != 1 {
 		t.Fatalf("升级后的供给凭据 = %v，want 仅 [kept@chordv]：b1 在 revision 6 被移除，"+
 			"快照携带的 revision 5 过不了它的下限", got)
 	}
@@ -1450,7 +1441,7 @@ func TestTheUpgradeReplayDoesNotClaimDisabledUsers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0] != "ours@chordv" {
+	if _, held := got["ours@chordv"]; !held || len(got) != 1 {
 		t.Fatalf("升级后的供给凭据 = %v，want 仅 [ours@chordv]：停用的用户从未被安装过", got)
 	}
 }
