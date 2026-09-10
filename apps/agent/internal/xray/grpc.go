@@ -168,6 +168,9 @@ func (g *GRPC) EnsureUser(ctx context.Context, user protocol.DesiredUser, expect
 	if user.Flow != protocol.FlowNone && user.Flow != protocol.FlowVision {
 		return fmt.Errorf("不支持的 VLESS flow")
 	}
+	if err := g.uniqueCounterEmails(ctx, []LiveUser{{Email: user.Email}}); err != nil {
+		return err
+	}
 	existing, err := g.observed(ctx, user.Email, expect)
 	if err != nil {
 		return err
@@ -226,6 +229,9 @@ func (g *GRPC) ReadAbsoluteCounters(ctx context.Context) ([]protocol.AbsoluteCou
 	if err != nil {
 		return nil, err
 	}
+	if err := g.uniqueCounterEmails(ctx, users); err != nil {
+		return nil, err
+	}
 	response, err := g.stats.QueryStats(ctx, &stats.QueryStatsRequest{Pattern: "user>>>", Reset_: false})
 	if err != nil {
 		return nil, fmt.Errorf("读取 Xray 计数: %w", err)
@@ -277,6 +283,44 @@ func (g *GRPC) uniqueIdentity(ctx context.Context, email string, id uuid.UUID) e
 		}
 		if vless.ProcessUUID(otherID) == key {
 			return fmt.Errorf("UUID 与入站中另一个账号冲突，拒绝安装")
+		}
+	}
+	return nil
+}
+
+// Xray user counters are process-wide, not tag-scoped. Another inbound with
+// the same email makes the number unassignable even if UUIDs differ. Never
+// guess that a failed/unsupported user-list RPC means an empty inbound.
+func (g *GRPC) uniqueCounterEmails(ctx context.Context, users []LiveUser) error {
+	wanted := make(map[string]bool, len(users))
+	for _, user := range users {
+		if user.Email != "" {
+			wanted[user.Email] = true
+		}
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
+	response, err := g.handler.ListInbounds(ctx, &handler.ListInboundsRequest{})
+	if err != nil {
+		return fmt.Errorf("无法确认进程范围的计量 email 唯一性: %w", err)
+	}
+	for _, inbound := range response.GetInbounds() {
+		if inbound.GetTag() == g.tag {
+			continue
+		}
+		// The panel's API forwarding inbound has no email-bearing users.
+		if inbound.GetProxySettings().GetType() == "xray.proxy.dokodemo.Config" {
+			continue
+		}
+		other, err := g.handler.GetInboundUsers(ctx, &handler.GetInboundUserRequest{Tag: inbound.GetTag()})
+		if err != nil {
+			return fmt.Errorf("无法检查入站 %q 的计量身份，拒绝歧义计量: %w", inbound.GetTag(), err)
+		}
+		for _, user := range other.GetUsers() {
+			if wanted[user.GetEmail()] {
+				return fmt.Errorf("email %q 在入站 %q 与 %q 重复，Xray 计数无法分离", user.GetEmail(), g.tag, inbound.GetTag())
+			}
 		}
 	}
 	return nil

@@ -321,3 +321,41 @@ func TestRealVLESSTrafficIsMetered(t *testing.T) {
 		}
 	}
 }
+
+func TestRealXrayRejectsCrossInboundEmailCounters(t *testing.T) {
+	g, instance := realServer(t, false)
+	ctx := context.Background()
+	user := protocol.DesiredUser{Email: "shared@example.test", UUID: "d52ca32b-784a-4f4b-ab51-b8341884f213"}
+	if err := g.EnsureUser(ctx, user, Expectation{Absent: true}); err != nil {
+		t.Fatal(err)
+	}
+	// Panel adds a second inbound outside this adapter, with a different identity
+	// but the same stats key. Read/installation must refuse, never sum it as ours.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := uint32(listener.Addr().(*net.TCPAddr).Port)
+	listener.Close()
+	err = core.AddInboundHandler(instance, &core.InboundHandlerConfig{Tag: "panel-other", ReceiverSettings: serial.ToTypedMessage(&proxyman.ReceiverConfig{
+		Listen: xnet.NewIPOrDomain(xnet.LocalHostIP), PortList: &xnet.PortList{Range: []*xnet.PortRange{{From: port, To: port}}},
+	}), ProxySettings: serial.ToTypedMessage(&vin.Config{Decryption: "none", Clients: []*xprotocol.User{{Email: user.Email, Account: serial.ToTypedMessage(&vless.Account{Id: "c27b65ce-e1f0-40ac-a8c0-2ad4d606bf64"})}}})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := instance.GetFeature(fstats.ManagerType()).(fstats.Manager)
+	counter, err := manager.RegisterCounter("user>>>" + user.Email + ">>>traffic>>>uplink")
+	if err != nil {
+		t.Fatal(err)
+	}
+	counter.Add(50) // both inbounds contribute to this ONE key
+	if values, err := g.ReadAbsoluteCounters(ctx); err == nil {
+		t.Fatalf("ambiguous traffic returned: %+v", values)
+	}
+	if err := g.EnsureUser(ctx, user, Expectation{UUID: user.UUID}); err == nil {
+		t.Fatal("installation ignored cross-inbound collision")
+	}
+	if counter.Value() != 50 {
+		t.Fatal("collision check reset shared counter")
+	}
+}
