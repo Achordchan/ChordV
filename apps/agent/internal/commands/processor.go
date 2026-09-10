@@ -250,7 +250,18 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 	if err := p.deps.Xray.EnsureUser(ctx, user); err != nil {
 		return err
 	}
-	return p.deps.Store.RecordProvisioned(user.BindingID, user.Email, user.UUID)
+	if err := p.deps.Store.RecordProvisioned(user.BindingID, user.Email, user.UUID); err != nil {
+		return err
+	}
+	// And the pending note goes, as Reconcile's enabled branch already does it.
+	//
+	// A note left behind carries the OLD identity, and identity is now what
+	// decides a claim: restore the binding with a new uuid and the fresh claim is
+	// correctly rejected once the panel puts the old uuid back at that address —
+	// while the stale note, which still names it, is accepted. An omission would
+	// then delete the panel's account through evidence this agent should have
+	// retired the moment the claim replaced it.
+	return p.deps.Store.ClearPendingRemoval([]string{user.Email})
 }
 
 // preflightCollision settles what to do about the address a user is about to
@@ -460,6 +471,9 @@ func (p *Processor) terminalUser(ctx context.Context, command protocol.Command, 
 		return err
 	}
 	email := ""
+	// settled marks a removal whose work is provably already done, so the empty
+	// target below is not a failure.
+	settled := false
 	if stored != nil {
 		email = stored.Email
 	} else {
@@ -496,6 +510,13 @@ func (p *Processor) terminalUser(ctx context.Context, command protocol.Command, 
 				if owner != "" && owner != bindingID {
 					p.logf("[agent] 命令 %s 跳过卸载：binding %s 曾用的 email %s 现在属于 binding %s",
 						command.Type, bindingID, remembered, owner)
+					// SETTLED, not stuck. The address having a new owner is
+					// itself the evidence that this removal already ran: the
+					// desired row was deleted and the address reassigned
+					// afterwards. Falling through to the empty-target error
+					// instead would fail this command on every redelivery,
+					// forever, for work that is already done.
+					settled = true
 					remembered = ""
 				}
 			}
@@ -508,9 +529,14 @@ func (p *Processor) terminalUser(ctx context.Context, command protocol.Command, 
 	// account it was meant to remove. A binding this node no longer stores, sent
 	// without an email, is exactly that case: it must come back as an actionable
 	// failure instead.
-	if email == "" {
+	if email == "" && !settled {
 		return fmt.Errorf("命令 %s 未能确定要卸载的账号：本机没有 bindingId 的记录，payload 也未提供 email",
 			command.Type)
+	}
+	if settled {
+		// Local bookkeeping only — the binding really is revoked, and the
+		// tombstone belongs on record whether or not anything was uninstalled.
+		return p.deps.Store.ApplyTerminal(bindingID, command.TargetRevision, "", remove)
 	}
 	// A terminal command names an ADDRESS, and under the shared inbound the
 	// account sitting at that address is not necessarily ours — a refused install

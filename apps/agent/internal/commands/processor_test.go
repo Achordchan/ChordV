@@ -2397,14 +2397,53 @@ func TestARemovalRetryWillNotTakeAnotherBindingsAccount(t *testing.T) {
 	fake.live = []xray.LiveUser{{Email: "shared@chordv", UUID: "uuid-b"}}
 	fake.calls = nil
 
-	// A's removal is redelivered after the crash.
-	run(t, processor, command("c1-retry", protocol.CommandRemoveUser, "2",
+	// A's removal is redelivered after the crash. It must SETTLE, not fail: the
+	// address having a new owner is itself proof the removal already ran, and
+	// failing here would fail this command on every redelivery, forever.
+	result := run(t, processor, command("c1-retry", protocol.CommandRemoveUser, "2",
 		map[string]any{"bindingId": "a"}), true)
+	if result.Status != protocol.StatusCompleted {
+		t.Fatalf("已经做完的移除在每次重投上永久失败：%+v", result)
+	}
 	if contains(fake.calls, "remove:shared@chordv") {
 		t.Fatalf("A 的重投把 B 的账号卸载了：%v", fake.calls)
 	}
 	claims, _ := state.ProvisionedAccounts()
 	if _, held := claims["shared@chordv"]; !held {
 		t.Fatalf("A 的重投清掉了 B 的所有权凭据：%v", claims)
+	}
+}
+
+// TestAnIndividualInstallClearsThePendingNote follows a note that outlives the
+// claim replacing it.
+//
+// An observing snapshot leaves a pending note carrying uuid A. If ENSURE_USER
+// later restores the binding with uuid B, the new claim is recorded — but a note
+// left behind still names A. Once the panel puts A back at that address, the
+// claim is correctly rejected on identity while the STALE NOTE is accepted, and
+// an omission deletes the panel's account through evidence this agent should
+// have retired.
+func TestAnIndividualInstallClearsThePendingNote(t *testing.T) {
+	processor, fake, state := newStrictProcessor(t)
+	if err := state.RecordPendingRemoval(map[string]string{"shared@chordv": "uuid-a"}); err != nil {
+		t.Fatal(err)
+	}
+
+	restored := userPayload("b1", "shared@chordv")
+	restored["uuid"] = "uuid-b"
+	run(t, processor, command("c1", protocol.CommandEnsureUser, "5", restored), true)
+	pending, _ := state.PendingRemovals()
+	if _, noted := pending["shared@chordv"]; noted {
+		t.Fatalf("认领已经取代它，pending 记录却留了下来：%v", pending)
+	}
+
+	// The panel puts the old identity back at that address.
+	fake.live = []xray.LiveUser{{Email: "shared@chordv", UUID: "uuid-a"}}
+	fake.calls = nil
+	run(t, processor, command("c2", protocol.CommandReconcileUsers, "6", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary), "users": []any{},
+	}), true)
+	if contains(fake.calls, "remove:shared@chordv") {
+		t.Fatalf("过期的 pending 记录让遗漏清理删掉了面板的账号：%v", fake.calls)
 	}
 }
