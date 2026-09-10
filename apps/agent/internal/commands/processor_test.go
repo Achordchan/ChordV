@@ -1575,3 +1575,42 @@ func TestPromotionDoesNotUninstallPanelAccountsItMerelyObserved(t *testing.T) {
 		}
 	}
 }
+
+// TestASnapshotMaySwapTwoBindingsEmails is the hand-off a per-user upsert loop
+// cannot express.
+//
+// desired_users_v2 has a UNIQUE email, so writing b1's new address fails while
+// b2's row still holds it — and Reconcile's rename pass has by then already
+// uninstalled BOTH accounts. Two users offline, and every retry reproduces it
+// exactly, because the payload does not change.
+func TestASnapshotMaySwapTwoBindingsEmails(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users": []any{
+			map[string]any(userPayload("b1", "a@chordv")),
+			map[string]any(userPayload("b2", "b@chordv")),
+		},
+	}), true)
+
+	fake.calls = nil
+	swapped := []any{
+		map[string]any(userPayload("b1", "b@chordv")),
+		map[string]any(userPayload("b2", "a@chordv")),
+	}
+	if result := run(t, processor, command("c2", protocol.CommandReconcileUsers, "6", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary), "users": swapped,
+	}), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("互换 email 的快照失败了，两个账号都被卸载并留在离线状态：%+v", result)
+	}
+	for _, want := range []string{"ensure:a@chordv", "ensure:b@chordv"} {
+		if !contains(fake.calls, want) {
+			t.Fatalf("互换之后 %s 没有被装回来：%v", want, fake.calls)
+		}
+	}
+	b1, _ := state.UserByBindingID("b1")
+	b2, _ := state.UserByBindingID("b2")
+	if b1 == nil || b2 == nil || b1.Email != "b@chordv" || b2.Email != "a@chordv" {
+		t.Fatalf("记录没有完成互换：%+v %+v", b1, b2)
+	}
+}

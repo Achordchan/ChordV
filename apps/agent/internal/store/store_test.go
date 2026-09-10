@@ -1004,3 +1004,58 @@ func TestAnOmissionFloorCannotOutliveItsDeletion(t *testing.T) {
 		t.Fatalf("被遗漏的记录还在：%+v", users)
 	}
 }
+
+// TestAnUpgradeKeepsProvisioningEvidenceOnADirectNode covers the database that
+// existed before provisioned_accounts_v2 did.
+//
+// Starting that table empty loses ownership of accounts the agent really did
+// install: the first snapshot that omits a revoked binding sees a stranger,
+// leaves it serving (unknown-user removal is off), and snapshot replacement then
+// deletes the only record of it. Nothing afterwards can revoke it.
+//
+// direct_primary is the one mode where the desired set IS the provisioning
+// record — getConfig filters it to source === "direct" — so it is the only mode
+// that may be adopted.
+func TestAnUpgradeKeepsProvisioningEvidenceOnADirectNode(t *testing.T) {
+	for mode, want := range map[protocol.ControlMode][]string{
+		protocol.ModeDirectPrimary: {"u1@chordv"},
+		protocol.ModeShadowDirect:  {},
+	} {
+		t.Run(string(mode), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "node-agent.db")
+			state := openAt(t, path, "node-1", "boot-1")
+			if _, err := state.ApplyConfigSnapshot(protocol.ConfigSnapshot{
+				NodeID: "node-1", Revision: "5", ControlMode: mode,
+				Users: []protocol.DesiredUser{{
+					BindingID: "b1", Email: "u1@chordv", UUID: "u", Revision: "5",
+					Enabled: true, QuotaRemainingBytes: "100", OfflineAllowanceBytes: allowance,
+				}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			// Simulate the pre-migration state: the rows exist, the evidence
+			// table does not yet.
+			if _, err := state.db.Exec(`DELETE FROM provisioned_accounts_v2`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := state.db.Exec(`DELETE FROM meta_v2 WHERE key = 'provisioned_backfilled'`); err != nil {
+				t.Fatal(err)
+			}
+			state.Close()
+
+			reopened := openAt(t, path, "node-1", "boot-2")
+			got, err := reopened.ProvisionedAccounts()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != len(want) {
+				t.Fatalf("升级后的供给凭据 = %v，want %v", got, want)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("升级后的供给凭据 = %v，want %v", got, want)
+				}
+			}
+		})
+	}
+}

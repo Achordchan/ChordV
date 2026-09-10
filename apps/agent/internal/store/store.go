@@ -148,6 +148,9 @@ func (s *Store) prepare() error {
 	if err := s.backfillSnapshotRevision(); err != nil {
 		return err
 	}
+	if err := s.backfillProvisioned(); err != nil {
+		return err
+	}
 	return s.initializeBoot()
 }
 
@@ -254,6 +257,44 @@ func (s *Store) backfillSnapshotRevision() error {
 	// success at 6 and a restart would then have its retry skipped and cached as
 	// completed: exactly the confusion the watermark exists to prevent.
 	return s.setMeta("snapshot_revision", applied)
+}
+
+// backfillProvisioned hands an OLDER database the provisioning evidence it never
+// recorded, without inventing any.
+//
+// A database written before provisioned_accounts_v2 existed has an empty table
+// even for accounts the agent really did install. Ownership would then start
+// from nothing: the first snapshot that omits a revoked binding classifies its
+// live account as a stranger and — with unknown-user removal off — leaves it
+// serving, while snapshot replacement deletes the only record of it. Nothing
+// afterwards can revoke it.
+//
+// The one mode where the desired set IS the provisioning record is
+// direct_primary: getConfig filters that snapshot to source === "direct", so
+// every row in it is ChordV's. In any other mode the rows include the PANEL's
+// bindings, and claiming them is the exact accident provisioned_accounts_v2
+// exists to prevent — so nothing is claimed there.
+//
+// Runs once. A fresh database has no rows and simply records that it ran.
+func (s *Store) backfillProvisioned() error {
+	done, err := s.meta("provisioned_backfilled")
+	if err != nil || done != "" {
+		return err
+	}
+	mode, err := s.ControlMode()
+	if err != nil {
+		return err
+	}
+	if mode == protocol.ModeDirectPrimary {
+		if _, err := s.db.Exec(`
+			INSERT INTO provisioned_accounts_v2(email, binding_id, recorded_at)
+			SELECT email, binding_id, ? FROM desired_users_v2
+			WHERE email NOT LIKE ? || '%'
+			ON CONFLICT(email) DO NOTHING`, isoMillis(time.Now()), reassignPlaceholder); err != nil {
+			return err
+		}
+	}
+	return s.setMeta("provisioned_backfilled", "1")
 }
 
 // RecordBindingTombstone remembers the revision at which a binding was DELETED.
@@ -1329,6 +1370,74 @@ func (s *Store) ClearPendingRemoval(emails []string) error {
 	return s.transact(func(tx *sql.Tx) error {
 		for _, email := range emails {
 			if _, err := tx.Exec(`DELETE FROM pending_removals_v2 WHERE email = ?`, email); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// reassignPlaceholder parks an email that another binding is taking over. The
+// NUL byte cannot occur in an address the control plane sends, so a parked row
+// can never collide with a real one.
+const reassignPlaceholder = "\x00reassign:"
+
+// ApplyDesiredUsers writes a whole desired set in ONE transaction, resolving the
+// email hand-offs inside it.
+//
+// desired_users_v2 has a UNIQUE email, and the control plane may legitimately
+// move an address between bindings — including swapping two. Upserting one row
+// at a time then fails on the first user whose new email another row still
+// holds, and by that point Reconcile's rename pass has already uninstalled the
+// accounts: both users are offline and every retry reproduces it exactly.
+//
+// So every row whose email is being taken over is parked on a placeholder first,
+// and only then are the users written. A cycle is no different from a chain once
+// nobody holds a contested address. Because it is one transaction, a failure
+// leaves no row parked.
+//
+// A parked row that the new set does not name at all keeps its placeholder until
+// ApplyConfigSnapshot deletes it moments later. That is safe only because
+// ownership lives in provisioned_accounts_v2 rather than in the row's email — a
+// crash in between leaves the account still claimed, and the next reconcile
+// retires it.
+func (s *Store) ApplyDesiredUsers(users []protocol.DesiredUser) error {
+	return s.transact(func(tx *sql.Tx) error {
+		taker := make(map[string]string, len(users))
+		for _, user := range users {
+			taker[user.Email] = user.BindingID
+		}
+		rows, err := tx.Query(`SELECT binding_id, email FROM desired_users_v2`)
+		if err != nil {
+			return err
+		}
+		type held struct{ id, email string }
+		var current []held
+		for rows.Next() {
+			var row held
+			if err := rows.Scan(&row.id, &row.email); err != nil {
+				rows.Close()
+				return err
+			}
+			current = append(current, row)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		for _, row := range current {
+			if to, contested := taker[row.email]; !contested || to == row.id {
+				continue
+			}
+			if _, err := tx.Exec(
+				`UPDATE desired_users_v2 SET email = ? WHERE binding_id = ?`,
+				reassignPlaceholder+row.id, row.id); err != nil {
+				return err
+			}
+		}
+		for _, user := range users {
+			if err := upsertDesiredUserTx(tx, user, s.options.DefaultOfflineAllowance); err != nil {
 				return err
 			}
 		}

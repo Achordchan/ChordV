@@ -655,10 +655,18 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 		}
 		p.logf("[agent] 用户 %s 的 email 由 %s 变更为 %s，已卸载旧账号", user.BindingID, old, user.Email)
 	}
+	// All of them in ONE transaction, before any of the Xray work below.
+	//
+	// A per-user upsert loop cannot express an email HAND-OFF: desired_users_v2
+	// has a unique email, so the first user taking an address another row still
+	// holds fails — after the rename pass above has already uninstalled both
+	// accounts. Two users offline, and every retry reproduces it. ApplyDesiredUsers
+	// parks the contested addresses first, which makes a swap no harder than a
+	// chain, and rolls the whole set back on failure.
+	if err := p.deps.Store.ApplyDesiredUsers(users); err != nil {
+		return err
+	}
 	for _, user := range users {
-		if err := p.deps.Store.UpsertDesiredUser(user); err != nil {
-			return err
-		}
 		// Only AFTER the desired-user record is durable. Dropping the pending
 		// note first would leave a re-added account with NEITHER form of
 		// ownership evidence if this loop then fails or the process dies — and
