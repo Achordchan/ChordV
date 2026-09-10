@@ -21,6 +21,7 @@ import {
 } from "@tabler/icons-react";
 import { StatusBadge } from "../shared/StatusBadge";
 import { formatDateTimeWithYear } from "../../utils/admin-format";
+import { PanelInboundSection } from "./PanelInboundSection";
 import { InboundDeploySection } from "./InboundDeploySection";
 import {
   agentStatusColor,
@@ -87,7 +88,8 @@ export function NodeControlDrawer(props: NodeControlDrawerProps) {
           {/* Keyed by node id: the drawer reuses this component across node
               switches, and a stale open modal (form values, a confirmed key
               rotation) must never carry into the next node. */}
-          <InboundDeploySection key={node.id} node={node} onNodeChanged={props.onNodeRecordChanged} />
+          <PanelInboundSection key={`panel-${node.id}`} node={node} onNodeChanged={props.onNodeRecordChanged} />
+          {!node.agent?.version?.startsWith("go-") && <InboundDeploySection key={node.id} node={node} onNodeChanged={props.onNodeRecordChanged} />}
         </Stack>
       ) : null}
     </Drawer>

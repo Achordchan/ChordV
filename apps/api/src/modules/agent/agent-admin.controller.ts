@@ -4,6 +4,7 @@ import { AdminAuthGuard } from "../common/admin-auth.guard";
 import { AgentRegisterDto, CreateAgentCredentialDto, QueueAgentCommandDto } from "./agent.dto";
 import { AgentRegisterService } from "./agent-register.service";
 import { AgentService } from "./agent.service";
+import { parsePanelLink } from "./panel-inbound";
 
 // A runtime class (not a TS interface): the global ValidationPipe only validates
 // class-decorated bodies — an interface-only DTO reaches the service as an
@@ -43,6 +44,25 @@ class CreateAgentNodeDto {
   recommended?: boolean;
 }
 
+class ParsePanelLinkDto {
+  @IsString()
+  @MaxLength(4096)
+  link!: string;
+
+  @IsString()
+  @MaxLength(32)
+  panelVersion!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  inboundTag?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  tagOverrideConfirmed?: boolean;
+}
+
 @Controller("admin/nodes")
 @UseGuards(AdminAuthGuard)
 export class AgentAdminController {
@@ -56,6 +76,11 @@ export class AgentAdminController {
   @Post("agent-native")
   createAgentNode(@Body() body: CreateAgentNodeDto) {
     return this.registerService.createAgentNode(body);
+  }
+
+  @Post("panel-inbound/parse")
+  parsePanelInbound(@Body() body: ParsePanelLinkDto) {
+    return parsePanelLink(body.link, body.panelVersion, body.inboundTag, body.tagOverrideConfirmed);
   }
 
   @Get(":nodeId/agents")

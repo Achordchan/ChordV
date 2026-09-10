@@ -56,7 +56,7 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
         <Stack gap="sm">
           <Alert color="blue" variant="light" p="xs">
             <Text size="xs">
-              创建后将在目标 VPS 上执行一条安装命令完成接入：节点连接参数由 Agent 自动上报，无需填写面板信息。
+              这里生成的是旧 Node/Xray 安装命令，仅供非面板共存节点。3x-ui 共存节点不要执行此脚本：创建后按 Go agent 接入手册手工注册，再在节点控制器导入面板链接。
             </Text>
           </Alert>
           <TextInput label="节点名称" required value={name} onChange={(event) => setName(event.currentTarget.value)} />

@@ -68,7 +68,7 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
       stopPolling();
       setStage("done"); setError(null);
       if (record) changed.current(record as AdminNodeRecordDto);
-      notifications.show({ color: "teal", title: "入站部署完成", message: `节点「${record?.name ?? nodeId}」的 Reality 入站已部署，连接参数已回填。` });
+      notifications.show({ color: "teal", title: "入站操作完成", message: `节点「${record?.name ?? nodeId}」的入站命令已完成，连接参数已更新；请按所选模式进行验收。` });
     };
     const tick = async () => {
       if (!valid()) return;

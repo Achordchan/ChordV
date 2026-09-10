@@ -19,6 +19,8 @@ import { trafficGbNumberToBytes } from "../common/traffic-bytes.utils";
 import { runWithNodeAndSubscriptionUsageLocks, runWithNodeUsageLock } from "../common/usage-lock.utils";
 import { applyDirectBatch, type SubscriptionTransition } from "./agent-direct-metering";
 
+import { normalizePanelInbound, parsePanelReport } from "./panel-inbound";
+
 const OFFLINE_ALLOWANCE_BYTES = 64n * 1024n * 1024n;
 const MAX_SERIALIZABLE_RETRIES = 3;
 const MAX_CONTIGUOUS_BATCHES_PER_TRANSACTION = 4;
@@ -299,16 +301,21 @@ export class AgentService {
     job: { id: string; payload: Prisma.JsonValue; targetRevision: bigint },
     input: AgentCommandResultDto
   ) {
-    const spec = normalizeInboundSpec((job.payload ?? {}) as Record<string, unknown>);
-    const fields = parseInboundReport(input.result, spec);
+    const payload = (job.payload ?? {}) as Record<string, unknown>;
+    const fields = payload.mode === "validate_panel"
+      ? parsePanelReport(input.result, normalizePanelInbound(payload))
+      : parseInboundReport(input.result, normalizeInboundSpec(payload));
     // A delayed or retried result must not overwrite a newer deployment. Reading
     // the newest completed job and then writing would still race a concurrent
     // completion — both transactions can see no newer row. One conditional
     // statement decides it instead: a stale writer simply matches no rows.
-    await tx.node.updateMany({
-      where: { id: nodeId, inboundAppliedRevision: { lt: job.targetRevision } },
+    const updated = await tx.node.updateMany({
+      where: { id: nodeId, inboundAppliedRevision: { lt: job.targetRevision }, ...(payload.mode === "validate_panel" ? { isActive: false } : {}) },
       data: { ...fields, inboundAppliedRevision: job.targetRevision }
     });
+    if (payload.mode === "validate_panel" && updated.count === 0) {
+      throw new BadRequestException("节点已激活或校验结果已过期，请停用并基于当前 revision 重新校验");
+    }
   }
 
   /**
@@ -367,12 +374,23 @@ export class AgentService {
       orderBy: [{ lastSeenAt: "desc" }, { createdAt: "desc" }]
     });
     if (!agent) throw new BadRequestException("该节点尚未创建有效 Agent 凭据");
+    if (input.type === "ENSURE_INBOUND") {
+      const mode = (input.payload as Record<string, unknown> | undefined)?.mode;
+      if (mode !== undefined && mode !== "validate_panel") throw new BadRequestException("未知入站模式，拒绝降级为部署");
+      if (agent.version?.startsWith("go-") && mode !== "validate_panel") throw new BadRequestException("Go agent 仅接受面板只读校验，请导入面板链接");
+    }
     // The inbound spec is the one payload the server must understand: it is
     // what the agent's report is later compared against field by field, and a
     // command dispatched with an unvalidated spec could never be verified.
     const payload = input.type === "ENSURE_INBOUND"
-      ? normalizeInboundSpec((input.payload ?? {}) as Record<string, unknown>)
+      ? ((input.payload as Record<string, unknown> | undefined)?.mode === "validate_panel"
+        ? normalizePanelInbound(input.payload as Record<string, unknown>)
+        : normalizeInboundSpec((input.payload ?? {}) as Record<string, unknown>))
       : input.payload;
+    if (input.type === "ENSURE_INBOUND" && (payload as Record<string, unknown>)?.mode === "validate_panel"
+      && !agent.version?.startsWith("go-")) {
+      throw new BadRequestException("面板校验需要 go- 版本标识的 Go agent，禁止交给旧 Node agent 部署");
+    }
     // Deduplicate RETRIES of an operation, not every historical occurrence of a
     // spec: an outstanding identical request is the double-click we want to
     // collapse, while a finished one must be repeatable (deploy 443 → 8443 →
@@ -396,6 +414,11 @@ export class AgentService {
     // would deadlock against this release path.
     const job = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM "Node" WHERE id = ${nodeId} FOR UPDATE`;
+      if (input.type === "ENSURE_INBOUND" && (payload as Record<string, unknown>)?.mode === "validate_panel") {
+        const current = await tx.node.findUnique({ where: { id: nodeId }, select: { isActive: true } });
+        if (!current || current.isActive) throw new BadRequestException("请先停用节点，再导入面板参数并进行校验");
+        if (input.expectedInboundAppliedRevision === undefined) throw new BadRequestException("面板校验必须携带当前入站 revision");
+      }
       const node = await tx.node.update({
         where: { id: nodeId },
         data: { agentConfigRevision: { increment: 1n } },

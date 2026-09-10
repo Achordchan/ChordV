@@ -2834,3 +2834,19 @@ func TestExhaustionCarriesExpectedIdentity(t *testing.T) {
 		t.Fatalf("missing identity: %+v", got)
 	}
 }
+
+func TestPanelValidationIsReadOnlyInObservingMode(t *testing.T) {
+	p, fake, _ := newStrictProcessor(t)
+	called := false
+	p.deps.ValidatePanel = func(_ context.Context, payload map[string]any) (map[string]any, error) {
+		called = true
+		return map[string]any{"inbound": map[string]any{"mode": "validate_panel", "validated": true}}, nil
+	}
+	result, err := p.Execute(context.Background(), command("panel-check", protocol.CommandEnsureInbound, "1", map[string]any{"mode": "validate_panel"}), false)
+	if err != nil || result.Status != protocol.StatusCompleted || !called {
+		t.Fatalf("validation: %+v %v", result, err)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("validation mutated user API: %v", fake.calls)
+	}
+}

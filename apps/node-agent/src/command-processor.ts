@@ -130,6 +130,7 @@ export class CommandProcessor {
    * throw instead of reporting a partial success.
    */
   private async ensureInbound(command: AgentCommand): Promise<InboundReport> {
+    if (command.payload.mode === 'validate_panel') throw new Error('面板只读校验需要 Go agent，旧 Node agent 不得部署此请求');
     if (!this.inbound) throw new Error('本机未启用 Xray 入站部署能力（缺少配置助手）');
     const spec = parseInboundSpec(command.payload, this.inbound.inboundTag);
     const hash = inboundSpecHash(spec);

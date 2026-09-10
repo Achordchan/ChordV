@@ -36,11 +36,11 @@ TypeScript 版之后，`-go` 后缀也不再指代任何东西。
 | P1-b1 | sqlite 状态库（用户、计量批次、命令幂等） | 已完成 |
 | P1-b2 | 命令处理器 + Xray 适配器边界 | 已完成 |
 | P1-b3 | 主循环、入口 `cmd/chordv-agent/main.go` | 已完成 |
-| P2-a | 真实 Xray gRPC 适配器、只读 tag 校验、隔离实测 | 本次新增 |
-| P2-b | 后台 vless 导入、ENSURE_INBOUND 语义改造、接入手册 | 未开始 |
+| P2-a | 真实 Xray gRPC 适配器、只读 tag 校验、隔离实测 | 已完成 |
+| P2-b | 后台 vless 导入、ENSURE_INBOUND 语义改造、接入手册 | 本次新增 |
 
-**已接入真实 Xray，但仍不可直接迁移正式节点。** P2-b 控制面入站导入和
-`ENSURE_INBOUND` 语义改造尚未完成。启动先只读校验目标 VLESS tag 与 StatsService，
+**已实现面板导入与只读校验，尚未进行生产灰度。** 接入步骤、手工安装路径、
+版本和计量验收见 [PANEL-ONBOARDING.md](PANEL-ONBOARDING.md)。启动先只读校验目标 VLESS tag 与 StatsService，
 失败时不注册、不初始化状态库。占位适配器和 `AGENT_ALLOW_NO_XRAY` 已删除。
 
 ## 与控制面的关系
@@ -48,7 +48,7 @@ TypeScript 版之后，`-go` 后缀也不再指代任何东西。
 线上协议**一个字节都不改**。`internal/protocol` 是
 `apps/node-agent/src/types.ts` 与服务端 `apps/api/src/modules/agent/agent.dto.ts`
 的逐字转写：灰度时如果协议也跟着变，就分不清是移植 bug 还是协议 bug。
-既有身份、路径和间隔变量沿用 Node 版；两个所有权开关见下文。部署脚本和后台入站导入不在本 PR。
+既有身份、路径和间隔变量沿用 Node 版；两个所有权开关见下文。面板模式显式下发 `mode=validate_panel`，既有 Node 部署流程保留兼容，不自动切换。
 
 ## 几条不能改的不变量
 
@@ -151,8 +151,8 @@ AddUser 报错、用户增删/重复调用、UUID/flow 变更、身份冲突，�
 **边界：** 测试使用固定版本的真实 Xray，不等于已验证所有面板捆绑版本；P2-b 接入时
 仍须核对版本/RPC/统计策略。合法但指错入站的 tag 须由后台绑定导入端口解决。
 身份读取与修改/统计不具备 CAS；面板并发改写竞态沿用 PRD §10。已移除 live 用户的
-尾部计数不由全局 stats 猜测归属，删前采样仍是计量保障。当前 ENSURE_INBOUND 继续
-明确拒绝部署请求，不能把适配器可用误当作生产迁移已就绪。
+尾部计数不由全局 stats 猜测归属，删前采样仍是计量保障。ENSURE_INBOUND 对 Go agent 仅接受显式面板校验，仍拒绝部署请求；
+不能把只读校验成功当作公网连通和计量验收通过。
 
 **进程范围 email 唯一性：** Xray 的 `user>>>email>>>traffic` 计数没有入站维度。
 安装与计量前会检查其他入站的用户列表，同名账号拒绝安装/计量；面板 API 使用的
@@ -160,3 +160,7 @@ AddUser 报错、用户增删/重复调用、UUID/flow 变更、身份冲突，�
 因此不支持用户列表 RPC 的共存协议需单独确认，不能直接激活。该检查是当前时刻
 的证据，不原子；部署必须保持 email 在整个 Xray 进程内唯一，历史上已混合的计数
 不能由 API 拆回各自流量。
+
+P2-b 复用现有节点连接字段与已完成命令 payload 持久化面板规格（mode/tag/声明版本），
+API 端口保留在节点本机环境文件，不新增数据库迁移，不删除历史面板列。
+面板版本尚非自动探测；管理员必须实际核对 ≥3.7.0，后台只校验声明格式和下限。

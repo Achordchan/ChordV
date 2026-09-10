@@ -4,8 +4,8 @@
 // environment variable, every wire field and the systemd unit name are
 // unchanged (see apps/agent/README.md).
 //
-// The real adapter is available, but P2-b control-plane onboarding must land
-// before production migration. This binary never creates panel inbounds.
+// Panel onboarding uses explicit read-only validation. This binary never
+// creates panel inbounds; production activation still requires a traffic test.
 package main
 
 import (
@@ -125,6 +125,7 @@ func serve(config *agentcfg.Config) error {
 		Xray: adapter,
 		Commands: commands.New(commands.Deps{
 			Store:                 state,
+			ValidatePanel:         adapter.ValidatePanel,
 			Xray:                  adapter,
 			RemoveUnknownUsers:    config.RemoveUnknownUsers,
 			AdoptExistingAccounts: config.AdoptExistingAccounts,
@@ -181,7 +182,8 @@ func openStore(config *agentcfg.Config, resolver *credentials.Resolver, identity
 	return store.Open(config.DatabasePath, options)
 }
 
-// healthCheck probes existing business state without registration or migration.\n// SQLite may maintain its shared segment; openReadOnly therefore requires the\n// service user and refuses a root probe against an unprivileged database.
+// healthCheck probes existing business state without registration or migration.\n// SQLite may maintain its shared segment; openReadOnly therefore requires the
+// service user and refuses a root probe against an unprivileged database.
 //
 // deploy/health-check.sh is normally run by an operator as root. Anything this
 // path created under the data directory — a credentials file, a sqlite WAL —

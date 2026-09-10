@@ -680,7 +680,7 @@ func (r *Runner) sendHeartbeat(ctx context.Context) error {
 
 	ack, err := r.deps.API.Heartbeat(ctx, protocol.Heartbeat{
 		BootID:         heartbeatBoot,
-		Version:        version.Version,
+		Version:        version.Wire(),
 		ConfigRevision: revision,
 		QueueDepth:     depth,
 		XrayStatus:     status,
