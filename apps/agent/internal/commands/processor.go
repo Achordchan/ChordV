@@ -484,7 +484,45 @@ func (p *Processor) reconcileCommand(ctx context.Context, command protocol.Comma
 //
 // The ownership snapshot is taken BEFORE the desired set is written, because
 // that write is what erases the evidence.
+// distinctBindings refuses a desired set that names the same binding, or the
+// same account, twice.
+//
+// Neither duplicate is recoverable once it has been acted on. Two rows for one
+// bindingId both get installed in Xray, but the upserts collapse into a single
+// stored row holding the LAST email — and because both emails are in the desired
+// set, the cleanup pass below skips the other one. From the next reconcile on it
+// is simply a stranger: with unknown-user removal off (the B1 default, because
+// the inbound is shared with the panel) nothing will ever take it down, and
+// there is no local record to meter it or to revoke it through.
+//
+// Two bindings sharing one email is the mirror image — one Xray account with two
+// owners, so a terminal command for either uninstalls the other's service.
+//
+// Refusing costs one failed command that the control plane can see and fix.
+func distinctBindings(users []protocol.DesiredUser) error {
+	bindings := make(map[string]bool, len(users))
+	emails := make(map[string]string, len(users))
+	for _, user := range users {
+		if bindings[user.BindingID] {
+			return fmt.Errorf("目标用户集里 bindingId %s 出现了多次", user.BindingID)
+		}
+		bindings[user.BindingID] = true
+		if owner, taken := emails[user.Email]; taken {
+			return fmt.Errorf("目标用户集里 email %s 同时属于 binding %s 和 %s",
+				user.Email, owner, user.BindingID)
+		}
+		emails[user.Email] = user.BindingID
+	}
+	return nil
+}
+
 func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser) error {
+	// Before ListUsers, not merely before the writes: a caller that reaches this
+	// with a malformed set should get the refusal without the agent having
+	// touched Xray at all.
+	if err := distinctBindings(users); err != nil {
+		return err
+	}
 	live, err := p.deps.Xray.ListUsers(ctx)
 	if err != nil {
 		return err
@@ -715,6 +753,13 @@ func parseDesiredUsers(raw any, revision string) ([]protocol.DesiredUser, error)
 			return nil, err
 		}
 		users = append(users, user)
+	}
+	// Checked here as well as in Reconcile, because an observing node never
+	// reaches Reconcile: it persists the snapshot and stops. A duplicate
+	// bindingId would collapse into one row there just as silently, and the node
+	// would carry that damaged record into its next promotion.
+	if err := distinctBindings(users); err != nil {
+		return nil, err
 	}
 	return users, nil
 }

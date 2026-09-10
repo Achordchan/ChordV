@@ -1354,3 +1354,71 @@ func TestAGenuinelyOlderTerminalCommandIsStillRefused(t *testing.T) {
 		}
 	})
 }
+
+// TestADuplicateBindingInASnapshotIsRefused covers the one shape of bad payload
+// whose damage cannot be undone later.
+//
+// Two rows for one bindingId both get installed, but the upserts collapse into a
+// single record holding the last email. Both emails are in the desired set, so
+// the cleanup pass skips the other one — and from the next reconcile on it is a
+// stranger that unknown-user removal (off by default under B1) will never take
+// down, with no local record to meter or revoke it.
+func TestADuplicateBindingInASnapshotIsRefused(t *testing.T) {
+	payloads := map[string][]any{
+		"same bindingId twice": {
+			map[string]any(userPayload("b1", "u1@chordv")),
+			map[string]any(userPayload("b1", "u2@chordv")),
+		},
+		"two bindings, one email": {
+			map[string]any(userPayload("b1", "shared@chordv")),
+			map[string]any(userPayload("b2", "shared@chordv")),
+		},
+	}
+	// Both control modes, because they refuse at different points. A node on the
+	// direct track is stopped by Reconcile; an OBSERVING node never reaches
+	// Reconcile at all — it persists the snapshot and stops — so only the
+	// parse-time check stands between it and a collapsed record it would carry
+	// into its next promotion.
+	for _, mode := range []protocol.ControlMode{protocol.ModeDirectPrimary, protocol.ModeXuiPrimary} {
+		for name, users := range payloads {
+			t.Run(string(mode)+"/"+name, func(t *testing.T) {
+				processor, fake, state := newProcessor(t, false)
+				result := run(t, processor, command("c1", protocol.CommandReconcileUsers, "6", map[string]any{
+					"controlMode": string(mode),
+					"users":       users,
+				}), true)
+				if result.Status != protocol.StatusFailed {
+					t.Fatalf("重复的 binding/email 被接受了：%+v", result)
+				}
+				if len(fake.calls) != 0 {
+					t.Fatalf("拒绝之前就动了 Xray：%v", fake.calls)
+				}
+				recorded, err := state.ListDesiredUsers()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(recorded) != 0 {
+					t.Fatalf("拒绝之后仍写下了记录：%+v", recorded)
+				}
+			})
+		}
+	}
+}
+
+// TestReconcileRefusesDuplicatesFromADirectCall guards the entry point that does
+// not go through payload parsing at all — the merge path hands Reconcile a set
+// built from a snapshot AND from stored rows, so parse-time validation alone
+// does not cover it.
+func TestReconcileRefusesDuplicatesFromADirectCall(t *testing.T) {
+	processor, fake, _ := newProcessor(t, false)
+	err := processor.Reconcile(context.Background(), []protocol.DesiredUser{
+		{BindingID: "b1", Email: "shared@chordv", UUID: "u1", Revision: "6", Enabled: true, QuotaRemainingBytes: "1"},
+		{BindingID: "b2", Email: "shared@chordv", UUID: "u2", Revision: "6", Enabled: true, QuotaRemainingBytes: "1"},
+	})
+	if err == nil {
+		t.Fatal("Reconcile 接受了两个 binding 共用一个 email")
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("拒绝之前就动了 Xray：%v", fake.calls)
+	}
+}
