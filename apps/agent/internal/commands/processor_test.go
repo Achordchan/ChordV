@@ -1264,3 +1264,93 @@ func TestADelayedTerminalCommandDoesNotUndoANewerSnapshot(t *testing.T) {
 		t.Fatal("记录被过期的终态命令删掉了")
 	}
 }
+
+// TestARemovalAtTheSameRevisionAsADisableStillRuns separates the terminal guard
+// from the enable guard.
+//
+// "Already disabled at revision R" and "a tombstone at revision R" are proof
+// that an ENABLE at R would be undoing something — they are not proof that a
+// REMOVAL at R has happened. Reusing the enable predicate makes REMOVE_USER
+// report completed while the local row stays in place forever, and would skip a
+// DISABLE_USER whose Xray uninstall had failed.
+func TestARemovalAtTheSameRevisionAsADisableStillRuns(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+
+	run(t, processor, command("c1", protocol.CommandEnsureUser, "6", userPayload("b1", "u1@chordv")), true)
+	run(t, processor, command("c2", protocol.CommandDisableUser, "6", map[string]any{"bindingId": "b1"}), true)
+
+	fake.calls = nil
+	if result := run(t, processor, command("c3", protocol.CommandRemoveUser, "6", map[string]any{
+		"bindingId": "b1", "email": "u1@chordv",
+	}), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("result = %+v", result)
+	}
+
+	removed := false
+	for _, call := range fake.calls {
+		if call == "remove:u1@chordv" {
+			removed = true
+		}
+	}
+	if !removed {
+		t.Fatalf("同 revision 的 REMOVE_USER 被当成已完成跳过了：%v", fake.calls)
+	}
+	users, err := state.ListDesiredUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, user := range users {
+		if user.BindingID == "b1" {
+			t.Fatal("REMOVE_USER 报了完成，本地记录却永久留了下来")
+		}
+	}
+}
+
+// TestAGenuinelyOlderTerminalCommandIsStillRefused is the other half: loosening
+// the equal-revision cases must not loosen the older-than cases. Each of the
+// three sources gets a case that ONLY it can catch, so none of them can rot
+// behind another.
+func TestAGenuinelyOlderTerminalCommandIsStillRefused(t *testing.T) {
+	// The stored row alone: ENSURE_USER leaves no tombstone and does not move
+	// the watermark, so a later DISABLE from a lower revision can only be caught
+	// by the row's own revision.
+	t.Run("stored row", func(t *testing.T) {
+		processor, fake, state := newProcessor(t, false)
+		run(t, processor, command("c1", protocol.CommandEnsureUser, "7", userPayload("b1", "u1@chordv")), true)
+
+		fake.calls = nil
+		run(t, processor, command("c2", protocol.CommandDisableUser, "5", map[string]any{
+			"bindingId": "b1", "email": "u1@chordv",
+		}), true)
+		if len(fake.calls) != 0 {
+			t.Fatalf("过期的终态命令仍然动了 Xray：%v", fake.calls)
+		}
+		users, _ := state.ListDesiredUsers()
+		for _, user := range users {
+			if user.BindingID == "b1" && !user.Enabled {
+				t.Fatal("过期的终态命令把记录改成了停用")
+			}
+		}
+	})
+
+	// The tombstone alone: after a removal the row is gone, so nothing but the
+	// tombstone remembers that revision 7 happened.
+	t.Run("tombstone", func(t *testing.T) {
+		processor, fake, state := newProcessor(t, false)
+		run(t, processor, command("c1", protocol.CommandEnsureUser, "6", userPayload("b1", "u1@chordv")), true)
+		run(t, processor, command("c2", protocol.CommandRemoveUser, "7", map[string]any{
+			"bindingId": "b1", "email": "u1@chordv",
+		}), true)
+
+		fake.calls = nil
+		run(t, processor, command("c3", protocol.CommandDisableUser, "5", map[string]any{
+			"bindingId": "b1", "email": "u1@chordv",
+		}), true)
+		if len(fake.calls) != 0 {
+			t.Fatalf("过期的终态命令仍然动了 Xray：%v", fake.calls)
+		}
+		if tombstone, _ := state.BindingTombstone("b1"); tombstone != "7" {
+			t.Fatalf("墓碑被过期命令拉低到了 %s", tombstone)
+		}
+	})
+}

@@ -232,6 +232,52 @@ func (p *Processor) supersededBinding(bindingID, targetRevision string, stored *
 	return p.supersededForBinding(bindingID, targetRevision, stored)
 }
 
+// staleTerminal is the terminal counterpart of supersededBinding.
+//
+// It keeps the checks that mean "a NEWER instruction has already spoken" and
+// drops the two equal-revision ones, because those are proof about an ENABLE and
+// not about a terminal operation:
+//
+//   - "already disabled at this revision" says nothing about whether the account
+//     was uninstalled from Xray. Reconcile persists the disabled row BEFORE
+//     touching Xray, so a failed uninstall leaves exactly that state — and a
+//     DISABLE_USER at the same revision would then be skipped while the account
+//     kept serving.
+//   - a tombstone at this revision does not say WHICH terminal command wrote it.
+//     A DISABLE at R followed by a REMOVE at R would report the removal
+//     completed and leave the local row in place permanently.
+//
+// Nothing is lost by re-running a terminal command: RemoveUser succeeds for an
+// account that is not installed, and ApplyTerminal is a no-op at an equal
+// revision. And a REDELIVERY of the same command never reaches here — Execute
+// returns the stored result for a commandId it has already finished.
+func (p *Processor) staleTerminal(bindingID, targetRevision string, stored *protocol.DesiredUser) (bool, error) {
+	snapshot, err := p.deps.Store.SnapshotRevision()
+	if err != nil {
+		return false, err
+	}
+	older, err := decimal.Less(targetRevision, snapshot)
+	if err != nil || older {
+		return older, err
+	}
+	if bindingID != "" {
+		tombstone, err := p.deps.Store.BindingTombstone(bindingID)
+		if err != nil {
+			return false, err
+		}
+		if tombstone != "0" {
+			older, err := decimal.Less(targetRevision, tombstone)
+			if err != nil || older {
+				return older, err
+			}
+		}
+	}
+	if stored == nil {
+		return false, nil
+	}
+	return decimal.Less(targetRevision, stored.Revision)
+}
+
 // supersededForBinding is supersededBinding without the snapshot watermark: the
 // binding's own history only.
 func (p *Processor) supersededForBinding(bindingID, targetRevision string, stored *protocol.DesiredUser) (bool, error) {
@@ -270,16 +316,19 @@ func (p *Processor) terminalUser(ctx context.Context, command protocol.Command, 
 		return err
 	}
 	// A terminal command's revision IS a command target revision, so it belongs
-	// on the watermark's axis and must be measured against it — the same
-	// predicate the enable path uses. Comparing only against the stored row is
-	// not enough: a snapshot at revision 10 may carry this binding untouched
-	// since revision 1, and a delayed DISABLE_USER at 5 then passes a 5-vs-1
-	// test and uninstalls an account the newer full snapshot installed.
+	// on the watermark's axis and must be measured against it. Comparing only
+	// against the stored row is not enough: a snapshot at revision 10 may carry
+	// this binding untouched since revision 1, and a delayed DISABLE_USER at 5
+	// then passes a 5-vs-1 test and uninstalls an account the newer full snapshot
+	// installed.
+	//
+	// staleTerminal, not supersededBinding — see its comment for why an
+	// equal-revision disable is proof for an enable and not for a removal.
 	bindingID, _ := command.Payload["bindingId"].(string)
 	if stored != nil {
 		bindingID = stored.BindingID
 	}
-	skip, err := p.supersededBinding(bindingID, command.TargetRevision, stored)
+	skip, err := p.staleTerminal(bindingID, command.TargetRevision, stored)
 	if err != nil || skip {
 		return err
 	}
