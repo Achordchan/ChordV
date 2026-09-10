@@ -1409,3 +1409,36 @@ func TestRecoveryConflictDoesNotBlockOtherUsersMetering(t *testing.T) {
 		t.Fatal("B quota not enforced")
 	}
 }
+
+// ENSURE_USER is an enable operation, not a patch of the enabled flag. Disables
+// are DISABLE_USER/REMOVE_USER or full reconciles, all already sampled by runner.
+func TestEnsureUserFalsePayloadDoesNotDisableAnAccount(t *testing.T) {
+	h := newHarness(t)
+	u := user("b1", "a@example.com", "7", true, "1000")
+	h.seed(t, "7", protocol.ModeDirectPrimary, u)
+	h.xray.live = []xray.LiveUser{{Email: u.Email, UUID: u.UUID, Flow: u.Flow}}
+	if err := h.store.RecordProvisioned(u.BindingID, u.Email, u.UUID); err != nil {
+		t.Fatal(err)
+	}
+	r := h.build(t)
+	cmd := commandOf("ensure-false", protocol.CommandEnsureUser, "8", map[string]any{"bindingId": u.BindingID, "enabled": false})
+	changes, err := r.deps.Commands.ReconfiguresUser(cmd)
+	if err != nil || changes {
+		t.Fatalf("unexpected reconfiguration: %v %v", changes, err)
+	}
+	result, err := r.execute(context.Background(), cmd)
+	if err != nil || result.Status != protocol.StatusCompleted {
+		t.Fatalf("ensure: %+v %v", result, err)
+	}
+	stored, err := h.store.UserByBindingID(u.BindingID)
+	if err != nil || !stored.Enabled {
+		t.Fatalf("ensure disabled account: %+v %v", stored, err)
+	}
+	if contains(h.xray.log(), "remove:"+u.Email) {
+		t.Fatal("ENSURE_USER removed unchanged account")
+	}
+	live, err := h.xray.ListUsers(context.Background())
+	if err != nil || len(live) != 1 || live[0].UUID != u.UUID {
+		t.Fatalf("account disappeared: %+v %v", live, err)
+	}
+}
