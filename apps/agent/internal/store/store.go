@@ -2009,3 +2009,45 @@ func openReadOnly(path string, options Options) (*Store, error) {
 	}
 	return store, nil
 }
+
+// CompletedCommand allows the runner to replay a result before trying a final
+// counter read. A redelivery of completed work must not depend on Xray being up.
+func (s *Store) CompletedCommand(commandID string) (*protocol.CommandResult, error) {
+	var raw sql.NullString
+	err := s.db.QueryRow(`SELECT result FROM commands_v2 WHERE command_id = ?`, commandID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !raw.Valid || raw.String == "" {
+		return nil, nil
+	}
+	var result protocol.CommandResult
+	if err := json.Unmarshal([]byte(raw.String), &result); err != nil {
+		return nil, err
+	}
+	if result.Status != protocol.StatusCompleted {
+		return nil, nil
+	}
+	return &result, nil
+}
+
+// OfflineDisabled distinguishes a local allowance cutoff from a control-plane
+// disable. Only the former may be released without a newer enable instruction.
+func (s *Store) OfflineDisabled(bindingID string) (bool, error) {
+	row, err := userByBindingID(s.db, bindingID)
+	if err != nil || row == nil || row.Enabled {
+		return false, err
+	}
+	used, err := decimal.Parse(row.OfflineUsed)
+	if err != nil {
+		return false, err
+	}
+	allowance, err := decimal.Parse(row.OfflineAllowanceBytes)
+	if err != nil {
+		return false, err
+	}
+	return used.Sign() > 0 && used.Cmp(allowance) >= 0, nil
+}

@@ -47,6 +47,24 @@ type Config struct {
 	// PublicHost overrides the address clients dial, ahead of API-observed
 	// detection.
 	PublicHost string
+
+	// RemoveUnknownUsers lets a reconcile uninstall an account that is live in
+	// Xray but absent from the desired set.
+	//
+	// LOAD-BEARING, and off by default. Under B1 the inbound is created by an
+	// administrator in the 3x-ui panel and is SHARED, so Xray's user list also
+	// contains the PANEL's own accounts — an unknown account is at least as
+	// likely to be somebody else's as a ChordV leftover. Turning this on is a
+	// claim that the inbound is NOT shared, and nothing in the agent can check
+	// it.
+	RemoveUnknownUsers bool
+	// AdoptExistingAccounts lets an install take over an email that already
+	// names a live account this agent has no record of.
+	//
+	// Off by default for the same reason, and it is the switch a MIGRATION from
+	// the Node agent needs: there the live accounts are known to be ChordV's,
+	// and without this every one of them fails its install as a collision.
+	AdoptExistingAccounts bool
 }
 
 // DefaultOfflineAllowance matches the Node agent's 64 MiB.
@@ -187,6 +205,8 @@ func Load() (*Config, error) {
 		OfflineAllowanceBytes: offlineAllowance,
 		ResetIdentity:         truthyFlag("CHORDV_AGENT_RESET_IDENTITY"),
 		PublicHost:            trimmedEnv("CHORDV_NODE_PUBLIC_HOST"),
+		RemoveUnknownUsers:    truthyFlag("AGENT_REMOVE_UNKNOWN_USERS"),
+		AdoptExistingAccounts: truthyFlag("AGENT_ADOPT_EXISTING_ACCOUNTS"),
 	}
 	// Mirrors the Node agent: the register token is only carried when it is the
 	// actual identity source, never alongside an operator-supplied token.
