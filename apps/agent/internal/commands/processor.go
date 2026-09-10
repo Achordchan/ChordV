@@ -202,7 +202,7 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 			p.logf("[agent] 用户 %s 的 email 由 %s 变更为 %s，但旧账号不是本节点装的（可能属于面板），未卸载",
 				user.BindingID, stored.Email, user.Email)
 		} else {
-			if err := p.deps.Xray.RemoveUser(ctx, stored.Email, p.expectation(stored.Email, nil)); err != nil {
+			if err := p.deps.Xray.RemoveUser(ctx, stored.Email, p.expectation(stored.Email, nil, false)); err != nil {
 				return err
 			}
 			if err := p.deps.Store.ForgetProvisioned([]string{stored.Email}); err != nil {
@@ -594,7 +594,7 @@ func (p *Processor) terminalUser(ctx context.Context, command protocol.Command, 
 	// still carrying traffic, and a crash after the local delete would leave it
 	// serving with nothing left to notice it.
 	if uninstall {
-		if err := p.deps.Xray.RemoveUser(ctx, email, p.expectation(email, live)); err != nil {
+		if err := p.deps.Xray.RemoveUser(ctx, email, p.expectation(email, live, true)); err != nil {
 			return err
 		}
 	}
@@ -1167,7 +1167,7 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 				user.BindingID, old, user.Email)
 			continue
 		}
-		if err := p.deps.Xray.RemoveUser(ctx, old, p.expectation(old, live)); err != nil {
+		if err := p.deps.Xray.RemoveUser(ctx, old, p.expectation(old, live, true)); err != nil {
 			return err
 		}
 		// The old email is gone for good; the new one is claimed by the install
@@ -1253,7 +1253,7 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 				user.BindingID, user.Email)
 			continue
 		}
-		if err := p.deps.Xray.RemoveUser(ctx, user.Email, p.expectation(user.Email, live)); err != nil {
+		if err := p.deps.Xray.RemoveUser(ctx, user.Email, p.expectation(user.Email, live, true)); err != nil {
 			return err
 		}
 		// Disabled, so it is no longer installed — but the RECORD stays, and so
@@ -1633,11 +1633,20 @@ func (p *Processor) mergeNewerBindings(users []protocol.DesiredUser, snapshotRev
 // reading says what is there, and the adapter's job is to notice that those have
 // diverged. Falling back to the claim keeps callers that have no reading from
 // sending an empty expectation, which refuses nothing.
-func (p *Processor) expectation(email string, live []xray.LiveUser) xray.Expectation {
+// `observed` says whether `live` is an authoritative reading of the inbound.
+// Without it, "no account in the list" and "no list" are the same value — and
+// they are opposites: the first is a constraint the adapter can enforce, the
+// second is silence. A removal that observed absence and then said nothing lets
+// the adapter delete whatever the panel puts there in between, with both safety
+// switches on.
+func (p *Processor) expectation(email string, live []xray.LiveUser, observed bool) xray.Expectation {
 	for _, account := range live {
 		if account.Email == email {
 			return xray.Expectation{UUID: account.UUID}
 		}
+	}
+	if observed {
+		return xray.Expectation{Absent: true}
 	}
 	claims, err := p.deps.Store.ProvisionedAccounts()
 	if err != nil {

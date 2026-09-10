@@ -152,6 +152,9 @@ func (s *Store) prepare() error {
 	if err := s.backfillProvisioned(); err != nil {
 		return err
 	}
+	if err := s.recoverParkedRows(); err != nil {
+		return err
+	}
 	return s.initializeBoot()
 }
 
@@ -583,6 +586,24 @@ func (s *Store) provisionedFromHistory() (int, error) {
 			if value, _ := payload["controlMode"].(string); protocol.IsControlMode(value) {
 				mode = protocol.ControlMode(value)
 			}
+			// reconcileCommand refuses a snapshot older than the watermark, so
+			// the replay must too — and every snapshot it does NOT refuse moves
+			// the watermark, because ApplyConfigSnapshot runs on both tracks and
+			// for a mode-only instruction alike.
+			//
+			// Separating that from the OWNERSHIP effects is the whole point: an
+			// observing snapshot says nothing about who owns what, but it still
+			// establishes that everything older than it is history. Skipping it
+			// wholesale left a delayed removal below it looking current, and the
+			// replay then deleted a claim runtime had kept.
+			refused, err := decimal.Less(entry.revision, orZero(watermark))
+			if err != nil {
+				return 0, err
+			}
+			if refused {
+				continue
+			}
+			watermark = entry.revision
 			if mode != protocol.ModeDirectPrimary {
 				continue
 			}
@@ -702,9 +723,6 @@ func (s *Store) provisionedFromHistory() (int, error) {
 				floors[id] = entry.revision
 			}
 			owned = next
-			// The snapshot watermark moves only here, as ApplyConfigSnapshot
-			// moves it only there.
-			watermark = entry.revision
 		}
 	}
 	added := 0
@@ -780,6 +798,60 @@ func payloadEmail(payload map[string]any) string {
 	}
 	email, _ := payload["userKey"].(string)
 	return email
+}
+
+// recoverParkedRows gives an interrupted address hand-off a definite ending.
+//
+// Parking is committed before the install that completes the hand-off, so a
+// crash can leave a row holding a placeholder. That row is invisible to
+// everything that acts on desired users, which keeps it harmless — but invisible
+// and permanent is not a state worth keeping.
+//
+// If the address it stands for is free again, the row gets it back: the hand-off
+// never happened, and the binding is exactly where it started. If somebody else
+// now holds that address the hand-off DID happen, so the row is what is left of
+// the binding that gave it up — it stays parked and invisible until the next
+// snapshot deletes it, with the tombstone that deletion writes.
+func (s *Store) recoverParkedRows() error {
+	rows, err := s.db.Query(
+		`SELECT binding_id, email FROM desired_users_v2 WHERE email LIKE ? || '%'`, reassignPlaceholder)
+	if err != nil {
+		return err
+	}
+	type parked struct{ id, stored string }
+	var found []parked
+	for rows.Next() {
+		var row parked
+		if err := rows.Scan(&row.id, &row.stored); err != nil {
+			rows.Close()
+			return err
+		}
+		found = append(found, row)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, row := range found {
+		original := originalEmail(row.stored, row.id)
+		if original == "" || original == row.stored {
+			continue
+		}
+		var taken int
+		if err := s.db.QueryRow(
+			`SELECT COUNT(*) FROM desired_users_v2 WHERE email = ?`, original).Scan(&taken); err != nil {
+			return err
+		}
+		if taken > 0 {
+			continue
+		}
+		if _, err := s.db.Exec(
+			`UPDATE desired_users_v2 SET email = ? WHERE binding_id = ?`, original, row.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // RecordBindingTombstone remembers the revision at which a binding was DELETED.
@@ -1409,13 +1481,32 @@ func (s *Store) UserByBindingID(bindingID string) (*protocol.DesiredUser, error)
 	if err != nil || row == nil {
 		return nil, err
 	}
+	// A PARKED row is not a desired user — see ListDesiredUsers. The unexported
+	// lookup still returns it, because upsertDesiredUserTx has to see the row it
+	// is about to overwrite; callers outside the store must not.
+	if strings.HasPrefix(row.Email, reassignPlaceholder) {
+		return nil, nil
+	}
 	user := row.DesiredUser
 	return &user, nil
 }
 
 // ListDesiredUsers returns every stored user, ordered by email for stable output.
+// PARKED rows are excluded, and that is not a detail.
+//
+// A parked row is a hand-off caught in the middle: its address has been given to
+// another binding and its own replacement has not landed yet. If the install
+// that follows fails — or the process dies before ApplyConfigSnapshot runs — the
+// row survives with a NUL-prefixed placeholder for an email. Exposed as a
+// desired user, a later mode-only reconcile would try to INSTALL that
+// placeholder as a real account, and a terminal command would aim at it instead
+// of the address it stands for.
+//
+// So the intermediate state is invisible to everything that acts on desired
+// users. recoverParkedRows gives it a definite ending at the next open.
 func (s *Store) ListDesiredUsers() ([]protocol.DesiredUser, error) {
-	rows, err := s.db.Query(`SELECT ` + userColumns + ` FROM desired_users_v2 ORDER BY email`)
+	rows, err := s.db.Query(`SELECT `+userColumns+
+		` FROM desired_users_v2 WHERE email NOT LIKE ? || '%' ORDER BY email`, reassignPlaceholder)
 	if err != nil {
 		return nil, err
 	}

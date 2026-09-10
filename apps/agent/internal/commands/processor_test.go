@@ -2610,10 +2610,6 @@ func (f *fakeXray) enforceExpectation(email string, expect xray.Expectation) err
 // their OWN account at that address — telling the adapter to expect it absent
 // would have a conforming adapter refuse every one of them.
 func TestAnUpdateExpectsItsOwnAccountToBeThere(t *testing.T) {
-	processor, fake, _ := newStrictProcessor(t)
-	run(t, processor, command("c1", protocol.CommandEnsureUser, "5", userPayload("b1", "u1@chordv")), true)
-	fake.live = []xray.LiveUser{{Email: "u1@chordv", UUID: "uuid-b1"}}
-
 	for name, payload := range map[string]map[string]any{
 		"an ordinary update": userPayload("b1", "u1@chordv"),
 		"a uuid rotation": func() map[string]any {
@@ -2623,6 +2619,12 @@ func TestAnUpdateExpectsItsOwnAccountToBeThere(t *testing.T) {
 		}(),
 	} {
 		t.Run(name, func(t *testing.T) {
+			// A fresh node per case: the two are independent stories about the
+			// same address, and sharing one would make the outcome depend on
+			// which ran first.
+			processor, fake, _ := newStrictProcessor(t)
+			run(t, processor, command("c1", protocol.CommandEnsureUser, "5", userPayload("b1", "u1@chordv")), true)
+			fake.live = []xray.LiveUser{{Email: "u1@chordv", UUID: "uuid-b1"}}
 			fake.expectations = nil
 			result := run(t, processor, command("c-"+name, protocol.CommandEnsureUser, "6", payload), true)
 			if result.Status != protocol.StatusCompleted {
@@ -2668,5 +2670,35 @@ func TestAReconcileInstallCarriesTheObservedIdentity(t *testing.T) {
 	}
 	if install.Absent || install.UUID != "uuid-b1" {
 		t.Fatalf("安装没有带上观察到的身份：%+v", install)
+	}
+}
+
+// TestARemovalThatObservedAbsenceSaysSo separates "I looked and there is nothing
+// there" from "I did not look".
+//
+// They are opposites, and an empty expectation is the second. A terminal command
+// whose target is not installed used to send nothing at all — so if the panel
+// creates that email before the adapter's final check, the adapter has been told
+// neither to expect absence nor to check an identity, and deletes it.
+func TestARemovalThatObservedAbsenceSaysSo(t *testing.T) {
+	processor, fake, state := newStrictProcessor(t)
+	seedOwned(t, state, protocol.DesiredUser{
+		BindingID: "b1", Email: "u1@chordv", UUID: "uuid-b1", Revision: "1",
+		Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
+	})
+	// Xray restarted: our in-memory account is gone. The removal still runs.
+	fake.live = nil
+	fake.expectations = nil
+	run(t, processor, command("c1", protocol.CommandRemoveUser, "2", map[string]any{
+		"bindingId": "b1", "email": "u1@chordv",
+	}), true)
+
+	expect, made := fake.expectFor["remove:u1@chordv"]
+	if !made {
+		t.Fatalf("没有卸载调用：%v", fake.calls)
+	}
+	if !expect.Absent {
+		t.Fatalf("看过入站、确认这里没有账号，却什么都没告诉适配器：%+v —— "+
+			"面板在这中间建一个同名账号就会被删掉", expect)
 	}
 }

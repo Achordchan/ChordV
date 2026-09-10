@@ -3,6 +3,7 @@ package store
 import (
 	"math/big"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -2093,5 +2094,113 @@ func TestTheUpgradeReplayKeepsDisabledStateAndItsRevision(t *testing.T) {
 	}
 	if claims["u1@chordv"].UUID != "installed-uuid" {
 		t.Fatalf("恢复出来的身份是 agent 从未安装过的那个：%v", claims)
+	}
+}
+
+// TestAnInterruptedHandoffIsNotADesiredUser follows a parked row after a crash.
+//
+// Parking commits before the install that completes the hand-off, so a failure
+// in between leaves a row holding a NUL-prefixed placeholder. Exposed as a
+// desired user, a later mode-only reconcile would try to INSTALL that
+// placeholder as a real account, and a terminal command would aim at it instead
+// of the address it stands for.
+func TestAnInterruptedHandoffIsNotADesiredUser(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+	user := func(id, email, revision string) protocol.DesiredUser {
+		return protocol.DesiredUser{
+			BindingID: id, Email: email, UUID: "uuid-" + id, Revision: revision,
+			Enabled: true, QuotaRemainingBytes: "100", OfflineAllowanceBytes: allowance,
+		}
+	}
+	seed(t, state, user("b1", "a@chordv", "5"))
+	// The interrupted shape: b1 parked for a hand-off whose other half never
+	// landed, so nothing else holds its address either.
+	if _, err := state.db.Exec(
+		`UPDATE desired_users_v2 SET email = ? WHERE binding_id = 'b1'`,
+		"\x00reassign:b1:a@chordv"); err != nil {
+		t.Fatal(err)
+	}
+
+	users, err := state.ListDesiredUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, listed := range users {
+		if strings.HasPrefix(listed.Email, "\x00reassign:") {
+			t.Fatalf("占位符地址被当成了目标用户，下一次 reconcile 会去安装它：%+v", listed)
+		}
+	}
+	if stored, _ := state.UserByBindingID("b1"); stored != nil {
+		t.Fatalf("终态命令能解析到占位符行，会瞄准一个 Xray 从没听说过的名字：%+v", stored)
+	}
+
+	// Reopening gives it an ending: the address is free again, so the binding
+	// gets it back.
+	state.Close()
+	reopened := openAt(t, path, "node-1", "boot-2")
+	restored, err := reopened.UserByBindingID("b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored == nil || restored.Email != "a@chordv" {
+		t.Fatalf("重开之后没有把地址还回去：%+v", restored)
+	}
+}
+
+// TestTheUpgradeReplayAdvancesTheWatermarkForObservingSnapshots keeps the two
+// effects of a snapshot apart.
+//
+// An observing snapshot says nothing about who owns what — but it still
+// establishes that everything older than it is history, because
+// ApplyConfigSnapshot moves the watermark on both tracks. Skipping it wholesale
+// left a delayed removal below it looking current, and the replay then deleted a
+// claim runtime had kept.
+func TestTheUpgradeReplayAdvancesTheWatermarkForObservingSnapshots(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+
+	finish := func(id string, kind protocol.CommandType, revision string, payload map[string]any) {
+		t.Helper()
+		if _, err := state.BeginCommand(protocol.Command{
+			CommandID: id, Type: kind, TargetRevision: revision, Payload: payload,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.CompleteCommand(protocol.CommandResult{
+			CommandID: id, Status: protocol.StatusCompleted,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	finish("c1", protocol.CommandEnsureUser, "1", map[string]any{
+		"bindingId": "b1", "email": "u1@chordv", "uuid": "uuid-b1",
+	})
+	finish("c2", protocol.CommandReconcileUsers, "10", map[string]any{
+		"controlMode": string(protocol.ModeShadowDirect),
+		"users": []any{
+			map[string]any{"bindingId": "b1", "email": "u1@chordv", "uuid": "uuid-b1", "revision": "1"},
+		},
+	})
+	// Delayed from 5 — below the watermark the observing snapshot established.
+	finish("c3", protocol.CommandRemoveUser, "5", map[string]any{"bindingId": "b1"})
+
+	if _, err := state.db.Exec(`DELETE FROM provisioned_accounts_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`DELETE FROM meta_v2 WHERE key = 'provisioned_backfilled'`); err != nil {
+		t.Fatal(err)
+	}
+	state.Close()
+
+	reopened := openAt(t, path, "node-1", "boot-2")
+	claims, err := reopened.ProvisionedAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims["u1@chordv"].UUID != "uuid-b1" {
+		t.Fatalf("观察态快照没有推进水位线，水位线之下的移除把认领删掉了：%v", claims)
 	}
 }
