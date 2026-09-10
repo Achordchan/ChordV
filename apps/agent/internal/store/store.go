@@ -2229,9 +2229,16 @@ func (s *Store) RecordProvisioned(bindingID, email, uuid string) error {
 	// The uuid travels with the claim: an address alone cannot say whether the
 	// account sitting there is still the one this agent installed. See
 	// ProvisionedAccounts.
+	//
+	// next_uuid is CLEARED here, because this call is the answer to the question
+	// it asked. A rotation records the replacement identity beside the claim
+	// while it is in flight; a successful install settles it, and leaving the
+	// candidate behind would keep asserting that two identities are acceptable at
+	// this address long after only one of them is.
 	_, err := s.db.Exec(`
 		INSERT INTO provisioned_accounts_v2(email, binding_id, recorded_at, state, uuid) VALUES(?, ?, ?, 'owned', ?)
-		ON CONFLICT(email) DO UPDATE SET binding_id = excluded.binding_id, state = 'owned', uuid = excluded.uuid`,
+		ON CONFLICT(email) DO UPDATE SET
+			binding_id = excluded.binding_id, state = 'owned', uuid = excluded.uuid, next_uuid = ''`,
 		email, bindingID, isoMillis(time.Now()), uuid)
 	return err
 }
@@ -2268,10 +2275,26 @@ func (s *Store) RecordProvisionIntent(bindingID, email, uuid string) error {
 	// it. Until resolveIntents settles which one Xray really has, both identities
 	// count as ours — the conservative reading, since either one may be the
 	// account this agent installed.
+	// An existing INTENT is replaced outright, not amended.
+	//
+	// A row that is still an intent describes an install that never completed —
+	// it is a guess about the past, not a claim. Amending only next_uuid would
+	// leave recovery reading the OLD binding and uuid: an adoption of A that
+	// failed, followed by an adoption of B that succeeded and crashed before its
+	// claim, would be unrecoverable, because ProvisionIntents reports A and
+	// settleRotations only looks at owned rows. So the fields recovery actually
+	// reads are the ones this call overwrites.
 	_, err := s.db.Exec(`
 		INSERT INTO provisioned_accounts_v2(email, binding_id, recorded_at, state, uuid) VALUES(?, ?, ?, 'intent', ?)
 		ON CONFLICT(email) DO UPDATE SET
-			next_uuid = CASE WHEN provisioned_accounts_v2.uuid = excluded.uuid THEN '' ELSE excluded.uuid END`,
+			binding_id = CASE WHEN provisioned_accounts_v2.state = 'intent'
+				THEN excluded.binding_id ELSE provisioned_accounts_v2.binding_id END,
+			uuid = CASE WHEN provisioned_accounts_v2.state = 'intent'
+				THEN excluded.uuid ELSE provisioned_accounts_v2.uuid END,
+			next_uuid = CASE
+				WHEN provisioned_accounts_v2.state = 'intent' THEN ''
+				WHEN provisioned_accounts_v2.uuid = excluded.uuid THEN ''
+				ELSE excluded.uuid END`,
 		email, bindingID, isoMillis(time.Now()), uuid)
 	return err
 }

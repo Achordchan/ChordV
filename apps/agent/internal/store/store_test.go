@@ -2264,3 +2264,62 @@ func TestTheUpgradeReplayChecksFreshnessBeforeTheDisabledBranch(t *testing.T) {
 		t.Fatalf("过期的停用条目把实际安装着的账号的认领丢掉了：%v", claims)
 	}
 }
+
+// TestASuccessfulInstallSettlesTheRotationCandidate makes the committed claim
+// describe a settled installation.
+//
+// A rotation records the replacement identity beside the claim while it is in
+// flight. A successful install answers that question — leaving the candidate
+// behind would keep asserting that TWO identities are acceptable at this
+// address long after only one of them is, which is exactly the looseness the
+// identity check exists to remove.
+func TestASuccessfulInstallSettlesTheRotationCandidate(t *testing.T) {
+	state := newStore(t, "node-1", "boot-1")
+	if err := state.RecordProvisioned("b1", "u1@chordv", "old-uuid"); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.RecordProvisionIntent("b1", "u1@chordv", "new-uuid"); err != nil {
+		t.Fatal(err)
+	}
+	claims, _ := state.ProvisionedAccounts()
+	if claims["u1@chordv"].NextUUID != "new-uuid" {
+		t.Fatalf("前提没成立：轮换候选没有记下来 %+v", claims["u1@chordv"])
+	}
+
+	if err := state.RecordProvisioned("b1", "u1@chordv", "new-uuid"); err != nil {
+		t.Fatal(err)
+	}
+	claims, _ = state.ProvisionedAccounts()
+	if claims["u1@chordv"].UUID != "new-uuid" || claims["u1@chordv"].NextUUID != "" {
+		t.Fatalf("安装成功之后轮换仍被标记为在飞：%+v", claims["u1@chordv"])
+	}
+}
+
+// TestASecondIntentReplacesAnUnresolvedOne is the difference between a claim and
+// a guess.
+//
+// A row that is still an intent describes an install that never completed.
+// Amending only its rotation candidate leaves recovery reading the OLD binding
+// and uuid — so an adoption of A that failed, followed by an adoption of B that
+// succeeded and crashed before its claim, would be unrecoverable: the account is
+// installed as B, and nothing on record says so.
+func TestASecondIntentReplacesAnUnresolvedOne(t *testing.T) {
+	state := newStore(t, "node-1", "boot-1")
+	if err := state.RecordProvisionIntent("b1", "shared@chordv", "uuid-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.RecordProvisionIntent("b2", "shared@chordv", "uuid-b"); err != nil {
+		t.Fatal(err)
+	}
+	intents, err := state.ProvisionIntents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := intents["shared@chordv"]
+	if got.UUID != "uuid-b" || got.BindingID != "b2" {
+		t.Fatalf("未兑现的意图没有被后来的那次取代：%+v —— 恢复会去找一个从未装成的身份", got)
+	}
+	if claims, _ := state.ProvisionedAccounts(); len(claims) != 0 {
+		t.Fatalf("意图被当成了所有权：%v", claims)
+	}
+}
