@@ -853,3 +853,61 @@ func TestAFreshDatabasePersistsItsZeroWatermark(t *testing.T) {
 		t.Fatalf("SnapshotRevision = %s, %v; want 0 — no snapshot has ever been applied", watermark, err)
 	}
 }
+
+// TestApplyTerminalRollsTheTombstoneBackWithTheRow is the reason the tombstone
+// and the row change share a transaction.
+//
+// The tombstone is what makes a re-delivered terminal command idempotent: once
+// it stands at the command's revision, the processor's staleness guard treats
+// the command as already applied and returns completed. So a tombstone that
+// survives a failed row change is worse than no tombstone at all — the retry
+// reports success, the enabled row is still there, and the next reconcile
+// reinstalls the account.
+//
+// A trigger stands in for the crash: it aborts the DELETE after the tombstone
+// statement has already run inside the same transaction.
+func TestApplyTerminalRollsTheTombstoneBackWithTheRow(t *testing.T) {
+	state := newStore(t, "node-1", "boot-1")
+	if err := state.UpsertDesiredUser(protocol.DesiredUser{
+		BindingID: "b1", Email: "u1@chordv", UUID: "u", Revision: "5", Enabled: true,
+		QuotaRemainingBytes: "100", OfflineAllowanceBytes: allowance,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`CREATE TRIGGER boom BEFORE DELETE ON desired_users_v2
+		BEGIN SELECT RAISE(ABORT, 'boom'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := state.ApplyTerminal("b1", "6", true); err == nil {
+		t.Fatal("ApplyTerminal 在行写入失败时仍然返回了成功")
+	}
+
+	tombstone, err := state.BindingTombstone("b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tombstone != "0" {
+		t.Fatalf("行没删成功，墓碑却留下了 %s —— 重投会误报完成", tombstone)
+	}
+
+	// And once the obstacle is gone the retry completes the whole transition.
+	if _, err := state.db.Exec(`DROP TRIGGER boom`); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.ApplyTerminal("b1", "6", true); err != nil {
+		t.Fatal(err)
+	}
+	if tombstone, _ = state.BindingTombstone("b1"); tombstone != "6" {
+		t.Fatalf("重试后墓碑 = %s", tombstone)
+	}
+	users, err := state.ListDesiredUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, user := range users {
+		if user.BindingID == "b1" {
+			t.Fatal("重试后记录仍在")
+		}
+	}
+}

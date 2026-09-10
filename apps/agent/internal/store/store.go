@@ -266,27 +266,82 @@ func (s *Store) RecordBindingTombstone(bindingID, revision string) error {
 	// Everything else in this agent already compares revisions with big.Int;
 	// reaching for a SQL cast here was the inconsistency.
 	return s.transact(func(tx *sql.Tx) error {
+		return recordTombstoneTx(tx, bindingID, normalized)
+	})
+}
+
+func recordTombstoneTx(tx *sql.Tx, bindingID, normalized string) error {
+	var current string
+	switch err := tx.QueryRow(
+		`SELECT revision FROM binding_tombstones_v2 WHERE binding_id = ?`, bindingID).Scan(&current); {
+	case errors.Is(err, sql.ErrNoRows):
+		current = ""
+	case err != nil:
+		return err
+	}
+	if current != "" {
+		order, err := decimal.Cmp(normalized, current)
+		if err != nil {
+			return err
+		}
+		if order <= 0 {
+			return nil
+		}
+	}
+	_, err := tx.Exec(`
+		INSERT INTO binding_tombstones_v2(binding_id, revision, recorded_at) VALUES(?, ?, ?)
+		ON CONFLICT(binding_id) DO UPDATE SET revision = excluded.revision, recorded_at = excluded.recorded_at`,
+		bindingID, normalized, isoMillis(time.Now()))
+	return err
+}
+
+// ApplyTerminal records a binding's tombstone AND retires its local row in one
+// transaction.
+//
+// The two must not be separable. The tombstone is what makes a re-delivered
+// terminal command idempotent: once it is at the command's revision, the guard
+// treats the command as already applied. So a crash — or any failed write —
+// between a standalone tombstone and the row change leaves the tombstone saying
+// "done" while the row is still enabled at an older revision. The redelivery
+// then returns early and reports completed, and the next reconcile happily
+// reinstalls the enabled row: the account comes back with nothing left that
+// disagrees.
+//
+// Committing them together means a retry either finds the whole transition or
+// none of it, and in the "none" case does the work again.
+func (s *Store) ApplyTerminal(bindingID, revision string, remove bool) error {
+	normalized, err := decimal.Normalize(revision)
+	if err != nil {
+		return err
+	}
+	return s.transact(func(tx *sql.Tx) error {
+		if bindingID == "" {
+			return errors.New("终态命令缺少 bindingId")
+		}
+		if err := recordTombstoneTx(tx, bindingID, normalized); err != nil {
+			return err
+		}
+		if remove {
+			_, err := tx.Exec(`DELETE FROM desired_users_v2 WHERE binding_id = ?`, bindingID)
+			return err
+		}
+		// Same revision guard SetUserEnabled applies, kept inside the
+		// transaction so it sees the row the tombstone is being written against.
 		var current string
 		switch err := tx.QueryRow(
-			`SELECT revision FROM binding_tombstones_v2 WHERE binding_id = ?`, bindingID).Scan(&current); {
+			`SELECT revision FROM desired_users_v2 WHERE binding_id = ?`, bindingID).Scan(&current); {
 		case errors.Is(err, sql.ErrNoRows):
-			current = ""
+			return nil
 		case err != nil:
 			return err
 		}
-		if current != "" {
-			order, err := decimal.Cmp(normalized, current)
-			if err != nil {
-				return err
-			}
-			if order <= 0 {
-				return nil
-			}
+		stale, err := decimal.Less(normalized, current)
+		if err != nil || stale {
+			return err
 		}
-		_, err := tx.Exec(`
-			INSERT INTO binding_tombstones_v2(binding_id, revision, recorded_at) VALUES(?, ?, ?)
-			ON CONFLICT(binding_id) DO UPDATE SET revision = excluded.revision, recorded_at = excluded.recorded_at`,
-			bindingID, normalized, isoMillis(time.Now()))
+		_, err = tx.Exec(
+			`UPDATE desired_users_v2 SET enabled = 0, revision = ?, updated_at = ? WHERE binding_id = ?`,
+			normalized, isoMillis(time.Now()), bindingID)
 		return err
 	})
 }

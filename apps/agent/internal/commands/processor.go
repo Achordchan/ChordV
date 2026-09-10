@@ -316,18 +316,16 @@ func (p *Processor) terminalUser(ctx context.Context, command protocol.Command, 
 	// and a delayed enable at a lower revision would then restore access to an
 	// account the control plane just took down. The tombstone is a floor on the
 	// binding rather than a fact about the row, so it applies uniformly.
-	if bindingID != "" {
-		if err := p.deps.Store.RecordBindingTombstone(bindingID, command.TargetRevision); err != nil {
-			return err
-		}
-	}
-	if stored == nil {
+	//
+	// And it goes down TOGETHER with the row change, in one transaction. A
+	// tombstone that lands alone already says "this command is applied", so a
+	// crash before the row is retired makes the redelivery return early and
+	// report completed while the enabled row survives for the next reconcile to
+	// reinstall.
+	if bindingID == "" {
 		return nil
 	}
-	if remove {
-		return p.deps.Store.DeleteUser(stored.BindingID)
-	}
-	return p.deps.Store.SetUserEnabled(stored.BindingID, false, command.TargetRevision)
+	return p.deps.Store.ApplyTerminal(bindingID, command.TargetRevision, remove)
 }
 
 func (p *Processor) reconcileCommand(ctx context.Context, command protocol.Command) error {
