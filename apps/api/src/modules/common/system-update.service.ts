@@ -14,6 +14,7 @@ import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
 import { Client as PgClient } from "pg";
+import { Subject, filter } from "rxjs";
 import type {
   SystemUpdateCheckDto,
   SystemUpdateOperationDto,
@@ -138,6 +139,9 @@ export function verifyManifestSignature(
 export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SystemUpdateService.name);
   private config: SystemUpdateRuntimeConfig = resolveSystemUpdateRuntimeConfig();
+  private readonly operationUpdates = new Subject<string>();
+  observeOperation(operationId: string) { return this.operationUpdates.pipe(filter(id => id === operationId)); }
+  operationStateDirectory() { return this.config.stateDir; }
   private cache: SystemUpdateCacheEntry | null = null;
   // Per-process only: a new/fallback release must check its own schema before success.
   private readinessCache: { expiresAt: number; result: Promise<boolean> } | null = null;
@@ -201,6 +205,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleDestroy() {
+    this.operationUpdates?.complete();
     // Graceful shutdown (docker stop → SIGTERM, enableShutdownHooks is on): kill any
     // still-running detached migration/snapshot process group so it does not keep
     // mutating the database after the app has exited and the supervisor moves on.
@@ -1403,6 +1408,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       where: { operationId },
       data: { status: "running", toVersion, phase: initialPhase, progress: null }
     });
+    this.operationUpdates?.next(operationId);
   }
 
   private async updateOperation(operationId: string, data: { migrationApplied?: boolean }) {
@@ -1448,6 +1454,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
             : { operationId: pending.operationId, status: "running" },
           data: pending.data
         });
+        this.operationUpdates?.next(pending.operationId);
       } catch (error) {
         this.logger.warn(`Progress phase update failed (ignored): ${this.describeError(error)}`);
       }
@@ -1526,6 +1533,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
         ...(data.failureReason !== undefined ? { failureReason: data.failureReason } : {})
       }
     });
+    this.operationUpdates?.next(operationId);
   }
 
   private async writePendingMarker(marker: {

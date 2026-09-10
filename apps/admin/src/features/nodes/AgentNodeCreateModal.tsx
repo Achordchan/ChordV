@@ -9,6 +9,7 @@ import {
   Loader,
   Modal,
   Stack,
+  Stepper,
   Text,
   TextInput,
   Textarea,
@@ -29,11 +30,12 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
   const [provider, setProvider] = useState("");
   const [tags, setTags] = useState("");
   const [panelInbound, setPanelInbound] = useState<Record<string, unknown> | null>(null);
-  const { stage, result, node, error, creating, regenerating, submit, regenerate, retryValidation, refresh, invalidate } =
+  const { stage, result, node, error, hasValidation, creating, regenerating, submit, configure, editInbound, regenerate, retryValidation, refresh, invalidate } =
     useAgentNodeOnboarding(opened, initialNode, onNodeChanged);
   useLayoutEffect(() => { setName(""); setRegion(""); setProvider(""); setTags(""); setPanelInbound(null); }, [opened, initialNode?.id]);
+  useLayoutEffect(() => { if (stage === "configure") setPanelInbound(null); }, [stage]);
   const handleClose = () => { invalidate(); onClose(); };
-  const create = () => panelInbound && submit({ name: name.trim(), panelInbound, region: region.trim() || undefined,
+  const create = () => submit({ name: name.trim(), region: region.trim() || undefined,
     provider: provider.trim() || undefined, tags: tags.trim() ? tags.split(/[,，\s]+/).filter(Boolean) : undefined });
 
   // The install command references the origin the admin is already using. The
@@ -54,14 +56,19 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
       size="lg"
       closeOnClickOutside={stage === "form" || stage === "ready" || stage === "failed" || stage === "legacy"}
     >
+      <Stepper active={["configure", "validating", "ready"].includes(stage) || (stage === "failed" && hasValidation) ? (stage === "ready" ? 2 : 1) : 0}
+        size="sm" mb="lg" allowNextStepsSelect={false}>
+        <Stepper.Step label="接入服务器" description="基础信息、安装与检测" />
+        <Stepper.Step label="添加节点" description="配置并校验入站" />
+      </Stepper>
       {stage === "form" ? (
         <Stack gap="sm">
           <Alert color="blue" variant="light" p="xs">
             <Text size="xs">
-              在原生 3x-ui 面板中准备 VLESS + Reality 入站，设为不限期、不限流量，再导入分享链接。安装器会自动检查面板版本、API 和实际入站；校验完成后由你验收并激活。
+              先填写服务器基础信息并生成安装命令。Agent 安装和环境检测完成后，再配置节点入站。
             </Text>
           </Alert>
-          <TextInput label="节点名称" required value={name} onChange={(event) => setName(event.currentTarget.value)} />
+          <TextInput label="名称" required value={name} onChange={(event) => setName(event.currentTarget.value)} />
           <Group grow>
             <TextInput label="地区" placeholder="如：香港" value={region} onChange={(event) => setRegion(event.currentTarget.value)} />
             <TextInput label="供应商" placeholder="可选" value={provider} onChange={(event) => setProvider(event.currentTarget.value)} />
@@ -72,7 +79,6 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
             value={tags}
             onChange={(event) => setTags(event.currentTarget.value)}
           />
-          <PanelInboundForm onParsed={setPanelInbound} />
           {error ? (
             <Alert color="red" variant="light" p="xs">
               <Text size="xs">{error}</Text>
@@ -82,8 +88,8 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
             <Button variant="default" onClick={handleClose}>
               取消
             </Button>
-            <Button loading={creating} disabled={!name.trim() || !panelInbound} onClick={() => void create()}>
-              创建并生成安装命令
+            <Button loading={creating} disabled={!name.trim()} onClick={() => void create()}>
+              生成安装命令
             </Button>
           </Group>
         </Stack>
@@ -104,7 +110,7 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
           <Alert color="blue" variant="light">
             <Group gap="xs">
               <Loader size="xs" />
-              <Text size="sm">节点已创建（{node?.name}），等待 Agent 注册…安装命令在目标 VPS 上以 root 执行后，此处将自动更新。</Text>
+              <Text size="sm">等待服务器「{node?.name}」安装并完成环境检测。在目标 VPS 上以 root 执行命令后，此处将自动更新。</Text>
             </Group>
           </Alert>
           <Text size="xs" fw={700}>
@@ -141,8 +147,25 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
         </Stack>
       ) : null}
 
+      {stage === "environment" ? <Stack gap="sm">
+        <Group gap="xs"><Loader size="sm" /><Text size="sm">Agent 已注册，等待服务启动和环境就绪确认…</Text></Group>
+        {error && <Alert color="red">{error}</Alert>}
+        <Group justify="flex-end"><Button variant="default" onClick={refresh}>刷新状态</Button><Button onClick={handleClose}>稍后继续</Button></Group>
+      </Stack> : null}
+
+      {stage === "configure" && node ? <Stack gap="sm">
+        <Text size="sm">服务器「{node.name}」环境已就绪。导入面板中的 VLESS + Reality 入站链接，完成节点绑定。</Text>
+        <Text size="xs" c="dimmed">请将面板入站设为不限期、不限流量。</Text>
+        <PanelInboundForm onParsed={setPanelInbound} />
+        {error && <Alert color="red">{error}</Alert>}
+        <Group justify="flex-end">
+          <Button variant="default" onClick={handleClose}>稍后继续</Button>
+          <Button loading={creating} disabled={!panelInbound} onClick={() => { if (panelInbound) void configure(panelInbound); }}>添加并校验节点</Button>
+        </Group>
+      </Stack> : null}
+
       {stage === "validating" ? <Stack gap="sm">
-        <Group gap="xs"><Loader size="sm" /><Text size="sm">Agent 已注册，正在核对实际入站参数…</Text></Group>
+        <Group gap="xs"><Loader size="sm" /><Text size="sm">正在匹配实际入站并核对连接参数…</Text></Group>
         {error && <Alert color="red">{error}</Alert>}
         <Group justify="flex-end"><Button variant="default" onClick={refresh}>刷新状态</Button><Button onClick={handleClose}>关闭</Button></Group>
       </Stack> : null}
@@ -189,10 +212,11 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
               color="blue"
               variant="light"
               loading={regenerating}
-              onClick={() => void (node?.registrationStatus === "agent_ready" ? retryValidation() : regenerate())}
+              onClick={() => { if (hasValidation) void retryValidation(); else if (node?.registrationStatus === "agent_ready") refresh(); else void regenerate(); }}
             >
-              {node?.registrationStatus === "agent_ready" ? "重新校验入站" : "重新生成安装命令"}
+              {hasValidation ? "重新校验入站" : node?.registrationStatus === "agent_ready" ? "重新检测环境" : "重新生成安装命令"}
             </Button>
+            {hasValidation && <Button variant="light" size="xs" onClick={editInbound}>修改入站参数</Button>}
             <Button variant="default" size="xs" onClick={refresh}>刷新状态</Button>
             <Button variant="default" onClick={handleClose}>
               关闭

@@ -163,6 +163,12 @@ func Inspect(ctx context.Context, panelPID int, specPath string) (string, error)
 	if json.Unmarshal(specData, &spec) != nil {
 		return "", fmt.Errorf("待接入参数格式错误")
 	}
+	if spec["mode"] == "awaiting_panel" {
+		if err := VerifyEnvironment(ctx, address); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("XRAY_API_ADDRESS=%s\nAGENT_WAIT_FOR_INBOUND=true\nCHORDV_PANEL_VERSION=%s\n", address, panelVersion), nil
+	}
 	tag, _ := spec["inboundTag"].(string)
 	if !tagPattern.MatchString(tag) {
 		return "", fmt.Errorf("待接入 tag 格式错误")
@@ -210,7 +216,13 @@ func Verify(ctx context.Context, address, tag, specPath string) error {
 		return fmt.Errorf("服务用户无法读取公共入站参数")
 	}
 	var spec map[string]any
-	if json.Unmarshal(data, &spec) != nil || !tagPattern.MatchString(tag) {
+	if json.Unmarshal(data, &spec) != nil {
+		return fmt.Errorf("入站参数格式错误")
+	}
+	if spec["mode"] == "awaiting_panel" {
+		return VerifyEnvironment(ctx, address)
+	}
+	if !tagPattern.MatchString(tag) {
 		return fmt.Errorf("入站参数格式错误")
 	}
 	spec["inboundTag"] = tag
@@ -304,4 +316,17 @@ func runningConfig(panelPID int) (string, error) {
 		return "", fmt.Errorf("无法确定面板唯一的运行中 Xray 配置，未修改任何面板设置")
 	}
 	return found[0], nil
+}
+
+// VerifyEnvironment checks both services under the installing service account.
+func VerifyEnvironment(ctx context.Context, address string) error {
+	if err := validateServiceSocket(address); err != nil {
+		return err
+	}
+	adapter, err := xray.NewControl(address)
+	if err != nil {
+		return err
+	}
+	defer adapter.Close()
+	return adapter.ValidateEnvironment(ctx)
 }

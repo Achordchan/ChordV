@@ -28,6 +28,7 @@ type Config struct {
 
 	APIBaseURL      string
 	XrayAPIAddress  string
+	WaitForInbound  bool
 	XrayInboundTag  string
 	DatabasePath    string
 	CredentialsPath string
@@ -186,7 +187,10 @@ func Load() (*Config, error) {
 	}
 
 	inboundTag := trimmedEnv("XRAY_INBOUND_TAG")
-	if inboundTag == "" {
+	if truthyFlag("AGENT_WAIT_FOR_INBOUND") && inboundTag != "" {
+		return nil, errors.New("等待入站模式不能同时指定 XRAY_INBOUND_TAG")
+	}
+	if inboundTag == "" && !truthyFlag("AGENT_WAIT_FOR_INBOUND") {
 		inboundTag = "vless-in"
 	}
 
@@ -197,6 +201,7 @@ func Load() (*Config, error) {
 		APIBaseURL:            apiBaseURL,
 		XrayAPIAddress:        xrayAPIAddress,
 		XrayInboundTag:        inboundTag,
+		WaitForInbound:        truthyFlag("AGENT_WAIT_FOR_INBOUND"),
 		DatabasePath:          databasePath,
 		CredentialsPath:       credentialsPath,
 		SampleInterval:        sampleInterval,

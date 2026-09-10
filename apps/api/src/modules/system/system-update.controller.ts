@@ -1,7 +1,8 @@
-import { Body, Controller, Get, Post, Query, Req, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, Headers, Post, Query, Req, Sse, UseGuards } from "@nestjs/common";
 import { IsIn, IsOptional, IsString, Matches } from "class-validator";
 import { AdminAuthGuard } from "../common/admin-auth.guard";
 import { SystemUpdateService } from "../common/system-update.service";
+import { SystemUpdateStreamService } from "./system-update-stream.service";
 
 class RollbackBodyDto {
   @IsOptional()
@@ -43,7 +44,13 @@ function actorFrom(request: AuthedRequest) {
 @Controller("admin/system")
 @UseGuards(AdminAuthGuard)
 export class SystemUpdateController {
-  constructor(private readonly systemUpdateService: SystemUpdateService) {}
+  constructor(private readonly systemUpdateService: SystemUpdateService, private readonly streams: SystemUpdateStreamService) {}
+
+  @Sse("update-events")
+  updateEvents(@Query("operationId") operationId: string, @Headers("authorization") authorization?: string) {
+    if (!operationId || !/^[A-Za-z0-9_-]{1,128}$/.test(operationId)) throw new BadRequestException("操作编号无效");
+    return this.streams.stream(operationId, authorization);
+  }
 
   @Get("version")
   getVersion() {

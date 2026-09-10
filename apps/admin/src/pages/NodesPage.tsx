@@ -148,7 +148,7 @@ export function NodesPage(props: NodesPageProps) {
                   </Table.Td>
                   <Table.Td>
                     <RowActions>
-                      {item.registrationStatus === "pending_register" ? (
+                      {(item.registrationStatus === "pending_register" || (item.registrationStatus === "agent_ready" && item.inboundAppliedRevision === "0")) ? (
                         <Button size="compact-xs" variant="light" onClick={() => props.onResumeAgentNode(item.id)}>继续接入</Button>
                       ) : null}
                       <ActionIcon

@@ -115,6 +115,10 @@ export class AgentService {
           }
         })
       ]);
+      if (currentAgent.xrayStatus !== input.xrayStatus ||
+        (input.xrayStatus === "awaiting_inbound" && (!currentAgent.lastSeenAt || now.getTime() - currentAgent.lastSeenAt.getTime() >= 60_000))) {
+        this.adminEvents?.publish({ type: "node_access_updated", nodeId: agent.nodeId, occurredAt: now.toISOString() });
+      }
       return {
         accepted: true,
         serverTime: now.toISOString(),
@@ -312,6 +316,11 @@ export class AgentService {
     // the newest completed job and then writing would still race a concurrent
     // completion — both transactions can see no newer row. One conditional
     // statement decides it instead: a stale writer simply matches no rows.
+    if (payload.mode === "validate_panel") {
+      // Freeze the live tag only after the authenticated report passed all public-parameter checks.
+      const report = (input.result as { inbound: { inboundTag: string } }).inbound;
+      await tx.nodeCommandJob.update({ where: { id: job.id }, data: { payload: { ...payload, inboundTag: report.inboundTag, tagOverrideConfirmed: true } as Prisma.InputJsonValue } });
+    }
     const updated = await tx.node.updateMany({
       where: { id: nodeId, inboundAppliedRevision: { lt: job.targetRevision }, ...(payload.mode === "validate_panel" ? { isActive: false } : {}) },
       data: { ...fields, inboundAppliedRevision: job.targetRevision }
@@ -426,8 +435,14 @@ export class AgentService {
     const job = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM "Node" WHERE id = ${nodeId} FOR UPDATE`;
       if (input.type === "ENSURE_INBOUND" && (payload as Record<string, unknown>)?.mode === "validate_panel") {
-        const current = await tx.node.findUnique({ where: { id: nodeId }, select: { isActive: true } });
+        const current = await tx.node.findUnique({ where: { id: nodeId }, select: { isActive: true, onboardingSpec: true, inboundAppliedRevision: true } });
         if (!current || current.isActive) throw new BadRequestException("请先停用节点，再导入面板参数并进行校验");
+        if ((current.onboardingSpec as Record<string, unknown> | null)?.mode === "awaiting_panel" && current.inboundAppliedRevision === 0n) {
+          const live = await tx.nodeAgent.findFirst({ where: { id: agent.id, revokedAt: null } });
+          if (!live || !["awaiting_inbound", "healthy"].includes(live.xrayStatus) || !live.lastSeenAt || Date.now() - live.lastSeenAt.getTime() >= 60_000) {
+            throw new BadRequestException("请先完成 Agent 安装并等待环境就绪，再添加节点入站");
+          }
+        }
         if (input.expectedInboundAppliedRevision === undefined) throw new BadRequestException("面板校验必须携带当前入站 revision");
       }
       const node = await tx.node.update({

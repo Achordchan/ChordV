@@ -107,13 +107,13 @@ func serve(config *agentcfg.Config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	adapter, err := xray.New(config.XrayAPIAddress, config.XrayInboundTag)
+	adapter, err := runtimeConnection(config)
 	if err != nil {
 		return err
 	}
 	defer adapter.Close()
 	// Validate read-only before registering or opening a writable database.
-	if err := adapter.ValidateInbound(ctx); err != nil {
+	if err := validateRuntime(ctx, adapter, config.WaitForInbound); err != nil {
 		return err
 	}
 	if err := adapter.Health(ctx); err != nil {
@@ -141,6 +141,15 @@ func serve(config *agentcfg.Config) error {
 		return err
 	}
 	defer state.Close()
+	bound, err := xray.NewBinding(adapter, state)
+	if err != nil {
+		return err
+	}
+	if bound.InboundReady() {
+		if err := bound.ValidateInbound(ctx); err != nil {
+			return err
+		}
+	}
 
 	agent, err := runner.New(runner.Deps{
 		Config: config,
@@ -151,11 +160,11 @@ func serve(config *agentcfg.Config) error {
 			AgentID: identity.AgentID,
 			NodeID:  identity.NodeID,
 		}),
-		Xray: adapter,
+		Xray: bound,
 		Commands: commands.New(commands.Deps{
 			Store:                 state,
-			ValidatePanel:         adapter.ValidatePanel,
-			Xray:                  adapter,
+			ValidatePanel:         bound.ValidatePanel,
+			Xray:                  bound,
 			RemoveUnknownUsers:    config.RemoveUnknownUsers,
 			AdoptExistingAccounts: config.AdoptExistingAccounts,
 			Logf:                  logf,
@@ -259,12 +268,16 @@ func healthCheck(config *agentcfg.Config) bool {
 	}
 	// Xray last, so a failure here still leaves the store's numbers available in
 	// the reason line an operator reads.
-	adapter, err := xray.New(config.XrayAPIAddress, config.XrayInboundTag)
+	adapter, err := runtimeConnection(config)
 	if err != nil {
 		return fail(err.Error())
 	}
 	defer adapter.Close()
-	if err := adapter.ValidateInbound(context.Background()); err != nil {
+	bound, err := xray.NewBinding(adapter, state)
+	if err != nil {
+		return fail(err.Error())
+	}
+	if err := validateRuntime(context.Background(), bound.GRPC, !bound.InboundReady()); err != nil {
 		return fail(err.Error())
 	}
 	if err := adapter.Health(context.Background()); err != nil {
@@ -272,6 +285,21 @@ func healthCheck(config *agentcfg.Config) bool {
 			err, snapshot["configRevision"], snapshot["pendingBatches"]))
 	}
 	snapshot["ok"] = true
+	snapshot["inboundReady"] = bound.InboundReady()
 	report(snapshot)
 	return true
+}
+
+func runtimeConnection(config *agentcfg.Config) (*xray.GRPC, error) {
+	if config.WaitForInbound {
+		return xray.NewControl(config.XrayAPIAddress)
+	}
+	return xray.New(config.XrayAPIAddress, config.XrayInboundTag)
+}
+
+func validateRuntime(ctx context.Context, adapter *xray.GRPC, waiting bool) error {
+	if waiting {
+		return adapter.ValidateEnvironment(ctx)
+	}
+	return adapter.ValidateInbound(ctx)
 }

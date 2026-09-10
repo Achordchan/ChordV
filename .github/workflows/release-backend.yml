@@ -131,9 +131,20 @@ jobs:
         if: steps.publication.outputs.mode == 'build'
         run: pnpm --filter @chordv/api db:generate
 
-      - name: Run API regression tests
+      - name: Setup Go for bundled node agent
         if: steps.publication.outputs.mode == 'build'
-        run: pnpm test:api
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/agent/go.mod
+          cache-dependency-path: apps/agent/go.sum
+
+      - name: Verify parallel release gate
+        if: steps.publication.outputs.mode == 'build'
+        run: node --test scripts/verify-backend-release.test.mjs
+
+      - name: Run API and Go verification in parallel
+        if: steps.publication.outputs.mode == 'build'
+        run: node scripts/verify-backend-release.mjs
 
       - name: Build backend system (shared + api + admin)
         if: steps.publication.outputs.mode == 'build'
@@ -142,19 +153,6 @@ jobs:
           pnpm --filter @chordv/api db:generate
           pnpm --filter @chordv/api build
           pnpm --filter @chordv/admin build
-
-      - name: Setup Go for bundled node agent
-        if: steps.publication.outputs.mode == 'build'
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: apps/agent/go.mod
-          cache-dependency-path: apps/agent/go.sum
-
-      - name: Verify and build bundled Go agent
-        if: steps.publication.outputs.mode == 'build'
-        run: |
-          (cd apps/agent && go test -race ./... && go vet ./...)
-          node scripts/build-go-agent.mjs
 
       - name: Assemble relocatable release tree
         if: steps.publication.outputs.mode == 'build'

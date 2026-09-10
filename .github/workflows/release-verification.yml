@@ -1,0 +1,42 @@
+name: Verify Release Pipeline
+
+# Exercise changes to the release verifier on the actual runner without
+# uploading a release, touching the stable feed or exposing signing secrets.
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/release-backend.yml"
+      - ".github/workflows/release-verification.yml"
+      - "scripts/verify-backend-release*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: release-verification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/agent/go.mod
+          cache-dependency-path: apps/agent/go.sum
+      - name: Install verification dependencies
+        run: pnpm install --filter @chordv/api... --filter @chordv/admin... --filter @chordv/node-agent... --frozen-lockfile
+      - name: Generate Prisma client
+        run: pnpm --filter @chordv/api db:generate
+      - name: Check parallel gate
+        run: node --test scripts/verify-backend-release.test.mjs scripts/backend-release-resume.test.mjs
+      - name: Time API and Go verification together
+        run: node scripts/verify-backend-release.mjs

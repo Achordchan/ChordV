@@ -79,6 +79,7 @@ export function agentStatusColor(status?: string | null) {
 }
 
 export function translateXrayStatus(status?: string | null) {
+  if (status === "awaiting_inbound") return "等待绑定入站";
   if (status === "healthy") return "正常";
   if (status === "degraded") return "异常";
   if (status === "offline") return "离线";
@@ -86,6 +87,7 @@ export function translateXrayStatus(status?: string | null) {
 }
 
 export function xrayStatusColor(status?: string | null) {
+  if (status === "awaiting_inbound") return "blue";
   if (status === "healthy") return "green";
   if (status === "degraded") return "yellow";
   if (status === "offline") return "red";

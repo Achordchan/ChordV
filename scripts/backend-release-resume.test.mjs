@@ -393,7 +393,7 @@ test('workflow gates all mutable build steps, verifies before stable and never u
   const workflow = await readFile(new URL('../.github/workflows/release-backend.yml', import.meta.url), 'utf8');
   assert.match(workflow, /resume_existing:/);
   assert.match(workflow, /group: chordv-backend-release\n\s+cancel-in-progress: false/);
-  for (const name of ['Setup pnpm', 'Setup Node', 'Install dependencies', 'Run API regression tests', 'Build backend system (shared + api + admin)', 'Assemble relocatable release tree', 'Generate manifest.json', 'Sign manifest (ed25519, if signing key configured)', 'Create GitHub Release (never update or clobber existing assets)']) {
+  for (const name of ['Setup pnpm', 'Setup Node', 'Install dependencies', 'Setup Go for bundled node agent', 'Verify parallel release gate', 'Run API and Go verification in parallel', 'Build backend system (shared + api + admin)', 'Assemble relocatable release tree', 'Generate manifest.json', 'Sign manifest (ed25519, if signing key configured)', 'Create GitHub Release (never update or clobber existing assets)']) {
     assert.ok(workflow.includes(`- name: ${name}\n        if: steps.publication.outputs.mode == 'build'`), `${name} must skip resume`);
   }
   assert.doesNotMatch(workflow, /action-gh-release|--clobber|gh release (upload|edit|delete)/);

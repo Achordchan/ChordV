@@ -97,7 +97,9 @@ export function parsePanelLink(link: string, panelVersion: string, override?: st
 export function parsePanelReport(result: unknown, spec: PanelInboundSpec) {
   const report = (result as { inbound?: Record<string, unknown> } | null)?.inbound;
   if (!report || report.mode !== "validate_panel" || report.validated !== true) throw new BadRequestException("缺少面板入站只读校验结果");
-  for (const [key, expected] of Object.entries({ inboundTag: spec.inboundTag, serverPort: spec.listenPort,
+  if (typeof report.inboundTag !== "string" || !/^[A-Za-z0-9_-]{1,32}$/.test(report.inboundTag) ||
+    (spec.tagOverrideConfirmed && report.inboundTag !== spec.inboundTag)) throw new BadRequestException("面板入站 tag 与确认目标不一致");
+  for (const [key, expected] of Object.entries({ serverPort: spec.listenPort,
     serverHost: spec.serverHost, realityPublicKey: spec.realityPublicKey, shortId: spec.shortId,
     serverName: spec.serverNames[0], flow: spec.flow, fingerprint: spec.fingerprint, spiderX: spec.spiderX })) {
     if (report[key] !== expected) throw new BadRequestException(`面板入站校验结果 ${key} 与导入规格不一致`);

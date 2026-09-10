@@ -101,6 +101,9 @@ func (p *Processor) apply(ctx context.Context, command protocol.Command, writabl
 	// REFRESH_QUOTA and RECONCILE_USERS only touch local state, so an observing
 	// node may run them. Everything else installs or uninstalls accounts.
 	panelValidation := command.Type == protocol.CommandEnsureInbound && command.Payload["mode"] == "validate_panel"
+	if !xray.InboundReady(p.deps.Xray) && !panelValidation {
+		return nil, errors.New("请先绑定节点入站")
+	}
 	if !writable && !panelValidation && command.Type != protocol.CommandRefreshQuota && command.Type != protocol.CommandReconcileUsers {
 		return nil, errors.New("当前控制模式禁止修改 Xray 用户")
 	}
@@ -1083,6 +1086,12 @@ func distinctBindings(users []protocol.DesiredUser) error {
 }
 
 func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser) error {
+	if !xray.InboundReady(p.deps.Xray) {
+		if len(users) != 0 {
+			return errors.New("未绑定入站，不能同步账号")
+		}
+		return nil
+	}
 	// Before ListUsers, not merely before the writes: a caller that reaches this
 	// with a malformed set should get the refusal without the agent having
 	// touched Xray at all.

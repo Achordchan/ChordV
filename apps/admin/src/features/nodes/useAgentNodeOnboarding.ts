@@ -1,9 +1,9 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { AdminNodeRecordDto, CreateAgentNodeInputDto, CreateAgentNodeResultDto } from "@chordv/shared";
-import { createAgentNode, fetchAgentOnboarding, issueNodeRegisterToken, retryAgentOnboarding } from "../../api/nodes";
+import { createAgentNode, deployNodeInbound, fetchAgentOnboarding, issueNodeRegisterToken, retryAgentOnboarding } from "../../api/nodes";
 import { subscribeAdminRuntimeEvents } from "../../api/client";
 
-type Stage = "form" | "resume" | "awaiting" | "validating" | "ready" | "failed" | "legacy";
+type Stage = "form" | "resume" | "awaiting" | "environment" | "configure" | "validating" | "ready" | "failed" | "legacy";
 function errorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   try { const body = JSON.parse(raw); if (typeof body?.message === "string") return body.message; } catch { /* plain error */ }
@@ -18,6 +18,7 @@ export function useAgentNodeOnboarding(opened: boolean, initialNode: AdminNodeRe
   const [result, setResult] = useState<CreateAgentNodeResultDto | null>(null);
   const [node, setNode] = useState<AdminNodeRecordDto | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [hasValidation, setHasValidation] = useState(false);
   const [creating, setCreating] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const session = useRef(0), watchEpoch = useRef(0);
@@ -52,6 +53,7 @@ export function useAgentNodeOnboarding(opened: boolean, initialNode: AdminNodeRe
         if (!valid()) return;
         const registered = status.node;
         setNode(registered); changed.current(registered);
+        setHasValidation(Boolean(status.spec));
         if (status.mode === "legacy") {
           resultAvailable.current = false;
           setResult(null); setStage("legacy"); setError(null); stopWatching(); return;
@@ -62,6 +64,11 @@ export function useAgentNodeOnboarding(opened: boolean, initialNode: AdminNodeRe
         }
         resultAvailable.current = false;
         setResult(null);
+        if (status.mode === "environment") {
+          setStage(status.environmentReady ? "configure" : "environment"); setError(null);
+          if (status.environmentReady && deadline.current !== null) { window.clearTimeout(deadline.current); deadline.current = null; }
+          return;
+        }
         if (!status.spec || !status.command) {
           setStage("failed"); setError("缺少入站校验任务，请在节点控制器重新导入参数并校验。");
         } else if (status.command.status === "completed" && registered.inboundAppliedRevision === status.command.targetRevision) {
@@ -96,8 +103,8 @@ export function useAgentNodeOnboarding(opened: boolean, initialNode: AdminNodeRe
   useLayoutEffect(() => {
     invalidate(); active.current = opened;
     setResult(null); setNode(opened ? initialNode : null); setError(null);
-    setCreating(false); setRegenerating(false);
-    setStage(opened && initialNode ? (initialNode.registrationStatus === "agent_ready" ? "validating" : "resume") : "form");
+    setCreating(false); setRegenerating(false); setHasValidation(false);
+    setStage(opened && initialNode ? (initialNode.registrationStatus === "agent_ready" ? "environment" : "resume") : "form");
     if (opened && initialNode) watchRegistration(initialNode.id, session.current);
     return invalidate;
   }, [opened, initialNode?.id, invalidate, watchRegistration]);
@@ -158,6 +165,25 @@ export function useAgentNodeOnboarding(opened: boolean, initialNode: AdminNodeRe
     }
   }, [node, current, watchRegistration]);
 
+  const configure = useCallback(async (payload: Record<string, unknown>) => {
+    if (!node || !active.current || requestBusy.current || stage !== "configure") return;
+    const epoch = session.current;
+    requestBusy.current = true; setCreating(true); setError(null); stopWatching();
+    try {
+      await deployNodeInbound(node.id, payload, node.inboundAppliedRevision ?? "0");
+      if (!current(epoch)) return;
+      setStage("validating"); watchRegistration(node.id, epoch);
+    } catch (error) {
+      if (current(epoch)) { setStage("configure"); setError(errorMessage(error)); }
+    } finally {
+      if (current(epoch)) { requestBusy.current = false; setCreating(false); }
+    }
+  }, [node, stage, current, watchRegistration, stopWatching]);
+
+  const editInbound = () => {
+    if (!node || requestBusy.current || !active.current) return;
+    stopWatching(); setError(null); setStage("configure");
+  };
   const refresh = () => { if (node && active.current) watchRegistration(node.id, session.current); };
-  return { stage, result, node, error, creating, regenerating, submit, regenerate, retryValidation, refresh, invalidate };
+  return { stage, result, node, error, hasValidation, creating, regenerating, submit, configure, editInbound, regenerate, retryValidation, refresh, invalidate };
 }
