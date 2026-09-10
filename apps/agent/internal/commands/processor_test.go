@@ -1221,3 +1221,46 @@ func TestASnapshotKeepsBindingsOlderThanThePreviousSnapshot(t *testing.T) {
 		t.Fatalf("快照携带的 binding 被水位线误杀了：%v", fake.calls)
 	}
 }
+
+// TestADelayedTerminalCommandDoesNotUndoANewerSnapshot puts terminal commands on
+// the watermark's axis.
+//
+// The stored row alone cannot answer the question: a snapshot at revision 10 may
+// carry a binding untouched since revision 1, so a DISABLE_USER delayed from
+// revision 5 compares 5 against 1, decides it is newer, and uninstalls an account
+// the newer full snapshot had just installed.
+func TestADelayedTerminalCommandDoesNotUndoANewerSnapshot(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+
+	payload := userPayload("b1", "u1@chordv")
+	payload["revision"] = "1"
+	run(t, processor, command("c1", protocol.CommandReconcileUsers, "10", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any(payload)},
+	}), true)
+
+	fake.calls = nil
+	run(t, processor, command("c2", protocol.CommandDisableUser, "5", map[string]any{"bindingId": "b1"}), true)
+
+	for _, call := range fake.calls {
+		if strings.HasPrefix(call, "remove:") {
+			t.Fatalf("过期的终态命令卸载了更新快照刚装上的账号：%v", fake.calls)
+		}
+	}
+	users, err := state.ListDesiredUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, user := range users {
+		if user.BindingID == "b1" {
+			found = true
+			if !user.Enabled {
+				t.Fatal("过期的终态命令把本地记录改成了停用")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("记录被过期的终态命令删掉了")
+	}
+}

@@ -257,11 +257,19 @@ func (p *Processor) terminalUser(ctx context.Context, command protocol.Command, 
 	if err != nil {
 		return err
 	}
+	// A terminal command's revision IS a command target revision, so it belongs
+	// on the watermark's axis and must be measured against it — the same
+	// predicate the enable path uses. Comparing only against the stored row is
+	// not enough: a snapshot at revision 10 may carry this binding untouched
+	// since revision 1, and a delayed DISABLE_USER at 5 then passes a 5-vs-1
+	// test and uninstalls an account the newer full snapshot installed.
+	bindingID, _ := command.Payload["bindingId"].(string)
 	if stored != nil {
-		older, err := decimal.Less(command.TargetRevision, stored.Revision)
-		if err != nil || older {
-			return err
-		}
+		bindingID = stored.BindingID
+	}
+	skip, err := p.supersededBinding(bindingID, command.TargetRevision, stored)
+	if err != nil || skip {
+		return err
 	}
 	email := ""
 	if stored != nil {
@@ -296,10 +304,6 @@ func (p *Processor) terminalUser(ctx context.Context, command protocol.Command, 
 	// and a delayed enable at a lower revision would then restore access to an
 	// account the control plane just took down. The tombstone is a floor on the
 	// binding rather than a fact about the row, so it applies uniformly.
-	bindingID, _ := command.Payload["bindingId"].(string)
-	if stored != nil {
-		bindingID = stored.BindingID
-	}
 	if bindingID != "" {
 		if err := p.deps.Store.RecordBindingTombstone(bindingID, command.TargetRevision); err != nil {
 			return err
