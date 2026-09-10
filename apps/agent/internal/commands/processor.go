@@ -792,6 +792,15 @@ func (p *Processor) mergeNewerBindings(users []protocol.DesiredUser, snapshotRev
 		}
 		merged = append(merged, user)
 	}
+	// This loop DOES compare across the two axes, and that is deliberate. Its
+	// question is not "which instruction is newer about this binding" but "was
+	// this binding added AFTER the snapshot was built" — and the only quantity
+	// the agent holds that can stand for "after" is the stored revision, which
+	// came from the target revision of whatever command created the row. The
+	// premise is therefore that a row's revision is a command revision; a row
+	// whose revision came from a snapshot's per-user field can be measured
+	// wrongly here. Restricting this to the binding's own history instead would
+	// mean the loop could never uninstall anything.
 	for _, user := range recorded {
 		if carried[user.BindingID] {
 			continue
