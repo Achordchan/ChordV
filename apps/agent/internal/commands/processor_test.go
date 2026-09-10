@@ -1707,3 +1707,51 @@ func TestAFailedDisableKeepsThePendingOwnershipNote(t *testing.T) {
 		t.Fatalf("账号从所有权里掉了出去，遗漏清理不再认它：%v", fake.calls)
 	}
 }
+
+// TestAPromotionMustCarryItsOwnUserSet closes the last way panel accounts get
+// claimed.
+//
+// getConfig filters a snapshot to source === "direct" only once the node IS on
+// direct_primary; while it observes, the set it holds includes the PANEL's
+// bindings. A mode-only RECONCILE_USERS falls back to exactly those users, so
+// Reconcile would install and CLAIM the panel's accounts — and the next properly
+// filtered snapshot, omitting them, would then uninstall them as ours.
+func TestAPromotionMustCarryItsOwnUserSet(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", map[string]any{
+		"controlMode": string(protocol.ModeShadowDirect),
+		"users": []any{
+			map[string]any(userPayload("b1", "ours@chordv")),
+			map[string]any(userPayload("bp", "panel@panel")),
+		},
+	}), false)
+
+	fake.calls = nil
+	result := run(t, processor, command("c2", protocol.CommandReconcileUsers, "6", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+	}), true)
+	if result.Status != protocol.StatusFailed {
+		t.Fatalf("仅凭控制模式的晋升被接受了：%+v", result)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("拒绝之前就动了 Xray：%v", fake.calls)
+	}
+	if provisioned, _ := state.ProvisionedAccounts(); len(provisioned) != 0 {
+		t.Fatalf("面板账号被认领了：%v", provisioned)
+	}
+	if mode, _ := state.ControlMode(); mode != protocol.ModeShadowDirect {
+		t.Fatalf("拒绝之后模式仍被改成了 %s", mode)
+	}
+
+	// The same promotion WITH a filtered set is accepted.
+	fake.calls = nil
+	if result := run(t, processor, command("c3", protocol.CommandReconcileUsers, "7", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any(userPayload("b1", "ours@chordv"))},
+	}), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("带用户集的晋升被拒了：%+v", result)
+	}
+	if contains(fake.calls, "ensure:panel@panel") {
+		t.Fatalf("晋升装上了面板账号：%v", fake.calls)
+	}
+}

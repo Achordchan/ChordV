@@ -451,6 +451,25 @@ func (p *Processor) reconcileCommand(ctx context.Context, command protocol.Comma
 		}
 		mode = protocol.ControlMode(value)
 	}
+	// A PROMOTION must bring its own user set.
+	//
+	// getConfig only filters the snapshot to source === "direct" once the node IS
+	// on direct_primary; in the observing modes it hands over the PANEL's
+	// bindings too. So the users this node is holding while it observes are not
+	// a lawful desired set for the direct track — and a mode-only instruction,
+	// which falls back to exactly those users, would have Reconcile install and
+	// CLAIM the panel's accounts. The next properly filtered snapshot then omits
+	// them, and now that they are claimed the cleanup uninstalls them, with
+	// RemoveUnknownUsers off and nothing to notice.
+	//
+	// The agent cannot fetch the authoritative set from here, so it refuses and
+	// says what the control plane must send instead.
+	if _, carriesUsers := command.Payload["users"]; !carriesUsers &&
+		mode == protocol.ModeDirectPrimary && current.ControlMode != protocol.ModeDirectPrimary {
+		return fmt.Errorf("拒绝仅凭控制模式把节点晋升到 direct_primary：本节点在 %s 下持有的用户集包含面板来源的 binding，"+
+			"直接沿用会把面板账号装上并认领为本节点所有。请在同一条 RECONCILE_USERS 里下发过滤后的 users",
+			current.ControlMode)
+	}
 	// A snapshot older than an individual command that has ALREADY landed must
 	// not undo it, and the snapshot watermark cannot see that: it only moves when
 	// a snapshot lands, so a delayed reconcile at revision 5 passes the gate even

@@ -358,7 +358,7 @@ func (s *Store) provisionedFromHistory() (int, error) {
 	rows, err := s.db.Query(`
 		SELECT command_type, payload FROM commands_v2
 		WHERE completed_at IS NOT NULL AND result LIKE '%"status":"completed"%'
-		  AND command_type IN ('ENSURE_USER', 'REMOVE_USER', 'RECONCILE_USERS')
+		  AND command_type IN ('ENSURE_USER', 'ENABLE_USER', 'REMOVE_USER', 'RECONCILE_USERS')
 		ORDER BY completed_at ASC, rowid ASC`)
 	if err != nil {
 		return 0, err
@@ -377,7 +377,12 @@ func (s *Store) provisionedFromHistory() (int, error) {
 		}
 		payload := stored.Payload
 		switch protocol.CommandType(kind) {
-		case protocol.CommandEnsureUser:
+		// ENABLE_USER runs through the very same install/rename path as
+		// ENSURE_USER (see the processor's apply switch), so it claims and
+		// releases identically. Leaving it out made an ensure-then-enable rename
+		// recover the OLD address: the revoked new one would be left serving,
+		// and a panel account that reused the old one could be deleted.
+		case protocol.CommandEnsureUser, protocol.CommandEnableUser:
 			id, _ := payload["bindingId"].(string)
 			if email := payloadEmail(payload); id != "" && email != "" {
 				owned[id] = email

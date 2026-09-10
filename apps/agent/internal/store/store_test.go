@@ -1200,3 +1200,50 @@ func TestTheUpgradeReplayHonorsReleases(t *testing.T) {
 			"recycled@chordv 已被移除（面板可能已重用该地址），kept@chordv 已被改名释放", got)
 	}
 }
+
+// TestTheUpgradeReplayIncludesEnableCommands is the sibling ENABLE_USER of the
+// replay test.
+//
+// The processor runs ENABLE_USER through the very same install/rename path as
+// ENSURE_USER. Leaving it out of the replay made an ensure-then-enable rename
+// recover the OLD address: the revoked new one would be left serving, and a
+// panel account that reused the old one could be deleted.
+func TestTheUpgradeReplayIncludesEnableCommands(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+
+	finish := func(id string, kind protocol.CommandType, revision string, payload map[string]any) {
+		t.Helper()
+		if _, err := state.BeginCommand(protocol.Command{
+			CommandID: id, Type: kind, TargetRevision: revision, Payload: payload,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.CompleteCommand(protocol.CommandResult{
+			CommandID: id, Status: protocol.StatusCompleted,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	finish("c1", protocol.CommandEnsureUser, "1", map[string]any{"bindingId": "b1", "email": "before@chordv", "uuid": "u"})
+	finish("c2", protocol.CommandEnableUser, "2", map[string]any{"bindingId": "b1", "email": "after@chordv", "uuid": "u"})
+
+	if _, err := state.db.Exec(`DELETE FROM provisioned_accounts_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`DELETE FROM meta_v2 WHERE key = 'provisioned_backfilled'`); err != nil {
+		t.Fatal(err)
+	}
+	state.Close()
+
+	reopened := openAt(t, path, "node-1", "boot-2")
+	got, err := reopened.ProvisionedAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "after@chordv" {
+		t.Fatalf("升级后的供给凭据 = %v，want 仅 [after@chordv]：ENABLE_USER 改名释放了 before@chordv", got)
+	}
+}
