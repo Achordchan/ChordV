@@ -200,7 +200,7 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 			p.logf("[agent] 用户 %s 的 email 由 %s 变更为 %s，但旧账号不是本节点装的（可能属于面板），未卸载",
 				user.BindingID, stored.Email, user.Email)
 		} else {
-			if err := p.deps.Xray.RemoveUser(ctx, stored.Email); err != nil {
+			if err := p.deps.Xray.RemoveUser(ctx, stored.Email, p.expectation(stored.Email)); err != nil {
 				return err
 			}
 			if err := p.deps.Store.ForgetProvisioned([]string{stored.Email}); err != nil {
@@ -247,7 +247,7 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 			return err
 		}
 	}
-	if err := p.deps.Xray.EnsureUser(ctx, user); err != nil {
+	if err := p.deps.Xray.EnsureUser(ctx, user, xray.Expectation{Absent: !takeover}); err != nil {
 		return err
 	}
 	if err := p.deps.Store.RecordProvisioned(user.BindingID, user.Email, user.UUID); err != nil {
@@ -578,7 +578,7 @@ func (p *Processor) terminalUser(ctx context.Context, command protocol.Command, 
 	// still carrying traffic, and a crash after the local delete would leave it
 	// serving with nothing left to notice it.
 	if uninstall {
-		if err := p.deps.Xray.RemoveUser(ctx, email); err != nil {
+		if err := p.deps.Xray.RemoveUser(ctx, email, p.expectation(email)); err != nil {
 			return err
 		}
 	}
@@ -1134,7 +1134,7 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 				user.BindingID, old, user.Email)
 			continue
 		}
-		if err := p.deps.Xray.RemoveUser(ctx, old); err != nil {
+		if err := p.deps.Xray.RemoveUser(ctx, old, p.expectation(old)); err != nil {
 			return err
 		}
 		// The old email is gone for good; the new one is claimed by the install
@@ -1197,7 +1197,7 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 					return err
 				}
 			}
-			if err := p.deps.Xray.EnsureUser(ctx, user); err != nil {
+			if err := p.deps.Xray.EnsureUser(ctx, user, xray.Expectation{Absent: !liveNow[user.Email]}); err != nil {
 				return err
 			}
 			if err := p.deps.Store.RecordProvisioned(user.BindingID, user.Email, user.UUID); err != nil {
@@ -1218,7 +1218,7 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 				user.BindingID, user.Email)
 			continue
 		}
-		if err := p.deps.Xray.RemoveUser(ctx, user.Email); err != nil {
+		if err := p.deps.Xray.RemoveUser(ctx, user.Email, p.expectation(user.Email)); err != nil {
 			return err
 		}
 		// Disabled, so it is no longer installed — but the RECORD stays, and so
@@ -1239,7 +1239,7 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 			// Propagate a failure rather than swallowing it: the caller must not
 			// go on to replace the snapshot, which would delete the record that
 			// proves this account is ours.
-			if err := p.deps.Xray.RemoveUser(ctx, installed.Email); err != nil {
+			if err := p.deps.Xray.RemoveUser(ctx, installed.Email, xray.Expectation{UUID: installed.UUID}); err != nil {
 				return err
 			}
 			retired = append(retired, installed.Email)
@@ -1587,4 +1587,15 @@ func (p *Processor) mergeNewerBindings(users []protocol.DesiredUser, snapshotRev
 		}
 	}
 	return merged, nil
+}
+
+// expectation is what this agent believes lives at an address, for the adapter
+// to re-check as late as it can. See xray.Expectation for why this narrows the
+// race rather than closing it.
+func (p *Processor) expectation(email string) xray.Expectation {
+	claims, err := p.deps.Store.ProvisionedAccounts()
+	if err != nil {
+		return xray.Expectation{}
+	}
+	return xray.Expectation{UUID: claims[email].UUID}
 }

@@ -30,6 +30,9 @@ type fakeXray struct {
 	// in it — so a test that cares about the interleaving observes the store
 	// from inside the call instead.
 	onRemove func()
+	// expectations records what each mutation was told to expect, so a test can
+	// check that the processor passes its belief down to the adapter.
+	expectations []xray.Expectation
 }
 
 func (f *fakeXray) Health(context.Context) error                 { return nil }
@@ -38,14 +41,16 @@ func (f *fakeXray) ListUsers(context.Context) ([]xray.LiveUser, error) {
 	f.calls = append(f.calls, "list")
 	return f.live, nil
 }
-func (f *fakeXray) EnsureUser(_ context.Context, user protocol.DesiredUser) error {
+func (f *fakeXray) EnsureUser(_ context.Context, user protocol.DesiredUser, expect xray.Expectation) error {
+	f.expectations = append(f.expectations, expect)
 	f.calls = append(f.calls, "ensure:"+user.Email)
 	if f.ensureErrFor != "" && f.ensureErrFor == user.Email {
 		return errors.New("安装失败")
 	}
 	return f.ensureErr
 }
-func (f *fakeXray) RemoveUser(_ context.Context, email string) error {
+func (f *fakeXray) RemoveUser(_ context.Context, email string, expect xray.Expectation) error {
+	f.expectations = append(f.expectations, expect)
 	f.calls = append(f.calls, "remove:"+email)
 	if f.onRemove != nil {
 		f.onRemove()
@@ -2483,5 +2488,74 @@ func TestReconcileMayReplaceOneBindingWithAnother(t *testing.T) {
 	remembered, _ := state.TombstonedEmail("old")
 	if remembered != "shared@chordv" {
 		t.Fatalf("墓碑记下的不是真实地址：%q", remembered)
+	}
+}
+
+// TestAnEqualRevisionDisableIsPersisted follows the row a snapshot disables at
+// the revision it is already enabled at.
+//
+// supersededForBinding accepts the snapshot's word and Reconcile uninstalls the
+// account — but the store's upsert skips equal revisions, so without a carve-out
+// the row stays ENABLED while the command reports success. The next mode-only
+// reconcile rebuilds the desired set from that row and puts the account back.
+func TestAnEqualRevisionDisableIsPersisted(t *testing.T) {
+	processor, fake, state := newStrictProcessor(t)
+	run(t, processor, command("c1", protocol.CommandEnsureUser, "6", userPayload("b1", "u1@chordv")), true)
+	fake.live = []xray.LiveUser{{Email: "u1@chordv", UUID: "uuid-b1"}}
+
+	disabled := userPayload("b1", "u1@chordv")
+	disabled["enabled"] = false
+	disabled["revision"] = "6"
+	fake.calls = nil
+	run(t, processor, command("c2", protocol.CommandReconcileUsers, "6", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any(disabled)},
+	}), true)
+	if !contains(fake.calls, "remove:u1@chordv") {
+		t.Fatalf("同 revision 的停用没有卸载账号：%v", fake.calls)
+	}
+	stored, _ := state.UserByBindingID("b1")
+	if stored == nil || stored.Enabled {
+		t.Fatalf("账号已卸载，本地记录却仍是启用：%+v —— 下一次 reconcile 会把它装回去", stored)
+	}
+
+	// And the next mode-only reconcile must not resurrect it.
+	fake.live = nil
+	fake.calls = nil
+	run(t, processor, command("c3", protocol.CommandReconcileUsers, "7", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+	}), true)
+	for _, call := range fake.calls {
+		if strings.HasPrefix(call, "ensure:") {
+			t.Fatalf("陈旧的启用记录把账号装了回去：%v", fake.calls)
+		}
+	}
+}
+
+// TestMutationsCarryWhatTheAgentExpected checks that the processor hands its
+// belief down to the adapter.
+//
+// The panel writes to the same inbound, so a decision made from a ListUsers
+// snapshot can be stale by the time the mutation runs. The adapter is the last
+// place that can re-check — but only if the caller tells it what it expected.
+// This does not close the race (see xray.Expectation); it is what makes closing
+// it possible at all.
+func TestMutationsCarryWhatTheAgentExpected(t *testing.T) {
+	processor, fake, _ := newStrictProcessor(t)
+
+	// A fresh install expects the address to be free.
+	run(t, processor, command("c1", protocol.CommandEnsureUser, "5", userPayload("b1", "u1@chordv")), true)
+	if len(fake.expectations) != 1 || !fake.expectations[0].Absent {
+		t.Fatalf("安装没有声明「这个地址应当是空的」：%+v", fake.expectations)
+	}
+
+	// A removal expects the identity this agent installed.
+	fake.live = []xray.LiveUser{{Email: "u1@chordv", UUID: "uuid-b1"}}
+	fake.expectations = nil
+	run(t, processor, command("c2", protocol.CommandRemoveUser, "6", map[string]any{
+		"bindingId": "b1", "email": "u1@chordv",
+	}), true)
+	if len(fake.expectations) != 1 || fake.expectations[0].UUID != "uuid-b1" {
+		t.Fatalf("卸载没有带上它认领的身份：%+v", fake.expectations)
 	}
 }

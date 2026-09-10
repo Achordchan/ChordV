@@ -27,6 +27,32 @@ type LiveUser struct {
 	UUID string
 }
 
+// Expectation is what the caller observed at an address before deciding to
+// change it, carried into the mutation so the adapter can re-check it as late as
+// possible.
+//
+// THIS IS A NARROWING, NOT A GUARANTEE, and the distinction is load-bearing.
+// The processor decides what to do from a ListUsers snapshot, and the 3x-ui
+// panel writes to the same inbound independently — so between the observation
+// and the mutation the panel can create, replace or remove an account. A
+// preflight alone therefore cannot deliver the protection the collision guard
+// advertises: it can only be right about a past moment.
+//
+// xray-core's handler service offers no compare-and-swap, so an adapter cannot
+// close this window either; the honest contract is that it re-reads immediately
+// before mutating and refuses on a mismatch, which shrinks the race to the
+// width of one gRPC call. Closing it properly needs serialisation shared with
+// the panel — recorded in the PRD as an open item, because it is a deployment
+// decision rather than an agent one.
+type Expectation struct {
+	// UUID is the identity the caller expects to find. "" means it did not know
+	// one and the adapter must not use identity to refuse.
+	UUID string
+	// Absent says the caller expects NO account at this address — the state that
+	// makes an install safe under the shared inbound.
+	Absent bool
+}
+
 // Adapter is what the runner needs from Xray. The gRPC implementation lands in
 // P2 together with the panel-inbound onboarding; keeping it behind an interface
 // is what lets the protocol and metering layers be reviewed and tested without
@@ -42,11 +68,13 @@ type Adapter interface {
 	// inbound — under B1 that includes any the PANEL put there. See
 	// commands.Processor for why that matters.
 	ListUsers(ctx context.Context) ([]LiveUser, error)
-	// EnsureUser installs or updates one account.
-	EnsureUser(ctx context.Context, user protocol.DesiredUser) error
+	// EnsureUser installs or updates one account, and `expect` says what the
+	// caller believed was at that address when it decided to. See Expectation.
+	EnsureUser(ctx context.Context, user protocol.DesiredUser, expect Expectation) error
 	// RemoveUser uninstalls one account by email. Removing an account that is
 	// not there must succeed: every caller is a reconcile that may run twice.
-	RemoveUser(ctx context.Context, email string) error
+	// `expect` carries the same identity check as EnsureUser.
+	RemoveUser(ctx context.Context, email string, expect Expectation) error
 	// ReadAbsoluteCounters reads every account's cumulative traffic WITHOUT
 	// resetting it. Reset-on-read is what makes two readers steal from each
 	// other, and 3x-ui is the other reader.
@@ -63,11 +91,13 @@ var ErrNotBuilt = errors.New("本构建尚未包含 Xray gRPC 适配器（P2 提
 // nobody.
 type Unavailable struct{}
 
-func (Unavailable) Health(context.Context) error                           { return ErrNotBuilt }
-func (Unavailable) UptimeSeconds(context.Context) (int64, error)           { return 0, ErrNotBuilt }
-func (Unavailable) ListUsers(context.Context) ([]LiveUser, error)          { return nil, ErrNotBuilt }
-func (Unavailable) EnsureUser(context.Context, protocol.DesiredUser) error { return ErrNotBuilt }
-func (Unavailable) RemoveUser(context.Context, string) error               { return ErrNotBuilt }
+func (Unavailable) Health(context.Context) error                  { return ErrNotBuilt }
+func (Unavailable) UptimeSeconds(context.Context) (int64, error)  { return 0, ErrNotBuilt }
+func (Unavailable) ListUsers(context.Context) ([]LiveUser, error) { return nil, ErrNotBuilt }
+func (Unavailable) EnsureUser(context.Context, protocol.DesiredUser, Expectation) error {
+	return ErrNotBuilt
+}
+func (Unavailable) RemoveUser(context.Context, string, Expectation) error { return ErrNotBuilt }
 func (Unavailable) ReadAbsoluteCounters(context.Context) ([]protocol.AbsoluteCounter, error) {
 	return nil, ErrNotBuilt
 }

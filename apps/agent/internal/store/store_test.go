@@ -2036,3 +2036,62 @@ func TestTheUpgradeReplayKeepsBindingsNewerThanTheSnapshotOmittingThem(t *testin
 		t.Fatalf("比遗漏它的快照更新的 binding 被回放丢掉了：%v", claims)
 	}
 }
+
+// TestTheUpgradeReplayKeepsDisabledStateAndItsRevision matches
+// supersededBinding's last leg.
+//
+// Install at 1, a snapshot disabling that binding at 5, then a delayed enable at
+// 5 with a replacement uuid. Execution skips the enable — the binding is already
+// disabled at that revision. A replay that carried the revision-1 claim forward
+// unchanged lets the enable through, and the recovered ownership then describes
+// an identity the agent never installed.
+func TestTheUpgradeReplayKeepsDisabledStateAndItsRevision(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+
+	finish := func(id string, kind protocol.CommandType, revision string, payload map[string]any) {
+		t.Helper()
+		if _, err := state.BeginCommand(protocol.Command{
+			CommandID: id, Type: kind, TargetRevision: revision, Payload: payload,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.CompleteCommand(protocol.CommandResult{
+			CommandID: id, Status: protocol.StatusCompleted,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	finish("c1", protocol.CommandEnsureUser, "1", map[string]any{
+		"bindingId": "b1", "email": "u1@chordv", "uuid": "installed-uuid",
+	})
+	finish("c2", protocol.CommandReconcileUsers, "5", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users": []any{
+			map[string]any{"bindingId": "b1", "email": "u1@chordv", "uuid": "installed-uuid",
+				"revision": "5", "enabled": false},
+		},
+	})
+	finish("c3", protocol.CommandEnableUser, "5", map[string]any{
+		"bindingId": "b1", "email": "u1@chordv", "uuid": "never-installed-uuid",
+	})
+
+	if _, err := state.db.Exec(`DELETE FROM provisioned_accounts_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`DELETE FROM meta_v2 WHERE key = 'provisioned_backfilled'`); err != nil {
+		t.Fatal(err)
+	}
+	state.Close()
+
+	reopened := openAt(t, path, "node-1", "boot-2")
+	claims, err := reopened.ProvisionedAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims["u1@chordv"].UUID != "installed-uuid" {
+		t.Fatalf("恢复出来的身份是 agent 从未安装过的那个：%v", claims)
+	}
+}

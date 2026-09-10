@@ -428,7 +428,12 @@ func (s *Store) provisionedFromHistory() (int, error) {
 	// panel account that reused the address would be accepted as ours.
 	// revision is the binding-level revision the claim was established at, so the
 	// replay can apply mergeNewerBindings the way execution does.
-	type held struct{ email, uuid, revision string }
+	type held struct {
+		email, uuid, revision string
+		// disabled mirrors the stored row's state, so an equal-revision enable
+		// stays the no-op supersededBinding makes it.
+		disabled bool
+	}
 	owned := map[string]held{}
 	floors := map[string]string{} // bindingId -> the revocation floor, as tombstones do
 	// The effective mode is tracked, not required of every payload: an ABSENT
@@ -495,12 +500,22 @@ func (s *Store) provisionedFromHistory() (int, error) {
 			// And the same per-binding guard supersededBinding applies: an
 			// instruction that is not newer than what this binding has already
 			// had did nothing at execution time, so it must do nothing here.
+			// supersededBinding's remaining two legs, in its own shape: STRICTLY
+			// older than what the binding already has, or equal to a revision it
+			// is already disabled at.
 			if current, had := owned[id]; had {
-				stale, err := notNewer(entry.revision, current.revision)
+				stale, err := decimal.Less(entry.revision, current.revision)
 				if err != nil {
 					return 0, err
 				}
 				if stale {
+					continue
+				}
+				// An enable at the very revision the binding was DISABLED at is
+				// a no-op at execution time. Replaying it would let a delayed
+				// enable replace the recovered identity with one this agent
+				// never installed.
+				if current.disabled && entry.revision == current.revision {
 					continue
 				}
 			}
@@ -514,7 +529,7 @@ func (s *Store) provisionedFromHistory() (int, error) {
 			if uuid == "" {
 				uuid = owned[id].uuid
 			}
-			owned[id] = held{email, uuid, entry.revision}
+			owned[id] = held{email: email, uuid: uuid, revision: entry.revision}
 			// The live path clears the tombstone when a binding legitimately
 			// comes back; the replay has to do the same or every later snapshot
 			// carrying it would look revoked.
@@ -628,8 +643,17 @@ func (s *Store) provisionedFromHistory() (int, error) {
 				}
 				if !enabled {
 					if current, had := owned[id]; had && current.email == email {
+						// The claim carries forward, but at THIS revision and
+						// marked disabled — the stored row really is rewritten
+						// that way. Keeping the old revision would let a delayed
+						// enable at the disabling revision pass the guards above
+						// and replace the recovered identity.
+						//
+						// The floor stays: only an install legitimately brings a
+						// binding back, and this is not one.
+						current.revision = revision
+						current.disabled = true
 						next[id] = current
-						delete(floors, id)
 					}
 					continue
 				}
@@ -651,7 +675,7 @@ func (s *Store) provisionedFromHistory() (int, error) {
 						continue
 					}
 				}
-				next[id] = held{email, uuid, revision}
+				next[id] = held{email: email, uuid: uuid, revision: revision, disabled: !enabled}
 				delete(floors, id)
 			}
 			// Omitting a binding is a revocation, and it leaves a floor — the
@@ -1193,7 +1217,20 @@ func upsertDesiredUserTx(tx *sql.Tx, user protocol.DesiredUser, fallback *big.In
 		if err != nil {
 			return err
 		}
-		if !newer {
+		// An equal-revision DISABLE is the one refinement this guard lets
+		// through, and it has to.
+		//
+		// supersededForBinding accepts a snapshot carrying a binding disabled at
+		// the revision the stored row is enabled at — the merge keeps the
+		// snapshot's word — and Reconcile then uninstalls the account. If the row
+		// stayed enabled, the next mode-only reconcile would rebuild the desired
+		// set from it and put the account straight back, while this command had
+		// already reported success.
+		//
+		// One direction only: an equal-revision ENABLE never overrides a stored
+		// disable, which is the rule supersededBinding enforces on the other side.
+		disabling := current.Enabled && !user.Enabled && revision == current.Revision
+		if !newer && !disabling {
 			return nil
 		}
 	}
