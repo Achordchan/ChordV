@@ -1316,3 +1316,41 @@ func TestFirstDurableTerminalResultIncludesWatermarks(t *testing.T) {
 		t.Fatalf("replay: %+v %v", result, err)
 	}
 }
+
+func TestReconnectReceivesCommandsAfterLocalRefreshFailure(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "7", protocol.ModeDirectPrimary)
+	r := h.build(t)
+	cmd := commandOf("completed", protocol.CommandRemoveUser, "8", map[string]any{"bindingId": "old", "email": "old@example.com"})
+	// Seed a durably completed result whose HTTP report was lost.
+	if _, err := h.store.BeginCommand(cmd); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.CompleteCommand(protocol.CommandResult{CommandID: cmd.CommandID, Status: protocol.StatusCompleted, Result: map[string]any{"disableWatermarks": []any{}}}); err != nil {
+		t.Fatal(err)
+	}
+	u := user("b1", "a@example.com", "9", true, "1000")
+	h.api.config = protocol.ConfigSnapshot{NodeID: "node-1", Revision: "9", ControlMode: protocol.ModeDirectPrimary, Users: []protocol.DesiredUser{u}}
+	h.xray.ensureErr = errors.New("Xray not ready")
+	h.api.stream = []protocol.Command{cmd}
+	if err := r.consumeOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.api.results(); len(got) != 1 || got[0].Status != protocol.StatusCompleted {
+		t.Fatalf("replay blocked: %+v", got)
+	}
+	if !r.refreshPending {
+		t.Fatal("lost refresh retry")
+	}
+	// A stream can remain open indefinitely. Heartbeat retries the failed apply.
+	h.xray.ensureErr = nil
+	if err := r.sendHeartbeat(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if r.refreshPending {
+		t.Fatal("successful heartbeat retry not recorded")
+	}
+	if revision, _ := h.store.ConfigRevision(); revision != "9" {
+		t.Fatalf("refresh never recovered: %s", revision)
+	}
+}

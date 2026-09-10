@@ -122,6 +122,8 @@ type Runner struct {
 	// Incremented only when an acknowledgement removes durable batches. A GET
 	// started before that settlement cannot release the corresponding cutoff.
 	settlementEpoch uint64
+	// Retry a failed reconnect refresh from heartbeats even while SSE stays open.
+	refreshPending bool
 }
 
 // New builds a runner and seeds it with what the store already believes.
@@ -261,12 +263,19 @@ func (r *Runner) shutdown() {
 
 // refreshConfig fetches the desired state and applies it, returning what was
 // applied — which is the STORED snapshot when the control plane's is older.
-func (r *Runner) refreshConfig(ctx context.Context) (protocol.ConfigSnapshot, error) {
+func (r *Runner) refreshConfig(ctx context.Context) (result protocol.ConfigSnapshot, refreshErr error) {
 	ctx, cancel := context.WithTimeout(ctx, ShutdownTimeout)
 	defer cancel()
 	r.state.Lock()
 	epoch := r.settlementEpoch
 	r.state.Unlock()
+	defer func() {
+		if refreshErr != nil {
+			r.state.Lock()
+			r.refreshPending = true
+			r.state.Unlock()
+		}
+	}()
 	snapshot, err := r.deps.API.GetConfig(ctx)
 	if err != nil {
 		r.setBackendOnline(false)
@@ -283,7 +292,11 @@ func (r *Runner) refreshConfig(ctx context.Context) (protocol.ConfigSnapshot, er
 	if epoch != r.settlementEpoch {
 		return protocol.ConfigSnapshot{}, fmt.Errorf("配置请求期间计量已结算，丢弃响应并重新拉取")
 	}
-	return r.applyRefreshedLocked(ctx, snapshot)
+	applied, err := r.applyRefreshedLocked(ctx, snapshot)
+	if err == nil {
+		r.refreshPending = false
+	}
+	return applied, err
 }
 
 func (r *Runner) applyRefreshedLocked(ctx context.Context, snapshot protocol.ConfigSnapshot) (protocol.ConfigSnapshot, error) {
@@ -602,6 +615,7 @@ func (r *Runner) sendHeartbeat(ctx context.Context) error {
 		status = protocol.XrayHealthy
 	}
 	mode := r.current.ControlMode
+	refreshPending := r.refreshPending
 	r.state.Unlock()
 	if err != nil {
 		return err
@@ -634,6 +648,10 @@ func (r *Runner) sendHeartbeat(ctx context.Context) error {
 	// place it learns that the desired state moved. A malformed revision is
 	// ignored rather than fatal: it is the control plane's field, and refusing
 	// the heartbeat over it would take the node offline for a cosmetic problem.
+	if refreshPending {
+		_, err := r.refreshConfig(ctx)
+		return err
+	}
 	if mode != protocol.ModeShadowDirect {
 		return nil
 	}
@@ -676,7 +694,12 @@ func (r *Runner) eventsLoop(ctx context.Context) {
 
 func (r *Runner) consumeOnce(ctx context.Context) error {
 	if _, err := r.refreshConfig(ctx); err != nil {
-		return err
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		// A local apply failure must not block cached reports or recovery commands.
+		// The API authenticates the stream; Execute still enforces mode and revision.
+		r.errorf("连接命令流前配置刷新失败，将由心跳重试：%v", err)
 	}
 	return r.deps.API.ConsumeEvents(ctx, func(command protocol.Command) error {
 		return r.handleCommand(ctx, command)
