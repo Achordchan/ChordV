@@ -3,6 +3,7 @@ package store
 import (
 	"math/big"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -744,5 +745,485 @@ func TestRelativeDatabasePathOpens(t *testing.T) {
 	}
 	if snapshot["desiredUsers"] != 1 || snapshot["bootId"] != "boot-1" {
 		t.Fatalf("the probe read a different database: %v", snapshot)
+	}
+}
+
+func TestAnOlderDatabaseGetsASafeSnapshotWatermark(t *testing.T) {
+	// A database written before the watermark existed reads as 0, which would let
+	// a long-delayed per-binding command pass the staleness gate and recreate a
+	// binding a full snapshot has since removed. config_revision is at least as
+	// high as any snapshot that database applied, so adopting it errs toward
+	// REFUSING work — a wrongly-skipped install is repaired by the next reconcile,
+	// a resurrected revoked account is not.
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	first := openAt(t, path, "node-1", "boot-1")
+	if err := first.AdvanceConfigRevision("10"); err != nil {
+		t.Fatal(err)
+	}
+	// The pre-change shape: an applied revision on record, no watermark.
+	if _, err := first.db.Exec(`DELETE FROM meta_v2 WHERE key = 'snapshot_revision'`); err != nil {
+		t.Fatal(err)
+	}
+	first.Close()
+
+	second := openAt(t, path, "node-1", "boot-2")
+	watermark, err := second.SnapshotRevision()
+	if err != nil || watermark != "10" {
+		t.Fatalf("SnapshotRevision = %s, %v; want the conservative 10", watermark, err)
+	}
+}
+
+func TestABrandNewDatabaseStartsWithNoSnapshotWatermark(t *testing.T) {
+	// The backfill must not invent history: a fresh node has applied nothing, and
+	// starting it at anything but zero would reject the first real instructions.
+	store := newStore(t, "node-1", "boot-1")
+	watermark, err := store.SnapshotRevision()
+	if err != nil || watermark != "0" {
+		t.Fatalf("SnapshotRevision = %s, %v; want 0", watermark, err)
+	}
+}
+
+func TestBindingTombstonesOnlyMoveForward(t *testing.T) {
+	store := newStore(t, "node-1", "boot-1")
+	if err := store.RecordBindingTombstone("b1", "6"); err != nil {
+		t.Fatal(err)
+	}
+	// Commands can arrive out of order; an older deletion must not lower the bar
+	// that a stale install has to clear.
+	if err := store.RecordBindingTombstone("b1", "3"); err != nil {
+		t.Fatal(err)
+	}
+	if value, _ := store.BindingTombstone("b1"); value != "6" {
+		t.Fatalf("tombstone = %s, want 6", value)
+	}
+	if err := store.RecordBindingTombstone("b1", "9"); err != nil {
+		t.Fatal(err)
+	}
+	if value, _ := store.BindingTombstone("b1"); value != "9" {
+		t.Fatalf("tombstone = %s, want 9", value)
+	}
+	if err := store.ClearBindingTombstone("b1"); err != nil {
+		t.Fatal(err)
+	}
+	if value, _ := store.BindingTombstone("b1"); value != "0" {
+		t.Fatalf("tombstone = %s after clearing, want 0", value)
+	}
+}
+
+func TestTombstoneComparisonIsExactBeyondInt64(t *testing.T) {
+	store := newStore(t, "node-1", "boot-1")
+	// Both of these saturate to the same value under SQLite's CAST … AS INTEGER,
+	// so a SQL-side comparison could not tell them apart — and the later deletion
+	// would fail to raise the floor, leaving an enable between the two revisions
+	// free to pass the staleness guard.
+	low := "9223372036854775808"  // int64 max + 1
+	high := "9223372036854775809" // int64 max + 2
+	if err := store.RecordBindingTombstone("b1", low); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordBindingTombstone("b1", high); err != nil {
+		t.Fatal(err)
+	}
+	if value, _ := store.BindingTombstone("b1"); value != high {
+		t.Fatalf("tombstone = %s, want %s", value, high)
+	}
+	// And the reverse direction must still be refused.
+	if err := store.RecordBindingTombstone("b1", low); err != nil {
+		t.Fatal(err)
+	}
+	if value, _ := store.BindingTombstone("b1"); value != high {
+		t.Fatalf("an older deletion lowered the floor to %s", value)
+	}
+}
+
+func TestAFreshDatabasePersistsItsZeroWatermark(t *testing.T) {
+	// Reading as zero is not enough: the key must EXIST, or the next open — after
+	// individual commands have moved config_revision but before any snapshot has
+	// arrived — mistakes this database for an old one and backfills the watermark
+	// from that per-command progress.
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	first := openAt(t, path, "node-1", "boot-1")
+	if err := first.AdvanceConfigRevision("6"); err != nil {
+		t.Fatal(err)
+	}
+	first.Close()
+
+	second := openAt(t, path, "node-1", "boot-2")
+	watermark, err := second.SnapshotRevision()
+	if err != nil || watermark != "0" {
+		t.Fatalf("SnapshotRevision = %s, %v; want 0 — no snapshot has ever been applied", watermark, err)
+	}
+}
+
+// TestApplyTerminalRollsTheTombstoneBackWithTheRow is the reason the tombstone
+// and the row change share a transaction.
+//
+// The tombstone is what makes a re-delivered terminal command idempotent: once
+// it stands at the command's revision, the processor's staleness guard treats
+// the command as already applied and returns completed. So a tombstone that
+// survives a failed row change is worse than no tombstone at all — the retry
+// reports success, the enabled row is still there, and the next reconcile
+// reinstalls the account.
+//
+// A trigger stands in for the crash: it aborts the DELETE after the tombstone
+// statement has already run inside the same transaction.
+func TestApplyTerminalRollsTheTombstoneBackWithTheRow(t *testing.T) {
+	state := newStore(t, "node-1", "boot-1")
+	if err := state.UpsertDesiredUser(protocol.DesiredUser{
+		BindingID: "b1", Email: "u1@chordv", UUID: "u", Revision: "5", Enabled: true,
+		QuotaRemainingBytes: "100", OfflineAllowanceBytes: allowance,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`CREATE TRIGGER boom BEFORE DELETE ON desired_users_v2
+		BEGIN SELECT RAISE(ABORT, 'boom'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := state.ApplyTerminal("b1", "6", "u1@chordv", true); err == nil {
+		t.Fatal("ApplyTerminal 在行写入失败时仍然返回了成功")
+	}
+
+	tombstone, err := state.BindingTombstone("b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tombstone != "0" {
+		t.Fatalf("行没删成功，墓碑却留下了 %s —— 重投会误报完成", tombstone)
+	}
+
+	// And once the obstacle is gone the retry completes the whole transition.
+	if _, err := state.db.Exec(`DROP TRIGGER boom`); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.ApplyTerminal("b1", "6", "u1@chordv", true); err != nil {
+		t.Fatal(err)
+	}
+	if tombstone, _ = state.BindingTombstone("b1"); tombstone != "6" {
+		t.Fatalf("重试后墓碑 = %s", tombstone)
+	}
+	users, err := state.ListDesiredUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, user := range users {
+		if user.BindingID == "b1" {
+			t.Fatal("重试后记录仍在")
+		}
+	}
+}
+
+// TestARenameStartsANewMeteringGeneration covers the case the reset detector
+// cannot see.
+//
+// Xray addresses accounts by email, so renaming a binding hands it a different
+// account whose counter starts at zero. The detector only fires when a reading
+// goes DOWN — so if the new account moves MORE bytes than the old baseline
+// before the first sample, nothing looks wrong and only the difference gets
+// billed. Here the old baseline is 100 and the new account's first reading is
+// 150: the whole 150 must be billed, not 50.
+func TestARenameStartsANewMeteringGeneration(t *testing.T) {
+	state := newStore(t, "node-1", "boot-1")
+	seed(t, state, protocol.DesiredUser{
+		BindingID: "b1", Email: "old@chordv", UUID: "u", Revision: "1", Enabled: true,
+		QuotaRemainingBytes: "1000000", OfflineAllowanceBytes: allowance,
+	})
+	// Establish the baseline, then bill 100 bytes against it.
+	sampleAt(t, state, true, counter("old@chordv", "0", "0"))
+	sampleAt(t, state, true, counter("old@chordv", "100", "0"))
+
+	before := storedUser(t, state, "b1")
+	if err := state.UpsertDesiredUser(protocol.DesiredUser{
+		BindingID: "b1", Email: "new@chordv", UUID: "u", Revision: "2", Enabled: true,
+		QuotaRemainingBytes: "1000000", OfflineAllowanceBytes: allowance,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	after := storedUser(t, state, "b1")
+	if after.Uplink != "0" || after.Downlink != "0" {
+		t.Fatalf("改名后基线没有归零：%s/%s", after.Uplink, after.Downlink)
+	}
+	if after.Generation == before.Generation {
+		t.Fatalf("改名后 generation 没有推进：%s", after.Generation)
+	}
+	if !after.CounterInitialized {
+		t.Fatal("改名后应保持已初始化，否则第一份样本只建基线、白丢一段流量")
+	}
+
+	result := sampleAt(t, state, true, counter("new@chordv", "150", "0"))
+	if result.Batch == nil || len(result.Batch.Samples) != 1 {
+		t.Fatalf("batch = %+v", result.Batch)
+	}
+	if got := result.Batch.Samples[0].UplinkDeltaBytes; got != "150" {
+		t.Fatalf("改名后第一次采样计费 %s，应为 150（旧基线 100 被当成了新账号的已计费量）", got)
+	}
+}
+
+// TestAnOmissionFloorCannotOutliveItsDeletion is why the floor is written inside
+// replaceDesiredUsersTx rather than by the caller beforehand.
+//
+// A tombstone that lands while the deletion does not is WORSE than no tombstone:
+// the enabled row survives next to a floor that now makes every later
+// instruction about the binding look superseded, so a merge preserves the stale
+// enabled row and the revoked account goes back in.
+func TestAnOmissionFloorCannotOutliveItsDeletion(t *testing.T) {
+	state := newStore(t, "node-1", "boot-1")
+	seed(t, state, protocol.DesiredUser{
+		BindingID: "b1", Email: "u1@chordv", UUID: "u", Revision: "1", Enabled: true,
+		QuotaRemainingBytes: "100", OfflineAllowanceBytes: allowance,
+	})
+	if _, err := state.db.Exec(`CREATE TRIGGER boom BEFORE DELETE ON desired_users_v2
+		BEGIN SELECT RAISE(ABORT, 'boom'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := state.ApplyConfigSnapshot(protocol.ConfigSnapshot{
+		NodeID: "node-1", Revision: "7", ControlMode: protocol.ModeDirectPrimary,
+	}); err == nil {
+		t.Fatal("删除失败时快照仍然被当成应用成功")
+	}
+	if floor, _ := state.BindingTombstone("b1"); floor != "0" {
+		t.Fatalf("行没删成功，吊销下限却留下了 %s", floor)
+	}
+
+	if _, err := state.db.Exec(`DROP TRIGGER boom`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.ApplyConfigSnapshot(protocol.ConfigSnapshot{
+		NodeID: "node-1", Revision: "7", ControlMode: protocol.ModeDirectPrimary,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if floor, _ := state.BindingTombstone("b1"); floor != "7" {
+		t.Fatalf("快照遗漏没有留下吊销下限：%s", floor)
+	}
+	users, err := state.ListDesiredUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 0 {
+		t.Fatalf("被遗漏的记录还在：%+v", users)
+	}
+}
+
+// TestAnObservingSnapshotMaySwapEmails covers the track that never calls
+// Reconcile.
+//
+// An observing node applies snapshots straight through ApplyConfigSnapshot, so
+// the transactional hand-off parking has to live there too. Without it a
+// snapshot that swaps two bindings' addresses hits the unique email constraint
+// and fails on every retry — a snapshot the direct track applies without
+// trouble.
+func TestAnObservingSnapshotMaySwapEmails(t *testing.T) {
+	state := newStore(t, "node-1", "boot-1")
+	user := func(id, email, revision string) protocol.DesiredUser {
+		return protocol.DesiredUser{
+			BindingID: id, Email: email, UUID: "uuid-" + id, Revision: revision,
+			Enabled: true, QuotaRemainingBytes: "100", OfflineAllowanceBytes: allowance,
+		}
+	}
+	if _, err := state.ApplyConfigSnapshot(protocol.ConfigSnapshot{
+		NodeID: "node-1", Revision: "5", ControlMode: protocol.ModeShadowDirect,
+		Users: []protocol.DesiredUser{user("b1", "a@chordv", "5"), user("b2", "b@chordv", "5")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.ApplyConfigSnapshot(protocol.ConfigSnapshot{
+		NodeID: "node-1", Revision: "6", ControlMode: protocol.ModeShadowDirect,
+		Users: []protocol.DesiredUser{user("b1", "b@chordv", "6"), user("b2", "a@chordv", "6")},
+	}); err != nil {
+		t.Fatalf("观察态的互换快照失败了，且每次重试都会重复：%v", err)
+	}
+	b1, _ := state.UserByBindingID("b1")
+	b2, _ := state.UserByBindingID("b2")
+	if b1 == nil || b2 == nil || b1.Email != "b@chordv" || b2.Email != "a@chordv" {
+		t.Fatalf("记录没有完成互换：%+v %+v", b1, b2)
+	}
+}
+
+// TestAStaleSwapDoesNotStrandARowOnAPlaceholder is the cost of parking too
+// eagerly.
+//
+// Parking runs before the per-row revision guard, and upsertDesiredUserTx
+// silently skips a user that is not newer. A row parked for a replacement that
+// never arrives keeps its PLACEHOLDER address: metering can no longer match the
+// account, and terminal commands aim at a name Xray has never heard of. A stale
+// update that used to be harmless would become corruption.
+func TestAStaleSwapDoesNotStrandARowOnAPlaceholder(t *testing.T) {
+	state := newStore(t, "node-1", "boot-1")
+	user := func(id, email, revision string) protocol.DesiredUser {
+		return protocol.DesiredUser{
+			BindingID: id, Email: email, UUID: "uuid-" + id, Revision: revision,
+			Enabled: true, QuotaRemainingBytes: "100", OfflineAllowanceBytes: allowance,
+		}
+	}
+	seed(t, state, user("b1", "a@chordv", "10"), user("b2", "b@chordv", "10"))
+
+	// b2 takes a@chordv at a NEWER revision; b1's own move is stale and will be
+	// skipped, so the hand-off cannot complete.
+	err := state.ApplyDesiredUsers([]protocol.DesiredUser{
+		user("b2", "a@chordv", "11"), user("b1", "b@chordv", "5"),
+	})
+	if err == nil {
+		t.Fatal("无法完成的交接被静默接受了")
+	}
+	b1, _ := state.UserByBindingID("b1")
+	if b1 == nil || b1.Email != "a@chordv" {
+		t.Fatalf("b1 被搁置在占位符地址上：%+v", b1)
+	}
+}
+
+// TestASnapshotMayReplaceOneBindingWithAnother covers a hand-off FROM a binding
+// the snapshot drops.
+//
+// The old owner is not moving to another address — it is going away entirely —
+// so refusing to park it would have the newcomer's upsert hit the unique email
+// constraint before the deletion could run, on every retry. And because a parked
+// row can be deleted before it ever receives a replacement, the placeholder has
+// to keep the original address: the tombstone written at that moment is the last
+// place it survives, and a binding-only REMOVE_USER retry resolves its target
+// from there.
+func TestASnapshotMayReplaceOneBindingWithAnother(t *testing.T) {
+	state := newStore(t, "node-1", "boot-1")
+	user := func(id, email, revision string) protocol.DesiredUser {
+		return protocol.DesiredUser{
+			BindingID: id, Email: email, UUID: "uuid-" + id, Revision: revision,
+			Enabled: true, QuotaRemainingBytes: "100", OfflineAllowanceBytes: allowance,
+		}
+	}
+	if _, err := state.ApplyConfigSnapshot(protocol.ConfigSnapshot{
+		NodeID: "node-1", Revision: "5", ControlMode: protocol.ModeDirectPrimary,
+		Users: []protocol.DesiredUser{user("old", "shared@chordv", "5")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.ApplyConfigSnapshot(protocol.ConfigSnapshot{
+		NodeID: "node-1", Revision: "6", ControlMode: protocol.ModeDirectPrimary,
+		Users: []protocol.DesiredUser{user("new", "shared@chordv", "6")},
+	}); err != nil {
+		t.Fatalf("换一个 binding 接手同一个地址失败了，且每次重试都会重复：%v", err)
+	}
+	moved, _ := state.UserByBindingID("new")
+	if moved == nil || moved.Email != "shared@chordv" {
+		t.Fatalf("接手方没有拿到地址：%+v", moved)
+	}
+	// The departed binding's address must survive in its tombstone, or a
+	// binding-only removal retry has nothing to aim at.
+	remembered, err := state.TombstonedEmail("old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remembered != "shared@chordv" {
+		t.Fatalf("墓碑记下的是占位符而不是真实地址：%q", remembered)
+	}
+}
+
+// TestAnInterruptedHandoffIsNotADesiredUser follows a parked row after a crash.
+//
+// Parking commits before the install that completes the hand-off, so a failure
+// in between leaves a row holding a NUL-prefixed placeholder. Exposed as a
+// desired user, a later mode-only reconcile would try to INSTALL that
+// placeholder as a real account, and a terminal command would aim at it instead
+// of the address it stands for.
+func TestAnInterruptedHandoffIsNotADesiredUser(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+	user := func(id, email, revision string) protocol.DesiredUser {
+		return protocol.DesiredUser{
+			BindingID: id, Email: email, UUID: "uuid-" + id, Revision: revision,
+			Enabled: true, QuotaRemainingBytes: "100", OfflineAllowanceBytes: allowance,
+		}
+	}
+	seed(t, state, user("b1", "a@chordv", "5"))
+	// The interrupted shape: b1 parked for a hand-off whose other half never
+	// landed, so nothing else holds its address either.
+	if _, err := state.db.Exec(
+		`UPDATE desired_users_v2 SET email = ? WHERE binding_id = 'b1'`,
+		"\x00reassign:b1:a@chordv"); err != nil {
+		t.Fatal(err)
+	}
+
+	users, err := state.ListDesiredUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, listed := range users {
+		if strings.HasPrefix(listed.Email, "\x00reassign:") {
+			t.Fatalf("占位符地址被当成了目标用户，下一次 reconcile 会去安装它：%+v", listed)
+		}
+	}
+	if stored, _ := state.UserByBindingID("b1"); stored != nil {
+		t.Fatalf("终态命令能解析到占位符行，会瞄准一个 Xray 从没听说过的名字：%+v", stored)
+	}
+
+	// Reopening gives it an ending: the address is free again, so the binding
+	// gets it back.
+	state.Close()
+	reopened := openAt(t, path, "node-1", "boot-2")
+	restored, err := reopened.UserByBindingID("b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored == nil || restored.Email != "a@chordv" {
+		t.Fatalf("重开之后没有把地址还回去：%+v", restored)
+	}
+}
+
+// TestASuccessfulInstallSettlesTheRotationCandidate makes the committed claim
+// describe a settled installation.
+//
+// A rotation records the replacement identity beside the claim while it is in
+// flight. A successful install answers that question — leaving the candidate
+// behind would keep asserting that TWO identities are acceptable at this
+// address long after only one of them is, which is exactly the looseness the
+// identity check exists to remove.
+func TestASuccessfulInstallSettlesTheRotationCandidate(t *testing.T) {
+	state := newStore(t, "node-1", "boot-1")
+	if err := state.RecordProvisioned("b1", "u1@chordv", "old-uuid"); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.RecordProvisionIntent("b1", "u1@chordv", "new-uuid"); err != nil {
+		t.Fatal(err)
+	}
+	claims, _ := state.ProvisionedAccounts()
+	if claims["u1@chordv"].NextUUID != "new-uuid" {
+		t.Fatalf("前提没成立：轮换候选没有记下来 %+v", claims["u1@chordv"])
+	}
+
+	if err := state.RecordProvisioned("b1", "u1@chordv", "new-uuid"); err != nil {
+		t.Fatal(err)
+	}
+	claims, _ = state.ProvisionedAccounts()
+	if claims["u1@chordv"].UUID != "new-uuid" || claims["u1@chordv"].NextUUID != "" {
+		t.Fatalf("安装成功之后轮换仍被标记为在飞：%+v", claims["u1@chordv"])
+	}
+}
+
+// TestASecondIntentReplacesAnUnresolvedOne is the difference between a claim and
+// a guess.
+//
+// A row that is still an intent describes an install that never completed.
+// Amending only its rotation candidate leaves recovery reading the OLD binding
+// and uuid — so an adoption of A that failed, followed by an adoption of B that
+// succeeded and crashed before its claim, would be unrecoverable: the account is
+// installed as B, and nothing on record says so.
+func TestASecondIntentReplacesAnUnresolvedOne(t *testing.T) {
+	state := newStore(t, "node-1", "boot-1")
+	if err := state.RecordProvisionIntent("b1", "shared@chordv", "uuid-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.RecordProvisionIntent("b2", "shared@chordv", "uuid-b"); err != nil {
+		t.Fatal(err)
+	}
+	intents, err := state.ProvisionIntents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := intents["shared@chordv"]
+	if got.UUID != "uuid-b" || got.BindingID != "b2" {
+		t.Fatalf("未兑现的意图没有被后来的那次取代：%+v —— 恢复会去找一个从未装成的身份", got)
+	}
+	if claims, _ := state.ProvisionedAccounts(); len(claims) != 0 {
+		t.Fatalf("意图被当成了所有权：%v", claims)
 	}
 }

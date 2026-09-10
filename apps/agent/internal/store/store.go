@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Achordchan/ChordV/apps/agent/internal/decimal"
@@ -145,6 +146,12 @@ func (s *Store) prepare() error {
 	if err := s.assertOwnIdentity(); err != nil {
 		return err
 	}
+	if err := s.backfillSnapshotRevision(); err != nil {
+		return err
+	}
+	if err := s.recoverParkedRows(); err != nil {
+		return err
+	}
 	return s.initializeBoot()
 }
 
@@ -177,6 +184,42 @@ func (s *Store) migrate() error {
 			payload TEXT NOT NULL,
 			PRIMARY KEY (boot_id, sequence)
 		);
+		CREATE TABLE IF NOT EXISTS binding_tombstones_v2 (
+			binding_id TEXT PRIMARY KEY,
+			revision TEXT NOT NULL,
+			recorded_at TEXT NOT NULL,
+			-- The address the binding held when it was revoked. Deleting the row
+			-- also deletes the only other place that named it, so a REMOVE_USER
+			-- carrying nothing but a bindingId could not be retried after a crash.
+			email TEXT NOT NULL DEFAULT ''
+		);
+		CREATE TABLE IF NOT EXISTS pending_removals_v2 (
+			email TEXT PRIMARY KEY,
+			recorded_at TEXT NOT NULL,
+			-- Carried for the same reason provisioned_accounts_v2 carries one: a
+			-- pending note is an ownership claim, and an address is not an identity.
+			uuid TEXT NOT NULL DEFAULT ''
+		);
+		-- Accounts THIS agent installed. Deliberately separate from
+		-- desired_users_v2: under B1 a stored desired-user record does NOT prove
+		-- ChordV provisioned the account. See ProvisionedAccounts.
+		-- state is 'owned' (the install SUCCEEDED) or 'intent' (this agent was
+		-- about to install, and the address was nobody else's at that moment).
+		-- Only 'owned' counts as ownership; an intent is resolved against Xray on
+		-- the next reconcile. See RecordProvisionIntent.
+		CREATE TABLE IF NOT EXISTS provisioned_accounts_v2 (
+			email TEXT PRIMARY KEY,
+			binding_id TEXT NOT NULL,
+			recorded_at TEXT NOT NULL,
+			state TEXT NOT NULL DEFAULT 'owned',
+			-- The uuid this agent intended to install, so an intent can be checked
+			-- against the LIVE account's identity rather than its address alone.
+			uuid TEXT NOT NULL DEFAULT '',
+			-- A ROTATION in flight: the replacement identity for an address this
+			-- agent already owns. Kept beside the old uuid, never over it, so a
+			-- crash mid-rotation leaves both candidates on record.
+			next_uuid TEXT NOT NULL DEFAULT ''
+		);
 		CREATE TABLE IF NOT EXISTS commands_v2 (
 			command_id TEXT PRIMARY KEY,
 			command_type TEXT NOT NULL,
@@ -205,6 +248,232 @@ func (s *Store) assertOwnIdentity() error {
 		return s.setMeta("node_id", s.options.NodeID)
 	}
 	return nil
+}
+
+// backfillSnapshotRevision gives an OLDER database a safe snapshot watermark.
+//
+// A database written before the watermark existed has none, and reading it as 0
+// would let a delayed per-binding command from long ago pass the staleness gate
+// and recreate a binding that a full snapshot has since removed. config_revision
+// is at least as high as any snapshot that database ever applied, so adopting it
+// errs toward REFUSING work: a wrongly-skipped install is repaired by the next
+// reconcile, whereas a resurrected revoked account is not.
+//
+// A brand-new database has config_revision "0" and is untouched by this.
+func (s *Store) backfillSnapshotRevision() error {
+	existing, err := s.meta("snapshot_revision")
+	if err != nil || existing != "" {
+		return err
+	}
+	applied, err := s.ConfigRevision()
+	if err != nil {
+		return err
+	}
+	// A fresh database must PERSIST the zero, not just read as zero. Returning
+	// early here would leave the key absent, so the next open — after individual
+	// commands have moved config_revision but before any snapshot has arrived —
+	// would mistake this database for an old one and backfill the watermark from
+	// that per-command progress. A failed install at revision 5 followed by a
+	// success at 6 and a restart would then have its retry skipped and cached as
+	// completed: exactly the confusion the watermark exists to prevent.
+	return s.setMeta("snapshot_revision", applied)
+}
+
+// recoverParkedRows gives an interrupted address hand-off a definite ending.
+//
+// Parking is committed before the install that completes the hand-off, so a
+// crash can leave a row holding a placeholder. That row is invisible to
+// everything that acts on desired users, which keeps it harmless — but invisible
+// and permanent is not a state worth keeping.
+//
+// If the address it stands for is free again, the row gets it back: the hand-off
+// never happened, and the binding is exactly where it started. If somebody else
+// now holds that address the hand-off DID happen, so the row is what is left of
+// the binding that gave it up — it stays parked and invisible until the next
+// snapshot deletes it, with the tombstone that deletion writes.
+func (s *Store) recoverParkedRows() error {
+	rows, err := s.db.Query(
+		`SELECT binding_id, email FROM desired_users_v2 WHERE email LIKE ? || '%'`, reassignPlaceholder)
+	if err != nil {
+		return err
+	}
+	type parked struct{ id, stored string }
+	var found []parked
+	for rows.Next() {
+		var row parked
+		if err := rows.Scan(&row.id, &row.stored); err != nil {
+			rows.Close()
+			return err
+		}
+		found = append(found, row)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, row := range found {
+		original := originalEmail(row.stored, row.id)
+		if original == "" || original == row.stored {
+			continue
+		}
+		var taken int
+		if err := s.db.QueryRow(
+			`SELECT COUNT(*) FROM desired_users_v2 WHERE email = ?`, original).Scan(&taken); err != nil {
+			return err
+		}
+		if taken > 0 {
+			continue
+		}
+		if _, err := s.db.Exec(
+			`UPDATE desired_users_v2 SET email = ? WHERE binding_id = ?`, original, row.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RecordBindingTombstone remembers the revision at which a binding was DELETED.
+//
+// Deleting the desired-user row also deletes the revision that staleForEnable
+// compares against. Without a tombstone, an install that failed at revision 5,
+// followed by a REMOVE_USER at 6, lets the retry of that install pass every
+// guard and reinstall an account the control plane has revoked.
+func (s *Store) RecordBindingTombstone(bindingID, revision string) error {
+	normalized, err := decimal.Normalize(revision)
+	if err != nil {
+		return err
+	}
+	// Compared in Go, not in SQL. SQLite's CAST … AS INTEGER saturates at the
+	// signed 64-bit maximum, so two protocol-valid revisions above it compare
+	// EQUAL and a later deletion could not raise the floor — leaving an enable
+	// between the two deletion revisions free to pass the staleness guard.
+	// Everything else in this agent already compares revisions with big.Int;
+	// reaching for a SQL cast here was the inconsistency.
+	return s.transact(func(tx *sql.Tx) error {
+		return recordTombstoneTx(tx, bindingID, normalized, "")
+	})
+}
+
+func recordTombstoneTx(tx *sql.Tx, bindingID, normalized, email string) error {
+	var current string
+	switch err := tx.QueryRow(
+		`SELECT revision FROM binding_tombstones_v2 WHERE binding_id = ?`, bindingID).Scan(&current); {
+	case errors.Is(err, sql.ErrNoRows):
+		current = ""
+	case err != nil:
+		return err
+	}
+	if current != "" {
+		order, err := decimal.Cmp(normalized, current)
+		if err != nil {
+			return err
+		}
+		if order <= 0 {
+			return nil
+		}
+	}
+	// An empty email never overwrites a remembered one: a snapshot omission knows
+	// the binding but not always the address, and the address is what a retry
+	// needs.
+	_, err := tx.Exec(`
+		INSERT INTO binding_tombstones_v2(binding_id, revision, recorded_at, email) VALUES(?, ?, ?, ?)
+		ON CONFLICT(binding_id) DO UPDATE SET
+			revision = excluded.revision,
+			recorded_at = excluded.recorded_at,
+			email = CASE WHEN excluded.email = '' THEN binding_tombstones_v2.email ELSE excluded.email END`,
+		bindingID, normalized, isoMillis(time.Now()), email)
+	return err
+}
+
+// ApplyTerminal records a binding's tombstone AND retires its local row in one
+// transaction.
+//
+// The two must not be separable. The tombstone is what makes a re-delivered
+// terminal command idempotent: once it is at the command's revision, the guard
+// treats the command as already applied. So a crash — or any failed write —
+// between a standalone tombstone and the row change leaves the tombstone saying
+// "done" while the row is still enabled at an older revision. The redelivery
+// then returns early and reports completed, and the next reconcile happily
+// reinstalls the enabled row: the account comes back with nothing left that
+// disagrees.
+//
+// Committing them together means a retry either finds the whole transition or
+// none of it, and in the "none" case does the work again.
+func (s *Store) ApplyTerminal(bindingID, revision, email string, remove bool) error {
+	normalized, err := decimal.Normalize(revision)
+	if err != nil {
+		return err
+	}
+	return s.transact(func(tx *sql.Tx) error {
+		if bindingID == "" {
+			return errors.New("终态命令缺少 bindingId")
+		}
+		if err := recordTombstoneTx(tx, bindingID, normalized, email); err != nil {
+			return err
+		}
+		if remove {
+			_, err := tx.Exec(`DELETE FROM desired_users_v2 WHERE binding_id = ?`, bindingID)
+			return err
+		}
+		// Same revision guard SetUserEnabled applies, kept inside the
+		// transaction so it sees the row the tombstone is being written against.
+		var current string
+		switch err := tx.QueryRow(
+			`SELECT revision FROM desired_users_v2 WHERE binding_id = ?`, bindingID).Scan(&current); {
+		case errors.Is(err, sql.ErrNoRows):
+			return nil
+		case err != nil:
+			return err
+		}
+		stale, err := decimal.Less(normalized, current)
+		if err != nil || stale {
+			return err
+		}
+		_, err = tx.Exec(
+			`UPDATE desired_users_v2 SET enabled = 0, revision = ?, updated_at = ? WHERE binding_id = ?`,
+			normalized, isoMillis(time.Now()), bindingID)
+		return err
+	})
+}
+
+// BindingTombstone reports the revision at which a binding was deleted, or "0".
+func (s *Store) BindingTombstone(bindingID string) (string, error) {
+	var revision string
+	switch err := s.db.QueryRow(
+		`SELECT revision FROM binding_tombstones_v2 WHERE binding_id = ?`, bindingID).Scan(&revision); {
+	case err == nil:
+		return revision, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return "0", nil
+	default:
+		return "0", err
+	}
+}
+
+// TombstonedEmail reports the address a revoked binding held, or "".
+//
+// It is the last place that address survives: the desired-user row is deleted by
+// a removal, so a redelivered REMOVE_USER carrying nothing but a bindingId — the
+// shape the control plane sends — would otherwise have no target at all and fail
+// forever.
+func (s *Store) TombstonedEmail(bindingID string) (string, error) {
+	var email string
+	switch err := s.db.QueryRow(
+		`SELECT email FROM binding_tombstones_v2 WHERE binding_id = ?`, bindingID).Scan(&email); {
+	case err == nil:
+		return email, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return "", nil
+	default:
+		return "", err
+	}
+}
+
+// ClearBindingTombstone forgets a binding that has legitimately come back.
+func (s *Store) ClearBindingTombstone(bindingID string) error {
+	_, err := s.db.Exec(`DELETE FROM binding_tombstones_v2 WHERE binding_id = ?`, bindingID)
+	return err
 }
 
 func (s *Store) initializeBoot() error {
@@ -282,6 +551,24 @@ func (s *Store) transact(body func(*sql.Tx) error) error {
 // ConfigRevision is the highest revision this agent has applied.
 func (s *Store) ConfigRevision() (string, error) {
 	value, err := s.meta("config_revision")
+	if err != nil || value == "" {
+		return "0", err
+	}
+	return value, nil
+}
+
+// SnapshotRevision is the revision of the last FULL desired-state snapshot this
+// node applied.
+//
+// It is deliberately separate from ConfigRevision, which advances on every
+// completed command. Only a snapshot supersedes a per-binding instruction: if
+// binding A's install fails at revision 5 and binding B's succeeds at 6, A's
+// retry is still live work — the control plane never said anything new about A.
+// Comparing it against the global applied-revision watermark would skip it as
+// "already superseded" and cache that as a success, leaving A uninstalled for
+// good.
+func (s *Store) SnapshotRevision() (string, error) {
+	value, err := s.meta("snapshot_revision")
 	if err != nil || value == "" {
 		return "0", err
 	}
@@ -366,6 +653,10 @@ func (s *Store) ApplyConfigSnapshot(snapshot protocol.ConfigSnapshot) (bool, err
 		if err := setMetaTx(tx, "control_mode", string(snapshot.ControlMode)); err != nil {
 			return err
 		}
+		// The snapshot watermark moves ONLY here. See SnapshotRevision.
+		if err := setMetaTx(tx, "snapshot_revision", revision); err != nil {
+			return err
+		}
 		return setMetaTx(tx, "config_revision", revision)
 	})
 	return err == nil, err
@@ -383,34 +674,69 @@ func (s *Store) ReplaceDesiredUsers(users []protocol.DesiredUser, revision strin
 }
 
 func replaceDesiredUsersTx(tx *sql.Tx, users []protocol.DesiredUser, revision string, fallback *big.Int) error {
+	// The SAME hand-off parking ApplyDesiredUsers does, and it belongs here
+	// rather than only there: an OBSERVING node never calls Reconcile, so this is
+	// the only path a snapshot takes on that track. Without it a snapshot that
+	// swaps two bindings' addresses hits the unique email constraint and fails on
+	// every retry — a snapshot the direct track applies without trouble.
 	keep := make(map[string]bool, len(users))
 	for _, user := range users {
 		keep[user.BindingID] = true
+	}
+	// Rows this snapshot no longer names are about to be deleted, so parking one
+	// strands nothing — and a snapshot that REPLACES one binding with another at
+	// the same address needs exactly that, or the newcomer's upsert hits the
+	// unique email constraint before the deletion below can run, on every retry.
+	omitted, err := omittedBindingsTx(tx, keep)
+	if err != nil {
+		return err
+	}
+	if err := parkContestedEmailsTx(tx, users, omitted); err != nil {
+		return err
+	}
+	for _, user := range users {
 		if err := upsertDesiredUserTx(tx, user, fallback); err != nil {
 			return err
 		}
 	}
-	rows, err := tx.Query(`SELECT binding_id FROM desired_users_v2`)
+	rows, err := tx.Query(`SELECT binding_id, email FROM desired_users_v2`)
 	if err != nil {
 		return err
 	}
-	var existing []string
+	type row struct{ id, email string }
+	var existing []row
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var current row
+		if err := rows.Scan(&current.id, &current.email); err != nil {
 			rows.Close()
 			return err
 		}
-		existing = append(existing, id)
+		existing = append(existing, current)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
 		return err
 	}
 	rows.Close()
-	for _, id := range existing {
+	for _, current := range existing {
+		id := current.id
 		if keep[id] {
 			continue
+		}
+		// A snapshot that stops naming a binding is revoking it, and the row
+		// about to be deleted is the binding's whole local history. Without a
+		// floor, an enable arriving at this snapshot's own revision finds
+		// neither a row nor a tombstone and reinstalls what the snapshot just
+		// revoked.
+		//
+		// Written HERE, in the same transaction and from the same list, rather
+		// than by the caller beforehand. A floor that lands while the deletion
+		// does not is worse than no floor: the enabled row survives next to a
+		// tombstone that now makes every later instruction about the binding
+		// look superseded, so the stale enabled row is what a merge preserves —
+		// and the revoked account goes back in.
+		if err := recordTombstoneTx(tx, id, revision, originalEmail(current.email, id)); err != nil {
+			return err
 		}
 		if _, err := tx.Exec(`DELETE FROM desired_users_v2 WHERE binding_id = ?`, id); err != nil {
 			return err
@@ -442,7 +768,30 @@ func upsertDesiredUserTx(tx *sql.Tx, user protocol.DesiredUser, fallback *big.In
 		if err != nil {
 			return err
 		}
-		if !newer {
+		// An equal-revision DISABLE is the one refinement this guard lets
+		// through, and it has to.
+		//
+		// supersededForBinding accepts a snapshot carrying a binding disabled at
+		// the revision the stored row is enabled at — the merge keeps the
+		// snapshot's word — and Reconcile then uninstalls the account. If the row
+		// stayed enabled, the next mode-only reconcile would rebuild the desired
+		// set from it and put the account straight back, while this command had
+		// already reported success.
+		//
+		// One direction only: an equal-revision ENABLE never overrides a stored
+		// disable, which is the rule supersededBinding enforces on the other side.
+		//
+		// CONNECTION SETTINGS are the second refinement, and for a plainer
+		// reason: a binding's revision is its own, while flow comes from the
+		// NODE, so a fresh snapshot can legitimately carry a changed flow (or a
+		// rotated uuid) at an unchanged binding revision. Reconcile installs what
+		// the snapshot says; skipping the row here would have Xray and the store
+		// disagree about what is actually deployed, with the command reporting
+		// success. Whatever is installed must also be what is written down.
+		equal := revision == current.Revision
+		disabling := current.Enabled && !user.Enabled && equal
+		reconfiguring := equal && (current.UUID != user.UUID || current.Flow != user.Flow)
+		if !newer && !disabling && !reconfiguring {
 			return nil
 		}
 	}
@@ -477,6 +826,42 @@ func upsertDesiredUserTx(tx *sql.Tx, user protocol.DesiredUser, fallback *big.In
 			quota_remaining = excluded.quota_remaining,
 			offline_allowance = excluded.offline_allowance, updated_at = excluded.updated_at
 	`, user.BindingID, user.Email, user.UUID, user.Flow, enabled, revision, quota, allowance, isoMillis(time.Now()))
+	if err != nil {
+		return err
+	}
+	// A CHANGED EMAIL is the exception to that rule, and it must be handled here
+	// rather than by the caller.
+	//
+	// Xray addresses accounts by email, so a rename is a different account with
+	// its own counter starting at zero. Keeping the old baseline makes the next
+	// sample compute current − old_baseline. The reset detector cannot save us:
+	// it fires only when the reading goes DOWN, so if the new account has moved
+	// more bytes than the old baseline before the first sample, nothing looks
+	// wrong and the difference is all that gets billed.
+	//
+	// So the rename explicitly starts a new generation from a zero baseline —
+	// exactly the state a detected reset produces, which makes the next sample
+	// bill the new account's counter in full.
+	//
+	// In the same transaction as the row change on purpose: a rename that lands
+	// without its baseline reset is the under-billing this is here to prevent.
+	//
+	// KNOWN LOSS, and it is not fixable from the store: whatever the OLD account
+	// moved between the last sample and its uninstall is never observed by
+	// anyone. It is bounded by one sampling interval and it under-counts, which
+	// is the safe direction.
+	if current == nil || current.Email == user.Email {
+		return nil
+	}
+	generation, err := decimal.Parse(current.Generation)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`
+		UPDATE desired_users_v2
+		SET generation = ?, uplink = '0', downlink = '0', counter_initialized = 1
+		WHERE binding_id = ?`,
+		new(big.Int).Add(generation, big.NewInt(1)).String(), user.BindingID)
 	return err
 }
 
@@ -585,13 +970,32 @@ func (s *Store) UserByBindingID(bindingID string) (*protocol.DesiredUser, error)
 	if err != nil || row == nil {
 		return nil, err
 	}
+	// A PARKED row is not a desired user — see ListDesiredUsers. The unexported
+	// lookup still returns it, because upsertDesiredUserTx has to see the row it
+	// is about to overwrite; callers outside the store must not.
+	if strings.HasPrefix(row.Email, reassignPlaceholder) {
+		return nil, nil
+	}
 	user := row.DesiredUser
 	return &user, nil
 }
 
 // ListDesiredUsers returns every stored user, ordered by email for stable output.
+// PARKED rows are excluded, and that is not a detail.
+//
+// A parked row is a hand-off caught in the middle: its address has been given to
+// another binding and its own replacement has not landed yet. If the install
+// that follows fails — or the process dies before ApplyConfigSnapshot runs — the
+// row survives with a NUL-prefixed placeholder for an email. Exposed as a
+// desired user, a later mode-only reconcile would try to INSTALL that
+// placeholder as a real account, and a terminal command would aim at it instead
+// of the address it stands for.
+//
+// So the intermediate state is invisible to everything that acts on desired
+// users. recoverParkedRows gives it a definite ending at the next open.
 func (s *Store) ListDesiredUsers() ([]protocol.DesiredUser, error) {
-	rows, err := s.db.Query(`SELECT ` + userColumns + ` FROM desired_users_v2 ORDER BY email`)
+	rows, err := s.db.Query(`SELECT `+userColumns+
+		` FROM desired_users_v2 WHERE email NOT LIKE ? || '%' ORDER BY email`, reassignPlaceholder)
 	if err != nil {
 		return nil, err
 	}
@@ -1029,6 +1433,440 @@ func (s *Store) OldestPendingSampledAt() (string, error) {
 		return "", err
 	}
 	return value.String, nil
+}
+
+// --- pending removals -------------------------------------------------------
+
+// RecordPendingRemoval remembers that an account WAS this node's, so it can
+// still be uninstalled after the desired-user record naming it is gone.
+//
+// A snapshot applied while this node may not write Xray (shadow_direct,
+// xui_primary, rollback_pending) erases the record of every account it drops,
+// yet those accounts stay installed in the shared inbound. Without this the next
+// promotion to direct_primary would classify them as accounts it has never heard
+// of — which, under the panel-shared inbound, means "leave them alone" — and a
+// revoked subscription would serve forever.
+//
+// The table is additive: the Node agent neither reads nor writes it, so a
+// rollback to that implementation on the same data directory still works.
+// The note carries the IDENTITY the claim was made for, not just the address:
+// while the account is gone from the desired set its address is free, and the
+// panel may put a different account there. A note that could not be contradicted
+// would hand that account to the next promotion.
+func (s *Store) RecordPendingRemoval(claims map[string]string) error {
+	if len(claims) == 0 {
+		return nil
+	}
+	return s.transact(func(tx *sql.Tx) error {
+		for email, uuid := range claims {
+			if _, err := tx.Exec(
+				`INSERT INTO pending_removals_v2(email, recorded_at, uuid) VALUES(?, ?, ?) ON CONFLICT(email) DO NOTHING`,
+				email, isoMillis(time.Now()), uuid); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// PendingRemovals lists accounts known to be this node's but no longer in the
+// desired set.
+func (s *Store) PendingRemovals() (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT email, uuid FROM pending_removals_v2 ORDER BY rowid`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	claims := map[string]string{}
+	for rows.Next() {
+		var email, uuid string
+		if err := rows.Scan(&email, &uuid); err != nil {
+			return nil, err
+		}
+		claims[email] = uuid
+	}
+	return claims, rows.Err()
+}
+
+// ClearPendingRemoval forgets accounts that have been dealt with — uninstalled,
+// or handed back a desired-user record of their own.
+func (s *Store) ClearPendingRemoval(emails []string) error {
+	if len(emails) == 0 {
+		return nil
+	}
+	return s.transact(func(tx *sql.Tx) error {
+		for _, email := range emails {
+			if _, err := tx.Exec(`DELETE FROM pending_removals_v2 WHERE email = ?`, email); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// reassignPlaceholder parks an email that another binding is taking over. The
+// NUL byte cannot occur in an address the control plane sends, so a parked row
+// can never collide with a real one.
+const reassignPlaceholder = "\x00reassign:"
+
+// parkedAs builds the placeholder, keeping the ORIGINAL address inside it.
+//
+// A parked row can still be deleted before it ever receives its replacement —
+// that is exactly what happens when a snapshot hands one binding's address to
+// another and omits the first. The tombstone written at that moment is the last
+// place the address survives (a binding-only REMOVE_USER retry resolves its
+// target from it), so the placeholder has to carry it rather than erase it.
+func parkedAs(bindingID, email string) string {
+	return reassignPlaceholder + bindingID + ":" + email
+}
+
+// originalEmail recovers the address a parked row held, or returns the value
+// unchanged when it is a real address.
+func originalEmail(stored, bindingID string) string {
+	prefix := reassignPlaceholder + bindingID + ":"
+	if after, parked := strings.CutPrefix(stored, prefix); parked {
+		return after
+	}
+	return stored
+}
+
+// ApplyDesiredUsers writes a whole desired set in ONE transaction, resolving the
+// email hand-offs inside it.
+//
+// desired_users_v2 has a UNIQUE email, and the control plane may legitimately
+// move an address between bindings — including swapping two. Upserting one row
+// at a time then fails on the first user whose new email another row still
+// holds, and by that point Reconcile's rename pass has already uninstalled the
+// accounts: both users are offline and every retry reproduces it exactly.
+//
+// So every row whose email is being taken over is parked on a placeholder first,
+// and only then are the users written. A cycle is no different from a chain once
+// nobody holds a contested address. Because it is one transaction, a failure
+// leaves no row parked.
+//
+// A parked row that the new set does not name at all keeps its placeholder until
+// ApplyConfigSnapshot deletes it moments later. That is safe only because
+// ownership lives in provisioned_accounts_v2 rather than in the row's email — a
+// crash in between leaves the account still claimed, and the next reconcile
+// retires it.
+func (s *Store) ApplyDesiredUsers(users []protocol.DesiredUser) error {
+	return s.transact(func(tx *sql.Tx) error {
+		// The omitted set matters here as much as in replaceDesiredUsersTx: this
+		// runs FIRST on the direct track, so a snapshot that replaces one binding
+		// with another at the same address would collide here and never reach the
+		// replacement that handles it. Those rows are deleted moments later by
+		// ApplyConfigSnapshot, and the placeholder carries their address for the
+		// tombstone written then.
+		keep := make(map[string]bool, len(users))
+		for _, user := range users {
+			keep[user.BindingID] = true
+		}
+		omitted, err := omittedBindingsTx(tx, keep)
+		if err != nil {
+			return err
+		}
+		if err := parkContestedEmailsTx(tx, users, omitted); err != nil {
+			return err
+		}
+		for _, user := range users {
+			if err := upsertDesiredUserTx(tx, user, s.options.DefaultOfflineAllowance); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// omittedBindingsTx lists the stored bindings a desired set no longer names.
+func omittedBindingsTx(tx *sql.Tx, keep map[string]bool) (map[string]bool, error) {
+	rows, err := tx.Query(`SELECT binding_id FROM desired_users_v2`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	omitted := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		if !keep[id] {
+			omitted[id] = true
+		}
+	}
+	return omitted, rows.Err()
+}
+
+// parkContestedEmailsTx moves every row whose address another binding is taking
+// over onto a placeholder, so the writes that follow cannot collide.
+// Parking runs BEFORE upsertDesiredUserTx, and upsertDesiredUserTx silently
+// skips a user whose revision is not newer than the stored row. A row parked for
+// a replacement that is then skipped keeps its PLACEHOLDER address — metering
+// can no longer match the account, and terminal commands aim at a name Xray has
+// never heard of. A stale update that used to be harmless would become
+// corruption.
+//
+// So a row is parked only when its own replacement will actually apply. If the
+// hand-off cannot complete, nothing is parked and the colliding upsert fails the
+// whole transaction — visible, and leaving the addresses as they were.
+func parkContestedEmailsTx(tx *sql.Tx, users []protocol.DesiredUser, omitted map[string]bool) error {
+	rows, err := tx.Query(`SELECT binding_id, email, revision FROM desired_users_v2`)
+	if err != nil {
+		return err
+	}
+	type held struct{ id, email, revision string }
+	var current []held
+	for rows.Next() {
+		var row held
+		if err := rows.Scan(&row.id, &row.email, &row.revision); err != nil {
+			rows.Close()
+			return err
+		}
+		current = append(current, row)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	stored := make(map[string]held, len(current))
+	for _, row := range current {
+		stored[row.id] = row
+	}
+	// Only the users that will really be written count as takers.
+	applying := make(map[string]protocol.DesiredUser, len(users))
+	for _, user := range users {
+		existing, known := stored[user.BindingID]
+		if known {
+			normalized, err := decimal.Normalize(user.Revision)
+			if err != nil {
+				return err
+			}
+			newer, err := decimal.Less(existing.revision, normalized)
+			if err != nil {
+				return err
+			}
+			if !newer {
+				continue
+			}
+		}
+		applying[user.BindingID] = user
+	}
+	taker := make(map[string]string, len(applying))
+	for id, user := range applying {
+		taker[user.Email] = id
+	}
+	for _, row := range current {
+		to, contested := taker[row.email]
+		if !contested || to == row.id {
+			continue
+		}
+		if _, willMove := applying[row.id]; !willMove && !omitted[row.id] {
+			// This row is not going anywhere, so parking it would strand it on a
+			// placeholder. Leave it and let the collision surface.
+			//
+			// An OMITTED row is the exception: the caller is about to delete it,
+			// so it is not stranded — and refusing to park it would block a
+			// legitimate replacement of one binding by another at the same
+			// address, on every retry.
+			continue
+		}
+		if _, err := tx.Exec(
+			`UPDATE desired_users_v2 SET email = ? WHERE binding_id = ?`,
+			parkedAs(row.id, row.email), row.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// --- provisioning evidence --------------------------------------------------
+
+// RecordProvisioned notes that THIS agent installed an account in Xray.
+//
+// The distinction this table exists for: under B1 the inbound is shared with the
+// 3x-ui panel, and a stored desired-user record does NOT prove ChordV owns the
+// account it names. The control plane's getConfig includes PANEL-sourced
+// bindings while a node is in xui_primary or shadow_direct, and filters them out
+// only in direct_primary. So a node that observed a snapshot in shadow mode has
+// desired-user rows for the panel's own accounts — and on promotion the filtered
+// set omits them. Deriving ownership from those rows would classify the panel's
+// accounts as ChordV leftovers and uninstall them, with RemoveUnknownUsers off
+// and nothing to warn anybody.
+//
+// Provisioning is the fact that survives that: this agent called EnsureUser for
+// this email. Nothing the control plane says can manufacture it.
+//
+// Recorded BEFORE the install, on purpose. If the install then fails we claim an
+// account that does not exist, and the worst that costs is one RemoveUser for an
+// account Xray does not have — which the adapter contract says succeeds. The
+// opposite order risks an installed account nothing claims, which under a shared
+// inbound serves forever.
+func (s *Store) RecordProvisioned(bindingID, email, uuid string) error {
+	if email == "" {
+		return nil
+	}
+	// The uuid travels with the claim: an address alone cannot say whether the
+	// account sitting there is still the one this agent installed. See
+	// ProvisionedAccounts.
+	//
+	// next_uuid is CLEARED here, because this call is the answer to the question
+	// it asked. A rotation records the replacement identity beside the claim
+	// while it is in flight; a successful install settles it, and leaving the
+	// candidate behind would keep asserting that two identities are acceptable at
+	// this address long after only one of them is.
+	_, err := s.db.Exec(`
+		INSERT INTO provisioned_accounts_v2(email, binding_id, recorded_at, state, uuid) VALUES(?, ?, ?, 'owned', ?)
+		ON CONFLICT(email) DO UPDATE SET
+			binding_id = excluded.binding_id, state = 'owned', uuid = excluded.uuid, next_uuid = ''`,
+		email, bindingID, isoMillis(time.Now()), uuid)
+	return err
+}
+
+// RecordProvisionIntent notes that this agent is ABOUT to install an account,
+// which is a weaker thing than owning it and is stored as such.
+//
+// It exists for one window: the process dies after EnsureUser succeeds but
+// before the claim commits. Re-running the reconcile repairs that only while the
+// snapshot still names the binding — revoke the subscription in between and the
+// account is installed, unclaimed, unmetered, and (with unknown-user removal
+// off) permanent.
+//
+// The intent is NOT ownership, so a failed install cannot turn into a claim on
+// somebody else's address. What makes it resolvable later is WHEN it is written:
+// the caller records it only if the email named no live account at that moment,
+// so any account carrying that address afterwards can only be this agent's.
+// ResolveProvisionIntents settles them against Xray on the next reconcile.
+func (s *Store) RecordProvisionIntent(bindingID, email, uuid string) error {
+	if email == "" {
+		return nil
+	}
+	// An existing 'owned' row is never weakened back to an intent — but it is not
+	// left untouched either.
+	//
+	// A UUID ROTATION reuses the address this agent already owns. "Do nothing"
+	// would record no trace of the replacement identity, so if Xray accepts the
+	// new uuid and the process then dies, storage still names only the OLD one:
+	// every later ownership check rejects the account that is actually installed,
+	// which blocks the retry, and an omission leaves the revoked account serving
+	// because nothing claims it any more.
+	//
+	// So the replacement goes into next_uuid, BESIDE the claim rather than over
+	// it. Until resolveIntents settles which one Xray really has, both identities
+	// count as ours — the conservative reading, since either one may be the
+	// account this agent installed.
+	// An existing INTENT is replaced outright, not amended.
+	//
+	// A row that is still an intent describes an install that never completed —
+	// it is a guess about the past, not a claim. Amending only next_uuid would
+	// leave recovery reading the OLD binding and uuid: an adoption of A that
+	// failed, followed by an adoption of B that succeeded and crashed before its
+	// claim, would be unrecoverable, because ProvisionIntents reports A and
+	// settleRotations only looks at owned rows. So the fields recovery actually
+	// reads are the ones this call overwrites.
+	_, err := s.db.Exec(`
+		INSERT INTO provisioned_accounts_v2(email, binding_id, recorded_at, state, uuid) VALUES(?, ?, ?, 'intent', ?)
+		ON CONFLICT(email) DO UPDATE SET
+			binding_id = CASE WHEN provisioned_accounts_v2.state = 'intent'
+				THEN excluded.binding_id ELSE provisioned_accounts_v2.binding_id END,
+			uuid = CASE WHEN provisioned_accounts_v2.state = 'intent'
+				THEN excluded.uuid ELSE provisioned_accounts_v2.uuid END,
+			next_uuid = CASE
+				WHEN provisioned_accounts_v2.state = 'intent' THEN ''
+				WHEN provisioned_accounts_v2.uuid = excluded.uuid THEN ''
+				ELSE excluded.uuid END`,
+		email, bindingID, isoMillis(time.Now()), uuid)
+	return err
+}
+
+// SettleRotation finishes a rotation that resolveIntents has decided: `uuid`
+// becomes the claim and next_uuid is cleared.
+func (s *Store) SettleRotation(email, uuid string) error {
+	_, err := s.db.Exec(
+		`UPDATE provisioned_accounts_v2 SET uuid = ?, next_uuid = '' WHERE email = ?`, uuid, email)
+	return err
+}
+
+// ProvisionIntent is one unresolved intent: which binding, and the identity the
+// agent was about to install at that address.
+type ProvisionIntent struct {
+	BindingID string
+	UUID      string
+}
+
+// ProvisionIntents lists the unresolved intents by email.
+func (s *Store) ProvisionIntents() (map[string]ProvisionIntent, error) {
+	rows, err := s.db.Query(`SELECT email, binding_id, uuid FROM provisioned_accounts_v2 WHERE state = 'intent'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	intents := map[string]ProvisionIntent{}
+	for rows.Next() {
+		var email string
+		var intent ProvisionIntent
+		if err := rows.Scan(&email, &intent.BindingID, &intent.UUID); err != nil {
+			return nil, err
+		}
+		intents[email] = intent
+	}
+	return intents, rows.Err()
+}
+
+// ForgetProvisioned drops the claim on accounts that are no longer installed.
+func (s *Store) ForgetProvisioned(emails []string) error {
+	if len(emails) == 0 {
+		return nil
+	}
+	return s.transact(func(tx *sql.Tx) error {
+		for _, email := range emails {
+			if _, err := tx.Exec(`DELETE FROM provisioned_accounts_v2 WHERE email = ?`, email); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// ProvisionedAccounts maps each email this agent has installed to the uuid it
+// installed there.
+//
+// The uuid is what keeps a RETAINED claim honest. A claim deliberately survives
+// a disable — the record stays and a later enable puts the same account back —
+// but while it is disabled the address is free, and the panel may reuse it. An
+// email-only claim would then read as permission to overwrite, and later to
+// delete, somebody else's account.
+//
+// An empty uuid means "cannot tell", which callers treat as no contradiction.
+// Claim is what the store remembers about an address this agent owns.
+type Claim struct {
+	// UUID is the identity installed there; "" means the record predates identity
+	// tracking, which callers read as "cannot tell".
+	UUID string
+	// NextUUID is a rotation that was in flight: Xray may already carry it.
+	NextUUID string
+	// BindingID is WHOSE claim this is. An address can be reassigned between
+	// bindings, so a caller acting on behalf of one binding must not treat
+	// another binding's claim on the same address as its own.
+	BindingID string
+}
+
+func (s *Store) ProvisionedAccounts() (map[string]Claim, error) {
+	rows, err := s.db.Query(`SELECT email, uuid, next_uuid, binding_id FROM provisioned_accounts_v2 WHERE state = 'owned' ORDER BY rowid`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	claims := map[string]Claim{}
+	for rows.Next() {
+		var email string
+		var claim Claim
+		if err := rows.Scan(&email, &claim.UUID, &claim.NextUUID, &claim.BindingID); err != nil {
+			return nil, err
+		}
+		claims[email] = claim
+	}
+	return claims, rows.Err()
 }
 
 // --- commands ---------------------------------------------------------------
