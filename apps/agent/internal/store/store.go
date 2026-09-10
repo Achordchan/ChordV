@@ -506,6 +506,13 @@ func (s *Store) provisionedFromHistory() (int, error) {
 			delete(floors, id)
 		case protocol.CommandRemoveUser:
 			if id, _ := payload["bindingId"].(string); id != "" {
+				stale, err := staleTerminalReplay(entry.revision, owned[id].revision, floors[id])
+				if err != nil {
+					return 0, err
+				}
+				if stale {
+					continue
+				}
 				delete(owned, id)
 				floors[id] = entry.revision
 				continue
@@ -513,10 +520,18 @@ func (s *Store) provisionedFromHistory() (int, error) {
 			// Addressed by email only: release whichever binding holds it.
 			if email := payloadEmail(payload); email != "" {
 				for id, current := range owned {
-					if current.email == email {
-						delete(owned, id)
-						floors[id] = entry.revision
+					if current.email != email {
+						continue
 					}
+					stale, err := staleTerminalReplay(entry.revision, current.revision, floors[id])
+					if err != nil {
+						return 0, err
+					}
+					if stale {
+						continue
+					}
+					delete(owned, id)
+					floors[id] = entry.revision
 				}
 			}
 		case protocol.CommandDisableUser:
@@ -525,6 +540,13 @@ func (s *Store) provisionedFromHistory() (int, error) {
 			// exactly as terminalUser does. A snapshot carrying this binding at
 			// an older per-user revision must not re-enable it.
 			if id, _ := payload["bindingId"].(string); id != "" {
+				stale, err := staleTerminalReplay(entry.revision, owned[id].revision, floors[id])
+				if err != nil {
+					return 0, err
+				}
+				if stale {
+					continue
+				}
 				floors[id] = entry.revision
 			}
 		case protocol.CommandReconcileUsers:
@@ -646,6 +668,30 @@ func (s *Store) provisionedFromHistory() (int, error) {
 		added += int(affected)
 	}
 	return added, nil
+}
+
+// staleTerminalReplay is staleTerminal's rule, for the replay: a terminal
+// command that execution refused did NOT release ownership, so the replay must
+// not release it either.
+//
+// Without this an install at revision 7 followed by a delayed removal at 5 —
+// which staleTerminal skips, leaving the account installed — loses its recovered
+// claim on upgrade. Strict collision handling then refuses to manage that
+// account, and omission cleanup leaves it running.
+//
+// Strictly older, as staleTerminal is: an equal revision is not proof the
+// terminal operation already happened.
+func staleTerminalReplay(revision, bindingRevision, floor string) (bool, error) {
+	for _, against := range []string{bindingRevision, floor} {
+		if against == "" {
+			continue
+		}
+		older, err := decimal.Less(revision, against)
+		if err != nil || older {
+			return older, err
+		}
+	}
+	return false, nil
 }
 
 // notNewer reports whether a revision fails to clear a floor, matching the live
@@ -1024,26 +1070,10 @@ func replaceDesiredUsersTx(tx *sql.Tx, users []protocol.DesiredUser, revision st
 	// strands nothing — and a snapshot that REPLACES one binding with another at
 	// the same address needs exactly that, or the newcomer's upsert hits the
 	// unique email constraint before the deletion below can run, on every retry.
-	existingIDs, err := tx.Query(`SELECT binding_id FROM desired_users_v2`)
+	omitted, err := omittedBindingsTx(tx, keep)
 	if err != nil {
 		return err
 	}
-	omitted := map[string]bool{}
-	for existingIDs.Next() {
-		var id string
-		if err := existingIDs.Scan(&id); err != nil {
-			existingIDs.Close()
-			return err
-		}
-		if !keep[id] {
-			omitted[id] = true
-		}
-	}
-	if err := existingIDs.Err(); err != nil {
-		existingIDs.Close()
-		return err
-	}
-	existingIDs.Close()
 	if err := parkContestedEmailsTx(tx, users, omitted); err != nil {
 		return err
 	}
@@ -1862,7 +1892,21 @@ func originalEmail(stored, bindingID string) string {
 // retires it.
 func (s *Store) ApplyDesiredUsers(users []protocol.DesiredUser) error {
 	return s.transact(func(tx *sql.Tx) error {
-		if err := parkContestedEmailsTx(tx, users, nil); err != nil {
+		// The omitted set matters here as much as in replaceDesiredUsersTx: this
+		// runs FIRST on the direct track, so a snapshot that replaces one binding
+		// with another at the same address would collide here and never reach the
+		// replacement that handles it. Those rows are deleted moments later by
+		// ApplyConfigSnapshot, and the placeholder carries their address for the
+		// tombstone written then.
+		keep := make(map[string]bool, len(users))
+		for _, user := range users {
+			keep[user.BindingID] = true
+		}
+		omitted, err := omittedBindingsTx(tx, keep)
+		if err != nil {
+			return err
+		}
+		if err := parkContestedEmailsTx(tx, users, omitted); err != nil {
 			return err
 		}
 		for _, user := range users {
@@ -1872,6 +1916,26 @@ func (s *Store) ApplyDesiredUsers(users []protocol.DesiredUser) error {
 		}
 		return nil
 	})
+}
+
+// omittedBindingsTx lists the stored bindings a desired set no longer names.
+func omittedBindingsTx(tx *sql.Tx, keep map[string]bool) (map[string]bool, error) {
+	rows, err := tx.Query(`SELECT binding_id FROM desired_users_v2`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	omitted := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		if !keep[id] {
+			omitted[id] = true
+		}
+	}
+	return omitted, rows.Err()
 }
 
 // parkContestedEmailsTx moves every row whose address another binding is taking

@@ -1881,3 +1881,52 @@ func TestTheUpgradeReplayFollowsExecutionOrder(t *testing.T) {
 		t.Fatalf("回放认领了执行时从未安装过的地址：%v", claims)
 	}
 }
+
+// TestTheUpgradeReplayHonorsTerminalStaleness matches staleTerminal.
+//
+// A completed but SUPERSEDED removal did not release anything at runtime — the
+// account stayed installed. Replaying it as a release loses the recovered claim,
+// and strict collision handling then refuses to manage that account while
+// omission cleanup leaves it running.
+func TestTheUpgradeReplayHonorsTerminalStaleness(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+
+	finish := func(id string, kind protocol.CommandType, revision string, payload map[string]any) {
+		t.Helper()
+		if _, err := state.BeginCommand(protocol.Command{
+			CommandID: id, Type: kind, TargetRevision: revision, Payload: payload,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.CompleteCommand(protocol.CommandResult{
+			CommandID: id, Status: protocol.StatusCompleted,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	finish("c1", protocol.CommandEnsureUser, "7", map[string]any{
+		"bindingId": "b1", "email": "u1@chordv", "uuid": "uuid-b1",
+	})
+	// Delayed from revision 5, and skipped by staleTerminal at runtime.
+	finish("c2", protocol.CommandRemoveUser, "5", map[string]any{"bindingId": "b1"})
+
+	if _, err := state.db.Exec(`DELETE FROM provisioned_accounts_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`DELETE FROM meta_v2 WHERE key = 'provisioned_backfilled'`); err != nil {
+		t.Fatal(err)
+	}
+	state.Close()
+
+	reopened := openAt(t, path, "node-1", "boot-2")
+	claims, err := reopened.ProvisionedAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims["u1@chordv"].UUID != "uuid-b1" {
+		t.Fatalf("执行时被跳过的移除，在回放里把认领删掉了：%v", claims)
+	}
+}

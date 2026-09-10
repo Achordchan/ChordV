@@ -2447,3 +2447,41 @@ func TestAnIndividualInstallClearsThePendingNote(t *testing.T) {
 		t.Fatalf("过期的 pending 记录让遗漏清理删掉了面板的账号：%v", fake.calls)
 	}
 }
+
+// TestReconcileMayReplaceOneBindingWithAnother is the processor-level version of
+// the same hand-off: through Reconcile, not just through ApplyConfigSnapshot.
+//
+// Reconcile writes the desired set with ApplyDesiredUsers BEFORE
+// ApplyConfigSnapshot, so a snapshot that gives one binding's address to another
+// and drops the first collides there and never reaches the replacement that
+// handles it — on every retry.
+func TestReconcileMayReplaceOneBindingWithAnother(t *testing.T) {
+	processor, fake, state := newStrictProcessor(t)
+	if result := run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any(userPayload("old", "shared@chordv"))},
+	}), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("result = %+v", result)
+	}
+	fake.live = []xray.LiveUser{{Email: "shared@chordv", UUID: "uuid-old"}}
+	fake.calls = nil
+
+	// The address moves to a different binding, and the old one is dropped.
+	if result := run(t, processor, command("c2", protocol.CommandReconcileUsers, "6", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any(userPayload("new", "shared@chordv"))},
+	}), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("换一个 binding 接手同一个地址失败了，且每次重试都会重复：%+v", result)
+	}
+	moved, _ := state.UserByBindingID("new")
+	if moved == nil || moved.Email != "shared@chordv" {
+		t.Fatalf("接手方没有拿到地址：%+v", moved)
+	}
+	if gone, _ := state.UserByBindingID("old"); gone != nil {
+		t.Fatalf("被替换掉的 binding 记录还在：%+v", gone)
+	}
+	remembered, _ := state.TombstonedEmail("old")
+	if remembered != "shared@chordv" {
+		t.Fatalf("墓碑记下的不是真实地址：%q", remembered)
+	}
+}
