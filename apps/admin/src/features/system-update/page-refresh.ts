@@ -30,9 +30,8 @@ export async function waitForUpdatedPage(version: string, signal: AbortSignal, p
       const found = await probe();
       if (signal.aborted) return false;
       if (found === version) return true;
-      // Older rollback targets do not carry a stamp; require an explicit reload
-      // rather than claiming the old document is confirmed to be the target.
-      if (found === null) return false;
+      // An unstamped document may be the previous release while nginx switches
+      // webroots. Retry within the same bound; only a matching stamp permits reload.
     } catch { if (signal.aborted) return false; }
     if (attempt < 9) await sleep(1000);
   }

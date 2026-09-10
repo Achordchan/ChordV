@@ -37,7 +37,7 @@ function fixture() {
     stopWatching: () => undefined, watchRegistration: (...args: unknown[]) => polls.push(args),
     notifications: { show: (value: unknown) => notified.push(value) }, errorMessage: (error: Error) => error.message
   };
-  for (const key of ["setCreating", "setError", "setNode", "setResult", "setStage", "setRegenerating"]) {
+  for (const key of ["setCreating", "setError", "setNode", "setResult", "setStage", "setRegenerating", "setHasValidation"]) {
     scope[key] = (value: unknown) => mutations.push([key, value]);
   }
   return { scope, session, active, requestBusy, resultAvailable, mutations, notified, polls, changedNodes };
@@ -76,7 +76,7 @@ async function watchFixture(status: unknown, pendingRead?: Promise<unknown>, has
   let listener!: (event: unknown) => void, reads = 0, stopped = 0;
   Object.assign(f.scope, {
     watchEpoch, unsubscribe, deadline: { current: null },
-    window: { setTimeout: () => 1 },
+    window: { setTimeout: () => 1, clearTimeout: () => undefined },
     stopWatching: () => { watchEpoch.current++; unsubscribe.current?.(); unsubscribe.current = null; },
     subscribeAdminRuntimeEvents: (callback: (event: unknown) => void) => { listener = callback; return () => { stopped++; }; },
     fetchAgentOnboarding: () => { reads++; return reads === 1 && pendingRead ? pendingRead : Promise.resolve(status); }
@@ -92,6 +92,10 @@ for (const hasResult of [false, true]) {
   assert.ok(refreshed.mutations.some(([key, value]) => key === 'setStage' && value === (hasResult ? 'awaiting' : 'resume')),
     'a successful pending read must restore the waiting state after a timeout');
   assert.ok(refreshed.mutations.some(([key, value]) => key === 'setError' && value === null), 'pending refresh must clear stale timeout errors');
+}
+for (const environmentReady of [false, true]) {
+  const waiting = await watchFixture({ mode: 'environment', environmentReady, node: registeredNode, spec: null, command: null });
+  assert.ok(waiting.mutations.some(([key, value]) => key === 'setStage' && value === (environmentReady ? 'configure' : 'environment')));
 }
 const failedMutation = await watchFixture({ mode: 'panel', node, spec: {}, command: null }, undefined, false, true);
 assert.ok(!failedMutation.mutations.some(([key]) => key === 'setStage' || key === 'setError'),

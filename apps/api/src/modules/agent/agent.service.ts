@@ -485,7 +485,9 @@ export class AgentService {
             },
             select: { id: true },
           });
-          if (intervening) {
+          // A failed/cancelled validation is terminal from the operator's
+          // perspective. Explicit retry needs a fresh job, not the old failure.
+          if (intervening || outstanding.status === "failed" || outstanding.status === "cancelled") {
             // Match on STILL HOLDING the base key rather than on a status: an
             // outstanding job may already be running (the agent picked it up
             // but has not reported), and a job that completed concurrently has

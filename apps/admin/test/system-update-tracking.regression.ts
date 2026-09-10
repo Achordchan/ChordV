@@ -70,8 +70,14 @@ function streamResponse(signal: AbortSignal) {
   assert.equal(await waitForUpdatedPage('0.0.13', new AbortController().signal,
     async () => ++probes < 3 ? '0.0.12' : '0.0.13', async () => {}), true);
   assert.equal(probes, 3, 'do not reload while nginx still serves the old HTML');
-  assert.equal(await waitForUpdatedPage('0.0.13', new AbortController().signal, async () => null, async () => {}), false,
-    'an unstamped rollback target requires explicit refresh');
+  probes = 0;
+  assert.equal(await waitForUpdatedPage('0.0.13', new AbortController().signal,
+    async () => ++probes < 3 ? null : '0.0.13', async () => {}), true, 'unstamped old HTML must allow the webroot switch');
+  assert.equal(probes, 3);
+  probes = 0;
+  assert.equal(await waitForUpdatedPage('0.0.13', new AbortController().signal, async () => { probes++; return null; }, async () => {}), false,
+    'a permanently unstamped target requires explicit refresh after bounded retries');
+  assert.equal(probes, 10);
   probes = 0;
   assert.equal(await waitForUpdatedPage('0.0.13', new AbortController().signal, async () => { probes++; return '0.0.12'; }, async () => {}), false);
   assert.equal(probes, 10, 'static readiness retries must terminate');
