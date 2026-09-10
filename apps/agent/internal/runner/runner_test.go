@@ -3,8 +3,10 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/big"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1440,5 +1442,97 @@ func TestEnsureUserFalsePayloadDoesNotDisableAnAccount(t *testing.T) {
 	live, err := h.xray.ListUsers(context.Background())
 	if err != nil || len(live) != 1 || live[0].UUID != u.UUID {
 		t.Fatalf("account disappeared: %+v %v", live, err)
+	}
+}
+
+// Models AgentService: boot changes reset one watermark, retained rows allow
+// reconstruction, and direct accounting advances at most four rows per request.
+type singleBootAPI struct {
+	*fakeAPI
+	boot  string
+	ack   int
+	rows  map[string]map[int]bool
+	beats []string
+}
+
+func (a *singleBootAPI) switchBoot(boot string) {
+	if a.boot != boot {
+		a.boot = boot
+		a.ack = 0
+	}
+}
+func (a *singleBootAPI) Heartbeat(_ context.Context, p protocol.Heartbeat) (protocol.HeartbeatAck, error) {
+	a.switchBoot(p.BootID)
+	a.beats = append(a.beats, p.BootID)
+	return protocol.HeartbeatAck{Accepted: true, AckThrough: fmt.Sprint(a.ack), ConfigRevision: "7"}, nil
+}
+func (a *singleBootAPI) UploadBatch(_ context.Context, p protocol.UsageBatch) (protocol.UsageBatchAck, error) {
+	a.switchBoot(p.BootID)
+	if a.rows[p.BootID] == nil {
+		a.rows[p.BootID] = map[int]bool{}
+	}
+	sequence, err := strconv.Atoi(p.Sequence)
+	if err != nil {
+		return protocol.UsageBatchAck{}, err
+	}
+	a.rows[p.BootID][sequence] = true
+	for i := 0; i < 4 && a.rows[p.BootID][a.ack+1]; i++ {
+		a.ack++
+	}
+	return protocol.UsageBatchAck{Accepted: true, AckThrough: fmt.Sprint(a.ack)}, nil
+}
+
+func TestBacklogReplayAndHeartbeatShareServerBoot(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state.db")
+	options := store.Options{NodeID: "node-1", BootID: "old-boot", DefaultOfflineAllowance: big.NewInt(1024)}
+	old, err := store.Open(dir, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := user("b1", "a@example.com", "7", true, "10000")
+	if _, err := old.ApplyConfigSnapshot(protocol.ConfigSnapshot{NodeID: "node-1", Revision: "7", ControlMode: protocol.ModeDirectPrimary, Users: []protocol.DesiredUser{u}}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 10; i++ {
+		if _, err := old.RecordSample([]protocol.AbsoluteCounter{{Email: u.Email, UplinkBytes: fmt.Sprint(i), DownlinkBytes: "0"}}, time.Now(), true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := old.AckThrough("old-boot", "8"); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	options.BootID = bootID
+	state, err := store.Open(dir, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	h := newHarness(t)
+	h.store = state
+	r := h.build(t)
+	a := &singleBootAPI{fakeAPI: h.api, boot: bootID, rows: map[string]map[int]bool{"old-boot": {}}}
+	for i := 1; i <= 8; i++ {
+		a.rows["old-boot"][i] = true
+	}
+	r.deps.API = a
+	for i := 0; i < 5; i++ {
+		if err := r.sendHeartbeat(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.uploadPending(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if pending, err := state.PendingBatchCount(); err != nil || pending != 0 {
+		t.Fatalf("backlog stalled: %d %v", pending, err)
+	}
+	if a.beats[0] != "old-boot" || a.beats[1] != "old-boot" {
+		t.Fatalf("premature boot switch: %v", a.beats)
+	}
+	if a.boot != bootID {
+		t.Fatalf("did not return to current boot: %s", a.boot)
 	}
 }

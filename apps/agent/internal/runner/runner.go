@@ -101,6 +101,9 @@ type Runner struct {
 
 	// state guards the store and every field below it. See the package comment.
 	state sync.Mutex
+	// The server owns one boot watermark. Serialize boot-bearing requests,
+	// independently of state so a slow backend never blocks sampling.
+	transport sync.Mutex
 	// current is the runner's view of what this node should be serving. It is a
 	// cache of the store's, kept because the mode gate is consulted on paths
 	// that must not re-read the database, and refreshed from the store after
@@ -565,6 +568,15 @@ func (r *Runner) sampleLocked(ctx context.Context) error {
 
 // flushBatches uploads the local metering queue.
 func (r *Runner) flushBatches(ctx context.Context) error {
+	if err := r.uploadPending(ctx); err != nil {
+		return err
+	}
+	return r.recoverAfterUpload(ctx)
+}
+
+func (r *Runner) uploadPending(ctx context.Context) error {
+	r.transport.Lock()
+	defer r.transport.Unlock()
 	r.state.Lock()
 	batches, err := r.deps.Store.ListPendingBatches(0)
 	r.state.Unlock()
@@ -572,6 +584,9 @@ func (r *Runner) flushBatches(ctx context.Context) error {
 		return err
 	}
 	for _, batch := range batches {
+		if batch.BootID != batches[0].BootID {
+			break
+		}
 		ack, err := r.deps.API.UploadBatch(ctx, batch)
 		if err != nil {
 			r.setBackendOnline(false)
@@ -588,8 +603,18 @@ func (r *Runner) flushBatches(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		behind, err := decimal.Less(ack.AckThrough, batch.Sequence)
+		if err != nil {
+			return err
+		}
+		if behind {
+			break
+		} // replay again until the server's bounded scan catches up
 	}
+	return nil
+}
 
+func (r *Runner) recoverAfterUpload(ctx context.Context) error {
 	// Draining the queue is what settles the argument about locally-disabled
 	// users: the backend has now seen every byte this node metered, so its answer
 	// about their quota is authoritative and they can come back.
@@ -610,11 +635,26 @@ func (r *Runner) flushBatches(ctx context.Context) error {
 // --- heartbeat ---------------------------------------------------------------
 
 func (r *Runner) sendHeartbeat(ctx context.Context) error {
+	r.transport.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			r.transport.Unlock()
+		}
+	}()
 	r.state.Lock()
 	revision, err := r.deps.Store.ConfigRevision()
 	var depth int
 	if err == nil {
 		depth, err = r.deps.Store.PendingBatchCount()
+	}
+	heartbeatBoot := r.deps.BootID
+	if err == nil {
+		var pending []protocol.UsageBatch
+		pending, err = r.deps.Store.ListPendingBatches(1)
+		if len(pending) > 0 {
+			heartbeatBoot = pending[0].BootID
+		}
 	}
 	status := protocol.XrayOffline
 	if r.xrayHealthy {
@@ -628,7 +668,7 @@ func (r *Runner) sendHeartbeat(ctx context.Context) error {
 	}
 
 	ack, err := r.deps.API.Heartbeat(ctx, protocol.Heartbeat{
-		BootID:         r.deps.BootID,
+		BootID:         heartbeatBoot,
 		Version:        version.Version,
 		ConfigRevision: revision,
 		QueueDepth:     depth,
@@ -643,13 +683,15 @@ func (r *Runner) sendHeartbeat(ctx context.Context) error {
 		return fmt.Errorf("控制面未接受心跳")
 	}
 	r.state.Lock()
-	err = r.ackLocked(r.deps.BootID, ack.AckThrough)
+	err = r.ackLocked(heartbeatBoot, ack.AckThrough)
 	r.backendOnline = true
 	r.state.Unlock()
 	if err != nil {
 		return err
 	}
 
+	r.transport.Unlock()
+	locked = false
 	// An OBSERVING node gets no commands, so the heartbeat's ack is the only
 	// place it learns that the desired state moved. A malformed revision is
 	// ignored rather than fatal: it is the control plane's field, and refusing
