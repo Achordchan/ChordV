@@ -208,13 +208,20 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 	if err := p.deps.Store.ClearBindingTombstone(user.BindingID); err != nil {
 		return err
 	}
-	// Claimed before the install, not after — see RecordProvisioned. An
-	// unfulfilled claim costs one no-op RemoveUser; an unclaimed installed
-	// account serves forever under a shared inbound.
-	if err := p.deps.Store.RecordProvisioned(user.BindingID, user.Email); err != nil {
+	// Claimed only once the install has SUCCEEDED. An attempted install is not
+	// proof of ownership, and the difference is destructive: if this email
+	// already names a panel account, a failed EnsureUser would leave the panel's
+	// account marked as ChordV's, for the next omission to delete.
+	//
+	// The window this opens instead is self-healing. A crash between the install
+	// and the claim leaves an installed account with no claim — but the
+	// desired-user record was written above, so the next reconcile finds it in
+	// the desired set (cleanup skips it) and re-runs both steps. The record
+	// outlives the gap precisely because the store is written before Xray.
+	if err := p.deps.Xray.EnsureUser(ctx, user); err != nil {
 		return err
 	}
-	return p.deps.Xray.EnsureUser(ctx, user)
+	return p.deps.Store.RecordProvisioned(user.BindingID, user.Email)
 }
 
 // supersededBinding is the ONE place that decides whether an instruction about
@@ -774,13 +781,19 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	}
 	for _, user := range users {
 		if user.Enabled {
+			// Install FIRST, then claim — see ensureUser. A failed install must
+			// not leave a claim on an address that may be the panel's.
+			//
+			// The pending note is only released after the claim exists, which is
+			// what keeps a failure here from dropping the account out of
+			// ownership altogether.
+			if err := p.deps.Xray.EnsureUser(ctx, user); err != nil {
+				return err
+			}
 			if err := p.deps.Store.RecordProvisioned(user.BindingID, user.Email); err != nil {
 				return err
 			}
 			if err := clearPending(user.Email); err != nil {
-				return err
-			}
-			if err := p.deps.Xray.EnsureUser(ctx, user); err != nil {
 				return err
 			}
 			continue

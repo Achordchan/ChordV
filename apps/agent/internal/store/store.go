@@ -370,7 +370,7 @@ func (s *Store) provisionedFromHistory() (int, error) {
 	rows, err := s.db.Query(`
 		SELECT command_type, target_revision, payload FROM commands_v2
 		WHERE completed_at IS NOT NULL AND result LIKE '%"status":"completed"%'
-		  AND command_type IN ('ENSURE_USER', 'ENABLE_USER', 'REMOVE_USER', 'RECONCILE_USERS')
+		  AND command_type IN ('ENSURE_USER', 'ENABLE_USER', 'DISABLE_USER', 'REMOVE_USER', 'RECONCILE_USERS')
 		ORDER BY completed_at ASC, rowid ASC`)
 	if err != nil {
 		return 0, err
@@ -407,7 +407,8 @@ func (s *Store) provisionedFromHistory() (int, error) {
 	if sortErr != nil {
 		return 0, sortErr
 	}
-	owned := map[string]string{} // bindingId -> the email it currently holds
+	owned := map[string]string{}  // bindingId -> the email it currently holds
+	floors := map[string]string{} // bindingId -> the revocation floor, as tombstones do
 	// The effective mode is tracked, not required of every payload: an ABSENT
 	// controlMode means "keep whatever this node is on", and the processor
 	// honours that. Ignoring those reconciles would drop their releases —
@@ -434,12 +435,26 @@ func (s *Store) provisionedFromHistory() (int, error) {
 		// and a panel account that reused the old one could be deleted.
 		case protocol.CommandEnsureUser, protocol.CommandEnableUser:
 			id, _ := payload["bindingId"].(string)
-			if email := payloadEmail(payload); id != "" && email != "" {
-				owned[id] = email
+			email := payloadEmail(payload)
+			if id == "" || email == "" {
+				continue
 			}
+			superseded, err := notNewer(entry.revision, floors[id])
+			if err != nil {
+				return 0, err
+			}
+			if superseded {
+				continue
+			}
+			owned[id] = email
+			// The live path clears the tombstone when a binding legitimately
+			// comes back; the replay has to do the same or every later snapshot
+			// carrying it would look revoked.
+			delete(floors, id)
 		case protocol.CommandRemoveUser:
 			if id, _ := payload["bindingId"].(string); id != "" {
 				delete(owned, id)
+				floors[id] = entry.revision
 				continue
 			}
 			// Addressed by email only: release whichever binding holds it.
@@ -447,8 +462,17 @@ func (s *Store) provisionedFromHistory() (int, error) {
 				for id, held := range owned {
 					if held == email {
 						delete(owned, id)
+						floors[id] = entry.revision
 					}
 				}
+			}
+		case protocol.CommandDisableUser:
+			// Ownership survives a disable — the record stays and a later enable
+			// puts the same account back — but the FLOOR is recorded either way,
+			// exactly as terminalUser does. A snapshot carrying this binding at
+			// an older per-user revision must not re-enable it.
+			if id, _ := payload["bindingId"].(string); id != "" {
+				floors[id] = entry.revision
 			}
 		case protocol.CommandReconcileUsers:
 			if value, _ := payload["controlMode"].(string); protocol.IsControlMode(value) {
@@ -467,8 +491,36 @@ func (s *Store) provisionedFromHistory() (int, error) {
 			for _, item := range items {
 				user, _ := item.(map[string]any)
 				id, _ := user["bindingId"].(string)
-				if email := payloadEmail(user); id != "" && email != "" {
-					next[id] = email
+				email := payloadEmail(user)
+				if id == "" || email == "" {
+					continue
+				}
+				// A snapshot's per-user revision is the binding's own, and it can
+				// be far below the snapshot's. mergeNewerBindings drops a user
+				// whose revision does not clear the binding's floor, so the
+				// reconcile never installed it and never owned it — replaying the
+				// raw payload instead would re-claim an address the control plane
+				// released, and a panel account that reused it would then be
+				// deleted as ours.
+				revision, _ := user["revision"].(string)
+				if revision == "" {
+					revision = entry.revision
+				}
+				superseded, err := notNewer(revision, floors[id])
+				if err != nil {
+					return 0, err
+				}
+				if superseded {
+					continue
+				}
+				next[id] = email
+				delete(floors, id)
+			}
+			// Omitting a binding is a revocation, and it leaves a floor — the
+			// same one replaceDesiredUsersTx writes.
+			for id := range owned {
+				if _, kept := next[id]; !kept {
+					floors[id] = entry.revision
 				}
 			}
 			owned = next
@@ -489,6 +541,20 @@ func (s *Store) provisionedFromHistory() (int, error) {
 		added += int(affected)
 	}
 	return added, nil
+}
+
+// notNewer reports whether a revision fails to clear a floor, matching the live
+// guard: recorded AT or below the floor means superseded. An empty floor is the
+// absence of one.
+func notNewer(revision, floor string) (bool, error) {
+	if floor == "" {
+		return false, nil
+	}
+	order, err := decimal.Cmp(revision, floor)
+	if err != nil {
+		return false, err
+	}
+	return order <= 0, nil
 }
 
 func payloadEmail(payload map[string]any) string {

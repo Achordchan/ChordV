@@ -1350,3 +1350,61 @@ func TestTheUpgradeReplayInheritsTheControlMode(t *testing.T) {
 		t.Fatalf("升级后的供给凭据 = %v，want 空：省略 controlMode 的那次 reconcile 清空了用户集", got)
 	}
 }
+
+// TestTheUpgradeReplayHonorsPerBindingFloors is why revision ORDER alone is not
+// enough.
+//
+// A snapshot's per-user revision is the binding's own and can sit far below the
+// snapshot's. The live merge drops a user whose revision does not clear the
+// binding's floor, so that reconcile never installed it and never owned it.
+// Replaying the raw payload instead re-claims an address the control plane
+// released — and a panel account that reused it is then deleted as ours.
+func TestTheUpgradeReplayHonorsPerBindingFloors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+
+	finish := func(id string, kind protocol.CommandType, revision string, payload map[string]any) {
+		t.Helper()
+		if _, err := state.BeginCommand(protocol.Command{
+			CommandID: id, Type: kind, TargetRevision: revision, Payload: payload,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.CompleteCommand(protocol.CommandResult{
+			CommandID: id, Status: protocol.StatusCompleted,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	finish("c1", protocol.CommandEnsureUser, "5", map[string]any{"bindingId": "b1", "email": "recycled@chordv", "uuid": "u"})
+	finish("c2", protocol.CommandRemoveUser, "6", map[string]any{"bindingId": "b1", "email": "recycled@chordv"})
+	// A snapshot at 10 still carrying b1 — but at ITS revision 5, which the live
+	// merge measures against the binding's floor of 6 and drops.
+	finish("c3", protocol.CommandReconcileUsers, "10", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users": []any{
+			map[string]any{"bindingId": "b1", "email": "recycled@chordv", "uuid": "u", "revision": "5"},
+			map[string]any{"bindingId": "b2", "email": "kept@chordv", "uuid": "u", "revision": "9"},
+		},
+	})
+
+	if _, err := state.db.Exec(`DELETE FROM provisioned_accounts_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`DELETE FROM meta_v2 WHERE key = 'provisioned_backfilled'`); err != nil {
+		t.Fatal(err)
+	}
+	state.Close()
+
+	reopened := openAt(t, path, "node-1", "boot-2")
+	got, err := reopened.ProvisionedAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "kept@chordv" {
+		t.Fatalf("升级后的供给凭据 = %v，want 仅 [kept@chordv]：b1 在 revision 6 被移除，"+
+			"快照携带的 revision 5 过不了它的下限", got)
+	}
+}

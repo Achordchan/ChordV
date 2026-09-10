@@ -1843,3 +1843,47 @@ func TestARenameReleasesBothFormsOfOwnership(t *testing.T) {
 		})
 	}
 }
+
+// TestAFailedInstallDoesNotClaimTheAddress separates an ATTEMPTED install from a
+// successful one.
+//
+// Claiming first is the right trade when the account is ours to create. It is
+// the wrong one when the email already names a live account this agent never
+// provisioned — that is the panel's, and a failed EnsureUser would leave it
+// marked as ChordV's for the next omission to delete.
+func TestAFailedInstallDoesNotClaimTheAddress(t *testing.T) {
+	for _, viaCommand := range []bool{true, false} {
+		name := "reconcile"
+		if viaCommand {
+			name = "ensure_user"
+		}
+		t.Run(name, func(t *testing.T) {
+			processor, fake, state := newProcessor(t, false)
+			fake.live = []xray.LiveUser{{Email: "panel@panel"}}
+			fake.ensureErr = errors.New("gRPC 断开")
+
+			payload := userPayload("b1", "panel@panel")
+			if viaCommand {
+				run(t, processor, command("c1", protocol.CommandEnsureUser, "5", payload), true)
+			} else {
+				run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", map[string]any{
+					"controlMode": string(protocol.ModeDirectPrimary),
+					"users":       []any{map[string]any(payload)},
+				}), true)
+			}
+			if provisioned, _ := state.ProvisionedAccounts(); len(provisioned) != 0 {
+				t.Fatalf("安装失败却认领了这个地址：%v —— 它可能是面板的账号", provisioned)
+			}
+
+			// And the account is left alone by the next omission.
+			fake.ensureErr = nil
+			fake.calls = nil
+			run(t, processor, command("c2", protocol.CommandReconcileUsers, "6", map[string]any{
+				"controlMode": string(protocol.ModeDirectPrimary), "users": []any{},
+			}), true)
+			if contains(fake.calls, "remove:panel@panel") {
+				t.Fatalf("面板账号被当成本节点的删掉了：%v", fake.calls)
+			}
+		})
+	}
+}
