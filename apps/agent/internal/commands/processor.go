@@ -80,6 +80,16 @@ func (p *Processor) Execute(ctx context.Context, command protocol.Command, writa
 			result.Result[key] = value
 		}
 	}
+	// The first durable completed result already contains its settlement
+	// boundary. There must not be a replayable success awaiting runner enrichment.
+	if result.Status == protocol.StatusCompleted &&
+		(command.Type == protocol.CommandDisableUser || command.Type == protocol.CommandRemoveUser) {
+		watermarks, err := p.deps.Store.PendingBatchWatermarks()
+		if err != nil {
+			return protocol.CommandResult{}, err
+		}
+		result.Result["disableWatermarks"] = watermarks
+	}
 	if err := p.deps.Store.CompleteCommand(result); err != nil {
 		return protocol.CommandResult{}, err
 	}

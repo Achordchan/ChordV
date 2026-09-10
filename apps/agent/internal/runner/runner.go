@@ -119,6 +119,9 @@ type Runner struct {
 	// would serve nobody until its next restart. So the intent stays set until a
 	// reconcile actually completes.
 	reconcilePending bool
+	// Incremented only when an acknowledgement removes durable batches. A GET
+	// started before that settlement cannot release the corresponding cutoff.
+	settlementEpoch uint64
 }
 
 // New builds a runner and seeds it with what the store already believes.
@@ -261,6 +264,9 @@ func (r *Runner) shutdown() {
 func (r *Runner) refreshConfig(ctx context.Context) (protocol.ConfigSnapshot, error) {
 	ctx, cancel := context.WithTimeout(ctx, ShutdownTimeout)
 	defer cancel()
+	r.state.Lock()
+	epoch := r.settlementEpoch
+	r.state.Unlock()
 	snapshot, err := r.deps.API.GetConfig(ctx)
 	if err != nil {
 		r.setBackendOnline(false)
@@ -274,6 +280,9 @@ func (r *Runner) refreshConfig(ctx context.Context) (protocol.ConfigSnapshot, er
 	// as "backend offline" and started spending the offline allowance while the
 	// backend was demonstrably up.
 	r.backendOnline = true
+	if epoch != r.settlementEpoch {
+		return protocol.ConfigSnapshot{}, fmt.Errorf("配置请求期间计量已结算，丢弃响应并重新拉取")
+	}
 	return r.applyRefreshedLocked(ctx, snapshot)
 }
 
@@ -554,7 +563,7 @@ func (r *Runner) flushBatches(ctx context.Context) error {
 			return fmt.Errorf("控制面未接受计量批次 %s/%s", batch.BootID, batch.Sequence)
 		}
 		r.state.Lock()
-		_, err = r.deps.Store.AckThrough(batch.BootID, ack.AckThrough)
+		err = r.ackLocked(batch.BootID, ack.AckThrough)
 		r.backendOnline = true
 		r.state.Unlock()
 		if err != nil {
@@ -614,7 +623,7 @@ func (r *Runner) sendHeartbeat(ctx context.Context) error {
 		return fmt.Errorf("控制面未接受心跳")
 	}
 	r.state.Lock()
-	_, err = r.deps.Store.AckThrough(r.deps.BootID, ack.AckThrough)
+	err = r.ackLocked(r.deps.BootID, ack.AckThrough)
 	r.backendOnline = true
 	r.state.Unlock()
 	if err != nil {
@@ -725,21 +734,6 @@ func (r *Runner) execute(ctx context.Context, command protocol.Command) (protoco
 	if err != nil {
 		return protocol.CommandResult{}, err
 	}
-	if result.Status == protocol.StatusCompleted && isTerminal(command.Type) {
-		// How far the local queue reaches, so the control plane knows which
-		// batches must still settle before it may consider the user gone.
-		watermarks, err := r.deps.Store.PendingBatchWatermarks()
-		if err != nil {
-			return protocol.CommandResult{}, err
-		}
-		if result.Result == nil {
-			result.Result = map[string]any{}
-		}
-		result.Result["disableWatermarks"] = watermarks
-		if err := r.deps.Store.CompleteCommand(result); err != nil {
-			return protocol.CommandResult{}, err
-		}
-	}
 	if r.current, err = r.deps.Store.ConfigSnapshot(); err != nil {
 		return protocol.CommandResult{}, err
 	}
@@ -788,4 +782,12 @@ func (r *Runner) restoreOfflineUsersLocked(incoming, local []protocol.DesiredUse
 		recover = append(recover, user)
 	}
 	return r.deps.Store.RestoreBackendConfirmedUsers(recover)
+}
+
+func (r *Runner) ackLocked(bootID, through string) error {
+	removed, err := r.deps.Store.AckThrough(bootID, through)
+	if err == nil && removed > 0 {
+		r.settlementEpoch++
+	}
+	return err
 }

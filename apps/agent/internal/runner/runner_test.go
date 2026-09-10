@@ -1218,3 +1218,101 @@ func TestSSEReconcileMetersRemovalAndPreservesLocalCutoff(t *testing.T) {
 		t.Fatalf("SSE bypassed cutoff: %+v %v", stored, err)
 	}
 }
+
+type delayedConfigAPI struct {
+	*fakeAPI
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (a *delayedConfigAPI) GetConfig(ctx context.Context) (protocol.ConfigSnapshot, error) {
+	snapshot, err := a.fakeAPI.GetConfig(ctx)
+	close(a.entered)
+	select {
+	case <-ctx.Done():
+		return snapshot, ctx.Err()
+	case <-a.release:
+	}
+	return snapshot, err
+}
+
+func TestConfigInFlightAcrossSettlementCannotReleaseCutoff(t *testing.T) {
+	for _, via := range []string{"heartbeat", "upload"} {
+		t.Run(via, func(t *testing.T) {
+			h := newHarness(t)
+			u := user("b1", "a@example.com", "7", true, "1000")
+			u.OfflineAllowanceBytes = "10"
+			h.seed(t, "7", protocol.ModeDirectPrimary, u)
+			r := h.build(t)
+			h.xray.counters = []protocol.AbsoluteCounter{{Email: u.Email, UplinkBytes: "0", DownlinkBytes: "0"}}
+			if err := r.sample(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			h.xray.counters[0].UplinkBytes = "20"
+			if err := r.sample(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			h.api.config = protocol.ConfigSnapshot{NodeID: "node-1", Revision: "8", ControlMode: protocol.ModeDirectPrimary, Users: []protocol.DesiredUser{u}}
+			delayed := &delayedConfigAPI{fakeAPI: h.api, entered: make(chan struct{}), release: make(chan struct{})}
+			r.deps.API = delayed
+			done := make(chan error, 1)
+			go func() { _, err := r.refreshConfig(context.Background()); done <- err }()
+			<-delayed.entered
+			if via == "heartbeat" {
+				h.api.heartbeatAck = protocol.HeartbeatAck{Accepted: true, AckThrough: "2", ConfigRevision: "7"}
+				if err := r.sendHeartbeat(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				// Exercise the exact acknowledgement helper used by UploadBatch;
+				// don't launch its subsequent recovery GET into this blocked fixture.
+				r.state.Lock()
+				err := r.ackLocked(bootID, "2")
+				r.state.Unlock()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			close(delayed.release)
+			if err := <-done; err == nil {
+				t.Fatal("pre-settlement response accepted")
+			}
+			stored, err := h.store.UserByBindingID("b1")
+			if err != nil || stored.Enabled {
+				t.Fatalf("stale credit released cutoff: %+v %v", stored, err)
+			}
+			r.deps.API = h.api
+			if _, err := r.refreshConfig(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestFirstDurableTerminalResultIncludesWatermarks(t *testing.T) {
+	h := newHarness(t)
+	u := user("b1", "a@example.com", "7", true, "1000")
+	h.seed(t, "7", protocol.ModeDirectPrimary, u)
+	r := h.build(t)
+	h.xray.counters = []protocol.AbsoluteCounter{{Email: u.Email, UplinkBytes: "0", DownlinkBytes: "0"}}
+	if err := r.sample(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cmd := commandOf("terminal", protocol.CommandRemoveUser, "8", map[string]any{"bindingId": "b1"})
+	// Stop precisely where Execute returns, before the runner can write again.
+	if result, err := r.deps.Commands.Execute(context.Background(), cmd, true); err != nil || result.Status != protocol.StatusCompleted {
+		t.Fatalf("execute: %+v %v", result, err)
+	}
+	stored, err := h.store.CompletedCommand(cmd.CommandID)
+	if err != nil || stored == nil {
+		t.Fatalf("stored: %+v %v", stored, err)
+	}
+	marks, ok := stored.Result["disableWatermarks"].([]any)
+	if !ok || len(marks) != 1 {
+		t.Fatalf("first completion lacks boundary: %+v", stored.Result)
+	}
+	h.xray.healthErr = errors.New("down after crash")
+	if result, err := r.execute(context.Background(), cmd); err != nil || result.Status != protocol.StatusCompleted {
+		t.Fatalf("replay: %+v %v", result, err)
+	}
+}
