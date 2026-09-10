@@ -186,6 +186,12 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 	if err := p.deps.Store.ClearBindingTombstone(user.BindingID); err != nil {
 		return err
 	}
+	// Claimed before the install, not after — see RecordProvisioned. An
+	// unfulfilled claim costs one no-op RemoveUser; an unclaimed installed
+	// account serves forever under a shared inbound.
+	if err := p.deps.Store.RecordProvisioned(user.BindingID, user.Email); err != nil {
+		return err
+	}
 	return p.deps.Xray.EnsureUser(ctx, user)
 }
 
@@ -364,6 +370,13 @@ func (p *Processor) terminalUser(ctx context.Context, command protocol.Command, 
 	// serving with nothing left to notice it.
 	if err := p.deps.Xray.RemoveUser(ctx, email); err != nil {
 		return err
+	}
+	// A REMOVE ends the agent's claim on the account; a DISABLE does not — the
+	// record survives and a later enable puts the same account back.
+	if remove {
+		if err := p.deps.Store.ForgetProvisioned([]string{email}); err != nil {
+			return err
+		}
 	}
 	// Recorded for BOTH kinds, and even when this node had no row to act on.
 	//
@@ -579,9 +592,26 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	if err != nil {
 		return err
 	}
-	ours := make(map[string]bool, len(recorded))
-	for _, user := range recorded {
-		ours[user.Email] = true
+	// Ownership comes from PROVISIONING, not from having a desired-user record.
+	//
+	// The control plane's getConfig includes PANEL-sourced bindings while a node
+	// is in xui_primary or shadow_direct, and filters them out only in
+	// direct_primary. So a node that observed a snapshot in shadow mode holds
+	// desired-user rows for the panel's own accounts, and the filtered set it
+	// receives on promotion omits them. Reading ownership off those rows would
+	// classify the panel's accounts as ChordV leftovers and uninstall them —
+	// silently, with RemoveUnknownUsers off and no warning, because as far as
+	// that map is concerned they were ours all along.
+	//
+	// "This agent called EnsureUser for this email" is the fact none of that can
+	// manufacture.
+	provisioned, err := p.deps.Store.ProvisionedAccounts()
+	if err != nil {
+		return err
+	}
+	ours := make(map[string]bool, len(provisioned))
+	for _, email := range provisioned {
+		ours[email] = true
 	}
 	// Accounts whose record was erased by a snapshot applied while this node
 	// could not write Xray. They are still ours, and this is the only surviving
@@ -618,6 +648,11 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 		if err := p.deps.Xray.RemoveUser(ctx, old); err != nil {
 			return err
 		}
+		// The old email is gone for good; the new one is claimed by the install
+		// pass below.
+		if err := p.deps.Store.ForgetProvisioned([]string{old}); err != nil {
+			return err
+		}
 		p.logf("[agent] 用户 %s 的 email 由 %s 变更为 %s，已卸载旧账号", user.BindingID, old, user.Email)
 	}
 	for _, user := range users {
@@ -637,6 +672,9 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 			delete(stillPending, user.Email)
 		}
 		if user.Enabled {
+			if err := p.deps.Store.RecordProvisioned(user.BindingID, user.Email); err != nil {
+				return err
+			}
 			if err := p.deps.Xray.EnsureUser(ctx, user); err != nil {
 				return err
 			}
@@ -645,6 +683,9 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 		if err := p.deps.Xray.RemoveUser(ctx, user.Email); err != nil {
 			return err
 		}
+		// Disabled, so it is no longer installed — but the RECORD stays, and so
+		// the account is still this agent's to account for. The claim is dropped
+		// only when the account leaves for good, below.
 	}
 	var unknown, retired []string
 	liveEmails := make(map[string]bool, len(live))
@@ -675,6 +716,11 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	if err := p.deps.Store.ClearPendingRemoval(retired); err != nil {
 		return err
 	}
+	// Retired accounts are uninstalled and out of the desired set; nothing is
+	// left for this agent to answer for.
+	if err := p.deps.Store.ForgetProvisioned(retired); err != nil {
+		return err
+	}
 	if len(unknown) > 0 {
 		p.logf("[agent] 入站中有 %d 个本节点从未记录过的账号，未做处理（B1 下入站与 3x-ui 面板共用，"+
 			"它们可能属于面板）：%v", len(unknown), unknown)
@@ -693,11 +739,25 @@ func (p *Processor) rememberDroppedOwnership(users []protocol.DesiredUser) error
 	for _, user := range users {
 		desired[user.Email] = true
 	}
+	// Same restriction as Reconcile's ownership map, and for the same reason: a
+	// desired-user row is not evidence that ChordV provisioned the account. In
+	// the shadow modes those rows include the PANEL's bindings, and noting them
+	// as "ours, pending removal" would hand a later promotion a list of the
+	// panel's accounts to uninstall — the mistake merely deferred rather than
+	// avoided.
+	provisioned, err := p.deps.Store.ProvisionedAccounts()
+	if err != nil {
+		return err
+	}
+	ours := make(map[string]bool, len(provisioned))
+	for _, email := range provisioned {
+		ours[email] = true
+	}
 	var dropped []string
 	for _, user := range recorded {
 		// Covers both an omitted binding and a renamed one: either way this
 		// email is about to lose the record that names it.
-		if !desired[user.Email] {
+		if !desired[user.Email] && ours[user.Email] {
 			dropped = append(dropped, user.Email)
 		}
 	}

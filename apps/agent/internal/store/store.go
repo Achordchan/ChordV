@@ -189,6 +189,14 @@ func (s *Store) migrate() error {
 			email TEXT PRIMARY KEY,
 			recorded_at TEXT NOT NULL
 		);
+		-- Accounts THIS agent installed. Deliberately separate from
+		-- desired_users_v2: under B1 a stored desired-user record does NOT prove
+		-- ChordV provisioned the account. See ProvisionedAccounts.
+		CREATE TABLE IF NOT EXISTS provisioned_accounts_v2 (
+			email TEXT PRIMARY KEY,
+			binding_id TEXT NOT NULL,
+			recorded_at TEXT NOT NULL
+		);
 		CREATE TABLE IF NOT EXISTS commands_v2 (
 			command_id TEXT PRIMARY KEY,
 			command_type TEXT NOT NULL,
@@ -1326,6 +1334,72 @@ func (s *Store) ClearPendingRemoval(emails []string) error {
 		}
 		return nil
 	})
+}
+
+// --- provisioning evidence --------------------------------------------------
+
+// RecordProvisioned notes that THIS agent installed an account in Xray.
+//
+// The distinction this table exists for: under B1 the inbound is shared with the
+// 3x-ui panel, and a stored desired-user record does NOT prove ChordV owns the
+// account it names. The control plane's getConfig includes PANEL-sourced
+// bindings while a node is in xui_primary or shadow_direct, and filters them out
+// only in direct_primary. So a node that observed a snapshot in shadow mode has
+// desired-user rows for the panel's own accounts — and on promotion the filtered
+// set omits them. Deriving ownership from those rows would classify the panel's
+// accounts as ChordV leftovers and uninstall them, with RemoveUnknownUsers off
+// and nothing to warn anybody.
+//
+// Provisioning is the fact that survives that: this agent called EnsureUser for
+// this email. Nothing the control plane says can manufacture it.
+//
+// Recorded BEFORE the install, on purpose. If the install then fails we claim an
+// account that does not exist, and the worst that costs is one RemoveUser for an
+// account Xray does not have — which the adapter contract says succeeds. The
+// opposite order risks an installed account nothing claims, which under a shared
+// inbound serves forever.
+func (s *Store) RecordProvisioned(bindingID, email string) error {
+	if email == "" {
+		return nil
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO provisioned_accounts_v2(email, binding_id, recorded_at) VALUES(?, ?, ?)
+		ON CONFLICT(email) DO UPDATE SET binding_id = excluded.binding_id`,
+		email, bindingID, isoMillis(time.Now()))
+	return err
+}
+
+// ForgetProvisioned drops the claim on accounts that are no longer installed.
+func (s *Store) ForgetProvisioned(emails []string) error {
+	if len(emails) == 0 {
+		return nil
+	}
+	return s.transact(func(tx *sql.Tx) error {
+		for _, email := range emails {
+			if _, err := tx.Exec(`DELETE FROM provisioned_accounts_v2 WHERE email = ?`, email); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// ProvisionedAccounts lists the emails this agent has installed.
+func (s *Store) ProvisionedAccounts() ([]string, error) {
+	rows, err := s.db.Query(`SELECT email FROM provisioned_accounts_v2 ORDER BY rowid`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	emails := []string{}
+	for rows.Next() {
+		var email string
+		if err := rows.Scan(&email); err != nil {
+			return nil, err
+		}
+		emails = append(emails, email)
+	}
+	return emails, rows.Err()
 }
 
 // --- commands ---------------------------------------------------------------

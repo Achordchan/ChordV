@@ -445,14 +445,10 @@ func contains(values []string, want string) bool {
 // distinction the panel's accounts do not satisfy.
 func TestReconcileRemovesOmittedAccountsItHasARecordOf(t *testing.T) {
 	processor, fake, state := newProcessor(t, false)
-	for _, seeded := range []protocol.DesiredUser{
-		{BindingID: "b1", Email: "u1@chordv", UUID: "u1", Revision: "1", Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000"},
-		{BindingID: "b2", Email: "revoked@chordv", UUID: "u2", Revision: "1", Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000"},
-	} {
-		if err := state.UpsertDesiredUser(seeded); err != nil {
-			t.Fatal(err)
-		}
-	}
+	seedOwned(t, state,
+		protocol.DesiredUser{BindingID: "b1", Email: "u1@chordv", UUID: "u1", Revision: "1", Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000"},
+		protocol.DesiredUser{BindingID: "b2", Email: "revoked@chordv", UUID: "u2", Revision: "1", Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000"},
+	)
 	fake.live = []xray.LiveUser{
 		{Email: "u1@chordv"},
 		{Email: "revoked@chordv"}, // ours, dropped from the new instruction
@@ -479,12 +475,10 @@ func TestReconcileRemovesOmittedAccountsItHasARecordOf(t *testing.T) {
 
 func TestAFailedUninstallStopsTheSnapshotFromErasingTheEvidence(t *testing.T) {
 	processor, fake, state := newProcessor(t, false)
-	if err := state.UpsertDesiredUser(protocol.DesiredUser{
+	seedOwned(t, state, protocol.DesiredUser{
 		BindingID: "b2", Email: "revoked@chordv", UUID: "u2", Revision: "1",
 		Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	fake.live = []xray.LiveUser{{Email: "revoked@chordv"}}
 	fake.removeErrFor = "revoked@chordv"
 
@@ -681,12 +675,10 @@ func TestAFailedHandoverDoesNotAdvanceAnything(t *testing.T) {
 //	never heard of → under the panel-shared inbound, leaves it serving.
 func TestOwnershipSurvivesASnapshotAppliedWithoutWriteAccess(t *testing.T) {
 	processor, fake, state := newProcessor(t, false)
-	if err := state.UpsertDesiredUser(protocol.DesiredUser{
+	seedOwned(t, state, protocol.DesiredUser{
 		BindingID: "b2", Email: "revoked@chordv", UUID: "u2", Revision: "1",
 		Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	fake.live = []xray.LiveUser{{Email: "revoked@chordv"}, {Email: "someone@panel"}}
 
 	// Observing mode: the binding is dropped, and nothing may touch Xray.
@@ -726,12 +718,10 @@ func TestOwnershipSurvivesASnapshotAppliedWithoutWriteAccess(t *testing.T) {
 
 func TestAReaddedAccountClearsItsPendingRemoval(t *testing.T) {
 	processor, fake, state := newProcessor(t, false)
-	if err := state.UpsertDesiredUser(protocol.DesiredUser{
+	seedOwned(t, state, protocol.DesiredUser{
 		BindingID: "b1", Email: "u1@chordv", UUID: "u1", Revision: "1",
 		Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	fake.live = []xray.LiveUser{{Email: "u1@chordv"}}
 	run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", map[string]any{
 		"controlMode": string(protocol.ModeShadowDirect), "users": []any{},
@@ -1497,5 +1487,91 @@ func TestASnapshotOmissionLeavesARevocationFloor(t *testing.T) {
 	}
 	if !installed {
 		t.Fatalf("吊销下限挡住了更新的启用：%v", fake.calls)
+	}
+}
+
+// seedOwned puts a user in the store AND records that this agent installed its
+// account.
+//
+// Both halves are needed to express "an account this node owns": since ownership
+// stopped being derived from the desired-user row, seeding the row alone models
+// an OBSERVED binding — which is exactly the panel-sourced case that must not be
+// uninstalled.
+func seedOwned(t *testing.T, state *store.Store, users ...protocol.DesiredUser) {
+	t.Helper()
+	for _, user := range users {
+		if err := state.UpsertDesiredUser(user); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.RecordProvisioned(user.BindingID, user.Email); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestPromotionDoesNotUninstallPanelAccountsItMerelyObserved is the disaster this
+// agent exists to avoid, and the reason ownership is provisioning rather than
+// having a record.
+//
+// The deployed getConfig includes PANEL-sourced bindings while a node is in
+// xui_primary or shadow_direct, and filters them out only in direct_primary. So
+// an observing node ends up holding desired-user rows for the panel's own
+// accounts, and the set it receives on promotion omits them. If ownership were
+// read off those rows, the promotion would classify the panel administrator's
+// users as ChordV leftovers and uninstall them — with RemoveUnknownUsers off,
+// which is precisely the guard that is supposed to make that impossible.
+func TestPromotionDoesNotUninstallPanelAccountsItMerelyObserved(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	fake.live = []xray.LiveUser{{Email: "ours@chordv"}, {Email: "panel@panel"}}
+
+	// Shadow mode: the snapshot carries BOTH ChordV's binding and the panel's.
+	// Nothing may touch Xray, and both get local records.
+	if result := run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", map[string]any{
+		"controlMode": string(protocol.ModeShadowDirect),
+		"users": []any{
+			map[string]any(userPayload("b1", "ours@chordv")),
+			map[string]any(userPayload("bp", "panel@panel")),
+		},
+	}), false); result.Status != protocol.StatusCompleted {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("an observing node touched Xray: %v", fake.calls)
+	}
+	if stored, _ := state.UserByBindingID("bp"); stored == nil {
+		t.Fatal("前提没成立：观察态本该留下面板 binding 的记录")
+	}
+
+	// Still observing, but the panel binding is now dropped from the snapshot —
+	// this is where rememberDroppedOwnership decides who is "ours, pending
+	// removal". Noting the panel's account here would merely defer the same
+	// mistake to the promotion below.
+	if result := run(t, processor, command("c2", protocol.CommandReconcileUsers, "6", map[string]any{
+		"controlMode": string(protocol.ModeShadowDirect),
+		"users":       []any{map[string]any(userPayload("b1", "ours@chordv"))},
+	}), false); result.Status != protocol.StatusCompleted {
+		t.Fatalf("result = %+v", result)
+	}
+
+	// Promotion. direct_primary filters the panel binding out of the snapshot.
+	fake.calls = nil
+	if result := run(t, processor, command("c3", protocol.CommandReconcileUsers, "7", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any(userPayload("b1", "ours@chordv"))},
+	}), false); result.Status != protocol.StatusCompleted {
+		t.Fatalf("result = %+v", result)
+	}
+	if contains(fake.calls, "remove:panel@panel") {
+		t.Fatalf("晋升把面板管理员的用户删了：%v", fake.calls)
+	}
+	// And it must not be queued for a later promotion to delete either.
+	pending, err := state.PendingRemovals()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, email := range pending {
+		if email == "panel@panel" {
+			t.Fatal("面板账号被记成了「待清理」，只是把同一个错误推迟了")
+		}
 	}
 }
