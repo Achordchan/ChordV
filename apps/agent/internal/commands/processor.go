@@ -22,8 +22,9 @@ import (
 
 // Deps are the collaborators one processor needs.
 type Deps struct {
-	Store *store.Store
-	Xray  xray.Adapter
+	Store         *store.Store
+	Xray          xray.Adapter
+	ValidatePanel func(context.Context, map[string]any) (map[string]any, error)
 	// RemoveUnknownUsers decides whether a reconcile may uninstall an account
 	// that is live in Xray but absent from the desired set. See Reconcile — it
 	// is OFF by default, and that is a deliberate departure from the Node agent.
@@ -99,7 +100,8 @@ func (p *Processor) Execute(ctx context.Context, command protocol.Command, writa
 func (p *Processor) apply(ctx context.Context, command protocol.Command, writable bool) (map[string]any, error) {
 	// REFRESH_QUOTA and RECONCILE_USERS only touch local state, so an observing
 	// node may run them. Everything else installs or uninstalls accounts.
-	if !writable && command.Type != protocol.CommandRefreshQuota && command.Type != protocol.CommandReconcileUsers {
+	panelValidation := command.Type == protocol.CommandEnsureInbound && command.Payload["mode"] == "validate_panel"
+	if !writable && !panelValidation && command.Type != protocol.CommandRefreshQuota && command.Type != protocol.CommandReconcileUsers {
 		return nil, errors.New("当前控制模式禁止修改 Xray 用户")
 	}
 	switch command.Type {
@@ -122,22 +124,11 @@ func (p *Processor) apply(ctx context.Context, command protocol.Command, writabl
 		}
 		return nil, p.deps.Store.UpdateQuota(bindingID, quota, command.TargetRevision)
 	case protocol.CommandEnsureInbound:
-		// B1 moved inbound ownership to the 3x-ui panel (PRD §3.1): the agent no
-		// longer deploys one, and the replacement semantics — verify the
-		// configured tag is usable — arrive in P2 with the adapter that can check
-		// it. Failing is the only honest answer for this build; reporting
-		// "completed" would advance the node's applied revision for work that
-		// never happened.
-		//
-		// But the failure is NOT self-contained, and the message has to say so.
-		// The deployed control plane still queues these and depends on the report
-		// to populate the node's connection parameters (agent.service.ts
-		// applyInboundReport), guards concurrency with the command's dedupe key,
-		// and compare-and-swaps on expectedInboundAppliedRevision. A node moved
-		// to this agent before the §5.2 control-plane change lands would be
-		// online, healthy, and unable to serve anyone — which is precisely the
-		// state the installer's own comment warns about. That ordering is a
-		// blocking prerequisite for the canary, recorded in PRD §9/§10.
+		if command.Payload["mode"] == "validate_panel" && p.deps.ValidatePanel != nil {
+			return p.deps.ValidatePanel(ctx, command.Payload)
+		}
+		// Legacy ENSURE_INBOUND means deployment, which B1 must never perform.
+		// Only the explicit validate_panel branch above has a read-only meaning.
 		return nil, errors.New(
 			"本构建不支持 ENSURE_INBOUND：B1 下入站改由 3x-ui 面板创建，" +
 				"节点的连接参数应由后台导入面板入站的 vless 链接得到（PRD §5.2）。" +

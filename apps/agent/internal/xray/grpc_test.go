@@ -31,6 +31,7 @@ import (
 	"github.com/xtls/xray-core/proxy/freedom"
 	"github.com/xtls/xray-core/proxy/vless"
 	vin "github.com/xtls/xray-core/proxy/vless/inbound"
+	"github.com/xtls/xray-core/transport/internet"
 	_ "github.com/xtls/xray-core/transport/internet/tcp"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
@@ -39,6 +40,14 @@ import (
 // The server uses upstream HandlerService, StatsService, and a real VLESS user
 // manager, not a mock reproducing our assumptions. All sockets are local.
 func realServer(t *testing.T, unix bool) (*GRPC, *core.Instance) {
+	return configuredServer(t, unix, nil)
+}
+
+func configuredServer(t *testing.T, unix bool, stream *internet.StreamConfig) (*GRPC, *core.Instance) {
+	return configuredProxyServer(t, unix, stream, &vin.Config{Decryption: "none"})
+}
+
+func configuredProxyServer(t *testing.T, unix bool, stream *internet.StreamConfig, proxy *vin.Config) (*GRPC, *core.Instance) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -51,8 +60,8 @@ func realServer(t *testing.T, unix bool) (*GRPC, *core.Instance) {
 		serial.ToTypedMessage(&dispatcher.Config{}), serial.ToTypedMessage(&proxyman.InboundConfig{}),
 		serial.ToTypedMessage(&proxyman.OutboundConfig{}), serial.ToTypedMessage(&statsapp.Config{}),
 	}, Outbound: []*core.OutboundHandlerConfig{{Tag: "direct", ProxySettings: serial.ToTypedMessage(&freedom.Config{})}}, Inbound: []*core.InboundHandlerConfig{{Tag: "inbound-test", ReceiverSettings: serial.ToTypedMessage(&proxyman.ReceiverConfig{
-		Listen: xnet.NewIPOrDomain(xnet.LocalHostIP), PortList: &xnet.PortList{Range: []*xnet.PortRange{{From: port, To: port}}},
-	}), ProxySettings: serial.ToTypedMessage(&vin.Config{Decryption: "none"})}}})
+		StreamSettings: stream, Listen: xnet.NewIPOrDomain(xnet.LocalHostIP), PortList: &xnet.PortList{Range: []*xnet.PortRange{{From: port, To: port}}},
+	}), ProxySettings: serial.ToTypedMessage(proxy)}}})
 	if err != nil {
 		t.Fatal(err)
 	}

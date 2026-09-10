@@ -416,7 +416,7 @@ func (r *Resolver) register(ctx context.Context, fingerprint string) (*Credentia
 		AgentToken:    agentToken,
 		Hostname:      hostname,
 		Arch:          Arch(),
-		AgentVersion:  version.Version,
+		AgentVersion:  version.Wire(),
 		BootID:        bootID,
 	})
 	if err != nil {

@@ -137,3 +137,9 @@ export function fetchNodeInboundSpec(nodeId: string) {
     timeoutMs: ADMIN_READ_TIMEOUT_MS
   });
 }
+
+export function parsePanelInboundLink(input: { link: string; panelVersion: string; inboundTag?: string; tagOverrideConfirmed?: boolean }) {
+  return request<Record<string, unknown>>("/admin/nodes/panel-inbound/parse", {
+    method: "POST", body: JSON.stringify(input), timeoutMs: ADMIN_ACTION_TIMEOUT_MS
+  });
+}

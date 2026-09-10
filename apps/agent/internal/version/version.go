@@ -23,7 +23,7 @@ func Validate() error {
 	if trimmed == "" {
 		return errEmptyVersion
 	}
-	if len(trimmed) > MaxLength {
+	if len(Wire()) > MaxLength {
 		return errLongVersion
 	}
 	return nil
@@ -37,3 +37,7 @@ const (
 	errEmptyVersion = versionError("Agent 版本号为空：构建时缺少 -ldflags -X ...internal/version.Version")
 	errLongVersion  = versionError("Agent 版本号超过 64 字节，控制面会拒绝注册")
 )
+
+// Wire identifies the Go implementation so the control plane cannot dispatch
+// a read-only panel validation to a legacy agent that interprets it as deploy.
+func Wire() string { return "go-" + strings.TrimPrefix(strings.TrimSpace(Version), "go-") }

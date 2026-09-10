@@ -30,3 +30,18 @@ func TestDefaultVersionIsUsable(t *testing.T) {
 		t.Fatalf("the default stamped version is unusable: %v", err)
 	}
 }
+
+func TestWireAlwaysIdentifiesGoAndFitsServerBound(t *testing.T) {
+	original := Version
+	t.Cleanup(func() { Version = original })
+	for _, value := range []string{"0.2.0", "go-0.2.0"} {
+		Version = value
+		if Wire() != "go-0.2.0" {
+			t.Fatalf("wire=%s", Wire())
+		}
+	}
+	Version = strings.Repeat("a", MaxLength-2)
+	if Validate() == nil {
+		t.Fatal("wire prefix exceeded server limit")
+	}
+}
