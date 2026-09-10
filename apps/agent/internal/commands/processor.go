@@ -166,6 +166,17 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 	if err := validateUser(user); err != nil {
 		return err
 	}
+	// The destination collision is settled BEFORE anything destructive, for the
+	// same reason validateUser is. Deciding it after the rename below would take
+	// a working account offline and overwrite the record that names it, and only
+	// then refuse — leaving the user off, with no retry able to put them back.
+	//
+	// takeover is nil when the address is free, so the intent may be recorded
+	// later; otherwise the collision has already been authorised or refused here.
+	takeover, err := p.preflightCollision(ctx, user)
+	if err != nil {
+		return err
+	}
 	// A changed email is a NEW account as far as Xray is concerned — the adapter
 	// addresses accounts by email and cannot infer the previous one. Uninstall
 	// the old one FIRST, while the record that names it is still here: after the
@@ -227,29 +238,11 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 	// unclaimed, unmetered and permanent. So an INTENT goes down first, which is
 	// weaker than a claim and cannot be mistaken for one.
 	//
-	// Recorded only if the address names no live account right now: that is what
-	// makes it resolvable later, because any account carrying it afterwards can
-	// only be this agent's. Checked only when the account is not already ours, so
-	// the common case costs no extra call.
-	owned, err := p.owns(user.Email)
-	if err != nil {
-		return err
-	}
-	if !owned {
-		live, err := p.deps.Xray.ListUsers(ctx)
-		if err != nil {
-			return err
-		}
-		taken := false
-		for _, account := range live {
-			if account.Email == user.Email {
-				taken = true
-				break
-			}
-		}
-		if taken {
-			return p.collision(user)
-		}
+	// Only for a FREE address, which the preflight above has already determined:
+	// an intent is settled later by finding this agent's own uuid at that
+	// address, and an address that already had an account cannot answer that
+	// question.
+	if !takeover {
 		if err := p.deps.Store.RecordProvisionIntent(user.BindingID, user.Email, user.UUID); err != nil {
 			return err
 		}
@@ -258,6 +251,26 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 		return err
 	}
 	return p.deps.Store.RecordProvisioned(user.BindingID, user.Email)
+}
+
+// preflightCollision settles what to do about the address a user is about to
+// take, before any step that cannot be undone. It reports whether the install is
+// a TAKEOVER of an account this agent has no record of.
+func (p *Processor) preflightCollision(ctx context.Context, user protocol.DesiredUser) (bool, error) {
+	owned, err := p.owns(user.Email)
+	if err != nil || owned {
+		return false, err
+	}
+	live, err := p.deps.Xray.ListUsers(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, account := range live {
+		if account.Email == user.Email {
+			return true, p.collision(user)
+		}
+	}
+	return false, nil
 }
 
 // collision decides what to do about a desired account whose email already names
@@ -457,11 +470,41 @@ func (p *Processor) terminalUser(ctx context.Context, command protocol.Command, 
 		return fmt.Errorf("命令 %s 未能确定要卸载的账号：本机没有 bindingId 的记录，payload 也未提供 email",
 			command.Type)
 	}
+	// A terminal command names an ADDRESS, and under the shared inbound the
+	// account sitting at that address is not necessarily ours — a refused install
+	// leaves a desired-user row whose email is the panel's, and findStored will
+	// happily resolve it. Uninstalling on the control plane's say-so would then
+	// cut off a panel user through DISABLE_USER or REMOVE_USER, with both safety
+	// switches off.
+	//
+	// The local bookkeeping below still runs: the binding really is revoked, and
+	// the tombstone must be recorded whether or not anything was uninstalled.
+	uninstall := true
+	owned, err := p.owns(email)
+	if err != nil {
+		return err
+	}
+	if !owned && !p.deps.AdoptExistingAccounts {
+		live, err := p.deps.Xray.ListUsers(ctx)
+		if err != nil {
+			return err
+		}
+		for _, account := range live {
+			if account.Email == email {
+				p.logf("[agent] 命令 %s 跳过卸载：email %s 上的活账号不是本节点装的（可能属于面板）",
+					command.Type, email)
+				uninstall = false
+				break
+			}
+		}
+	}
 	// Xray FIRST here, unlike ensureUser: until the account is uninstalled it is
 	// still carrying traffic, and a crash after the local delete would leave it
 	// serving with nothing left to notice it.
-	if err := p.deps.Xray.RemoveUser(ctx, email); err != nil {
-		return err
+	if uninstall {
+		if err := p.deps.Xray.RemoveUser(ctx, email); err != nil {
+			return err
+		}
 	}
 	// A REMOVE ends the agent's claim on the account; a DISABLE does not — the
 	// record survives and a later enable puts the same account back.
@@ -622,6 +665,14 @@ func (p *Processor) reconcileCommand(ctx context.Context, command protocol.Comma
 //
 // The ownership snapshot is taken BEFORE the desired set is written, because
 // that write is what erases the evidence.
+func liveEmails(live []xray.LiveUser) map[string]bool {
+	emails := make(map[string]bool, len(live))
+	for _, account := range live {
+		emails[account.Email] = true
+	}
+	return emails
+}
+
 // resolveIntents settles every unresolved installation intent against Xray.
 func (p *Processor) resolveIntents(live []xray.LiveUser) error {
 	intents, err := p.deps.Store.ProvisionIntents()
@@ -822,6 +873,22 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	for _, email := range pending {
 		stillPending[email] = true
 	}
+	// Destination collisions are settled before ANY of it — before the rename
+	// pass below uninstalls a working account, and before the replacement writes
+	// over the record that names it. Deciding this later would take a user
+	// offline and only then refuse, with no retry able to put them back.
+	//
+	// One refusal fails the whole reconcile, deliberately: a snapshot that would
+	// have to take over the panel's address is not a snapshot this node can apply
+	// halfway.
+	for _, user := range users {
+		if !user.Enabled || !liveEmails(live)[user.Email] || ours[user.Email] {
+			continue
+		}
+		if err := p.collision(user); err != nil {
+			return err
+		}
+	}
 	// Renames are settled BEFORE anything is written, for the same reason
 	// ensureUser does it: the upsert below replaces the only durable record that
 	// names the old account. If the install that follows fails — or the process
@@ -905,12 +972,13 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 			// The pending note is only released after the claim exists, which is
 			// what keeps a failure here from dropping the account out of
 			// ownership altogether.
-			if liveNow[user.Email] && !ours[user.Email] {
-				if err := p.collision(user); err != nil {
+			// The collision itself was settled by the preflight above; all that
+			// is left here is whether the address was FREE, which is the only
+			// case an intent can later be settled from.
+			if !liveNow[user.Email] || ours[user.Email] {
+				if err := p.deps.Store.RecordProvisionIntent(user.BindingID, user.Email, user.UUID); err != nil {
 					return err
 				}
-			} else if err := p.deps.Store.RecordProvisionIntent(user.BindingID, user.Email, user.UUID); err != nil {
-				return err
 			}
 			if err := p.deps.Xray.EnsureUser(ctx, user); err != nil {
 				return err
@@ -921,6 +989,16 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 			if err := clearPending(user.Email); err != nil {
 				return err
 			}
+			continue
+		}
+		// The SAME ownership question the enabled branch asks. A disable is an
+		// uninstall, and a desired-user row is not evidence that the live account
+		// at that address is ours — a refused install leaves exactly such a row
+		// behind, so a later snapshot disabling that binding would delete the
+		// panel's account with both safety switches off.
+		if liveNow[user.Email] && !ours[user.Email] && !p.deps.AdoptExistingAccounts {
+			p.logf("[agent] binding %s 停用时跳过卸载：email %s 上的活账号不是本节点装的（可能属于面板）",
+				user.BindingID, user.Email)
 			continue
 		}
 		if err := p.deps.Xray.RemoveUser(ctx, user.Email); err != nil {

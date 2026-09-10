@@ -2039,3 +2039,120 @@ func TestAnIntentIsNotResolvedByEmailAlone(t *testing.T) {
 		})
 	}
 }
+
+// TestAnAuthorizedAdoptionStillInstalls is the other half of the collision
+// guard: approving a takeover must not silently skip the work.
+//
+// Returning early on an approved collision would report the command completed —
+// and Execute caches that — while the credentials were never applied and the
+// account never claimed, so a later omission would leave it serving.
+func TestAnAuthorizedAdoptionStillInstalls(t *testing.T) {
+	processor, fake, state := newProcessor(t, false) // adoption on
+	fake.live = []xray.LiveUser{{Email: "u1@chordv", UUID: "installed-by-the-old-agent"}}
+
+	if result := run(t, processor, command("c1", protocol.CommandEnsureUser, "5",
+		userPayload("b1", "u1@chordv")), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("result = %+v", result)
+	}
+	if !contains(fake.calls, "ensure:u1@chordv") {
+		t.Fatalf("批准接管之后没有真正安装：%v", fake.calls)
+	}
+	provisioned, _ := state.ProvisionedAccounts()
+	if len(provisioned) != 1 || provisioned[0] != "u1@chordv" {
+		t.Fatalf("批准接管之后没有认领：%v —— 之后的遗漏清理会放着它不管", provisioned)
+	}
+}
+
+// TestARefusedInstallCannotBeTurnedIntoADeletion follows the row a refusal
+// leaves behind.
+//
+// The refusal happens after the desired-user record is written, so the binding
+// keeps a row naming the PANEL's address. Every path that uninstalls by address
+// — the disabled branch of a reconcile, DISABLE_USER, REMOVE_USER — would then
+// take that account down on the control plane's say-so, with both safety
+// switches off.
+func TestARefusedInstallCannotBeTurnedIntoADeletion(t *testing.T) {
+	seed := func(t *testing.T) (*Processor, *fakeXray, *store.Store) {
+		t.Helper()
+		processor, fake, state := newStrictProcessor(t)
+		fake.live = []xray.LiveUser{{Email: "panel@panel", UUID: "panel-uuid"}}
+		if result := run(t, processor, command("c1", protocol.CommandEnsureUser, "5",
+			userPayload("b1", "panel@panel")), true); result.Status != protocol.StatusFailed {
+			t.Fatalf("前提没成立：接管本该被拒绝 %+v", result)
+		}
+		fake.calls = nil
+		return processor, fake, state
+	}
+
+	t.Run("a snapshot disabling the binding", func(t *testing.T) {
+		processor, fake, _ := seed(t)
+		disabled := userPayload("b1", "panel@panel")
+		disabled["enabled"] = false
+		run(t, processor, command("c2", protocol.CommandReconcileUsers, "6", map[string]any{
+			"controlMode": string(protocol.ModeDirectPrimary),
+			"users":       []any{map[string]any(disabled)},
+		}), true)
+		if contains(fake.calls, "remove:panel@panel") {
+			t.Fatalf("停用把面板的账号卸载了：%v", fake.calls)
+		}
+	})
+
+	for _, kind := range []protocol.CommandType{protocol.CommandDisableUser, protocol.CommandRemoveUser} {
+		t.Run(string(kind), func(t *testing.T) {
+			processor, fake, _ := seed(t)
+			run(t, processor, command("c2", kind, "6", map[string]any{
+				"bindingId": "b1", "email": "panel@panel",
+			}), true)
+			if contains(fake.calls, "remove:panel@panel") {
+				t.Fatalf("%s 把面板的账号卸载了：%v", kind, fake.calls)
+			}
+		})
+	}
+}
+
+// TestARenameToAnOccupiedAddressLeavesTheUserOnline is about ORDER again.
+//
+// Refusing after the rename pass has uninstalled the old account takes a working
+// user offline and overwrites the record naming their address — and no retry can
+// put them back, because the payload does not change.
+func TestARenameToAnOccupiedAddressLeavesTheUserOnline(t *testing.T) {
+	for _, viaCommand := range []bool{true, false} {
+		name := "reconcile"
+		if viaCommand {
+			name = "ensure_user"
+		}
+		t.Run(name, func(t *testing.T) {
+			processor, fake, state := newStrictProcessor(t)
+			seedOwned(t, state, protocol.DesiredUser{
+				BindingID: "b1", Email: "working@chordv", UUID: "uuid-b1", Revision: "1",
+				Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
+			})
+			fake.live = []xray.LiveUser{
+				{Email: "working@chordv", UUID: "uuid-b1"},
+				{Email: "panel@panel", UUID: "panel-uuid"},
+			}
+			fake.calls = nil
+
+			renamed := userPayload("b1", "panel@panel")
+			var result protocol.CommandResult
+			if viaCommand {
+				result = run(t, processor, command("c1", protocol.CommandEnsureUser, "2", renamed), true)
+			} else {
+				result = run(t, processor, command("c1", protocol.CommandReconcileUsers, "2", map[string]any{
+					"controlMode": string(protocol.ModeDirectPrimary),
+					"users":       []any{map[string]any(renamed)},
+				}), true)
+			}
+			if result.Status != protocol.StatusFailed {
+				t.Fatalf("改名到面板占用的地址被接受了：%+v", result)
+			}
+			if contains(fake.calls, "remove:working@chordv") {
+				t.Fatalf("命令被拒绝了，却已经把正常工作的账号卸载掉：%v", fake.calls)
+			}
+			stored, _ := state.UserByBindingID("b1")
+			if stored == nil || stored.Email != "working@chordv" {
+				t.Fatalf("命令被拒绝了，记录却已被改写：%+v", stored)
+			}
+		})
+	}
+}
