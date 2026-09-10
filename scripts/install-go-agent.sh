@@ -36,9 +36,21 @@ SERVICE=chordv-node-agent.service
 for owned in /opt /var/lib /etc/chordv "$INSTALL_DIR" "$INSTALL_DIR/releases" "$STATE_DIR" "$ENV_FILE" "$IDENTITY" "$UNIT"; do
   [[ ! -L $owned ]] || fail "受管路径为符号链接：$owned，请先检查现有安装"
 done
-# The lock is outside service-writable state. It covers preflight as well as
-# promotion, so two installers cannot both pass the empty-host checks.
-exec 9>/run/lock/chordv-go-install.lock
+# Never open a predictable file beneath shared /run/lock as root. On hosts
+# without protected-symlink enforcement that can truncate an unrelated file.
+# Verify the private parent before creating a non-truncating lock descriptor.
+[[ -d /run && ! -L /run && $(stat -c %u /run) == 0 ]] || fail '/run 必须由 root 管理'
+[[ $(( 8#$(stat -c %a /run) & 0022 )) -eq 0 ]] || fail '/run 不得允许组或其他用户写入'
+LOCK_DIR=/run/chordv-agent-installer
+[[ ! -L $LOCK_DIR ]] || fail '安装锁目录不得为符号链接'
+if [[ -e $LOCK_DIR ]]; then
+  [[ -d $LOCK_DIR && $(stat -c %u "$LOCK_DIR") == 0 ]] || fail '安装锁目录必须由 root 管理'
+  [[ $(( 8#$(stat -c %a "$LOCK_DIR") & 0022 )) -eq 0 ]] || fail '安装锁目录不得允许其他用户写入'
+fi
+install -d -m 0700 -o root -g root "$LOCK_DIR"
+LOCK_FILE="$LOCK_DIR/install.lock"
+[[ ! -L $LOCK_FILE && ( ! -e $LOCK_FILE || -f $LOCK_FILE ) ]] || fail '安装锁文件类型异常'
+exec 9>>"$LOCK_FILE"
 flock -n 9 || fail '另一项 ChordV 安装正在执行'
 EXPECTED_IDENTITY=$(printf '%s\n%s' "$NODE_ID" "$TOKEN_HASH")
 EXISTING=0

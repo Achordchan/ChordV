@@ -22,6 +22,7 @@ export function useAgentNodeOnboarding(opened: boolean, initialNode: AdminNodeRe
   const [regenerating, setRegenerating] = useState(false);
   const session = useRef(0), watchEpoch = useRef(0);
   const active = useRef(false), requestBusy = useRef(false);
+  const resultAvailable = useRef(false);
   const unsubscribe = useRef<(() => void) | null>(null);
   const deadline = useRef<number | null>(null);
   const changed = useRef(onNodeChanged);
@@ -34,10 +35,10 @@ export function useAgentNodeOnboarding(opened: boolean, initialNode: AdminNodeRe
     deadline.current = null;
   }, []);
   const invalidate = useCallback(() => {
-    session.current++; active.current = false; requestBusy.current = false; stopWatching();
+    session.current++; active.current = false; requestBusy.current = false; resultAvailable.current = false; stopWatching();
   }, [stopWatching]);
 
-  const watchRegistration = useCallback((nodeId: string, epoch: number) => {
+  const watchRegistration = useCallback((nodeId: string, epoch: number, preservePendingError = false) => {
     stopWatching();
     const watch = watchEpoch.current;
     const valid = () => current(epoch) && watchEpoch.current === watch;
@@ -52,9 +53,14 @@ export function useAgentNodeOnboarding(opened: boolean, initialNode: AdminNodeRe
         const registered = status.node;
         setNode(registered); changed.current(registered);
         if (status.mode === "legacy") {
+          resultAvailable.current = false;
           setResult(null); setStage("legacy"); setError(null); stopWatching(); return;
         }
-        if (registered.registrationStatus !== "agent_ready") return;
+        if (registered.registrationStatus !== "agent_ready") {
+          if (!preservePendingError) { setStage(resultAvailable.current ? "awaiting" : "resume"); setError(null); }
+          return;
+        }
+        resultAvailable.current = false;
         setResult(null);
         if (!status.spec || !status.command) {
           setStage("failed"); setError("缺少入站校验任务，请在节点控制器重新导入参数并校验。");
@@ -104,6 +110,7 @@ export function useAgentNodeOnboarding(opened: boolean, initialNode: AdminNodeRe
       const created = await createAgentNode(input);
       changed.current(created.node);
       if (!current(epoch)) return;
+      resultAvailable.current = true;
       setNode(created.node); setResult(created); setStage("awaiting");
       watchRegistration(created.node.id, epoch);
     } catch (error) {
@@ -121,12 +128,16 @@ export function useAgentNodeOnboarding(opened: boolean, initialNode: AdminNodeRe
     try {
       const fresh = await issueNodeRegisterToken(node.id);
       if (!current(epoch)) return;
+      resultAvailable.current = true;
       setResult({ node, registerToken: fresh.token, registerTokenExpiresAt: fresh.expiresAt });
       setStage("awaiting"); watchRegistration(node.id, epoch);
     } catch (error) {
       if (!current(epoch)) return;
+      resultAvailable.current = false;
       setResult(null); setStage("failed"); setError(errorMessage(error));
-      watchRegistration(node.id, epoch);
+      // Observe a concurrent registration without hiding the failed token
+      // mutation. A user-triggered refresh can explicitly resume waiting.
+      watchRegistration(node.id, epoch, true);
     } finally {
       if (current(epoch)) { requestBusy.current = false; setRegenerating(false); }
     }

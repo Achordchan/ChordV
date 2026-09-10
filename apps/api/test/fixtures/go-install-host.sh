@@ -35,7 +35,21 @@ esac
 SYSTEMCTL
 chmod +x /usr/local/bin/curl /usr/local/bin/systemctl
 expect_failure() { if bash "$1" >/scenario/output 2>&1; then cat /scenario/output; exit 1; fi; }
+# A local unprivileged account can pre-create a symlink in a permissive shared
+# lock directory. The protected target must not be opened/truncated by root.
+chmod 0777 /run/lock
+printf 'protected-root-file\n' > /scenario/protected-root-file
+chmod 0600 /scenario/protected-root-file
+runuser -u nobody -- ln -s /scenario/protected-root-file /run/lock/chordv-go-install.lock
 expect_failure /payload/expired.sh
+[[ $(cat /scenario/protected-root-file) == 'protected-root-file' ]] || { echo 'protected file was truncated by installer lock' >&2; exit 1; }
+# Also refuse a planted symlink at the new private lock filename.
+ln -s /scenario/protected-root-file /run/chordv-agent-installer/install.lock.attack
+mv -fT /run/chordv-agent-installer/install.lock.attack /run/chordv-agent-installer/install.lock
+expect_failure /payload/install.sh
+[[ $(cat /scenario/protected-root-file) == 'protected-root-file' ]] || { echo 'private lock symlink changed protected file' >&2; exit 1; }
+rm /run/chordv-agent-installer/install.lock
+[[ $(stat -c %a /run/chordv-agent-installer) == 700 ]]
 [[ ! -e /opt/chordv-node-agent ]]
 expect_failure /payload/corrupt.sh
 [[ ! -e /opt/chordv-node-agent ]]

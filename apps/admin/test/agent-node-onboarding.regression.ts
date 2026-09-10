@@ -28,9 +28,10 @@ function deferred() {
 const node = { id: "pending-node", registrationStatus: "pending_register", name: "node" };
 function fixture() {
   const session = { current: 1 }, active = { current: true }, requestBusy = { current: false };
+  const resultAvailable = { current: false };
   const mutations: Array<[string, unknown]> = [], notified: unknown[] = [], polls: unknown[] = [], changedNodes: unknown[] = [];
   const scope: Record<string, unknown> = {
-    session, active, requestBusy, node,
+    session, active, requestBusy, resultAvailable, node,
     current: (epoch: number) => active.current && session.current === epoch,
     changed: { current: (value: unknown) => changedNodes.push(value) },
     stopWatching: () => undefined, watchRegistration: (...args: unknown[]) => polls.push(args),
@@ -39,7 +40,7 @@ function fixture() {
   for (const key of ["setCreating", "setError", "setNode", "setResult", "setStage", "setRegenerating"]) {
     scope[key] = (value: unknown) => mutations.push([key, value]);
   }
-  return { scope, session, active, requestBusy, mutations, notified, polls, changedNodes };
+  return { scope, session, active, requestBusy, resultAvailable, mutations, notified, polls, changedNodes };
 }
 for (const request of ["submit", "regenerate"]) for (const outcome of ["resolve", "reject"]) {
   const f = fixture(), pending = deferred();
@@ -68,8 +69,9 @@ assert.equal(resumed.requestBusy.current, false);
 console.log("agent-node-onboarding callbacks passed (late success/error/finally, close/reopen, pending resume)");
 
 // Status comes from one command outcome, never registration or revision alone.
-async function watchFixture(status: unknown, pendingRead?: Promise<unknown>) {
+async function watchFixture(status: unknown, pendingRead?: Promise<unknown>, hasResult = false, preservePendingError = false) {
   const f = fixture();
+  f.resultAvailable.current = hasResult;
   const watchEpoch = { current: 0 }, unsubscribe: { current: (() => void) | null } = { current: null };
   let listener!: (event: unknown) => void, reads = 0, stopped = 0;
   Object.assign(f.scope, {
@@ -79,12 +81,21 @@ async function watchFixture(status: unknown, pendingRead?: Promise<unknown>) {
     subscribeAdminRuntimeEvents: (callback: (event: unknown) => void) => { listener = callback; return () => { stopped++; }; },
     fetchAgentOnboarding: () => { reads++; return reads === 1 && pendingRead ? pendingRead : Promise.resolve(status); }
   });
-  callback("watchRegistration", f.scope)(node.id, 1);
+  callback("watchRegistration", f.scope)(node.id, 1, preservePendingError);
   const flush = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
   await flush();
   return { ...f, flush, event: () => listener({ type: 'node_access_updated', nodeId: node.id }), reads: () => reads, stopped: () => stopped };
 }
 const registeredNode = { ...node, registrationStatus: 'agent_ready', inboundAppliedRevision: '1' };
+for (const hasResult of [false, true]) {
+  const refreshed = await watchFixture({ mode: 'panel', node, spec: {}, command: null }, undefined, hasResult);
+  assert.ok(refreshed.mutations.some(([key, value]) => key === 'setStage' && value === (hasResult ? 'awaiting' : 'resume')),
+    'a successful pending read must restore the waiting state after a timeout');
+  assert.ok(refreshed.mutations.some(([key, value]) => key === 'setError' && value === null), 'pending refresh must clear stale timeout errors');
+}
+const failedMutation = await watchFixture({ mode: 'panel', node, spec: {}, command: null }, undefined, false, true);
+assert.ok(!failedMutation.mutations.some(([key]) => key === 'setStage' || key === 'setError'),
+  'observing a pending node must not conceal a failed token regeneration');
 const validating = await watchFixture({ node: registeredNode, spec: {}, command: { status: 'pending', targetRevision: '2' } });
 assert.ok(validating.mutations.some(([key, value]) => key === 'setStage' && value === 'validating'));
 assert.ok(!validating.mutations.some(([key, value]) => key === 'setStage' && value === 'ready'));
