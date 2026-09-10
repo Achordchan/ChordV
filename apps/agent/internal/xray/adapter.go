@@ -19,6 +19,12 @@ import (
 type LiveUser struct {
 	Email string
 	Flow  string
+	// UUID is the account's identity, and it is what distinguishes an account
+	// this agent installed from one the 3x-ui panel created at the same address.
+	// Email alone cannot: the inbound is shared, and the panel writes to it
+	// independently. An adapter that cannot report it must leave this empty
+	// rather than guess — the callers treat "" as "cannot tell".
+	UUID string
 }
 
 // Adapter is what the runner needs from Xray. The gRPC implementation lands in

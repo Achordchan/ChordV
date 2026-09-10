@@ -69,7 +69,21 @@ func newProcessor(t *testing.T, removeUnknown bool) (*Processor, *fakeXray, *sto
 	}
 	t.Cleanup(func() { state.Close() })
 	fake := &fakeXray{}
-	return New(Deps{Store: state, Xray: fake, RemoveUnknownUsers: removeUnknown, Logf: func(string, ...any) {}}), fake, state
+	// AdoptExistingAccounts on by default in tests that do not care about it:
+	// most of them express "an account this node already installed" by putting it
+	// in fake.live, which the collision guard cannot distinguish from the panel's.
+	// The tests that DO care set it explicitly, either way.
+	return New(Deps{Store: state, Xray: fake, RemoveUnknownUsers: removeUnknown,
+		AdoptExistingAccounts: true, Logf: func(string, ...any) {}}), fake, state
+}
+
+// newStrictProcessor is newProcessor with the collision guard armed — the
+// shipping default.
+func newStrictProcessor(t *testing.T) (*Processor, *fakeXray, *store.Store) {
+	t.Helper()
+	processor, fake, state := newProcessor(t, false)
+	processor.deps.AdoptExistingAccounts = false
+	return processor, fake, state
 }
 
 func command(id string, kind protocol.CommandType, revision string, payload map[string]any) protocol.Command {
@@ -1905,7 +1919,7 @@ func TestAnInstallIntentSurvivesACrashBeforeTheClaim(t *testing.T) {
 	if err := state.ForgetProvisioned([]string{"u1@chordv"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := state.RecordProvisionIntent("b1", "u1@chordv"); err != nil {
+	if err := state.RecordProvisionIntent("b1", "u1@chordv", "uuid-b1"); err != nil {
 		t.Fatal(err)
 	}
 	if provisioned, _ := state.ProvisionedAccounts(); len(provisioned) != 0 {
@@ -1914,7 +1928,9 @@ func TestAnInstallIntentSurvivesACrashBeforeTheClaim(t *testing.T) {
 
 	// The subscription is revoked in the same window: the account is live, and
 	// the snapshot no longer names it.
-	fake.live = []xray.LiveUser{{Email: "u1@chordv"}}
+	// The uuid is what settles the intent: presence at the address is not
+	// identity, because the panel writes to the same inbound.
+	fake.live = []xray.LiveUser{{Email: "u1@chordv", UUID: "uuid-b1"}}
 	fake.calls = nil
 	run(t, processor, command("c2", protocol.CommandReconcileUsers, "6", map[string]any{
 		"controlMode": string(protocol.ModeDirectPrimary), "users": []any{},
@@ -1928,7 +1944,7 @@ func TestAnInstallIntentSurvivesACrashBeforeTheClaim(t *testing.T) {
 // intent must not become ownership on its own.
 func TestAnIntentForAnAddressThatWasNeverInstalledIsDropped(t *testing.T) {
 	processor, fake, state := newProcessor(t, false)
-	if err := state.RecordProvisionIntent("b1", "never@chordv"); err != nil {
+	if err := state.RecordProvisionIntent("b1", "never@chordv", "uuid-b1"); err != nil {
 		t.Fatal(err)
 	}
 	fake.live = []xray.LiveUser{{Email: "panel@panel"}}
@@ -1941,5 +1957,85 @@ func TestAnIntentForAnAddressThatWasNeverInstalledIsDropped(t *testing.T) {
 	}
 	if intents, _ := state.ProvisionIntents(); len(intents) != 0 {
 		t.Fatalf("未兑现的意图没有被清理，会无限累积：%v", intents)
+	}
+}
+
+// TestAnInstallRefusesToTakeOverAnUnownedLiveAccount is the guard the shipping
+// default arms.
+//
+// Suppressing only the ownership claim is not enough: EnsureUser's contract lets
+// it UPDATE an existing account, so the install would overwrite the panel user's
+// credentials — cutting off their service — and the claim that follows would let
+// a later omission delete the account outright.
+func TestAnInstallRefusesToTakeOverAnUnownedLiveAccount(t *testing.T) {
+	for _, viaCommand := range []bool{true, false} {
+		name := "reconcile"
+		if viaCommand {
+			name = "ensure_user"
+		}
+		t.Run(name, func(t *testing.T) {
+			processor, fake, state := newStrictProcessor(t)
+			fake.live = []xray.LiveUser{{Email: "panel@panel", UUID: "panel-uuid"}}
+
+			payload := userPayload("b1", "panel@panel")
+			var result protocol.CommandResult
+			if viaCommand {
+				result = run(t, processor, command("c1", protocol.CommandEnsureUser, "5", payload), true)
+			} else {
+				result = run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", map[string]any{
+					"controlMode": string(protocol.ModeDirectPrimary),
+					"users":       []any{map[string]any(payload)},
+				}), true)
+			}
+			if result.Status != protocol.StatusFailed {
+				t.Fatalf("接管了一个本节点从未安装过的活账号：%+v", result)
+			}
+			if contains(fake.calls, "ensure:panel@panel") {
+				t.Fatalf("拒绝之前就覆盖了面板用户的凭据：%v", fake.calls)
+			}
+			if provisioned, _ := state.ProvisionedAccounts(); len(provisioned) != 0 {
+				t.Fatalf("面板账号被认领了：%v", provisioned)
+			}
+			// The refusal has to tell the operator what to do about a genuine
+			// migration, or it just looks like a broken node.
+			for _, needle := range []string{"AdoptExistingAccounts", "面板"} {
+				if !strings.Contains(result.Error, needle) {
+					t.Fatalf("拒绝信息没有提到 %q：%s", needle, result.Error)
+				}
+			}
+		})
+	}
+}
+
+// TestAnIntentIsNotResolvedByEmailAlone keeps a crash window from becoming a way
+// to claim somebody else's account.
+//
+// The address being free when the intent was written does not prove that
+// whatever sits there now is this agent's — the panel writes to the same inbound
+// and may have created that email in between. Only a matching uuid settles it,
+// and an intent that cannot be checked stays unresolved.
+func TestAnIntentIsNotResolvedByEmailAlone(t *testing.T) {
+	for name, account := range map[string]xray.LiveUser{
+		"a different uuid": {Email: "u1@chordv", UUID: "panel-made-this"},
+		"no uuid to go on": {Email: "u1@chordv"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			processor, fake, state := newProcessor(t, false)
+			if err := state.RecordProvisionIntent("b1", "u1@chordv", "uuid-b1"); err != nil {
+				t.Fatal(err)
+			}
+			fake.live = []xray.LiveUser{account}
+			fake.calls = nil
+			run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", map[string]any{
+				"controlMode": string(protocol.ModeDirectPrimary), "users": []any{},
+			}), true)
+
+			if provisioned, _ := state.ProvisionedAccounts(); len(provisioned) != 0 {
+				t.Fatalf("仅凭 email 就把账号认领了：%v", provisioned)
+			}
+			if contains(fake.calls, "remove:u1@chordv") {
+				t.Fatalf("一个身份对不上的账号被当成本节点的删掉了：%v", fake.calls)
+			}
+		})
 	}
 }

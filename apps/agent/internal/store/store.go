@@ -204,7 +204,10 @@ func (s *Store) migrate() error {
 			email TEXT PRIMARY KEY,
 			binding_id TEXT NOT NULL,
 			recorded_at TEXT NOT NULL,
-			state TEXT NOT NULL DEFAULT 'owned'
+			state TEXT NOT NULL DEFAULT 'owned',
+			-- The uuid this agent intended to install, so an intent can be checked
+			-- against the LIVE account's identity rather than its address alone.
+			uuid TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS commands_v2 (
 			command_id TEXT PRIMARY KEY,
@@ -1783,33 +1786,41 @@ func (s *Store) RecordProvisioned(bindingID, email string) error {
 // the caller records it only if the email named no live account at that moment,
 // so any account carrying that address afterwards can only be this agent's.
 // ResolveProvisionIntents settles them against Xray on the next reconcile.
-func (s *Store) RecordProvisionIntent(bindingID, email string) error {
+func (s *Store) RecordProvisionIntent(bindingID, email, uuid string) error {
 	if email == "" {
 		return nil
 	}
 	// DO NOTHING, not DO UPDATE: an existing 'owned' row must never be weakened
 	// back to an intent.
 	_, err := s.db.Exec(`
-		INSERT INTO provisioned_accounts_v2(email, binding_id, recorded_at, state) VALUES(?, ?, ?, 'intent')
+		INSERT INTO provisioned_accounts_v2(email, binding_id, recorded_at, state, uuid) VALUES(?, ?, ?, 'intent', ?)
 		ON CONFLICT(email) DO NOTHING`,
-		email, bindingID, isoMillis(time.Now()))
+		email, bindingID, isoMillis(time.Now()), uuid)
 	return err
 }
 
-// ProvisionIntents lists the unresolved intents, with the binding each names.
-func (s *Store) ProvisionIntents() (map[string]string, error) {
-	rows, err := s.db.Query(`SELECT email, binding_id FROM provisioned_accounts_v2 WHERE state = 'intent'`)
+// ProvisionIntent is one unresolved intent: which binding, and the identity the
+// agent was about to install at that address.
+type ProvisionIntent struct {
+	BindingID string
+	UUID      string
+}
+
+// ProvisionIntents lists the unresolved intents by email.
+func (s *Store) ProvisionIntents() (map[string]ProvisionIntent, error) {
+	rows, err := s.db.Query(`SELECT email, binding_id, uuid FROM provisioned_accounts_v2 WHERE state = 'intent'`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	intents := map[string]string{}
+	intents := map[string]ProvisionIntent{}
 	for rows.Next() {
-		var email, bindingID string
-		if err := rows.Scan(&email, &bindingID); err != nil {
+		var email string
+		var intent ProvisionIntent
+		if err := rows.Scan(&email, &intent.BindingID, &intent.UUID); err != nil {
 			return nil, err
 		}
-		intents[email] = bindingID
+		intents[email] = intent
 	}
 	return intents, rows.Err()
 }

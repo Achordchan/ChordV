@@ -28,6 +28,14 @@ type Deps struct {
 	// that is live in Xray but absent from the desired set. See Reconcile — it
 	// is OFF by default, and that is a deliberate departure from the Node agent.
 	RemoveUnknownUsers bool
+	// AdoptExistingAccounts lets an install take over an email that already names
+	// a live account this agent has no record of. OFF by default: under the
+	// panel-shared inbound that account may be the PANEL's, and taking it over
+	// overwrites its credentials and makes it deletable by a later omission.
+	//
+	// Turn it on only for a node being MIGRATED from the Node agent, where the
+	// live accounts are known to be ChordV's. See Processor.collision.
+	AdoptExistingAccounts bool
 	// Logf receives operator-facing notices.
 	Logf func(format string, args ...any)
 }
@@ -239,16 +247,44 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 				break
 			}
 		}
-		if !taken {
-			if err := p.deps.Store.RecordProvisionIntent(user.BindingID, user.Email); err != nil {
-				return err
-			}
+		if taken {
+			return p.collision(user)
+		}
+		if err := p.deps.Store.RecordProvisionIntent(user.BindingID, user.Email, user.UUID); err != nil {
+			return err
 		}
 	}
 	if err := p.deps.Xray.EnsureUser(ctx, user); err != nil {
 		return err
 	}
 	return p.deps.Store.RecordProvisioned(user.BindingID, user.Email)
+}
+
+// collision decides what to do about a desired account whose email already names
+// a LIVE account this agent never installed.
+//
+// Suppressing only the intent is not enough: EnsureUser's contract allows it to
+// UPDATE an existing account, so the call would overwrite the panel user's
+// credentials — cutting off their service — and the claim that follows would let
+// a later snapshot omission delete the account outright.
+//
+// The two possibilities are genuinely indistinguishable from here. It may be the
+// panel's account. It may equally be ChordV's own, installed by the TypeScript
+// agent this one replaces, or by a previous instance whose evidence is gone —
+// which is exactly what a promotion or an in-place upgrade looks like. So the
+// choice is not the agent's to make silently: it refuses, unless an operator has
+// declared this node a migration by turning AdoptExistingAccounts on.
+func (p *Processor) collision(user protocol.DesiredUser) error {
+	if p.deps.AdoptExistingAccounts {
+		p.logf("[agent] binding %s 的 email %s 已有一个本节点未记录的活账号，按 AdoptExistingAccounts 接管",
+			user.BindingID, user.Email)
+		return nil
+	}
+	return fmt.Errorf("binding %s 要用的 email %s 已经是入站中一个本节点从未安装过的账号。"+
+		"B1 下入站与 3x-ui 面板共用，覆盖它会切断面板用户的服务，并让之后的快照遗漏把它删掉。"+
+		"若这是从旧 agent 迁移、这些账号确实是 ChordV 的，请为本节点开启 AdoptExistingAccounts；"+
+		"否则请在面板侧改名，或由控制面换一个 email",
+		user.BindingID, user.Email)
 }
 
 // supersededBinding is the ONE place that decides whether an instruction about
@@ -592,19 +628,36 @@ func (p *Processor) resolveIntents(live []xray.LiveUser) error {
 	if err != nil || len(intents) == 0 {
 		return err
 	}
-	installed := make(map[string]bool, len(live))
+	installed := make(map[string]xray.LiveUser, len(live))
 	for _, account := range live {
-		installed[account.Email] = true
+		installed[account.Email] = account
 	}
 	var abandoned []string
-	for email, bindingID := range intents {
-		if installed[email] {
-			if err := p.deps.Store.RecordProvisioned(bindingID, email); err != nil {
-				return err
-			}
+	for email, intent := range intents {
+		account, present := installed[email]
+		if !present {
+			// Nothing at that address: the install never landed, and keeping the
+			// intent would only let it accumulate.
+			abandoned = append(abandoned, email)
 			continue
 		}
-		abandoned = append(abandoned, email)
+		// PRESENCE IS NOT IDENTITY. The address being free when the intent was
+		// written does not prove that whatever sits there now is this agent's:
+		// the inbound is shared, and the panel writes to it independently. If the
+		// install failed — or the process died before it ran — an administrator
+		// could have created that email in between, and converting presence into
+		// ownership would hand the panel's account to the omission cleanup.
+		//
+		// So the uuid has to match. An adapter that cannot report one leaves it
+		// empty, and an intent that cannot be checked is LEFT UNRESOLVED rather
+		// than resolved by guessing: an unresolved intent costs a little state,
+		// a wrong resolution costs somebody their account.
+		if account.UUID == "" || intent.UUID == "" || account.UUID != intent.UUID {
+			continue
+		}
+		if err := p.deps.Store.RecordProvisioned(intent.BindingID, email); err != nil {
+			return err
+		}
 	}
 	return p.deps.Store.ForgetProvisioned(abandoned)
 }
@@ -852,10 +905,12 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 			// The pending note is only released after the claim exists, which is
 			// what keeps a failure here from dropping the account out of
 			// ownership altogether.
-			if !liveNow[user.Email] || ours[user.Email] {
-				if err := p.deps.Store.RecordProvisionIntent(user.BindingID, user.Email); err != nil {
+			if liveNow[user.Email] && !ours[user.Email] {
+				if err := p.collision(user); err != nil {
 					return err
 				}
+			} else if err := p.deps.Store.RecordProvisionIntent(user.BindingID, user.Email, user.UUID); err != nil {
+				return err
 			}
 			if err := p.deps.Xray.EnsureUser(ctx, user); err != nil {
 				return err
