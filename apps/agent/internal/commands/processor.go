@@ -200,6 +200,14 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 //     evidence left once a terminal command has run. Recorded at or below the
 //     target revision means superseded: a re-delivered enable must not undo the
 //     disable that the same revision produced.
+//
+// The first source is on a DIFFERENT axis from the other two, and mixing them up
+// silently drops users. The watermark orders whole snapshots; the control plane
+// numbers each binding independently, so a fresh snapshot at revision 11 may
+// legitimately carry a binding last touched at revision 5. Use this function
+// when the revision in hand IS a command's target revision; use
+// supersededForBinding when it is a per-user revision carried inside a snapshot
+// whose freshness the caller has already checked.
 func (p *Processor) supersededBinding(bindingID, targetRevision string, stored *protocol.DesiredUser) (bool, error) {
 	snapshot, err := p.deps.Store.SnapshotRevision()
 	if err != nil {
@@ -209,6 +217,12 @@ func (p *Processor) supersededBinding(bindingID, targetRevision string, stored *
 	if err != nil || older {
 		return older, err
 	}
+	return p.supersededForBinding(bindingID, targetRevision, stored)
+}
+
+// supersededForBinding is supersededBinding without the snapshot watermark: the
+// binding's own history only.
+func (p *Processor) supersededForBinding(bindingID, targetRevision string, stored *protocol.DesiredUser) (bool, error) {
 	if bindingID != "" {
 		tombstone, err := p.deps.Store.BindingTombstone(bindingID)
 		if err != nil {
@@ -229,7 +243,7 @@ func (p *Processor) supersededBinding(bindingID, targetRevision string, stored *
 	if stored == nil {
 		return false, nil
 	}
-	older, err = decimal.Less(targetRevision, stored.Revision)
+	older, err := decimal.Less(targetRevision, stored.Revision)
 	if err != nil || older {
 		return older, err
 	}
@@ -747,8 +761,14 @@ func (p *Processor) mergeNewerBindings(users []protocol.DesiredUser, snapshotRev
 		// A snapshot from before a terminal command still passes the watermark
 		// gate, so it can carry a binding that has since been revoked. Without
 		// this the reconcile below would reinstall it.
+		//
+		// supersededForBinding, NOT supersededBinding: user.Revision is the
+		// binding's own revision, not this snapshot's. The command's freshness
+		// was checked against the watermark by the caller; measuring a per-user
+		// revision against it again would drop any binding whose last change
+		// predates the previous snapshot — which is most of them.
 		if !known {
-			superseded, err := p.supersededBinding(user.BindingID, user.Revision, nil)
+			superseded, err := p.supersededForBinding(user.BindingID, user.Revision, nil)
 			if err != nil {
 				return nil, err
 			}
@@ -758,11 +778,15 @@ func (p *Processor) mergeNewerBindings(users []protocol.DesiredUser, snapshotRev
 			merged = append(merged, user)
 			continue
 		}
-		newer, err := decimal.Less(user.Revision, existing.Revision)
+		// The same question for a binding we DO have a row for, and it has to be
+		// the same predicate: a plain "is the snapshot older" comparison lets a
+		// snapshot carrying the binding enabled at the very revision that
+		// disabled it reinstall the account.
+		superseded, err := p.supersededForBinding(user.BindingID, user.Revision, &existing)
 		if err != nil {
 			return nil, err
 		}
-		if newer {
+		if superseded {
 			merged = append(merged, existing)
 			continue
 		}

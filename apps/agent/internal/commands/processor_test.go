@@ -1145,3 +1145,79 @@ func TestDisablingAnAbsentBindingStillLeavesEvidence(t *testing.T) {
 		t.Fatalf("a newer enable was blocked: %v", fake.calls)
 	}
 }
+
+// --- the two axes -----------------------------------------------------------
+
+// TestAnEqualRevisionSnapshotDoesNotReinstateADisabledBinding covers the branch
+// mergeNewerBindings takes for a binding it already has a row for.
+//
+// A strict "is the snapshot older than the row" test is not enough: DISABLE_USER
+// at revision 6 and the RECONCILE_USERS that still carries the binding enabled at
+// revision 6 are the SAME revision, so nothing is older, and the snapshot's stale
+// Enabled flag wins. That reinstalls a revoked account in Xray — the individual
+// enable path has always refused exactly this, and the merge path must too.
+func TestAnEqualRevisionSnapshotDoesNotReinstateADisabledBinding(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+
+	run(t, processor, command("c1", protocol.CommandEnsureUser, "6", userPayload("b1", "u1@chordv")), true)
+	run(t, processor, command("c2", protocol.CommandDisableUser, "6", map[string]any{"bindingId": "b1"}), true)
+
+	fake.calls = nil
+	payload := userPayload("b1", "u1@chordv")
+	payload["revision"] = "6"
+	run(t, processor, command("c3", protocol.CommandReconcileUsers, "6", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any(payload)},
+	}), true)
+
+	for _, call := range fake.calls {
+		if strings.HasPrefix(call, "ensure:") {
+			t.Fatalf("同 revision 的快照把已吊销账号装了回去：%v", fake.calls)
+		}
+	}
+	users, err := state.ListDesiredUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, user := range users {
+		if user.BindingID == "b1" && user.Enabled {
+			t.Fatal("本地记录被快照改回了启用")
+		}
+	}
+}
+
+// TestASnapshotKeepsBindingsOlderThanThePreviousSnapshot is the other axis.
+//
+// The control plane numbers each binding independently of the node's snapshot
+// counter, so a FRESH snapshot routinely carries bindings whose own last change
+// is far older than the previous snapshot's revision. Measuring those per-user
+// revisions against the snapshot watermark drops them — silently, and the command
+// still reports completed.
+func TestASnapshotKeepsBindingsOlderThanThePreviousSnapshot(t *testing.T) {
+	processor, fake, _ := newProcessor(t, false)
+
+	// An empty snapshot at 10 only moves the watermark; it installs nothing.
+	run(t, processor, command("c1", protocol.CommandReconcileUsers, "10", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{},
+	}), true)
+
+	// A newer snapshot at 11 brings in a binding last touched at revision 5.
+	fake.calls = nil
+	payload := userPayload("b1", "u1@chordv")
+	payload["revision"] = "5"
+	run(t, processor, command("c2", protocol.CommandReconcileUsers, "11", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any(payload)},
+	}), true)
+
+	installed := false
+	for _, call := range fake.calls {
+		if call == "ensure:u1@chordv" {
+			installed = true
+		}
+	}
+	if !installed {
+		t.Fatalf("快照携带的 binding 被水位线误杀了：%v", fake.calls)
+	}
+}
