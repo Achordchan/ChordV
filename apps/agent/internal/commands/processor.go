@@ -201,13 +201,25 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 //     target revision means superseded: a re-delivered enable must not undo the
 //     disable that the same revision produced.
 //
-// The first source is on a DIFFERENT axis from the other two, and mixing them up
-// silently drops users. The watermark orders whole snapshots; the control plane
-// numbers each binding independently, so a fresh snapshot at revision 11 may
-// legitimately carry a binding last touched at revision 5. Use this function
-// when the revision in hand IS a command's target revision; use
-// supersededForBinding when it is a per-user revision carried inside a snapshot
-// whose freshness the caller has already checked.
+// Every revision the control plane emits comes from ONE counter — the node's
+// agentConfigRevision, incremented and then copied into both a command's target
+// revision and the binding's directRevision. There is no second axis.
+//
+// What differs is what a given number MEANS, and that is where the watermark
+// stops applying:
+//
+//   - a command's target revision, and a snapshot's own revision, are FRESHNESS
+//     CLAIMS — "this reflects the world as of here". Comparing one against the
+//     watermark asks a sound question.
+//   - a binding's revision inside a snapshot is a LAST-MODIFIED STAMP — "this
+//     binding last changed here". A binding untouched since revision 5 belongs
+//     in a snapshot at revision 11 exactly as it is; measuring that 5 against a
+//     watermark of 10 asks "did you last change before the previous snapshot",
+//     and drops every binding whose honest answer is yes.
+//
+// So: use this function when the revision in hand is a freshness claim, and
+// supersededForBinding when it is a last-modified stamp whose carrier the caller
+// has already checked against the watermark.
 func (p *Processor) supersededBinding(bindingID, targetRevision string, stored *protocol.DesiredUser) (bool, error) {
 	snapshot, err := p.deps.Store.SnapshotRevision()
 	if err != nil {
@@ -796,15 +808,16 @@ func (p *Processor) mergeNewerBindings(users []protocol.DesiredUser, snapshotRev
 		}
 		merged = append(merged, user)
 	}
-	// This loop DOES compare across the two axes, and that is deliberate. Its
-	// question is not "which instruction is newer about this binding" but "was
-	// this binding added AFTER the snapshot was built" — and the only quantity
-	// the agent holds that can stand for "after" is the stored revision, which
-	// came from the target revision of whatever command created the row. The
-	// premise is therefore that a row's revision is a command revision; a row
-	// whose revision came from a snapshot's per-user field can be measured
-	// wrongly here. Restricting this to the binding's own history instead would
-	// mean the loop could never uninstall anything.
+	// This loop DOES measure a stored revision against a snapshot revision, and
+	// that is deliberate. Its question is not "which instruction is newer about
+	// this binding" but "was this binding added AFTER the snapshot was built" —
+	// and the only quantity the agent holds that can stand for "after" is the
+	// stored revision. That reads correctly when the row was written by a
+	// command (its revision is that command's freshness claim) and conservatively
+	// when the row came from an earlier snapshot (a last-modified stamp, so at
+	// worst an old row is left to the snapshot's own omission handling).
+	// Restricting this to the binding's own history instead would mean the loop
+	// could never uninstall anything.
 	for _, user := range recorded {
 		if carried[user.BindingID] {
 			continue
