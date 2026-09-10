@@ -822,7 +822,7 @@ func TestTheBindingIdWinsWhenTheEmailIsSimplyNew(t *testing.T) {
 // under the panel-shared inbound, leaves it serving.
 func TestAFailureMidReconcileLeavesOwnershipEvidenceIntact(t *testing.T) {
 	processor, fake, state := newProcessor(t, false)
-	if err := state.RecordPendingRemoval([]string{"back@chordv"}); err != nil {
+	if err := state.RecordPendingRemoval(map[string]string{"back@chordv": "uuid-back"}); err != nil {
 		t.Fatal(err)
 	}
 	fake.live = []xray.LiveUser{{Email: "back@chordv"}}
@@ -842,7 +842,7 @@ func TestAFailureMidReconcileLeavesOwnershipEvidenceIntact(t *testing.T) {
 	// Exactly one of the two forms of evidence must survive; neither is a leak.
 	stored, _ := state.UserByBindingID("b2")
 	pending, _ := state.PendingRemovals()
-	if stored == nil && !contains(pending, "back@chordv") {
+	if _, noted := pending["back@chordv"]; stored == nil && !noted {
 		t.Fatal("a still-installed account was left with no ownership evidence at all")
 	}
 }
@@ -1583,10 +1583,8 @@ func TestPromotionDoesNotUninstallPanelAccountsItMerelyObserved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, email := range pending {
-		if email == "panel@panel" {
-			t.Fatal("面板账号被记成了「待清理」，只是把同一个错误推迟了")
-		}
+	if _, noted := pending["panel@panel"]; noted {
+		t.Fatal("面板账号被记成了「待清理」，只是把同一个错误推迟了")
 	}
 }
 
@@ -1826,7 +1824,7 @@ func TestARenameReleasesBothFormsOfOwnership(t *testing.T) {
 				BindingID: "b1", Email: "old@chordv", UUID: "u1", Revision: "1",
 				Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
 			})
-			if err := state.RecordPendingRemoval([]string{"old@chordv"}); err != nil {
+			if err := state.RecordPendingRemoval(map[string]string{"old@chordv": "uuid-b1"}); err != nil {
 				t.Fatal(err)
 			}
 			fake.live = []xray.LiveUser{{Email: "old@chordv"}}
@@ -1851,10 +1849,8 @@ func TestARenameReleasesBothFormsOfOwnership(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, email := range pending {
-				if email == "old@chordv" {
-					t.Fatal("改名之后旧地址仍被 pending 记录主张所有权")
-				}
+			if _, noted := pending["old@chordv"]; noted {
+				t.Fatal("改名之后旧地址仍被 pending 记录主张所有权")
 			}
 		})
 	}
@@ -2227,5 +2223,116 @@ func TestARetainedClaimIsCheckedAgainstIdentity(t *testing.T) {
 	}), true)
 	if contains(fake.calls, "remove:shared@chordv") {
 		t.Fatalf("面板账号被当成本节点的删掉了：%v", fake.calls)
+	}
+}
+
+// TestAPendingNoteIsCheckedAgainstIdentityToo closes the last path that could
+// override a UUID mismatch.
+//
+// A pending note is an ownership claim, made when an observing snapshot dropped
+// an account this agent had installed. While the account is out of the desired
+// set its address is free, and the panel may put a different account there. A
+// note that could not be contradicted would hand that account to the promotion.
+func TestAPendingNoteIsCheckedAgainstIdentityToo(t *testing.T) {
+	processor, fake, state := newStrictProcessor(t)
+	seedOwned(t, state, protocol.DesiredUser{
+		BindingID: "b1", Email: "shared@chordv", UUID: "uuid-b1", Revision: "1",
+		Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
+	})
+	if err := state.RecordProvisioned("b1", "shared@chordv", "uuid-b1"); err != nil {
+		t.Fatal(err)
+	}
+	fake.live = []xray.LiveUser{{Email: "shared@chordv", UUID: "uuid-b1"}}
+
+	// Observing snapshot drops it: the record goes, the note stays.
+	run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", map[string]any{
+		"controlMode": string(protocol.ModeShadowDirect), "users": []any{},
+	}), false)
+	if err := state.ForgetProvisioned([]string{"shared@chordv"}); err != nil {
+		t.Fatal(err)
+	}
+	pending, _ := state.PendingRemovals()
+	if uuid, noted := pending["shared@chordv"]; !noted || uuid != "uuid-b1" {
+		t.Fatalf("前提没成立：pending = %v，note 必须带上身份", pending)
+	}
+
+	// The panel replaces the account at that address, then the node is promoted.
+	fake.live = []xray.LiveUser{{Email: "shared@chordv", UUID: "made-by-the-panel"}}
+	fake.calls = nil
+	run(t, processor, command("c2", protocol.CommandReconcileUsers, "6", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary), "users": []any{},
+	}), true)
+	if contains(fake.calls, "remove:shared@chordv") {
+		t.Fatalf("pending 记录压过了身份不符，面板的替代账号被删了：%v", fake.calls)
+	}
+}
+
+// TestARetryAfterACrashBeforeTheClaimSucceeds is the redelivery of the very
+// command that crashed.
+//
+// The account is installed but carries only an intent, and `owns` does not read
+// intents — so without resolving them first the preflight sees this agent's OWN
+// account as an unowned collision and refuses. Every retry, until an unrelated
+// reconcile happened to run or somebody turned adoption on.
+func TestARetryAfterACrashBeforeTheClaimSucceeds(t *testing.T) {
+	processor, fake, state := newStrictProcessor(t)
+	if err := state.RecordProvisionIntent("b1", "u1@chordv", "uuid-b1"); err != nil {
+		t.Fatal(err)
+	}
+	fake.live = []xray.LiveUser{{Email: "u1@chordv", UUID: "uuid-b1"}}
+	fake.calls = nil
+
+	if result := run(t, processor, command("c1", protocol.CommandEnsureUser, "5",
+		userPayload("b1", "u1@chordv")), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("崩溃后的重试被当成了接管别人的账号：%+v", result)
+	}
+	provisioned, _ := state.ProvisionedAccounts()
+	if _, held := provisioned["u1@chordv"]; !held {
+		t.Fatalf("重试成功了却没有留下认领：%v", provisioned)
+	}
+}
+
+// TestAUUIDRotationSurvivesACrash covers a rotation at an address this agent
+// already owns.
+//
+// The intent cannot simply be inserted — the claim is already there — so a naive
+// "do nothing" records no trace of the replacement identity. If Xray takes the
+// new uuid and the process then dies, storage names only the OLD one: every
+// ownership check rejects the account that is actually installed, blocking the
+// retry, and an omission leaves the revoked account serving.
+func TestAUUIDRotationSurvivesACrash(t *testing.T) {
+	processor, fake, state := newStrictProcessor(t)
+	seedOwned(t, state, protocol.DesiredUser{
+		BindingID: "b1", Email: "u1@chordv", UUID: "old-uuid", Revision: "1",
+		Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
+	})
+	if err := state.RecordProvisioned("b1", "u1@chordv", "old-uuid"); err != nil {
+		t.Fatal(err)
+	}
+	// The rotation is recorded, Xray takes it, and the claim never commits.
+	if err := state.RecordProvisionIntent("b1", "u1@chordv", "new-uuid"); err != nil {
+		t.Fatal(err)
+	}
+	fake.live = []xray.LiveUser{{Email: "u1@chordv", UUID: "new-uuid"}}
+	fake.calls = nil
+
+	// The retry must go through, not be refused as a takeover.
+	rotated := userPayload("b1", "u1@chordv")
+	rotated["uuid"] = "new-uuid"
+	if result := run(t, processor, command("c1", protocol.CommandEnsureUser, "2", rotated), true); result.Status != protocol.StatusCompleted {
+		t.Fatalf("轮换后的重试被拒绝了：%+v", result)
+	}
+	claims, _ := state.ProvisionedAccounts()
+	if claims["u1@chordv"].UUID != "new-uuid" || claims["u1@chordv"].NextUUID != "" {
+		t.Fatalf("轮换没有结算：%+v", claims["u1@chordv"])
+	}
+
+	// And the rotated account is still recognised as ours by an omission.
+	fake.calls = nil
+	run(t, processor, command("c2", protocol.CommandReconcileUsers, "3", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary), "users": []any{},
+	}), true)
+	if !contains(fake.calls, "remove:u1@chordv") {
+		t.Fatalf("轮换之后账号掉出了所有权，被吊销却仍在服务：%v", fake.calls)
 	}
 }

@@ -257,12 +257,21 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 // take, before any step that cannot be undone. It reports whether the install is
 // a TAKEOVER of an account this agent has no record of.
 func (p *Processor) preflightCollision(ctx context.Context, user protocol.DesiredUser) (bool, error) {
-	owned, err := p.owns(ctx, user.Email)
-	if err != nil || owned {
-		return false, err
-	}
 	live, err := p.deps.Xray.ListUsers(ctx)
 	if err != nil {
+		return false, err
+	}
+	// Intents FIRST, exactly as the terminal path does. A crash between a
+	// successful install and its claim leaves the account carrying only an
+	// intent — and `owns` does not read intents, so the retry of that very
+	// ENSURE_USER would see its OWN account as an unowned collision and refuse.
+	// Every retry, until an unrelated reconcile happened to run or someone turned
+	// adoption on.
+	if err := p.resolveIntents(live); err != nil {
+		return false, err
+	}
+	owned, err := p.owns(ctx, user.Email)
+	if err != nil || owned {
 		return false, err
 	}
 	for _, account := range live {
@@ -681,8 +690,50 @@ func liveEmails(live []xray.LiveUser) map[string]bool {
 	return emails
 }
 
+// settleRotations decides, for every claim with a replacement identity in
+// flight, which of the two Xray actually has.
+//
+// Until this runs both count as ours, which is the conservative reading: either
+// may be the account this agent installed. Once Xray is observed, exactly one of
+// them is, and keeping the other around would leave a claim that could later be
+// contradicted by nothing.
+func (p *Processor) settleRotations(live []xray.LiveUser) error {
+	claims, err := p.deps.Store.ProvisionedAccounts()
+	if err != nil {
+		return err
+	}
+	installed := make(map[string]string, len(live))
+	for _, account := range live {
+		installed[account.Email] = account.UUID
+	}
+	for email, claim := range claims {
+		if claim.NextUUID == "" {
+			continue
+		}
+		present, live := installed[email]
+		if !live || present == "" {
+			continue // nothing to decide against yet
+		}
+		switch present {
+		case claim.NextUUID:
+			if err := p.deps.Store.SettleRotation(email, claim.NextUUID); err != nil {
+				return err
+			}
+		case claim.UUID:
+			// The rotation never landed; the old identity is still the truth.
+			if err := p.deps.Store.SettleRotation(email, claim.UUID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // resolveIntents settles every unresolved installation intent against Xray.
 func (p *Processor) resolveIntents(live []xray.LiveUser) error {
+	if err := p.settleRotations(live); err != nil {
+		return err
+	}
 	intents, err := p.deps.Store.ProvisionIntents()
 	if err != nil || len(intents) == 0 {
 		return err
@@ -743,25 +794,57 @@ func (p *Processor) ownershipMap(live []xray.LiveUser) (map[string]bool, error) 
 		installed[account.Email] = account.UUID
 	}
 	ours := make(map[string]bool, len(claims))
-	for email, claimed := range claims {
+	for email, claim := range claims {
 		present, live := installed[email]
-		if live && present != "" && claimed != "" && present != claimed {
-			// Somebody else is at this address now.
-			continue
+		if !claimStands(present, live, claim.UUID, claim.NextUUID) {
+			continue // somebody else is at this address now
 		}
 		ours[email] = true
 	}
 	// Accounts whose record was erased by a snapshot applied while this node
 	// could not write Xray. They are still ours, and this is the only surviving
-	// evidence of it.
+	// evidence of it — and it is subject to the SAME identity test. A pending
+	// note that could not be contradicted would let a promotion delete the
+	// account the panel put at that address in the meantime.
 	pending, err := p.deps.Store.PendingRemovals()
 	if err != nil {
 		return nil, err
 	}
-	for _, email := range pending {
+	for email, claimed := range pending {
+		present, live := installed[email]
+		if !claimStands(present, live, claimed) {
+			continue
+		}
 		ours[email] = true
 	}
 	return ours, nil
+}
+
+// claimStands reports whether a claim survives contact with the account living
+// at that address today.
+//
+// Nothing installed, or an adapter that cannot report identity, contradicts
+// nothing — the claim stands, which is how every path behaved before identity
+// existed. A claimed identity of "" is the same: unknown, not refuted.
+// A KNOWN candidate that matches settles it. Empty candidates are skipped
+// rather than treated as wildcards — a claim with no rotation in flight carries
+// an empty NextUUID, and letting that match everything would disable the check
+// entirely. Only when NOTHING is known does the claim stand unexamined.
+func claimStands(present string, live bool, claimed ...string) bool {
+	if !live || present == "" {
+		return true
+	}
+	known := false
+	for _, candidate := range claimed {
+		if candidate == "" {
+			continue
+		}
+		known = true
+		if candidate == present {
+			return true
+		}
+	}
+	return !known
 }
 
 // owns answers the same question for one address, fetching Xray's view only when
@@ -771,21 +854,19 @@ func (p *Processor) owns(ctx context.Context, email string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	claimed, held := claims[email]
-	if !held {
+	candidates := []string{}
+	if claim, held := claims[email]; held {
+		candidates = append(candidates, claim.UUID, claim.NextUUID)
+	} else {
 		pending, err := p.deps.Store.PendingRemovals()
 		if err != nil {
 			return false, err
 		}
-		for _, candidate := range pending {
-			if candidate == email {
-				return true, nil
-			}
+		claimed, held := pending[email]
+		if !held {
+			return false, nil
 		}
-		return false, nil
-	}
-	if claimed == "" {
-		return true, nil
+		candidates = append(candidates, claimed)
 	}
 	live, err := p.deps.Xray.ListUsers(ctx)
 	if err != nil {
@@ -793,7 +874,7 @@ func (p *Processor) owns(ctx context.Context, email string) (bool, error) {
 	}
 	for _, account := range live {
 		if account.Email == email {
-			return account.UUID == "" || account.UUID == claimed, nil
+			return claimStands(account.UUID, true, candidates...), nil
 		}
 	}
 	return true, nil
@@ -926,7 +1007,7 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 		desired[user.Email] = true
 	}
 	stillPending := make(map[string]bool, len(pending))
-	for _, email := range pending {
+	for email := range pending {
 		stillPending[email] = true
 	}
 	// Destination collisions are settled before ANY of it — before the rename
@@ -1141,16 +1222,17 @@ func (p *Processor) rememberDroppedOwnership(users []protocol.DesiredUser) error
 	if err != nil {
 		return err
 	}
-	ours := make(map[string]bool, len(provisioned))
-	for email := range provisioned {
-		ours[email] = true
-	}
-	var dropped []string
+	dropped := map[string]string{}
 	for _, user := range recorded {
 		// Covers both an omitted binding and a renamed one: either way this
 		// email is about to lose the record that names it.
-		if !desired[user.Email] && ours[user.Email] {
-			dropped = append(dropped, user.Email)
+		//
+		// The claim IDENTITY travels with the note, so a later promotion can
+		// still tell this account from whatever the panel may put at the same
+		// address in the meantime.
+		claimed, held := provisioned[user.Email]
+		if !desired[user.Email] && held {
+			dropped[user.Email] = claimed.UUID
 		}
 	}
 	return p.deps.Store.RecordPendingRemoval(dropped)

@@ -191,7 +191,10 @@ func (s *Store) migrate() error {
 		);
 		CREATE TABLE IF NOT EXISTS pending_removals_v2 (
 			email TEXT PRIMARY KEY,
-			recorded_at TEXT NOT NULL
+			recorded_at TEXT NOT NULL,
+			-- Carried for the same reason provisioned_accounts_v2 carries one: a
+			-- pending note is an ownership claim, and an address is not an identity.
+			uuid TEXT NOT NULL DEFAULT ''
 		);
 		-- Accounts THIS agent installed. Deliberately separate from
 		-- desired_users_v2: under B1 a stored desired-user record does NOT prove
@@ -207,7 +210,11 @@ func (s *Store) migrate() error {
 			state TEXT NOT NULL DEFAULT 'owned',
 			-- The uuid this agent intended to install, so an intent can be checked
 			-- against the LIVE account's identity rather than its address alone.
-			uuid TEXT NOT NULL DEFAULT ''
+			uuid TEXT NOT NULL DEFAULT '',
+			-- A ROTATION in flight: the replacement identity for an address this
+			-- agent already owns. Kept beside the old uuid, never over it, so a
+			-- crash mid-rotation leaves both candidates on record.
+			next_uuid TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS commands_v2 (
 			command_id TEXT PRIMARY KEY,
@@ -415,7 +422,11 @@ func (s *Store) provisionedFromHistory() (int, error) {
 	if sortErr != nil {
 		return 0, sortErr
 	}
-	owned := map[string]string{}  // bindingId -> the email it currently holds
+	// bindingId -> the account it currently holds. The uuid travels with it: a
+	// recovered claim without an identity can be contradicted by nothing, so a
+	// panel account that reused the address would be accepted as ours.
+	type held struct{ email, uuid string }
+	owned := map[string]held{}
 	floors := map[string]string{} // bindingId -> the revocation floor, as tombstones do
 	// The effective mode is tracked, not required of every payload: an ABSENT
 	// controlMode means "keep whatever this node is on", and the processor
@@ -454,7 +465,8 @@ func (s *Store) provisionedFromHistory() (int, error) {
 			if superseded {
 				continue
 			}
-			owned[id] = email
+			uuid, _ := payload["uuid"].(string)
+			owned[id] = held{email, uuid}
 			// The live path clears the tombstone when a binding legitimately
 			// comes back; the replay has to do the same or every later snapshot
 			// carrying it would look revoked.
@@ -467,8 +479,8 @@ func (s *Store) provisionedFromHistory() (int, error) {
 			}
 			// Addressed by email only: release whichever binding holds it.
 			if email := payloadEmail(payload); email != "" {
-				for id, held := range owned {
-					if held == email {
+				for id, current := range owned {
+					if current.email == email {
 						delete(owned, id)
 						floors[id] = entry.revision
 					}
@@ -495,7 +507,7 @@ func (s *Store) provisionedFromHistory() (int, error) {
 				// nothing about who owns what.
 				continue
 			}
-			next := map[string]string{}
+			next := map[string]held{}
 			for _, item := range items {
 				user, _ := item.(map[string]any)
 				id, _ := user["bindingId"].(string)
@@ -532,14 +544,15 @@ func (s *Store) provisionedFromHistory() (int, error) {
 				if value, present := user["enabled"].(bool); present {
 					enabled = value
 				}
+				uuid, _ := user["uuid"].(string)
 				if !enabled {
-					if held, had := owned[id]; had && held == email {
-						next[id] = email
+					if current, had := owned[id]; had && current.email == email {
+						next[id] = current
 						delete(floors, id)
 					}
 					continue
 				}
-				next[id] = email
+				next[id] = held{email, uuid}
 				delete(floors, id)
 			}
 			// Omitting a binding is a revocation, and it leaves a floor — the
@@ -553,10 +566,14 @@ func (s *Store) provisionedFromHistory() (int, error) {
 		}
 	}
 	added := 0
-	for id, email := range owned {
+	for id, account := range owned {
+		// An identity the log cannot supply is left empty rather than invented;
+		// the callers read "" as "cannot tell" and, being unable to contradict
+		// the claim, keep it. That is the same position every claim written
+		// before identity tracking is in.
 		result, err := s.db.Exec(`
-			INSERT INTO provisioned_accounts_v2(email, binding_id, recorded_at) VALUES(?, ?, ?)
-			ON CONFLICT(email) DO NOTHING`, email, id, isoMillis(time.Now()))
+			INSERT INTO provisioned_accounts_v2(email, binding_id, recorded_at, uuid) VALUES(?, ?, ?, ?)
+			ON CONFLICT(email) DO NOTHING`, account.email, id, isoMillis(time.Now()), account.uuid)
 		if err != nil {
 			return 0, err
 		}
@@ -1620,15 +1637,19 @@ func (s *Store) OldestPendingSampledAt() (string, error) {
 //
 // The table is additive: the Node agent neither reads nor writes it, so a
 // rollback to that implementation on the same data directory still works.
-func (s *Store) RecordPendingRemoval(emails []string) error {
-	if len(emails) == 0 {
+// The note carries the IDENTITY the claim was made for, not just the address:
+// while the account is gone from the desired set its address is free, and the
+// panel may put a different account there. A note that could not be contradicted
+// would hand that account to the next promotion.
+func (s *Store) RecordPendingRemoval(claims map[string]string) error {
+	if len(claims) == 0 {
 		return nil
 	}
 	return s.transact(func(tx *sql.Tx) error {
-		for _, email := range emails {
+		for email, uuid := range claims {
 			if _, err := tx.Exec(
-				`INSERT INTO pending_removals_v2(email, recorded_at) VALUES(?, ?) ON CONFLICT(email) DO NOTHING`,
-				email, isoMillis(time.Now())); err != nil {
+				`INSERT INTO pending_removals_v2(email, recorded_at, uuid) VALUES(?, ?, ?) ON CONFLICT(email) DO NOTHING`,
+				email, isoMillis(time.Now()), uuid); err != nil {
 				return err
 			}
 		}
@@ -1638,21 +1659,21 @@ func (s *Store) RecordPendingRemoval(emails []string) error {
 
 // PendingRemovals lists accounts known to be this node's but no longer in the
 // desired set.
-func (s *Store) PendingRemovals() ([]string, error) {
-	rows, err := s.db.Query(`SELECT email FROM pending_removals_v2 ORDER BY rowid`)
+func (s *Store) PendingRemovals() (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT email, uuid FROM pending_removals_v2 ORDER BY rowid`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	emails := []string{}
+	claims := map[string]string{}
 	for rows.Next() {
-		var email string
-		if err := rows.Scan(&email); err != nil {
+		var email, uuid string
+		if err := rows.Scan(&email, &uuid); err != nil {
 			return nil, err
 		}
-		emails = append(emails, email)
+		claims[email] = uuid
 	}
-	return emails, rows.Err()
+	return claims, rows.Err()
 }
 
 // ClearPendingRemoval forgets accounts that have been dealt with — uninstalled,
@@ -1793,12 +1814,33 @@ func (s *Store) RecordProvisionIntent(bindingID, email, uuid string) error {
 	if email == "" {
 		return nil
 	}
-	// DO NOTHING, not DO UPDATE: an existing 'owned' row must never be weakened
-	// back to an intent.
+	// An existing 'owned' row is never weakened back to an intent — but it is not
+	// left untouched either.
+	//
+	// A UUID ROTATION reuses the address this agent already owns. "Do nothing"
+	// would record no trace of the replacement identity, so if Xray accepts the
+	// new uuid and the process then dies, storage still names only the OLD one:
+	// every later ownership check rejects the account that is actually installed,
+	// which blocks the retry, and an omission leaves the revoked account serving
+	// because nothing claims it any more.
+	//
+	// So the replacement goes into next_uuid, BESIDE the claim rather than over
+	// it. Until resolveIntents settles which one Xray really has, both identities
+	// count as ours — the conservative reading, since either one may be the
+	// account this agent installed.
 	_, err := s.db.Exec(`
 		INSERT INTO provisioned_accounts_v2(email, binding_id, recorded_at, state, uuid) VALUES(?, ?, ?, 'intent', ?)
-		ON CONFLICT(email) DO NOTHING`,
+		ON CONFLICT(email) DO UPDATE SET
+			next_uuid = CASE WHEN provisioned_accounts_v2.uuid = excluded.uuid THEN '' ELSE excluded.uuid END`,
 		email, bindingID, isoMillis(time.Now()), uuid)
+	return err
+}
+
+// SettleRotation finishes a rotation that resolveIntents has decided: `uuid`
+// becomes the claim and next_uuid is cleared.
+func (s *Store) SettleRotation(email, uuid string) error {
+	_, err := s.db.Exec(
+		`UPDATE provisioned_accounts_v2 SET uuid = ?, next_uuid = '' WHERE email = ?`, uuid, email)
 	return err
 }
 
@@ -1853,19 +1895,29 @@ func (s *Store) ForgetProvisioned(emails []string) error {
 // delete, somebody else's account.
 //
 // An empty uuid means "cannot tell", which callers treat as no contradiction.
-func (s *Store) ProvisionedAccounts() (map[string]string, error) {
-	rows, err := s.db.Query(`SELECT email, uuid FROM provisioned_accounts_v2 WHERE state = 'owned' ORDER BY rowid`)
+// Claim is what the store remembers about an address this agent owns.
+type Claim struct {
+	// UUID is the identity installed there; "" means the record predates identity
+	// tracking, which callers read as "cannot tell".
+	UUID string
+	// NextUUID is a rotation that was in flight: Xray may already carry it.
+	NextUUID string
+}
+
+func (s *Store) ProvisionedAccounts() (map[string]Claim, error) {
+	rows, err := s.db.Query(`SELECT email, uuid, next_uuid FROM provisioned_accounts_v2 WHERE state = 'owned' ORDER BY rowid`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	claims := map[string]string{}
+	claims := map[string]Claim{}
 	for rows.Next() {
-		var email, uuid string
-		if err := rows.Scan(&email, &uuid); err != nil {
+		var email string
+		var claim Claim
+		if err := rows.Scan(&email, &claim.UUID, &claim.NextUUID); err != nil {
 			return nil, err
 		}
-		claims[email] = uuid
+		claims[email] = claim
 	}
 	return claims, rows.Err()
 }

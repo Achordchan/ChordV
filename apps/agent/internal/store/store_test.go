@@ -1445,3 +1445,51 @@ func TestTheUpgradeReplayDoesNotClaimDisabledUsers(t *testing.T) {
 		t.Fatalf("升级后的供给凭据 = %v，want 仅 [ours@chordv]：停用的用户从未被安装过", got)
 	}
 }
+
+// TestTheUpgradeReplayRecoversIdentity keeps a recovered claim contradictable.
+//
+// A claim with no identity can be refuted by nothing, so a panel account that
+// reused the address would be accepted as ours and deleted by a later omission.
+// The command payloads carry the uuid; the replay has to keep it.
+func TestTheUpgradeReplayRecoversIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+
+	finish := func(id string, kind protocol.CommandType, revision string, payload map[string]any) {
+		t.Helper()
+		if _, err := state.BeginCommand(protocol.Command{
+			CommandID: id, Type: kind, TargetRevision: revision, Payload: payload,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.CompleteCommand(protocol.CommandResult{
+			CommandID: id, Status: protocol.StatusCompleted,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	finish("c1", protocol.CommandEnsureUser, "1", map[string]any{
+		"bindingId": "b1", "email": "u1@chordv", "uuid": "uuid-b1",
+	})
+	// Disabled afterwards: ownership is retained, and the identity must be too.
+	finish("c2", protocol.CommandDisableUser, "2", map[string]any{"bindingId": "b1"})
+
+	if _, err := state.db.Exec(`DELETE FROM provisioned_accounts_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`DELETE FROM meta_v2 WHERE key = 'provisioned_backfilled'`); err != nil {
+		t.Fatal(err)
+	}
+	state.Close()
+
+	reopened := openAt(t, path, "node-1", "boot-2")
+	claims, err := reopened.ProvisionedAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims["u1@chordv"].UUID != "uuid-b1" {
+		t.Fatalf("恢复的认领没有身份，任何账号都无法反驳它：%+v", claims)
+	}
+}
