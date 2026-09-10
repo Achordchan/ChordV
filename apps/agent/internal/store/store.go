@@ -461,6 +461,15 @@ func (s *Store) provisionedFromHistory() (int, error) {
 		case protocol.CommandEnsureUser, protocol.CommandEnableUser:
 			id, _ := payload["bindingId"].(string)
 			email := payloadEmail(payload)
+			if email == "" {
+				// A UUID ROTATION carries only a bindingId and the replacement
+				// identity; resolveUser keeps the stored email and installs the
+				// new uuid, so this is a real payload shape and skipping it made
+				// the replay recover the PREVIOUS identity. The strict collision
+				// check then rejects the agent's own account and the omission
+				// cleanup leaves it running.
+				email = owned[id].email
+			}
 			if id == "" || email == "" {
 				continue
 			}
@@ -985,6 +994,14 @@ func (s *Store) ReplaceDesiredUsers(users []protocol.DesiredUser, revision strin
 }
 
 func replaceDesiredUsersTx(tx *sql.Tx, users []protocol.DesiredUser, revision string, fallback *big.Int) error {
+	// The SAME hand-off parking ApplyDesiredUsers does, and it belongs here
+	// rather than only there: an OBSERVING node never calls Reconcile, so this is
+	// the only path a snapshot takes on that track. Without it a snapshot that
+	// swaps two bindings' addresses hits the unique email constraint and fails on
+	// every retry — a snapshot the direct track applies without trouble.
+	if err := parkContestedEmailsTx(tx, users); err != nil {
+		return err
+	}
 	keep := make(map[string]bool, len(users))
 	for _, user := range users {
 		keep[user.BindingID] = true
@@ -1781,38 +1798,8 @@ const reassignPlaceholder = "\x00reassign:"
 // retires it.
 func (s *Store) ApplyDesiredUsers(users []protocol.DesiredUser) error {
 	return s.transact(func(tx *sql.Tx) error {
-		taker := make(map[string]string, len(users))
-		for _, user := range users {
-			taker[user.Email] = user.BindingID
-		}
-		rows, err := tx.Query(`SELECT binding_id, email FROM desired_users_v2`)
-		if err != nil {
+		if err := parkContestedEmailsTx(tx, users); err != nil {
 			return err
-		}
-		type held struct{ id, email string }
-		var current []held
-		for rows.Next() {
-			var row held
-			if err := rows.Scan(&row.id, &row.email); err != nil {
-				rows.Close()
-				return err
-			}
-			current = append(current, row)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return err
-		}
-		rows.Close()
-		for _, row := range current {
-			if to, contested := taker[row.email]; !contested || to == row.id {
-				continue
-			}
-			if _, err := tx.Exec(
-				`UPDATE desired_users_v2 SET email = ? WHERE binding_id = ?`,
-				reassignPlaceholder+row.id, row.id); err != nil {
-				return err
-			}
 		}
 		for _, user := range users {
 			if err := upsertDesiredUserTx(tx, user, s.options.DefaultOfflineAllowance); err != nil {
@@ -1821,6 +1808,45 @@ func (s *Store) ApplyDesiredUsers(users []protocol.DesiredUser) error {
 		}
 		return nil
 	})
+}
+
+// parkContestedEmailsTx moves every row whose address another binding is taking
+// over onto a placeholder, so the writes that follow cannot collide.
+func parkContestedEmailsTx(tx *sql.Tx, users []protocol.DesiredUser) error {
+	taker := make(map[string]string, len(users))
+	for _, user := range users {
+		taker[user.Email] = user.BindingID
+	}
+	rows, err := tx.Query(`SELECT binding_id, email FROM desired_users_v2`)
+	if err != nil {
+		return err
+	}
+	type held struct{ id, email string }
+	var current []held
+	for rows.Next() {
+		var row held
+		if err := rows.Scan(&row.id, &row.email); err != nil {
+			rows.Close()
+			return err
+		}
+		current = append(current, row)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, row := range current {
+		if to, contested := taker[row.email]; !contested || to == row.id {
+			continue
+		}
+		if _, err := tx.Exec(
+			`UPDATE desired_users_v2 SET email = ? WHERE binding_id = ?`,
+			reassignPlaceholder+row.id, row.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // --- provisioning evidence --------------------------------------------------

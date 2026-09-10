@@ -1600,3 +1600,89 @@ func TestTheUpgradeReplayKeepsNewerBindingState(t *testing.T) {
 		t.Fatalf("回放采用了过期快照的身份，实际安装的账号没有被认领：%v", claims)
 	}
 }
+
+// TestAnObservingSnapshotMaySwapEmails covers the track that never calls
+// Reconcile.
+//
+// An observing node applies snapshots straight through ApplyConfigSnapshot, so
+// the transactional hand-off parking has to live there too. Without it a
+// snapshot that swaps two bindings' addresses hits the unique email constraint
+// and fails on every retry — a snapshot the direct track applies without
+// trouble.
+func TestAnObservingSnapshotMaySwapEmails(t *testing.T) {
+	state := newStore(t, "node-1", "boot-1")
+	user := func(id, email, revision string) protocol.DesiredUser {
+		return protocol.DesiredUser{
+			BindingID: id, Email: email, UUID: "uuid-" + id, Revision: revision,
+			Enabled: true, QuotaRemainingBytes: "100", OfflineAllowanceBytes: allowance,
+		}
+	}
+	if _, err := state.ApplyConfigSnapshot(protocol.ConfigSnapshot{
+		NodeID: "node-1", Revision: "5", ControlMode: protocol.ModeShadowDirect,
+		Users: []protocol.DesiredUser{user("b1", "a@chordv", "5"), user("b2", "b@chordv", "5")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.ApplyConfigSnapshot(protocol.ConfigSnapshot{
+		NodeID: "node-1", Revision: "6", ControlMode: protocol.ModeShadowDirect,
+		Users: []protocol.DesiredUser{user("b1", "b@chordv", "6"), user("b2", "a@chordv", "6")},
+	}); err != nil {
+		t.Fatalf("观察态的互换快照失败了，且每次重试都会重复：%v", err)
+	}
+	b1, _ := state.UserByBindingID("b1")
+	b2, _ := state.UserByBindingID("b2")
+	if b1 == nil || b2 == nil || b1.Email != "b@chordv" || b2.Email != "a@chordv" {
+		t.Fatalf("记录没有完成互换：%+v %+v", b1, b2)
+	}
+}
+
+// TestTheUpgradeReplayResolvesBindingOnlyRotations is the replay's version of
+// the same partial-payload rule.
+//
+// A rotation carries only a bindingId and the replacement uuid; resolveUser
+// keeps the stored email. Skipping it for want of an email makes the replay
+// recover the PREVIOUS identity — the strict collision check then rejects the
+// agent's own account, and omission cleanup leaves it running.
+func TestTheUpgradeReplayResolvesBindingOnlyRotations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+
+	finish := func(id string, kind protocol.CommandType, revision string, payload map[string]any) {
+		t.Helper()
+		if _, err := state.BeginCommand(protocol.Command{
+			CommandID: id, Type: kind, TargetRevision: revision, Payload: payload,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.CompleteCommand(protocol.CommandResult{
+			CommandID: id, Status: protocol.StatusCompleted,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	finish("c1", protocol.CommandEnsureUser, "1", map[string]any{
+		"bindingId": "b1", "email": "u1@chordv", "uuid": "old-uuid",
+	})
+	finish("c2", protocol.CommandEnsureUser, "2", map[string]any{
+		"bindingId": "b1", "uuid": "new-uuid",
+	})
+
+	if _, err := state.db.Exec(`DELETE FROM provisioned_accounts_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`DELETE FROM meta_v2 WHERE key = 'provisioned_backfilled'`); err != nil {
+		t.Fatal(err)
+	}
+	state.Close()
+
+	reopened := openAt(t, path, "node-1", "boot-2")
+	claims, err := reopened.ProvisionedAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims["u1@chordv"].UUID != "new-uuid" {
+		t.Fatalf("只带 bindingId 的轮换被跳过了，恢复的是旧身份：%+v", claims)
+	}
+}
