@@ -662,22 +662,6 @@ func (s *Store) provisionedFromHistory() (int, error) {
 				if uuid == "" {
 					uuid = owned[id].uuid // merged, as above
 				}
-				if !enabled {
-					if current, had := owned[id]; had && current.email == email {
-						// The claim carries forward, but at THIS revision and
-						// marked disabled — the stored row really is rewritten
-						// that way. Keeping the old revision would let a delayed
-						// enable at the disabling revision pass the guards above
-						// and replace the recovered identity.
-						//
-						// The floor stays: only an install legitimately brings a
-						// binding back, and this is not one.
-						current.revision = revision
-						current.disabled = true
-						next[id] = current
-					}
-					continue
-				}
 				// mergeNewerBindings, reproduced: a snapshot carrying a binding at
 				// an OLDER revision than a per-binding instruction that already
 				// landed does not replace it. The live merge keeps the newer state,
@@ -696,7 +680,32 @@ func (s *Store) provisionedFromHistory() (int, error) {
 						continue
 					}
 				}
-				next[id] = held{email: email, uuid: uuid, revision: revision, disabled: !enabled}
+				if !enabled {
+					// Reached only once the freshness checks above have passed,
+					// so this snapshot really is the binding's latest word.
+					//
+					// A disabled user is only ever uninstalled, never installed,
+					// so its presence is not evidence that this agent ever held
+					// the address. An existing claim carries forward — the record
+					// survives a disable, and a later enable puts the same account
+					// back — but no new one is invented: the panel may since have
+					// taken the address, and inventing ownership here would have
+					// the next omission delete their account.
+					if current, had := owned[id]; had && current.email == email {
+						// At THIS revision and marked disabled — the stored row
+						// really is rewritten that way. Keeping the old revision
+						// would let a delayed enable at the disabling revision
+						// pass the guards above and replace the recovered identity.
+						//
+						// The floor stays: only an install legitimately brings a
+						// binding back, and this is not one.
+						current.revision = revision
+						current.disabled = true
+						next[id] = current
+					}
+					continue
+				}
+				next[id] = held{email: email, uuid: uuid, revision: revision}
 				delete(floors, id)
 			}
 			// Omitting a binding is a revocation, and it leaves a floor — the

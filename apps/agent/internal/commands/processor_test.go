@@ -31,6 +31,9 @@ type fakeXray struct {
 	// in it — so a test that cares about the interleaving observes the store
 	// from inside the call instead.
 	onRemove func()
+	// onEnsure runs at the moment of install, so a test can observe what evidence
+	// was durable BEFORE the mutation — which is the whole point of an intent.
+	onEnsure func()
 	// expectations records what each mutation was told to expect, so a test can
 	// check that the processor passes its belief down to the adapter.
 	expectations []xray.Expectation
@@ -48,6 +51,9 @@ func (f *fakeXray) ListUsers(context.Context) ([]xray.LiveUser, error) {
 func (f *fakeXray) EnsureUser(_ context.Context, user protocol.DesiredUser, expect xray.Expectation) error {
 	f.note("ensure:"+user.Email, expect)
 	f.calls = append(f.calls, "ensure:"+user.Email)
+	if f.onEnsure != nil {
+		f.onEnsure()
+	}
 	if err := f.enforceExpectation(user.Email, expect); err != nil {
 		return err
 	}
@@ -2700,5 +2706,64 @@ func TestARemovalThatObservedAbsenceSaysSo(t *testing.T) {
 	if !expect.Absent {
 		t.Fatalf("看过入站、确认这里没有账号，却什么都没告诉适配器：%+v —— "+
 			"面板在这中间建一个同名账号就会被删掉", expect)
+	}
+}
+
+// TestAnAuthorizedAdoptionLeavesRecoveryEvidence covers the crash window on the
+// migration path, which is where it matters most.
+//
+// An authorized takeover used to skip the provisioning intent, so an install
+// that succeeded and then died before its claim committed left NO durable
+// evidence. Omission cleanup consults ownership and RemoveUnknownUsers — it has
+// never heard of AdoptExistingAccounts — so a subscription revoked in that
+// window would simply keep serving.
+func TestAnAuthorizedAdoptionLeavesRecoveryEvidence(t *testing.T) {
+	for _, viaCommand := range []bool{true, false} {
+		name := "reconcile"
+		if viaCommand {
+			name = "ensure_user"
+		}
+		t.Run(name, func(t *testing.T) {
+			processor, fake, state := newProcessor(t, false) // adoption on
+			fake.live = []xray.LiveUser{{Email: "u1@chordv", UUID: "installed-by-the-old-agent"}}
+			// Observed at the moment of the mutation: a crash one instruction
+			// later must still leave something behind.
+			var evidence map[string]store.ProvisionIntent
+			fake.onEnsure = func() { evidence, _ = state.ProvisionIntents() }
+
+			payload := userPayload("b1", "u1@chordv")
+			if viaCommand {
+				run(t, processor, command("c1", protocol.CommandEnsureUser, "5", payload), true)
+			} else {
+				run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", map[string]any{
+					"controlMode": string(protocol.ModeDirectPrimary),
+					"users":       []any{map[string]any(payload)},
+				}), true)
+			}
+
+			if evidence["u1@chordv"].UUID != "uuid-b1" {
+				t.Fatalf("被批准的接管在动手之前没有留下可恢复的证据：%+v", evidence)
+			}
+
+			// The crash: the claim never committed, so only the intent survives.
+			if err := state.ForgetProvisioned([]string{"u1@chordv"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := state.RecordProvisionIntent("b1", "u1@chordv", "uuid-b1"); err != nil {
+				t.Fatal(err)
+			}
+			fake.onEnsure = nil
+
+			// Xray now carries what this command installed, so the next reconcile
+			// can settle the intent and retire the revoked account.
+			fake.live = []xray.LiveUser{{Email: "u1@chordv", UUID: "uuid-b1"}}
+			fake.calls = nil
+			run(t, processor, command("c2", protocol.CommandReconcileUsers, "6", map[string]any{
+				"controlMode": string(protocol.ModeDirectPrimary), "users": []any{},
+			}), true)
+			if !contains(fake.calls, "remove:u1@chordv") {
+				t.Fatalf("被吊销的订阅仍在服务，因为没有任何证据认得这个账号：%v", fake.calls)
+			}
+		})
 	}
 }

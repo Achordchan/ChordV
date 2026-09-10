@@ -2204,3 +2204,63 @@ func TestTheUpgradeReplayAdvancesTheWatermarkForObservingSnapshots(t *testing.T)
 		t.Fatalf("观察态快照没有推进水位线，水位线之下的移除把认领删掉了：%v", claims)
 	}
 }
+
+// TestTheUpgradeReplayChecksFreshnessBeforeTheDisabledBranch is about ORDER
+// inside the replay's snapshot handling.
+//
+// A snapshot at revision 10 can carry a binding disabled at ITS revision 5,
+// under the address it had before an install at revision 6 moved it. Runtime
+// preserves the newer installed binding. Handling the disabled case first
+// compares emails that no longer match and drops the claim — so backfill ends
+// with the live account unowned: strict collision handling refuses to manage it,
+// and omission cleanup leaves it serving.
+func TestTheUpgradeReplayChecksFreshnessBeforeTheDisabledBranch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+
+	finish := func(id string, kind protocol.CommandType, revision string, payload map[string]any) {
+		t.Helper()
+		if _, err := state.BeginCommand(protocol.Command{
+			CommandID: id, Type: kind, TargetRevision: revision, Payload: payload,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.CompleteCommand(protocol.CommandResult{
+			CommandID: id, Status: protocol.StatusCompleted,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	finish("c1", protocol.CommandEnsureUser, "1", map[string]any{
+		"bindingId": "b1", "email": "old@chordv", "uuid": "old-uuid",
+	})
+	finish("c2", protocol.CommandEnsureUser, "6", map[string]any{
+		"bindingId": "b1", "email": "new@chordv", "uuid": "new-uuid",
+	})
+	finish("c3", protocol.CommandReconcileUsers, "10", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users": []any{
+			map[string]any{"bindingId": "b1", "email": "old@chordv", "uuid": "old-uuid",
+				"revision": "5", "enabled": false},
+		},
+	})
+
+	if _, err := state.db.Exec(`DELETE FROM provisioned_accounts_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`DELETE FROM meta_v2 WHERE key = 'provisioned_backfilled'`); err != nil {
+		t.Fatal(err)
+	}
+	state.Close()
+
+	reopened := openAt(t, path, "node-1", "boot-2")
+	claims, err := reopened.ProvisionedAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims["new@chordv"].UUID != "new-uuid" {
+		t.Fatalf("过期的停用条目把实际安装着的账号的认领丢掉了：%v", claims)
+	}
+}

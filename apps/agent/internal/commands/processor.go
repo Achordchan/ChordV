@@ -172,10 +172,11 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 	// then refuse — leaving the user off, with no retry able to put them back.
 	//
 	// `observed` is what lives at that address right now — the expectation the
-	// adapter re-checks before it writes. `takeover` is the separate question of
-	// whether proceeding means claiming an account this agent has no record of;
-	// by the time it comes back true, the collision has already been authorised.
-	observed, takeover, err := p.preflightCollision(ctx, user)
+	// adapter re-checks before it writes. The preflight's other answer, whether
+	// this is a takeover, has already been acted on inside it: by the time it
+	// returns, an unauthorised collision has been refused and an authorised one
+	// approved, and nothing downstream needs to know which it was.
+	observed, _, err := p.preflightCollision(ctx, user)
 	if err != nil {
 		return err
 	}
@@ -240,15 +241,20 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 	// unclaimed, unmetered and permanent. So an INTENT goes down first, which is
 	// weaker than a claim and cannot be mistaken for one.
 	//
-	// Never for a TAKEOVER: an intent is settled later by finding this agent's
-	// own uuid at that address, and an address that already carried somebody
-	// else's account cannot answer that question. A free address records a fresh
-	// intent; an address this agent already owns records the replacement identity
-	// beside the claim, which is what makes a rotation recoverable.
-	if !takeover {
-		if err := p.deps.Store.RecordProvisionIntent(user.BindingID, user.Email, user.UUID); err != nil {
-			return err
-		}
+	// For EVERY install, takeovers included.
+	//
+	// An earlier version skipped takeovers, reasoning that an address which
+	// already carried somebody else's account cannot answer "did my install
+	// land". Identity changed that: the question is whether the account there
+	// now carries the uuid this command was installing, and that is answerable
+	// whatever was there before. Skipping it left an AUTHORISED adoption — the
+	// migration case, the one where accounts are most likely to be revoked
+	// mid-flight — with no durable evidence at all if the process died between
+	// the install and the claim. Omission cleanup consults ownership and
+	// RemoveUnknownUsers; it has never heard of AdoptExistingAccounts, so the
+	// account would simply keep serving.
+	if err := p.deps.Store.RecordProvisionIntent(user.BindingID, user.Email, user.UUID); err != nil {
+		return err
 	}
 	if err := p.deps.Xray.EnsureUser(ctx, user, observed); err != nil {
 		return err
@@ -1223,13 +1229,12 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 			// The pending note is only released after the claim exists, which is
 			// what keeps a failure here from dropping the account out of
 			// ownership altogether.
-			// The collision itself was settled by the preflight above; all that
-			// is left here is whether the address was FREE, which is the only
-			// case an intent can later be settled from.
-			if !liveNow[user.Email] || ours[user.Email] {
-				if err := p.deps.Store.RecordProvisionIntent(user.BindingID, user.Email, user.UUID); err != nil {
-					return err
-				}
+			// The collision itself was settled by the preflight above. The intent
+			// goes down for EVERY install, adoptions included — see ensureUser:
+			// what settles it is finding this command's own uuid at that address,
+			// which is answerable whatever was there before.
+			if err := p.deps.Store.RecordProvisionIntent(user.BindingID, user.Email, user.UUID); err != nil {
+				return err
 			}
 			expect := xray.Expectation{Absent: !liveNow[user.Email], UUID: liveUUID[user.Email]}
 			if err := p.deps.Xray.EnsureUser(ctx, user, expect); err != nil {
