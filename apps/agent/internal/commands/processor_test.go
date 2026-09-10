@@ -1887,3 +1887,59 @@ func TestAFailedInstallDoesNotClaimTheAddress(t *testing.T) {
 		})
 	}
 }
+
+// TestAnInstallIntentSurvivesACrashBeforeTheClaim covers the window between a
+// successful install and its ownership record.
+//
+// Re-running the reconcile only repairs that while the snapshot still names the
+// binding. Revoke the subscription in between and the account is installed,
+// unclaimed, unmetered and — with unknown-user removal off — permanent. The
+// intent is what makes it recoverable, and it must NOT be mistaken for ownership
+// of an address the agent never installed.
+func TestAnInstallIntentSurvivesACrashBeforeTheClaim(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	run(t, processor, command("c1", protocol.CommandEnsureUser, "5", userPayload("b1", "u1@chordv")), true)
+
+	// The install landed; simulate the crash by dropping the claim while leaving
+	// the intent — exactly the durable state the ordering produces.
+	if err := state.ForgetProvisioned([]string{"u1@chordv"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.RecordProvisionIntent("b1", "u1@chordv"); err != nil {
+		t.Fatal(err)
+	}
+	if provisioned, _ := state.ProvisionedAccounts(); len(provisioned) != 0 {
+		t.Fatalf("意图被当成了所有权：%v", provisioned)
+	}
+
+	// The subscription is revoked in the same window: the account is live, and
+	// the snapshot no longer names it.
+	fake.live = []xray.LiveUser{{Email: "u1@chordv"}}
+	fake.calls = nil
+	run(t, processor, command("c2", protocol.CommandReconcileUsers, "6", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary), "users": []any{},
+	}), true)
+	if !contains(fake.calls, "remove:u1@chordv") {
+		t.Fatalf("崩在认领之前的账号无人认领，被吊销后仍在服务：%v", fake.calls)
+	}
+}
+
+// TestAnIntentForAnAddressThatWasNeverInstalledIsDropped is the other half: an
+// intent must not become ownership on its own.
+func TestAnIntentForAnAddressThatWasNeverInstalledIsDropped(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	if err := state.RecordProvisionIntent("b1", "never@chordv"); err != nil {
+		t.Fatal(err)
+	}
+	fake.live = []xray.LiveUser{{Email: "panel@panel"}}
+	run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary), "users": []any{},
+	}), true)
+
+	if provisioned, _ := state.ProvisionedAccounts(); len(provisioned) != 0 {
+		t.Fatalf("从未安装过的意图变成了所有权：%v", provisioned)
+	}
+	if intents, _ := state.ProvisionIntents(); len(intents) != 0 {
+		t.Fatalf("未兑现的意图没有被清理，会无限累积：%v", intents)
+	}
+}

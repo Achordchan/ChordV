@@ -196,10 +196,15 @@ func (s *Store) migrate() error {
 		-- Accounts THIS agent installed. Deliberately separate from
 		-- desired_users_v2: under B1 a stored desired-user record does NOT prove
 		-- ChordV provisioned the account. See ProvisionedAccounts.
+		-- state is 'owned' (the install SUCCEEDED) or 'intent' (this agent was
+		-- about to install, and the address was nobody else's at that moment).
+		-- Only 'owned' counts as ownership; an intent is resolved against Xray on
+		-- the next reconcile. See RecordProvisionIntent.
 		CREATE TABLE IF NOT EXISTS provisioned_accounts_v2 (
 			email TEXT PRIMARY KEY,
 			binding_id TEXT NOT NULL,
-			recorded_at TEXT NOT NULL
+			recorded_at TEXT NOT NULL,
+			state TEXT NOT NULL DEFAULT 'owned'
 		);
 		CREATE TABLE IF NOT EXISTS commands_v2 (
 			command_id TEXT PRIMARY KEY,
@@ -511,6 +516,24 @@ func (s *Store) provisionedFromHistory() (int, error) {
 					return 0, err
 				}
 				if superseded {
+					continue
+				}
+				// A DISABLED user in the payload is only ever uninstalled, never
+				// installed — so its presence is not evidence that this agent
+				// ever held the address. An existing claim carries forward (the
+				// record survives a disable, and a later enable puts the same
+				// account back), but no new one is invented: the panel may since
+				// have taken the address, and inventing ownership here would have
+				// the next omission delete their account.
+				enabled := true
+				if value, present := user["enabled"].(bool); present {
+					enabled = value
+				}
+				if !enabled {
+					if held, had := owned[id]; had && held == email {
+						next[id] = email
+						delete(floors, id)
+					}
 					continue
 				}
 				next[id] = email
@@ -1740,10 +1763,55 @@ func (s *Store) RecordProvisioned(bindingID, email string) error {
 		return nil
 	}
 	_, err := s.db.Exec(`
-		INSERT INTO provisioned_accounts_v2(email, binding_id, recorded_at) VALUES(?, ?, ?)
-		ON CONFLICT(email) DO UPDATE SET binding_id = excluded.binding_id`,
+		INSERT INTO provisioned_accounts_v2(email, binding_id, recorded_at, state) VALUES(?, ?, ?, 'owned')
+		ON CONFLICT(email) DO UPDATE SET binding_id = excluded.binding_id, state = 'owned'`,
 		email, bindingID, isoMillis(time.Now()))
 	return err
+}
+
+// RecordProvisionIntent notes that this agent is ABOUT to install an account,
+// which is a weaker thing than owning it and is stored as such.
+//
+// It exists for one window: the process dies after EnsureUser succeeds but
+// before the claim commits. Re-running the reconcile repairs that only while the
+// snapshot still names the binding — revoke the subscription in between and the
+// account is installed, unclaimed, unmetered, and (with unknown-user removal
+// off) permanent.
+//
+// The intent is NOT ownership, so a failed install cannot turn into a claim on
+// somebody else's address. What makes it resolvable later is WHEN it is written:
+// the caller records it only if the email named no live account at that moment,
+// so any account carrying that address afterwards can only be this agent's.
+// ResolveProvisionIntents settles them against Xray on the next reconcile.
+func (s *Store) RecordProvisionIntent(bindingID, email string) error {
+	if email == "" {
+		return nil
+	}
+	// DO NOTHING, not DO UPDATE: an existing 'owned' row must never be weakened
+	// back to an intent.
+	_, err := s.db.Exec(`
+		INSERT INTO provisioned_accounts_v2(email, binding_id, recorded_at, state) VALUES(?, ?, ?, 'intent')
+		ON CONFLICT(email) DO NOTHING`,
+		email, bindingID, isoMillis(time.Now()))
+	return err
+}
+
+// ProvisionIntents lists the unresolved intents, with the binding each names.
+func (s *Store) ProvisionIntents() (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT email, binding_id FROM provisioned_accounts_v2 WHERE state = 'intent'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	intents := map[string]string{}
+	for rows.Next() {
+		var email, bindingID string
+		if err := rows.Scan(&email, &bindingID); err != nil {
+			return nil, err
+		}
+		intents[email] = bindingID
+	}
+	return intents, rows.Err()
 }
 
 // ForgetProvisioned drops the claim on accounts that are no longer installed.
@@ -1763,7 +1831,7 @@ func (s *Store) ForgetProvisioned(emails []string) error {
 
 // ProvisionedAccounts lists the emails this agent has installed.
 func (s *Store) ProvisionedAccounts() ([]string, error) {
-	rows, err := s.db.Query(`SELECT email FROM provisioned_accounts_v2 ORDER BY rowid`)
+	rows, err := s.db.Query(`SELECT email FROM provisioned_accounts_v2 WHERE state = 'owned' ORDER BY rowid`)
 	if err != nil {
 		return nil, err
 	}

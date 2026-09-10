@@ -1408,3 +1408,49 @@ func TestTheUpgradeReplayHonorsPerBindingFloors(t *testing.T) {
 			"快照携带的 revision 5 过不了它的下限", got)
 	}
 }
+
+// TestTheUpgradeReplayDoesNotClaimDisabledUsers keeps the migration from
+// inventing ownership.
+//
+// A disabled user in a reconcile payload is only ever uninstalled, never
+// installed, so its presence is not evidence that this agent ever held the
+// address. If the panel has since taken it, inventing a claim here means the
+// next omission deletes their account.
+func TestTheUpgradeReplayDoesNotClaimDisabledUsers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+
+	if _, err := state.BeginCommand(protocol.Command{
+		CommandID: "c1", Type: protocol.CommandReconcileUsers, TargetRevision: "5",
+		Payload: map[string]any{
+			"controlMode": string(protocol.ModeDirectPrimary),
+			"users": []any{
+				map[string]any{"bindingId": "b1", "email": "neverours@panel", "uuid": "u", "enabled": false},
+				map[string]any{"bindingId": "b2", "email": "ours@chordv", "uuid": "u"},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.CompleteCommand(protocol.CommandResult{
+		CommandID: "c1", Status: protocol.StatusCompleted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`DELETE FROM provisioned_accounts_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`DELETE FROM meta_v2 WHERE key = 'provisioned_backfilled'`); err != nil {
+		t.Fatal(err)
+	}
+	state.Close()
+
+	reopened := openAt(t, path, "node-1", "boot-2")
+	got, err := reopened.ProvisionedAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "ours@chordv" {
+		t.Fatalf("升级后的供给凭据 = %v，want 仅 [ours@chordv]：停用的用户从未被安装过", got)
+	}
+}

@@ -213,11 +213,38 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 	// already names a panel account, a failed EnsureUser would leave the panel's
 	// account marked as ChordV's, for the next omission to delete.
 	//
-	// The window this opens instead is self-healing. A crash between the install
-	// and the claim leaves an installed account with no claim — but the
-	// desired-user record was written above, so the next reconcile finds it in
-	// the desired set (cleanup skips it) and re-runs both steps. The record
-	// outlives the gap precisely because the store is written before Xray.
+	// But that leaves a window — a crash between the install and the claim — and
+	// re-running the reconcile only repairs it while the snapshot still names the
+	// binding. Revoke the subscription in between and the account is installed,
+	// unclaimed, unmetered and permanent. So an INTENT goes down first, which is
+	// weaker than a claim and cannot be mistaken for one.
+	//
+	// Recorded only if the address names no live account right now: that is what
+	// makes it resolvable later, because any account carrying it afterwards can
+	// only be this agent's. Checked only when the account is not already ours, so
+	// the common case costs no extra call.
+	owned, err := p.owns(user.Email)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		live, err := p.deps.Xray.ListUsers(ctx)
+		if err != nil {
+			return err
+		}
+		taken := false
+		for _, account := range live {
+			if account.Email == user.Email {
+				taken = true
+				break
+			}
+		}
+		if !taken {
+			if err := p.deps.Store.RecordProvisionIntent(user.BindingID, user.Email); err != nil {
+				return err
+			}
+		}
+	}
 	if err := p.deps.Xray.EnsureUser(ctx, user); err != nil {
 		return err
 	}
@@ -559,6 +586,29 @@ func (p *Processor) reconcileCommand(ctx context.Context, command protocol.Comma
 //
 // The ownership snapshot is taken BEFORE the desired set is written, because
 // that write is what erases the evidence.
+// resolveIntents settles every unresolved installation intent against Xray.
+func (p *Processor) resolveIntents(live []xray.LiveUser) error {
+	intents, err := p.deps.Store.ProvisionIntents()
+	if err != nil || len(intents) == 0 {
+		return err
+	}
+	installed := make(map[string]bool, len(live))
+	for _, account := range live {
+		installed[account.Email] = true
+	}
+	var abandoned []string
+	for email, bindingID := range intents {
+		if installed[email] {
+			if err := p.deps.Store.RecordProvisioned(bindingID, email); err != nil {
+				return err
+			}
+			continue
+		}
+		abandoned = append(abandoned, email)
+	}
+	return p.deps.Store.ForgetProvisioned(abandoned)
+}
+
 // owns reports whether this agent installed the account, by the same two pieces
 // of evidence Reconcile's ownership map is built from.
 func (p *Processor) owns(email string) (bool, error) {
@@ -684,6 +734,15 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	//
 	// "This agent called EnsureUser for this email" is the fact none of that can
 	// manufacture.
+	//
+	// Unresolved INTENTS are settled first, against what Xray actually holds. An
+	// intent was only written when the address named no live account, so finding
+	// one there now means the install landed and the claim did not — the crash
+	// window ensureUser describes. Finding nothing means the install never
+	// happened, and the intent is dropped rather than left to accumulate.
+	if err := p.resolveIntents(live); err != nil {
+		return err
+	}
 	provisioned, err := p.deps.Store.ProvisionedAccounts()
 	if err != nil {
 		return err
@@ -769,6 +828,10 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	// So each branch below hands the claim over before letting go of it: an
 	// enabled user gets a provisioning record first, a disabled one keeps the
 	// note until its uninstall has actually succeeded.
+	liveNow := make(map[string]bool, len(live))
+	for _, account := range live {
+		liveNow[account.Email] = true
+	}
 	clearPending := func(email string) error {
 		if !stillPending[email] {
 			return nil
@@ -782,11 +845,18 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	for _, user := range users {
 		if user.Enabled {
 			// Install FIRST, then claim — see ensureUser. A failed install must
-			// not leave a claim on an address that may be the panel's.
+			// not leave a claim on an address that may be the panel's; an intent
+			// covers the crash window in between, and is only written when the
+			// address names no live account.
 			//
 			// The pending note is only released after the claim exists, which is
 			// what keeps a failure here from dropping the account out of
 			// ownership altogether.
+			if !liveNow[user.Email] || ours[user.Email] {
+				if err := p.deps.Store.RecordProvisionIntent(user.BindingID, user.Email); err != nil {
+					return err
+				}
+			}
 			if err := p.deps.Xray.EnsureUser(ctx, user); err != nil {
 				return err
 			}
