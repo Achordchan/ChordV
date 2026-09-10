@@ -10,8 +10,9 @@ import { parsePanelLink } from "./panel-inbound";
 // class-decorated bodies — an interface-only DTO reaches the service as an
 // unvalidated Object.
 class CreateAgentNodeDto {
+  @IsOptional()
   @IsObject()
-  panelInbound!: Record<string, unknown>;
+  panelInbound?: Record<string, unknown>;
 
   @IsString()
   @MaxLength(120)

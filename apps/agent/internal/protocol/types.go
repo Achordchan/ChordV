@@ -154,10 +154,11 @@ type ConfigSnapshot struct {
 type XrayStatus string
 
 const (
-	XrayUnknown  XrayStatus = "unknown"
-	XrayHealthy  XrayStatus = "healthy"
-	XrayDegraded XrayStatus = "degraded"
-	XrayOffline  XrayStatus = "offline"
+	XrayAwaitingInbound XrayStatus = "awaiting_inbound"
+	XrayUnknown         XrayStatus = "unknown"
+	XrayHealthy         XrayStatus = "healthy"
+	XrayDegraded        XrayStatus = "degraded"
+	XrayOffline         XrayStatus = "offline"
 )
 
 // Heartbeat is the periodic liveness and progress report.

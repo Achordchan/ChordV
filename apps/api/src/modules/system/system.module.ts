@@ -3,6 +3,7 @@ import { DevDataModule } from "../common/dev-data.module";
 import { SystemUpdateService } from "../common/system-update.service";
 import { HealthController } from "./health.controller";
 import { SystemUpdateController } from "./system-update.controller";
+import { SystemUpdateStreamService } from "./system-update-stream.service";
 
 // DevDataModule (@Global) owns and exports DownloadMirrorService, which
 // SystemUpdateService injects. Import it explicitly so the dependency is visible
@@ -10,7 +11,7 @@ import { SystemUpdateController } from "./system-update.controller";
 @Module({
   imports: [DevDataModule],
   controllers: [HealthController, SystemUpdateController],
-  providers: [SystemUpdateService],
+  providers: [SystemUpdateService, SystemUpdateStreamService],
   exports: [SystemUpdateService]
 })
 export class SystemModule {}

@@ -37,6 +37,13 @@ func New(address, tag string) (*GRPC, error) {
 	if strings.TrimSpace(tag) == "" {
 		return nil, fmt.Errorf("XRAY_INBOUND_TAG 不能为空")
 	}
+	return newConnection(address, tag)
+}
+
+// NewControl connects to the local API without selecting an inbound.
+func NewControl(address string) (*GRPC, error) { return newConnection(address, "") }
+
+func newConnection(address, tag string) (*GRPC, error) {
 	network, target := "tcp", address
 	if strings.HasPrefix(strings.ToLower(address), "unix:") {
 		network, target = "unix", strings.TrimPrefix(address[5:], "//")

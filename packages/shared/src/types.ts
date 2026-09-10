@@ -1060,11 +1060,11 @@ export interface UpdateNodeInputDto {
   recommended?: boolean;
 }
 
-// Go onboarding stores public imported parameters separately from usable node
-// endpoints. Live validation must succeed before connection fields are applied.
+// New Go onboarding starts with server metadata. Optional public parameters
+// preserve older clients; new clients submit them after environment readiness.
 export interface CreateAgentNodeInputDto {
   name: string;
-  panelInbound: Record<string, unknown>;
+  panelInbound?: Record<string, unknown>;
   countryCode?: string;
   region?: string;
   provider?: string;
@@ -1319,7 +1319,7 @@ export interface AgentHeartbeatInputDto {
   version: string;
   configRevision: string;
   queueDepth: number;
-  xrayStatus: "unknown" | "healthy" | "degraded" | "offline";
+  xrayStatus: "unknown" | "healthy" | "degraded" | "offline" | "awaiting_inbound";
 }
 
 export interface AgentUsageSampleDto {

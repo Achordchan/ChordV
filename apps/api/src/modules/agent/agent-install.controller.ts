@@ -26,11 +26,11 @@ export class AgentInstallController {
     try {
       const token = await this.registerService.resolveTokenNode(body.token);
       if (!token) throw new Error("安装令牌不存在，请重新生成命令");
-      if (!token.spec) this.registerService.requireOnboardingSpec();
+      if (!token.spec && !token.environmentOnly) this.registerService.requireOnboardingSpec();
       const configured = process.env.CHORDV_PUBLIC_BASE_URL?.trim();
       const origin = normalizeOrigin(configured || (host ? (proto?.split(",")[0]?.trim() || "http") + "://" + host : ""));
       response.status(200).end(renderInstallScript({ token: body.token, apiBase: origin,
-        nodeId: token.nodeId, usable: token.usable, spec: token.spec!, release: loadGoRelease() }));
+        nodeId: token.nodeId, usable: token.usable, spec: token.spec, release: loadGoRelease() }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "无法生成安装命令";
       response.status(200).end("#!/usr/bin/env bash\nprintf '%s\\n' " + shellLiteral("安装中止：" + message) + " >&2\nexit 1\n");
@@ -59,12 +59,12 @@ export function normalizeOrigin(value: string | undefined): string {
 function shellLiteral(value: string) { return "'" + value.replace(/'/g, "'\\''") + "'"; }
 
 export function renderInstallScript(input: { token: string; apiBase: string; nodeId: string;
-  usable: boolean; spec: PanelInboundSpec; release: GoRelease }) {
+  usable: boolean; spec: PanelInboundSpec | null; release: GoRelease }) {
   const origin = normalizeOrigin(input.apiBase);
   if (!origin) throw new Error("安装脚本的公网地址无效");
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(input.token)) throw new Error("安装脚本的注册令牌格式无效");
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(input.nodeId)) throw new Error("节点 ID 无效");
-  const spec = normalizePanelInbound(input.spec as unknown as Record<string, unknown>);
+  const spec = input.spec ? normalizePanelInbound(input.spec as unknown as Record<string, unknown>) : { mode: "awaiting_panel" };
   const values: Record<string, string> = {
     ORIGIN: origin, TOKEN: input.token, NODE_ID: input.nodeId, USABLE: input.usable ? "1" : "0",
     TOKEN_HASH: createHash("sha256").update(input.token).digest("hex"),

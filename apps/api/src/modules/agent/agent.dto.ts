@@ -46,8 +46,8 @@ export class AgentHeartbeatDto {
   @Max(10_000_000)
   queueDepth!: number;
 
-  @IsIn(["unknown", "healthy", "degraded", "offline"])
-  xrayStatus!: "unknown" | "healthy" | "degraded" | "offline";
+  @IsIn(["unknown", "healthy", "degraded", "offline", "awaiting_inbound"])
+  xrayStatus!: "unknown" | "healthy" | "degraded" | "offline" | "awaiting_inbound";
 }
 
 export class AgentUsageSampleInputDto {

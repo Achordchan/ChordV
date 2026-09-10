@@ -4,7 +4,7 @@ import type {
   SystemUpdateRollbackVersionDto,
   SystemUpdateStartResultDto
 } from "@chordv/shared";
-import { request } from "../../api/base";
+import { API_BASE, clearStoredAdminSession, getStoredAdminAccessToken, refreshAdminAccessToken, request } from "../../api/base";
 
 export interface SystemRuntimeStatusDto {
   currentVersion: string;
@@ -12,8 +12,18 @@ export interface SystemRuntimeStatusDto {
   manifestConfigured: boolean;
 }
 
+async function readStatus<T>(path: string, signal?: AbortSignal) {
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal?.reason);
+  if (signal?.aborted) abort(); else signal?.addEventListener("abort", abort, { once: true });
+  // Keep the deadline through body consumption, not merely until headers arrive.
+  const timer = setTimeout(() => controller.abort(new Error("状态读取超时")), 20_000);
+  try { return await request<T>(path, { signal: controller.signal, cache: "no-store" }); }
+  finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }
+}
+
 export function fetchSystemVersion() {
-  return request<SystemRuntimeStatusDto>("/admin/system/version");
+  return readStatus<SystemRuntimeStatusDto>("/admin/system/version");
 }
 
 export function checkSystemUpdate(force = false) {
@@ -27,17 +37,32 @@ export async function fetchRollbackVersions() {
 }
 
 export async function fetchSystemOperations(limit = 20) {
-  const result = await request<{ operations: SystemUpdateOperationDto[] }>(
+  const result = await readStatus<{ operations: SystemUpdateOperationDto[] }>(
     `/admin/system/operations?limit=${encodeURIComponent(String(limit))}`
   );
   return result.operations;
 }
 
-export async function fetchSystemOperation(operationId: string) {
-  const result = await request<{ operation: SystemUpdateOperationDto | null }>(
-    `/admin/system/update-status?operationId=${encodeURIComponent(operationId)}`
+export async function fetchSystemOperation(operationId: string, signal?: AbortSignal) {
+  const result = await readStatus<{ operation: SystemUpdateOperationDto | null }>(
+    `/admin/system/update-status?operationId=${encodeURIComponent(operationId)}`, signal
   );
   return result.operation;
+}
+
+export async function openSystemOperationStream(operationId: string, signal: AbortSignal) {
+  const open = () => fetch(`${API_BASE}/api/admin/system/update-events?operationId=${encodeURIComponent(operationId)}`, {
+    headers: { Authorization: `Bearer ${getStoredAdminAccessToken()}` }, credentials: "include", signal
+  });
+  let response = await open();
+  if (response.status === 401) {
+    await response.body?.cancel();
+    const refreshed = await refreshAdminAccessToken();
+    if (signal.aborted) throw signal.reason;
+    if (refreshed) response = await open();
+    else clearStoredAdminSession({ notify: true });
+  }
+  return response;
 }
 
 export function startSystemUpdate(expectedVersion?: string) {

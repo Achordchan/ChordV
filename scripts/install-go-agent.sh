@@ -113,18 +113,20 @@ chmod 0755 "$STAGE/chordv-agent"
 printf '%s\n' "$SPEC" > "$STAGE/spec.json"
 PANEL_PID=$(systemctl show -p MainPID --value x-ui.service)
 [[ $PANEL_PID =~ ^[0-9]+$ ]] || fail '无法读取 x-ui.service 进程'
-printf '%s\n' '正在只读检查面板版本、统计配置和实际入站…'
+printf '%s\n' '正在只读检查面板版本、统计配置和 API 权限…'
 "$STAGE/chordv-agent" --inspect-panel --panel-pid "$PANEL_PID" --spec-file "$STAGE/spec.json" > "$STAGE/panel.env" \
   || fail '面板预检失败，已有面板与 Agent 服务未修改'
 DISCOVERED_API=''
 DISCOVERED_TAG=''
+WAIT_FOR_INBOUND=false
 while IFS='=' read -r key value; do
   case "$key" in
     XRAY_API_ADDRESS) DISCOVERED_API=$value ;;
     XRAY_INBOUND_TAG) DISCOVERED_TAG=$value ;;
+    AGENT_WAIT_FOR_INBOUND) WAIT_FOR_INBOUND=$value ;;
   esac
 done < "$STAGE/panel.env"
-[[ -n $DISCOVERED_API && -n $DISCOVERED_TAG ]] || fail '面板预检未返回完整的 API 与 tag'
+[[ -n $DISCOVERED_API && ( -n $DISCOVERED_TAG || $WAIT_FOR_INBOUND == true ) ]] || fail '面板预检未返回完整的环境信息'
 
 # No business files are changed until all downloads and panel checks pass.
 if ! id chordv-agent >/dev/null 2>&1; then
@@ -136,7 +138,7 @@ chmod 0710 "$STAGE"
 chmod 0640 "$STAGE/spec.json"
 runuser -u chordv-agent -- env -i XRAY_API_ADDRESS="$DISCOVERED_API" XRAY_INBOUND_TAG="$DISCOVERED_TAG" \
   "$STAGE/chordv-agent" --verify-inbound --spec-file "$STAGE/spec.json" \
-  || fail '服务用户无法校验实际入站，请检查面板 API 或 socket 权限；现有服务未修改'
+  || fail '服务用户预检失败，请检查面板 API 或 socket 权限；现有服务未修改'
 install -d -m 0750 -o root -g root /etc/chordv
 # Mark the accepted task before creating its other paths. An interrupted first
 # install can then resume without mistaking its own partial files for a legacy
@@ -225,11 +227,16 @@ for attempt in {1..20}; do
   if runuser -u chordv-agent -- env -i \
     CHORDV_API_BASE_URL="$API_BASE" AGENT_DATABASE_PATH="$STATE_DIR/agent.db" \
     AGENT_CREDENTIALS_PATH="$STATE_DIR/credentials.json" \
-    XRAY_API_ADDRESS="$DISCOVERED_API" XRAY_INBOUND_TAG="$DISCOVERED_TAG" \
+    XRAY_API_ADDRESS="$DISCOVERED_API" XRAY_INBOUND_TAG="$DISCOVERED_TAG" AGENT_WAIT_FOR_INBOUND="$WAIT_FOR_INBOUND" \
     "$INSTALL_DIR/current/chordv-agent" --health \
     > "$STAGE/health.json" 2>/dev/null; then HEALTHY=1; break; fi
   sleep 3
 done
 [[ $HEALTHY == 1 ]] || fail '首次注册未完成，请运行 journalctl -u chordv-node-agent -n 50 查看原因后重试'
 COMMITTED=1
-printf '%s\n' 'Go agent 已注册。请回到后台查看入站校验结果；完成实际连接与计量验收后再手工激活。'
+if [[ $WAIT_FOR_INBOUND == true ]]; then
+  printf '%s\n' 'Go agent 安装完成，环境检查通过。请回到后台继续添加节点入站。'
+else
+  printf '%s\n' 'Go agent 已注册。请回到后台查看入站校验结果。'
+fi
+printf '%s\n' '完成连接与计量验收后再手工激活节点。'

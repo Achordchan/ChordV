@@ -21,13 +21,14 @@ export class AgentRegisterService {
   constructor(private readonly prisma: PrismaService, @Optional() private readonly adminEvents?: AdminRuntimeEventsService) {}
 
   /**
-   * Persist public imported parameters with the pending node and token. They
-   * remain separate from usable connection fields until live validation passes.
+   * Create a pending server record and token. New clients configure an inbound
+   * after environment readiness; older clients may still supply a public spec.
+   * Neither path exposes usable connection fields before live validation.
    */
   async createAgentNode(input: CreateAgentNodeInputDto): Promise<CreateAgentNodeResultDto> {
     if (!input.name?.trim()) throw new BadRequestException("节点名称不能为空");
     if (input.name.trim().length > 120) throw new BadRequestException("节点名称过长");
-    const spec = normalizePanelInbound(input.panelInbound ?? {});
+    const spec = input.panelInbound ? normalizePanelInbound(input.panelInbound) : { mode: "awaiting_panel" };
     const token = `chordv_register_${randomBytes(32).toString("base64url")}`;
     const { node, expiresAt } = await this.prisma.$transaction(async (tx) => {
       const row = await tx.node.create({
@@ -106,7 +107,10 @@ export class AgentRegisterService {
       && candidate.mode === "validate_panel";
     return {
       node: toAdminNodeRecord(node),
-      mode: panelMode ? "panel" as const : "legacy" as const,
+      mode: panelMode ? "panel" as const : isAwaitingPanel(node.onboardingSpec) ? "environment" as const : "legacy" as const,
+      environmentReady: node.nodeAgents.some(agent => agent.version?.startsWith("go-") &&
+        ["awaiting_inbound", "healthy"].includes(agent.xrayStatus) && agent.lastSeenAt &&
+        Date.now() - agent.lastSeenAt.getTime() < 60_000),
       spec: panelMode ? normalizePanelInbound(candidate as Record<string, unknown>) : null,
       command: job ? { id: job.id, status: job.status, lastError: job.lastError, targetRevision: job.targetRevision.toString() } : null
     };
@@ -254,8 +258,8 @@ export class AgentRegisterService {
           if (node.registrationStatus !== "pending_register") {
             throw new UnauthorizedException("节点不处于待注册状态，不能签发 Agent 凭据");
           }
-          let spec = node.onboardingSpec ? normalizePanelInbound(node.onboardingSpec as Record<string, unknown>) : null;
-          if (spec && !input.agentVersion.startsWith("go-")) {
+          let spec = node.onboardingSpec && !isAwaitingPanel(node.onboardingSpec) ? normalizePanelInbound(node.onboardingSpec as Record<string, unknown>) : null;
+          if ((spec || isAwaitingPanel(node.onboardingSpec)) && !input.agentVersion.startsWith("go-")) {
             throw new BadRequestException("此节点需要 Go agent，不能使用旧 Node 安装器注册");
           }
           if (spec) {
@@ -331,11 +335,16 @@ export class AgentRegisterService {
     return {
       nodeId: record.nodeId,
       usable: !record.usedAt && record.expiresAt.getTime() > Date.now(),
-      spec: record.node?.onboardingSpec ? normalizePanelInbound(record.node.onboardingSpec as Record<string, unknown>) : null
+      environmentOnly: isAwaitingPanel(record.node?.onboardingSpec),
+      spec: record.node?.onboardingSpec && !isAwaitingPanel(record.node.onboardingSpec) ? normalizePanelInbound(record.node.onboardingSpec as Record<string, unknown>) : null
     };
   }
 }
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isAwaitingPanel(value: unknown): boolean {
+  return !!value && typeof value === "object" && !Array.isArray(value) && (value as Record<string, unknown>).mode === "awaiting_panel";
 }

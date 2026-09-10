@@ -1,0 +1,41 @@
+.panel {
+  width: min(420px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  padding: 20px;
+}
+.progress {
+  padding: 14px;
+  border: 1px solid var(--mantine-color-gray-2);
+  border-radius: var(--mantine-radius-md);
+  background: var(--mantine-color-gray-0);
+}
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+.nowrap {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+}
+.stepLabel {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+}
+.historyItem {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--mantine-color-gray-2);
+}
+.historyItem:last-child {
+  border-bottom: 0;
+}
+@media (max-width: 480px) {
+  .panel { padding: 16px; }
+  .progress { padding: 12px; }
+}

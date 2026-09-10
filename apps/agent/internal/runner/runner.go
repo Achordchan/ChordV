@@ -1,10 +1,9 @@
 // Package runner is the agent's main loop: the thing that turns a store, an API
 // client and an Xray adapter into a running service.
 //
-// It is a port of apps/node-agent/src/runner.ts minus everything about inbound
-// ownership — under B1 the inbound belongs to the 3x-ui panel (PRD §3.1), so the
-// deployment helper, the foreign-inbound probe and the "no tag to provision
-// into" deferral all disappear with it.
+// The inbound belongs to the 3x-ui panel. During initial environment onboarding
+// the agent has no target: it only checks the API and receives binding commands.
+// Sampling and account reconciliation begin after durable inbound binding.
 //
 // # Concurrency
 //
@@ -166,6 +165,9 @@ func (r *Runner) errorf(format string, args ...any) { r.deps.Errorf(format, args
 func (r *Runner) Run(ctx context.Context) error {
 	if err := r.start(ctx); err != nil {
 		return err
+	}
+	if err := r.sendHeartbeat(ctx); err != nil {
+		r.errorf("首次就绪心跳失败：%v", err)
 	}
 	var group sync.WaitGroup
 	r.every(ctx, &group, r.deps.Config.SampleInterval, "计量采样", r.sample)
@@ -436,7 +438,7 @@ func (r *Runner) checkXrayLocked(ctx context.Context) error {
 }
 
 func (r *Runner) flushPendingReconcileLocked(ctx context.Context) error {
-	if !r.reconcilePending || r.current.ControlMode != protocol.ModeDirectPrimary {
+	if !xray.InboundReady(r.deps.Xray) || !r.reconcilePending || r.current.ControlMode != protocol.ModeDirectPrimary {
 		return nil
 	}
 	users, err := r.deps.Store.ListDesiredUsers()
@@ -487,6 +489,9 @@ func (r *Runner) detectXrayRestartLocked(ctx context.Context) error {
 }
 
 func (r *Runner) detectMissingUsersLocked(ctx context.Context) error {
+	if !xray.InboundReady(r.deps.Xray) {
+		return nil
+	}
 	if r.current.ControlMode != protocol.ModeDirectPrimary {
 		return nil
 	}
@@ -531,6 +536,9 @@ func (r *Runner) sample(ctx context.Context) error {
 }
 
 func (r *Runner) sampleLocked(ctx context.Context) error {
+	if !xray.InboundReady(r.deps.Xray) {
+		return r.checkXrayLocked(ctx)
+	}
 	counters, err := r.deps.Xray.ReadAbsoluteCounters(ctx)
 	if err != nil {
 		r.xrayHealthy = false
@@ -670,6 +678,9 @@ func (r *Runner) sendHeartbeat(ctx context.Context) error {
 	status := protocol.XrayOffline
 	if r.xrayHealthy {
 		status = protocol.XrayHealthy
+		if !xray.InboundReady(r.deps.Xray) {
+			status = protocol.XrayAwaitingInbound
+		}
 	}
 	mode := r.current.ControlMode
 	refreshPending := r.refreshPending

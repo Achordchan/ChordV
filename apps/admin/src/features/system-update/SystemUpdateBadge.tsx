@@ -1,766 +1,122 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  Alert,
-  Badge,
-  Button,
-  Collapse,
-  Divider,
-  Group,
-  Loader,
-  Modal,
-  Popover,
-  Progress,
-  ScrollArea,
-  Stack,
-  Text,
-  Tooltip
-} from "@mantine/core";
-import { notifications } from "@mantine/notifications";
-import type {
-  SystemUpdateCheckDto,
-  SystemUpdateOperationDto,
-  SystemUpdateOperationPhase,
-  SystemUpdateRollbackVersionDto
-} from "@chordv/shared";
-import {
-  checkSystemUpdate,
-  fetchRollbackVersions,
-  fetchSystemOperation,
-  fetchSystemOperations,
-  fetchSystemVersion,
-  startSystemRestart,
-  startSystemRollback,
-  startSystemUpdate,
-  type SystemRuntimeStatusDto
-} from "./api";
+import { useState } from "react";
+import { Alert, Badge, Button, Collapse, Divider, Group, Loader, Modal, Popover, ScrollArea, Stack, Text, Tooltip } from "@mantine/core";
+import { IconArrowUp, IconCheck, IconChevronDown, IconHistory, IconRefresh, IconSettings } from "@tabler/icons-react";
+import { useSystemUpdate, type BusyKind } from "./useSystemUpdate";
+import { kindLabel, statusColor, statusLabel } from "./operation-presentation";
+import { OperationProgress } from "./OperationProgress";
+import { completionWarning } from "./page-refresh";
+import styles from "./SystemUpdate.module.css";
 
-type BusyKind = "update" | "rollback" | "restart";
-type Phase = "idle" | "running" | "reconnecting" | "finishing" | "done";
-
-const POLL_INTERVAL_MS = 3000;
-// Operation durations are configurable on the supervisor. Only an observed terminal
-// status may unlock controls; transport failures back off while the panel is mounted.
-const MAX_RECONNECT_INTERVAL_MS = 30_000;
-
-function parseErrorMessage(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  try {
-    const parsed = JSON.parse(raw) as { message?: unknown };
-    if (parsed && typeof parsed.message === "string") return parsed.message;
-  } catch {
-    // not JSON — fall through
-  }
-  return raw;
-}
-
-function statusColor(status: SystemUpdateOperationDto["status"]): string {
-  switch (status) {
-    case "succeeded":
-      return "teal";
-    case "failed":
-      return "red";
-    case "rolled_back":
-      return "orange";
-    default:
-      return "blue";
-  }
-}
-
-function statusLabel(status: SystemUpdateOperationDto["status"]): string {
-  switch (status) {
-    case "pending":
-      return "等待中";
-    case "running":
-      return "进行中";
-    case "succeeded":
-      return "成功";
-    case "failed":
-      return "失败";
-    case "rolled_back":
-      return "已回滚";
-    default:
-      return status;
-  }
-}
-
-function kindLabel(kind: SystemUpdateOperationDto["kind"]): string {
-  return kind === "update" ? "更新" : kind === "rollback" ? "回滚" : "重启";
-}
-
-// Ordered lifecycle stages of a running operation, matching the backend phase union.
-// Which steps APPLY depends on the operation kind: a rollback/restart never downloads
-// or extracts, and snapshot/migrate only run for an update that carries migrations
-// (migrationApplied is only known after the fact, so those steps show for any update
-// while running and collapse away on a skipped path — the phase union has no
-// "skipped" report, so they simply never activate).
-const PHASE_STEPS: Array<{ phase: SystemUpdateOperationPhase; label: string }> = [
-  { phase: "checking", label: "检查" },
-  { phase: "downloading", label: "下载" },
-  { phase: "extracting", label: "解压" },
-  { phase: "draining", label: "切换" },
-  { phase: "snapshotting", label: "快照" },
-  { phase: "migrating", label: "迁移" },
-  { phase: "health-gating", label: "健康检查" },
-  { phase: "stabilizing", label: "稳定观察" }
-];
-
-// Steps that can ever run per operation kind. A step that cannot run is rendered as
-// crossed-out/dimmed rather than completed, so a rollback does not claim a download
-// it never performed.
-const APPLICABLE_STEPS: Record<SystemUpdateOperationDto["kind"], ReadonlySet<SystemUpdateOperationPhase>> = {
-  update: new Set(PHASE_STEPS.map((step) => step.phase)),
-  rollback: new Set(["checking", "draining", "health-gating", "stabilizing"]),
-  restart: new Set(["draining", "health-gating", "stabilizing"])
-};
-
-// Supervisor-owned stages: whether they RUN is decided after the app exits (only an
-// update carrying migrations snapshots/migrates), so they are only check-marked when
-// actually OBSERVED by a poll — passing them silently is a skip, not a completion.
-// App-side stages always run in order for the kinds that include them.
-const OBSERVED_ONLY_STEPS: ReadonlySet<SystemUpdateOperationPhase> = new Set(["snapshotting", "migrating"]);
-
-function phaseDescription(phase: SystemUpdateOperationPhase): string {
-  switch (phase) {
-    case "checking":
-      return "正在确认最新版本与清单签名…";
-    case "downloading":
-      return "正在下载更新包…";
-    case "extracting":
-      return "正在校验并解压更新包…";
-    case "draining":
-      return "正在排空请求并切换版本，服务将短暂重启…";
-    case "snapshotting":
-      return "正在对数据库做迁移前快照…";
-    case "migrating":
-      return "正在执行数据库迁移…";
-    case "health-gating":
-      return "新版本已启动，正在通过健康检查…";
-    case "stabilizing":
-      return "新版本运行正常，正在稳定观察…";
-    case "rollback-health-gating":
-      return "新版本未通过验证，回滚目标已启动，正在通过健康检查…";
-    case "rollback-stabilizing":
-      return "回滚目标运行正常，正在稳定观察，随后将恢复服务…";
-    default:
-      return phase;
-  }
-}
-
-/**
- * Render the live progress area for a running operation: a phase step indicator
- * plus a byte-percentage progress bar while downloading. Falls back to kind-specific
- * static copy when no phase has been reported yet (older backend, or the brief
- * window before the first phase lands).
- */
-function OperationProgress({
-  op,
-  kind,
-  observedPhases,
-  reconnecting
-}: {
-  op: SystemUpdateOperationDto | null;
-  kind: BusyKind | null;
-  observedPhases: ReadonlySet<string>;
-  reconnecting: boolean;
-}) {
-  const activeKind = op?.kind ?? kind;
-  if (!op?.phase) {
-    const fallback =
-      activeKind === "rollback"
-        ? "正在回滚并重启服务…"
-        : activeKind === "restart"
-          ? "正在重启服务…"
-          : "正在下载并应用更新（下载 → 校验 → 迁移 → 切换 → 重启）…";
-    return (
-      <Text size="xs">
-        {reconnecting ? "服务重启中，正在重新连接…请勿关闭页面。" : fallback}
-      </Text>
-    );
-  }
-  const applicable = APPLICABLE_STEPS[op.kind] ?? APPLICABLE_STEPS.update;
-  // Auto-rollback landings report "rollback-*" phases for the same step slot.
-  const stepPhase = op.phase.replace(/^rollback-/, "");
-  const stepIndex = PHASE_STEPS.findIndex((step) => step.phase === stepPhase);
-  return (
-    <Stack gap={6}>
-      <Group gap={4} wrap="nowrap" align="center">
-        {PHASE_STEPS.map((step, index) => {
-          // Supervisor-owned stages only check-mark when a poll actually OBSERVED
-          // them AND a LATER phase was observed afterwards: snapshot/migrate are
-          // recorded when the command STARTS, so observing the phase alone does
-          // not prove it succeeded — the advancement (health-gating, or a
-          // rollback-* landing) is the completion signal. Without it (command
-          // failed → auto-rollback), the failed stage stays unmarked instead of
-          // wearing a ✓.
-          let observedAndAdvanced = false;
-          let superseded = false;
-          if (OBSERVED_ONLY_STEPS.has(step.phase)) {
-            for (const candidate of observedPhases) {
-              // Only FORWARD phases are advancement evidence: an auto-rollback
-              // landing (rollback-health-gating) maps to a later STEP SLOT but
-              // means the stage FAILED, not that it completed.
-              if (candidate.startsWith("rollback-")) continue;
-              if (PHASE_STEPS.findIndex((s) => s.phase === candidate) > index) {
-                if (observedPhases.has(step.phase)) {
-                  observedAndAdvanced = true;
-                } else {
-                  // A later forward phase is already active while this stage was
-                  // never observed: it was bypassed (an update without pending
-                  // migrations goes draining -> health-gating directly), not
-                  // still pending.
-                  superseded = true;
-                }
-                break;
-              }
-            }
-          }
-          const skipped = !applicable.has(step.phase);
-          const state = skipped || superseded
-            ? "skipped"
-            : index === stepIndex
-              ? "active"
-              : OBSERVED_ONLY_STEPS.has(step.phase)
-                ? observedAndAdvanced
-                  ? "done"
-                  : "todo"
-                : stepIndex >= 0 && index < stepIndex
-                  ? "done"
-                  : "todo";
-          return (
-            <Group key={step.phase} gap={4} wrap="nowrap">
-              {index > 0 ? <Text size="10px" c={state === "todo" || state === "skipped" ? "dimmed" : "blue"}>→</Text> : null}
-              <Text
-                size="10px"
-                td={state === "skipped" ? "line-through" : "none"}
-                fw={state === "active" ? 700 : 400}
-                c={state === "active" ? "blue" : state === "done" ? "teal" : "dimmed"}
-              >
-                {step.label}
-                {state === "done" ? " ✓" : ""}
-              </Text>
-            </Group>
-          );
-        })}
-      </Group>
-      <Text size="xs">{phaseDescription(op.phase)}{reconnecting ? "（连接中断，重连中…）" : ""}</Text>
-      {op.phase === "downloading" && op.progress !== null ? (
-        <>
-          <Progress value={op.progress} size="sm" radius="sm" animated />
-          <Text size="10px" c="dimmed" ta="center">
-            {op.progress}%
-          </Text>
-        </>
-      ) : null}
-    </Stack>
-  );
-}
-
+type Confirmation = { kind: BusyKind; version?: string; title: string; body: string };
 export function SystemUpdateBadge() {
   const [opened, setOpened] = useState(false);
-  const [runtime, setRuntime] = useState<SystemRuntimeStatusDto | null>(null);
-  const [check, setCheck] = useState<SystemUpdateCheckDto | null>(null);
-  const [checking, setChecking] = useState(false);
-  const [rollbackVersions, setRollbackVersions] = useState<SystemUpdateRollbackVersionDto[]>([]);
-  const [operations, setOperations] = useState<SystemUpdateOperationDto[]>([]);
-  const [showRollback, setShowRollback] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
-
-  const [busy, setBusy] = useState<BusyKind | null>(null);
-  const [phase, setPhase] = useState<Phase>("idle");
-  const [activeOp, setActiveOp] = useState<SystemUpdateOperationDto | null>(null);
-  const [confirm, setConfirm] = useState<{ kind: BusyKind; version?: string; title: string; body: string } | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-
-  const pollTimer = useRef<number | null>(null);
-  const polledOpId = useRef<string | null>(null);
-  const mounted = useRef(true);
-  // Supervisor stages (snapshot/migrate) actually seen by a poll for the CURRENT
-  // operation — reset when a new operation begins or is resumed.
-  const observedPhases = useRef<Set<string>>(new Set());
-
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-      if (pollTimer.current) window.clearTimeout(pollTimer.current);
-    };
-  }, []);
-
-  const loadRuntime = useCallback(async () => {
-    try {
-      const status = await fetchSystemVersion();
-      if (mounted.current) setRuntime(status);
-      return status;
-    } catch {
-      return null;
-    }
-  }, []);
-
-  const runCheck = useCallback(async (force: boolean) => {
-    setChecking(true);
-    try {
-      const result = await checkSystemUpdate(force);
-      if (mounted.current) setCheck(result);
-    } catch (error) {
-      if (mounted.current) {
-        setCheck(null);
-        notifications.show({ color: "red", title: "检查更新失败", message: parseErrorMessage(error) });
-      }
-    } finally {
-      if (mounted.current) setChecking(false);
-    }
-  }, []);
-
-  const loadAux = useCallback(async () => {
-    try {
-      const [versions, ops] = await Promise.all([fetchRollbackVersions(), fetchSystemOperations(20)]);
-      if (mounted.current) {
-        setRollbackVersions(versions);
-        setOperations(ops);
-      }
-    } catch {
-      // best-effort
-    }
-  }, []);
-
-  const finishPolling = useCallback(
-    async (op: SystemUpdateOperationDto) => {
-      setActiveOp(op);
-      setPhase("finishing");
-      setCheck(null);
-      try {
-        // Reload runtime FIRST: for a rollback, op.toVersion is deliberately the
-        // release that FAILED (preserved for audit), so the actual landing version
-        // is the refreshed running version, not op.toVersion.
-        const status = await loadRuntime();
-        const landingVersion = status?.currentVersion ?? null;
-        await runCheck(true);
-        await loadAux();
-        if (op.status === "succeeded") {
-          notifications.show({ color: "teal", title: "操作成功", message: `已完成${kindLabel(op.kind)}，当前版本 v${landingVersion ?? op.toVersion ?? ""}。` });
-        } else if (op.status === "rolled_back") {
-          notifications.show({
-            color: "orange",
-            title: "已自动回滚",
-            message: `${kindLabel(op.kind)} v${op.toVersion ?? "?"} 未通过健康检查，已自动回滚到 v${landingVersion ?? "上一版本"}，服务未受影响。${op.migrationApplied ? "注意：本次已执行数据库迁移，代码已回滚但库结构未回退，请人工确认。" : ""}`
-          });
-        } else if (op.status === "failed") {
-          notifications.show({ color: "red", title: "操作失败", message: op.failureReason ?? "未知原因" });
-        }
-      } finally {
-        if (mounted.current) {
-          polledOpId.current = null;
-          setPhase("done");
-          setBusy(null);
-        }
-      }
-    },
-    [loadAux, loadRuntime, runCheck]
-  );
-
-  const pollOperation = useCallback(
-    (operationId: string) => {
-      let interval = POLL_INTERVAL_MS;
-      const tick = async () => {
-        if (!mounted.current || polledOpId.current !== operationId) return;
-        try {
-          const op = await fetchSystemOperation(operationId);
-          if (!mounted.current || polledOpId.current !== operationId) return;
-          if (op && (op.status === "succeeded" || op.status === "failed" || op.status === "rolled_back")) {
-            await finishPolling(op);
-            return;
-          }
-          if (op) {
-            interval = POLL_INTERVAL_MS;
-            // Merge both sources into the observed set, keeping rollback aliases
-            // VERBATIM: the server is the only place the early stages
-            // (snapshot/migrate) can be observed from, and completion evidence
-            // must distinguish a rollback landing from forward advancement.
-            for (const phase of op.observedPhases ?? []) {
-              observedPhases.current.add(phase);
-            }
-            if (op.phase) {
-              observedPhases.current.add(op.phase);
-            }
-            setActiveOp(op);
-            setPhase("running");
-          } else {
-            interval = Math.min(interval * 2, MAX_RECONNECT_INTERVAL_MS);
-            setPhase("reconnecting");
-          }
-        } catch {
-          if (!mounted.current || polledOpId.current !== operationId) return;
-          interval = Math.min(interval * 2, MAX_RECONNECT_INTERVAL_MS);
-          setPhase("reconnecting");
-        }
-        pollTimer.current = window.setTimeout(() => void tick(), interval);
-      };
-      pollTimer.current = window.setTimeout(() => void tick(), POLL_INTERVAL_MS);
-    },
-    [finishPolling]
-  );
-
-  const beginOperation = useCallback(
-    async (kind: BusyKind, version?: string) => {
-      setBusy(kind);
-      setPhase("running");
-      setActiveOp(null);
-      observedPhases.current = new Set();
-      try {
-        const result =
-          kind === "update"
-            ? await startSystemUpdate(version) // version carries the confirmed target
-            : kind === "rollback"
-              ? await startSystemRollback(version)
-              : await startSystemRestart();
-        notifications.show({ color: "blue", title: "任务已开始", message: result.message });
-        polledOpId.current = result.operationId;
-        pollOperation(result.operationId);
-      } catch (error) {
-        setBusy(null);
-        setPhase("idle");
-        notifications.show({ color: "red", title: "无法启动任务", message: parseErrorMessage(error) });
-      }
-    },
-    [pollOperation]
-  );
-
-  // Resume following an operation that is already running on the backend (page
-  // reload, panel reopened mid-update, or one started by another admin) instead
-  // of showing normal enabled controls while the task is still live.
-  const resumeActiveOperation = useCallback(async () => {
-    if (polledOpId.current) return;
-    try {
-      const ops = await fetchSystemOperations(5);
-      const active = ops.find((op) => op.status === "running" || op.status === "pending");
-      if (active && !polledOpId.current && mounted.current) {
-        polledOpId.current = active.operationId;
-        observedPhases.current = new Set([
-          ...(active.observedPhases ?? []),
-          ...(active.phase ? [active.phase] : [])
-        ]);
-        setActiveOp(active);
-        setBusy(active.kind);
-        setPhase("running");
-        pollOperation(active.operationId);
-      }
-    } catch {
-      // best-effort
-    }
-  }, [pollOperation]);
-
-  // Initial load: current version + a cached update check + resume any live op.
-  useEffect(() => {
-    void (async () => {
-      const status = await loadRuntime();
-      if (status?.enabled) {
-        void runCheck(false);
-        void resumeActiveOperation();
-      }
-    })();
-  }, [loadRuntime, runCheck, resumeActiveOperation]);
-
-  useEffect(() => {
-    if (!opened) return;
-    void (async () => {
-      // Reload runtime status on every open, not just on mount: if the initial mount
-      // load failed during a brief API restart / network blip, `runtime` stays null
-      // and every control is disabled until a full page reload. Reopening the popover
-      // now re-fetches it and, once enabled, refreshes the update check too — so the
-      // panel self-heals instead of stranding the admin on stale disabled controls.
-      const status = await loadRuntime();
-      // Update actions require a FRESH (non-cached, warning-free) check, but the
-      // mount-time check may still be inside the backend's cache window — which
-      // used to leave "立即更新" disabled until the admin manually re-checked.
-      // Opening the panel IS the intent to act, so force a fresh check here; the
-      // safety condition itself is unchanged (only fresh results can update).
-      if (status?.enabled) void runCheck(true);
-      void loadAux();
-      void resumeActiveOperation();
-    })();
-  }, [opened, loadRuntime, runCheck, loadAux, resumeActiveOperation]);
-
-  const canUpdate = Boolean(runtime?.enabled && check?.hasUpdate && check.release &&
-    !check.cached && !check.warning && !checking && (busy === null || phase === "done"));
-
-  const requestConfirm = (next: { kind: BusyKind; version?: string; title: string; body: string }) => {
-    if (next.kind === "update" && !canUpdate) return;
-    setConfirm(next);
+  const [history, setHistory] = useState(false), [maintenance, setMaintenance] = useState(false);
+  const [confirm, setConfirm] = useState<Confirmation | null>(null), [submitting, setSubmitting] = useState(false);
+  const state = useSystemUpdate(opened);
+  const inProgress = state.busy !== null;
+  const version = state.runtime?.currentVersion ?? state.check?.currentVersion ?? '—';
+  const enabled = Boolean(state.runtime?.enabled);
+  const offer = state.check?.hasUpdate ? state.check.release : null;
+  const ask = (value: Confirmation) => {
+    if (inProgress || (value.kind === 'update' && !state.canUpdate)) return;
+    setConfirm(value);
   };
-
-  // Guard against a rapid double-click submitting the operation twice: the second
-  // send would 409 (an op is already in flight) and reset busy/phase, leaving the
-  // UI showing normal controls while an update is actually running. `submitting`
-  // (plus the button's disabled/loading state) makes the confirm one-shot.
-  const confirmProceed = async () => {
-    if (!confirm || submitting || (confirm.kind === "update" && !canUpdate)) return;
-    const { kind, version } = confirm;
+  const proceed = async () => {
+    if (!confirm || submitting || inProgress || (confirm.kind === 'update' && !state.canUpdate)) return;
     setSubmitting(true);
-    try {
-      await beginOperation(kind, version);
-    } finally {
-      setSubmitting(false);
-      setConfirm(null);
-    }
+    try { await state.beginOperation(confirm.kind, confirm.version); }
+    finally { setSubmitting(false); setConfirm(null); setOpened(true); }
   };
-
-  const currentVersion = runtime?.currentVersion ?? check?.currentVersion ?? "—";
-  const hasUpdate = Boolean(check?.hasUpdate);
-  const enabled = runtime?.enabled ?? false;
-  const inProgress = busy !== null && phase !== "done";
-
-  return (
-    <>
-      <Popover opened={opened} onChange={setOpened} position="bottom-start" width={360} shadow="md" withArrow>
-        <Popover.Target>
-          <Tooltip label="后台系统版本" openDelay={400}>
-            <Badge
-              variant={hasUpdate ? "filled" : "light"}
-              color={inProgress ? "blue" : hasUpdate ? "orange" : "gray"}
-              tt="none"
-              style={{ cursor: "pointer" }}
-              onClick={() => setOpened((v) => !v)}
-              leftSection={inProgress ? <Loader size={10} color="white" /> : undefined}
-            >
-              {inProgress ? "更新中" : `v${currentVersion}`}
-              {hasUpdate && !inProgress ? " ●" : ""}
-            </Badge>
-          </Tooltip>
-        </Popover.Target>
-        <Popover.Dropdown>
-          <Stack gap="sm">
-            <Group justify="space-between" align="center">
-              <div>
-                <Text size="xs" c="dimmed" tt="uppercase" fw={700}>
-                  后台系统版本
-                </Text>
-                <Text fw={600}>v{currentVersion}</Text>
-              </div>
-              <Button
-                size="xs"
-                variant="subtle"
-                loading={checking}
-                disabled={inProgress || !enabled}
-                onClick={() => void runCheck(true)}
-              >
-                检查更新
-              </Button>
-            </Group>
-
-            {!enabled ? (
-              <Alert color="gray" variant="light" p="xs">
-                <Text size="xs">当前环境未启用系统自更新（仅生产容器部署可用）。</Text>
-              </Alert>
-            ) : null}
-
-            {check?.warning ? (
-              <Alert color="yellow" variant="light" p="xs">
-                <Text size="xs">{check.warning}</Text>
-              </Alert>
-            ) : null}
-
-            {inProgress ? (
-              <Alert color="blue" variant="light" p="xs">
-                <Group gap="xs" wrap="nowrap" align="flex-start">
-                  <Loader size="xs" mt={4} />
-                  {phase === "finishing" ? (
-                    <Text size="xs">正在刷新版本与操作记录…</Text>
-                  ) : (
-                    <OperationProgress op={activeOp} kind={busy} observedPhases={observedPhases.current} reconnecting={phase === "reconnecting"} />
-                  )}
-                </Group>
-              </Alert>
-            ) : null}
-
-            {enabled && !inProgress && hasUpdate && check?.release ? (
-              <Stack gap={6}>
-                <Group gap="xs">
-                  <Badge color="orange" variant="light">
-                    新版本 v{check.release.version}
-                  </Badge>
-                  {check.release.htmlUrl ? (
-                    <Text
-                      size="xs"
-                      c="blue"
-                      component="a"
-                      href={check.release.htmlUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      更新日志 ↗
-                    </Text>
-                  ) : null}
-                </Group>
-                {check.release.changelog.length > 0 ? (
-                  <ScrollArea.Autosize mah={120}>
-                    <Stack gap={2}>
-                      {check.release.changelog.map((line, index) => (
-                        <Text key={index} size="xs" c="dimmed">
-                          • {line}
-                        </Text>
-                      ))}
-                    </Stack>
-                  </ScrollArea.Autosize>
-                ) : null}
-                <Button
-                  size="xs"
-                  color="orange"
-                  disabled={!canUpdate}
-                  onClick={() =>
-                    requestConfirm({
-                      kind: "update",
-                      // Bind to the reviewed version: the backend refuses to install a
-                      // different release than this if a newer one was just published.
-                      version: check.release?.version,
-                      title: "确认更新",
-                      body: `将更新至 v${check.release?.version} 并重启服务，期间管理端会短暂不可用。确认继续？`
-                    })
-                  }
-                >
-                  立即更新
-                </Button>
-              </Stack>
-            ) : null}
-
-            {enabled && !inProgress && !checking && check && !check.hasUpdate && !check.warning ? (
-              <Text size="xs" c="teal">
-                ✓ 已是最新版本
-              </Text>
-            ) : null}
-
-            {enabled ? (
-              <>
-                <Divider />
-                <Group justify="space-between">
-                  <Button
-                    size="compact-xs"
-                    variant="subtle"
-                    color="gray"
-                    onClick={() => setShowRollback((v) => !v)}
-                  >
-                    回滚到历史版本
-                  </Button>
-                  <Button
-                    size="compact-xs"
-                    variant="subtle"
-                    color="gray"
-                    disabled={inProgress}
-                    onClick={() =>
-                      requestConfirm({
-                        kind: "restart",
-                        title: "确认重启",
-                        body: "将重启后台服务（不改变版本），期间管理端会短暂不可用。确认继续？"
-                      })
-                    }
-                  >
-                    重启服务
-                  </Button>
-                </Group>
-                <Collapse in={showRollback}>
-                  <Stack gap={4}>
-                    {rollbackVersions.filter((v) => !v.isCurrent).length === 0 ? (
-                      <Text size="xs" c="dimmed">
-                        没有可回滚的历史版本。
-                      </Text>
-                    ) : (
-                      rollbackVersions
-                        .filter((v) => !v.isCurrent)
-                        .map((v) => (
-                          <Group key={v.version} justify="space-between">
-                            <Text size="xs">v{v.version}</Text>
-                            <Button
-                              size="compact-xs"
-                              variant="light"
-                              color="orange"
-                              disabled={inProgress}
-                              onClick={() =>
-                                requestConfirm({
-                                  kind: "rollback",
-                                  version: v.version,
-                                  title: "确认回滚",
-                                  body: `将回滚到 v${v.version} 并重启服务。若目标版本与当前存在数据库结构差异，回滚不会自动撤销已执行的迁移。确认继续？`
-                                })
-                              }
-                            >
-                              回滚
-                            </Button>
-                          </Group>
-                        ))
-                    )}
-                  </Stack>
-                </Collapse>
-
-                <Button size="compact-xs" variant="subtle" color="gray" onClick={() => setShowHistory((v) => !v)}>
-                  操作历史
-                </Button>
-                <Collapse in={showHistory}>
-                  <ScrollArea.Autosize mah={180}>
-                    <Stack gap={6}>
-                      {operations.length === 0 ? (
-                        <Text size="xs" c="dimmed">
-                          暂无操作记录。
-                        </Text>
-                      ) : (
-                        operations.map((op) => (
-                          <Group key={op.id} justify="space-between" wrap="nowrap" align="flex-start">
-                            <div style={{ minWidth: 0 }}>
-                              <Text size="xs">
-                                {kindLabel(op.kind)}
-                                {op.fromVersion || op.toVersion
-                                  ? ` v${op.fromVersion ?? "?"} → v${op.toVersion ?? "?"}`
-                                  : ""}
-                              </Text>
-                              <Text size="10px" c="dimmed">
-                                {new Date(op.startedAt).toLocaleString()} · {op.actorLabel ?? "系统"}
-                              </Text>
-                              {op.failureReason ? (
-                                <Text size="10px" c="red">
-                                  {op.failureReason}
-                                </Text>
-                              ) : null}
-                            </div>
-                            <Badge size="xs" color={statusColor(op.status)} variant="light">
-                              {statusLabel(op.status)}
-                            </Badge>
-                          </Group>
-                        ))
-                      )}
-                    </Stack>
-                  </ScrollArea.Autosize>
-                </Collapse>
-              </>
-            ) : null}
-          </Stack>
-        </Popover.Dropdown>
-      </Popover>
-
-      <Modal
-        opened={confirm !== null}
-        onClose={() => {
-          if (!submitting) setConfirm(null);
-        }}
-        title={confirm?.title ?? ""}
-        centered
-        size="sm"
-      >
+  const expand = (kind: 'history' | 'maintenance') => {
+    if (kind === 'history') setHistory(value => !value); else setMaintenance(value => !value);
+    void state.loadAux();
+  };
+  return <>
+    <Popover opened={opened} onChange={setOpened} position="bottom-start" width={420} shadow="sm" withArrow>
+      <Popover.Target>
+        <Tooltip label="后台系统版本" openDelay={400}>
+          <Button size="compact-xs" variant="light" color={inProgress ? 'blue' : offer ? 'orange' : 'gray'}
+            onClick={() => setOpened(value => !value)} aria-label="打开系统更新" rightSection={<IconChevronDown size={13} />}
+            leftSection={inProgress ? <Loader size={12} /> : offer ? <IconArrowUp size={13} /> : undefined}>
+            {inProgress ? `${kindLabel(state.busy!)}中` : `v${version}`}
+          </Button>
+        </Tooltip>
+      </Popover.Target>
+      <Popover.Dropdown className={styles.panel}>
         <Stack gap="md">
-          <Text size="sm">{confirm?.body}</Text>
-          <Group justify="flex-end">
-            <Button variant="default" size="xs" disabled={submitting} onClick={() => setConfirm(null)}>
-              取消
-            </Button>
-            <Button
-              size="xs"
-              color={confirm?.kind === "rollback" ? "orange" : confirm?.kind === "restart" ? "gray" : "blue"}
-              loading={submitting}
-              disabled={confirm?.kind === "update" && !canUpdate}
-              onClick={() => void confirmProceed()}
-            >
-              确认
-            </Button>
+          <Group justify="space-between" wrap="nowrap">
+            <Stack gap={2} className={styles.grow}>
+              <Text size="xs" c="dimmed">后台系统</Text>
+              <Text fw={650} size="lg">v{version}</Text>
+              {inProgress && state.activeOp?.toVersion && <Text size="xs" c="dimmed">目标版本 v{state.activeOp.toVersion}</Text>}
+            </Stack>
+            {!inProgress && <Button size="xs" variant="default" loading={state.checking} disabled={!enabled}
+              leftSection={<IconRefresh size={14} />} onClick={() => void state.runCheck(true)}>检查更新</Button>}
           </Group>
+          {!enabled && <Alert color="gray" variant="light" p="sm">{state.runtime ? '当前环境未启用系统更新。' : state.error ? '暂时无法连接后台。' : '正在确认后台版本…'}
+            {!state.runtime && state.error && <Button size="compact-xs" variant="subtle" ml="xs" onClick={state.reconnect}>重新连接</Button>}
+          </Alert>}
+          {state.error && <Alert color="red" variant="light" p="sm"><Text size="xs" style={{ overflowWrap: 'anywhere' }}>{state.error}</Text></Alert>}
+          {state.check?.warning && <Alert color="yellow" variant="light" p="sm"><Text size="xs">{state.check.warning}</Text></Alert>}
+
+          {state.refreshRequired ? <Stack gap="sm" className={styles.progress}>
+            <Text size="sm" fw={600}>后台任务已结束</Text>
+            <Text size="xs" c="dimmed">暂未确认新版页面资源，自动刷新已暂停。可以重新确认，或手动刷新页面。</Text>
+            <Group gap="xs"><Button size="xs" variant="default" onClick={state.reconnect}>重新确认</Button><Button size="xs" onClick={state.reloadPage}>刷新页面</Button></Group>
+          </Stack> : state.finishing ? <Group wrap="nowrap" className={styles.progress}><Loader size={20} /><Text size="sm">操作已结束，正在确认新版页面并刷新…</Text></Group>
+            : inProgress && <OperationProgress operation={state.activeOp} kind={state.busy!} observed={state.observedPhases}
+              connection={state.connection} onReconnect={state.reconnect} onPause={state.pause} />}
+
+          {state.completion && completionWarning(state.completion) && <Alert color="orange" p="sm"><Text size="xs">{completionWarning(state.completion)}</Text></Alert>}
+          {!inProgress && state.completion && <Alert color={state.completion.status === 'rolled_back' ? 'orange' : 'teal'} p="sm"
+            icon={<IconCheck size={17} />} withCloseButton onClose={state.dismissCompletion}>
+            {state.completion.status === 'rolled_back' ? `更新未通过验证，已恢复到 v${state.completion.version}。` : `已完成${kindLabel(state.completion.kind)}，当前版本 v${state.completion.version}。`}
+          </Alert>}
+          {enabled && !inProgress && offer && <Stack gap="sm">
+            <Group gap="xs"><Text size="sm" fw={600}>可更新至 v{offer.version}</Text></Group>
+            {!!offer.changelog.length && <ScrollArea.Autosize mah={160}><Stack gap={6}>
+              {offer.changelog.map((line, index) => <Text size="xs" c="dimmed" key={index} style={{ overflowWrap: 'anywhere' }}>{line}</Text>)}
+            </Stack></ScrollArea.Autosize>}
+            <Button fullWidth size="sm" disabled={!state.canUpdate} onClick={() => ask({ kind: 'update', version: offer.version,
+              title: '确认更新', body: `将更新至 v${offer.version}，服务切换期间会短暂断开。完成验证后将自动刷新网页。` })}>更新到 v{offer.version}</Button>
+          </Stack>}
+          {enabled && !inProgress && !offer && state.check && !state.checking && !state.check.warning && !state.completion &&
+            <Group gap={6}><IconCheck size={16} color="var(--mantine-color-teal-6)" /><Text size="xs" c="dimmed">已是最新版本</Text></Group>}
+          {enabled && <>
+            <Divider />
+            <Group justify="space-between">
+              <Button size="compact-xs" variant="subtle" color="gray" leftSection={<IconHistory size={15} />} onClick={() => expand('history')} aria-expanded={history}>操作记录</Button>
+              {!inProgress && <Button size="compact-xs" variant="subtle" color="gray" leftSection={<IconSettings size={15} />} onClick={() => expand('maintenance')} aria-expanded={maintenance}>维护操作</Button>}
+            </Group>
+            <Collapse in={history || (maintenance && !inProgress)}>
+              {state.auxLoading ? <Loader size="sm" /> : state.auxError ? <Text size="xs" c="red">{state.auxError}</Text> : <Stack gap="sm">
+                {history && <ScrollArea.Autosize mah={210}><Stack gap={0}>
+                  {state.operations.length === 0 && <Text size="xs" c="dimmed">暂无操作记录</Text>}
+                  {state.operations.map(op => <Group key={op.id} justify="space-between" wrap="nowrap" align="flex-start" className={styles.historyItem}>
+                    <Stack gap={3} className={styles.grow}><Text size="xs">{kindLabel(op.kind)}{op.toVersion ? `至 v${op.toVersion}` : ''}</Text>
+                      <Text size="xs" c="dimmed">{new Date(op.startedAt).toLocaleString()}</Text>
+                      {op.failureReason && <Text size="xs" c="red" style={{ overflowWrap: 'anywhere' }}>{op.failureReason}</Text>}
+                    </Stack><Badge size="xs" color={statusColor(op.status)} variant="light" className={styles.nowrap}>{statusLabel(op.status)}</Badge>
+                  </Group>)}
+                </Stack></ScrollArea.Autosize>}
+                {maintenance && !inProgress && <Stack gap="sm">
+                  <Group justify="space-between"><Text size="xs">重新启动后台服务</Text><Button size="compact-xs" variant="default" onClick={() => ask({ kind: 'restart', title: '确认重启', body: '重启期间后台会短暂断开，版本不会改变。' })}>重启服务</Button></Group>
+                  {state.versions.filter(item => !item.isCurrent).map(item => <Group key={item.version} justify="space-between"><Text size="xs">v{item.version}</Text>
+                    <Button size="compact-xs" variant="light" color="orange" onClick={() => ask({ kind: 'rollback', version: item.version,
+                      title: '确认回滚', body: `回滚至 v${item.version} 并重启服务。已经执行的数据库迁移不会撤销。` })}>回滚到此版本</Button></Group>)}
+                  {!state.versions.some(item => !item.isCurrent) && <Text size="xs" c="dimmed">没有可回滚的历史版本</Text>}
+                </Stack>}
+              </Stack>}
+            </Collapse>
+          </>}
         </Stack>
-      </Modal>
-    </>
-  );
+      </Popover.Dropdown>
+    </Popover>
+    <Modal opened={!!confirm} onClose={() => { if (!submitting) setConfirm(null); }} title={confirm?.title} centered size="sm">
+      <Stack gap="md"><Text size="sm">{confirm?.body}</Text><Group justify="flex-end">
+        <Button variant="default" disabled={submitting} onClick={() => setConfirm(null)}>取消</Button>
+        <Button loading={submitting} disabled={confirm?.kind === 'update' && !state.canUpdate} onClick={() => void proceed()}>确认{confirm ? kindLabel(confirm.kind) : ''}</Button>
+      </Group></Stack>
+    </Modal>
+  </>;
 }
