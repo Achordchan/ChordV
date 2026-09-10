@@ -716,21 +716,32 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	if err := p.deps.Store.ApplyDesiredUsers(users); err != nil {
 		return err
 	}
-	for _, user := range users {
-		// Only AFTER the desired-user record is durable. Dropping the pending
-		// note first would leave a re-added account with NEITHER form of
-		// ownership evidence if this loop then fails or the process dies — and
-		// the next snapshot that omits it would classify it as unknown and leave
-		// it serving. The opposite order is harmless: holding both for a moment
-		// just means the next reconcile clears it.
-		if stillPending[user.Email] {
-			if err := p.deps.Store.ClearPendingRemoval([]string{user.Email}); err != nil {
-				return err
-			}
-			delete(stillPending, user.Email)
+	// The pending note is an account's ONLY ownership evidence when the snapshot
+	// that erased its record was applied without write access. Clearing it before
+	// something durable has taken its place drops the account out of ownership
+	// entirely, and a later snapshot that omits it then leaves it installed
+	// forever — the desired-user row is no help, because cleanup deliberately
+	// does not read ownership off those rows.
+	//
+	// So each branch below hands the claim over before letting go of it: an
+	// enabled user gets a provisioning record first, a disabled one keeps the
+	// note until its uninstall has actually succeeded.
+	clearPending := func(email string) error {
+		if !stillPending[email] {
+			return nil
 		}
+		if err := p.deps.Store.ClearPendingRemoval([]string{email}); err != nil {
+			return err
+		}
+		delete(stillPending, email)
+		return nil
+	}
+	for _, user := range users {
 		if user.Enabled {
 			if err := p.deps.Store.RecordProvisioned(user.BindingID, user.Email); err != nil {
+				return err
+			}
+			if err := clearPending(user.Email); err != nil {
 				return err
 			}
 			if err := p.deps.Xray.EnsureUser(ctx, user); err != nil {
@@ -744,6 +755,9 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 		// Disabled, so it is no longer installed — but the RECORD stays, and so
 		// the account is still this agent's to account for. The claim is dropped
 		// only when the account leaves for good, below.
+		if err := clearPending(user.Email); err != nil {
+			return err
+		}
 	}
 	var unknown, retired []string
 	liveEmails := make(map[string]bool, len(live))

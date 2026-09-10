@@ -1654,3 +1654,56 @@ func TestARenameDoesNotUninstallAPanelAccount(t *testing.T) {
 		})
 	}
 }
+
+// TestAFailedDisableKeepsThePendingOwnershipNote covers an account whose ONLY
+// ownership evidence is the pending note.
+//
+// That is the state a snapshot applied without write access leaves behind. If
+// reconciling it as DISABLED clears the note before the uninstall has actually
+// succeeded, the account drops out of ownership entirely — and the next snapshot
+// that omits it leaves it installed forever, because cleanup deliberately does
+// not read ownership off the desired-user rows.
+func TestAFailedDisableKeepsThePendingOwnershipNote(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	seedOwned(t, state, protocol.DesiredUser{
+		BindingID: "b1", Email: "u1@chordv", UUID: "u1", Revision: "1",
+		Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
+	})
+	fake.live = []xray.LiveUser{{Email: "u1@chordv"}}
+
+	// An observing snapshot drops the binding: the record goes, the note stays,
+	// and the note becomes the only evidence.
+	run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", map[string]any{
+		"controlMode": string(protocol.ModeShadowDirect), "users": []any{},
+	}), false)
+	if err := state.ForgetProvisioned([]string{"u1@chordv"}); err != nil {
+		t.Fatal(err)
+	}
+	if pending, _ := state.PendingRemovals(); len(pending) != 1 {
+		t.Fatalf("前提没成立：pending = %v", pending)
+	}
+
+	// The binding comes back DISABLED, and the uninstall fails.
+	disabled := userPayload("b1", "u1@chordv")
+	disabled["enabled"] = false
+	fake.removeErrFor = "u1@chordv"
+	if result := run(t, processor, command("c2", protocol.CommandReconcileUsers, "6", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any(disabled)},
+	}), true); result.Status != protocol.StatusFailed {
+		t.Fatalf("卸载失败却报了成功：%+v", result)
+	}
+	if pending, _ := state.PendingRemovals(); len(pending) != 1 {
+		t.Fatalf("卸载失败后所有权凭据被清掉了：pending = %v", pending)
+	}
+
+	// And with the evidence intact, a later omission can still retire it.
+	fake.removeErrFor = ""
+	fake.calls = nil
+	run(t, processor, command("c3", protocol.CommandReconcileUsers, "7", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary), "users": []any{},
+	}), true)
+	if !contains(fake.calls, "remove:u1@chordv") {
+		t.Fatalf("账号从所有权里掉了出去，遗漏清理不再认它：%v", fake.calls)
+	}
+}

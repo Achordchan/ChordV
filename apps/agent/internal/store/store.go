@@ -332,18 +332,38 @@ func (s *Store) backfillProvisioned() error {
 	return nil
 }
 
-// provisionedFromHistory adopts the accounts the command log proves this agent
-// installed, and reports how many it added.
+// provisionedFromHistory REPLAYS the command log in order and adopts what this
+// agent still owns at the end of it, reporting how many claims it added.
+//
+// Adopting every historical install would be wrong, and dangerously so: an old
+// install proves HISTORICAL ownership, not current. If ChordV removed an account
+// and a panel administrator later reused that email, unconditional adoption
+// hands the panel's live account to ChordV — and the next direct reconcile
+// deletes it, RemoveUnknownUsers notwithstanding. Exactly the accident the whole
+// provisioning table exists to prevent, reintroduced through the migration.
+//
+// So releases count as much as claims, and ownership is tracked PER BINDING:
+//
+//   - ENSURE_USER claims the email for its binding, releasing whatever address
+//     that binding held before (which is what a rename is);
+//   - REMOVE_USER releases the binding's claim outright;
+//   - DISABLE_USER releases nothing — the record survives and a later enable
+//     puts the same account back, which is the live rule too;
+//   - a direct_primary RECONCILE_USERS is a full statement: it claims every
+//     binding it names and releases every binding it does not.
+//
+// Ordered by completion, with the row order as a tiebreaker for commands that
+// finished within the same millisecond.
 func (s *Store) provisionedFromHistory() (int, error) {
 	rows, err := s.db.Query(`
 		SELECT command_type, payload FROM commands_v2
 		WHERE completed_at IS NOT NULL AND result LIKE '%"status":"completed"%'
-		  AND command_type IN ('ENSURE_USER', 'RECONCILE_USERS')`)
+		  AND command_type IN ('ENSURE_USER', 'REMOVE_USER', 'RECONCILE_USERS')
+		ORDER BY completed_at ASC, rowid ASC`)
 	if err != nil {
 		return 0, err
 	}
-	type claim struct{ bindingID, email string }
-	var claims []claim
+	owned := map[string]string{} // bindingId -> the email it currently holds
 	for rows.Next() {
 		var kind, raw string
 		if err := rows.Scan(&kind, &raw); err != nil {
@@ -356,31 +376,44 @@ func (s *Store) provisionedFromHistory() (int, error) {
 			continue // an unreadable payload is not evidence, but is not fatal either
 		}
 		payload := stored.Payload
-		if protocol.CommandType(kind) == protocol.CommandEnsureUser {
-			email, _ := payload["email"].(string)
-			if email == "" {
-				email, _ = payload["userKey"].(string)
-			}
+		switch protocol.CommandType(kind) {
+		case protocol.CommandEnsureUser:
 			id, _ := payload["bindingId"].(string)
-			if email != "" {
-				claims = append(claims, claim{id, email})
+			if email := payloadEmail(payload); id != "" && email != "" {
+				owned[id] = email
 			}
-			continue
-		}
-		if value, _ := payload["controlMode"].(string); protocol.ControlMode(value) != protocol.ModeDirectPrimary {
-			continue
-		}
-		items, _ := payload["users"].([]any)
-		for _, item := range items {
-			user, _ := item.(map[string]any)
-			email, _ := user["email"].(string)
-			if email == "" {
-				email, _ = user["userKey"].(string)
+		case protocol.CommandRemoveUser:
+			if id, _ := payload["bindingId"].(string); id != "" {
+				delete(owned, id)
+				continue
 			}
-			id, _ := user["bindingId"].(string)
-			if email != "" {
-				claims = append(claims, claim{id, email})
+			// Addressed by email only: release whichever binding holds it.
+			if email := payloadEmail(payload); email != "" {
+				for id, held := range owned {
+					if held == email {
+						delete(owned, id)
+					}
+				}
 			}
+		case protocol.CommandReconcileUsers:
+			if value, _ := payload["controlMode"].(string); protocol.ControlMode(value) != protocol.ModeDirectPrimary {
+				continue
+			}
+			items, present := payload["users"].([]any)
+			if !present {
+				// No user set at all: a mode-only instruction, which says
+				// nothing about who owns what.
+				continue
+			}
+			next := map[string]string{}
+			for _, item := range items {
+				user, _ := item.(map[string]any)
+				id, _ := user["bindingId"].(string)
+				if email := payloadEmail(user); id != "" && email != "" {
+					next[id] = email
+				}
+			}
+			owned = next
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -389,10 +422,10 @@ func (s *Store) provisionedFromHistory() (int, error) {
 	}
 	rows.Close()
 	added := 0
-	for _, c := range claims {
+	for id, email := range owned {
 		result, err := s.db.Exec(`
 			INSERT INTO provisioned_accounts_v2(email, binding_id, recorded_at) VALUES(?, ?, ?)
-			ON CONFLICT(email) DO NOTHING`, c.email, c.bindingID, isoMillis(time.Now()))
+			ON CONFLICT(email) DO NOTHING`, email, id, isoMillis(time.Now()))
 		if err != nil {
 			return 0, err
 		}
@@ -403,6 +436,14 @@ func (s *Store) provisionedFromHistory() (int, error) {
 		added += int(affected)
 	}
 	return added, nil
+}
+
+func payloadEmail(payload map[string]any) string {
+	if email, _ := payload["email"].(string); email != "" {
+		return email
+	}
+	email, _ := payload["userKey"].(string)
+	return email
 }
 
 // RecordBindingTombstone remembers the revision at which a binding was DELETED.

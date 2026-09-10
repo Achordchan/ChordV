@@ -1146,3 +1146,57 @@ func TestAnAmbiguousUpgradeIsNotMarkedDone(t *testing.T) {
 		t.Fatalf("观察态的记录被认领了：%v", got)
 	}
 }
+
+// TestTheUpgradeReplayHonorsReleases is why the command log is REPLAYED rather
+// than harvested.
+//
+// An old install proves historical ownership, not current. Here ChordV installed
+// an address, removed it, and a panel administrator later reused it. Adopting
+// every historical install would hand the panel's live account to ChordV, and
+// the next direct reconcile would delete it — the exact accident the
+// provisioning table exists to prevent, reintroduced through the migration.
+func TestTheUpgradeReplayHonorsReleases(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+
+	finish := func(id string, kind protocol.CommandType, revision string, payload map[string]any) {
+		t.Helper()
+		if _, err := state.BeginCommand(protocol.Command{
+			CommandID: id, Type: kind, TargetRevision: revision, Payload: payload,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.CompleteCommand(protocol.CommandResult{
+			CommandID: id, Status: protocol.StatusCompleted,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		// completed_at has millisecond resolution; rowid breaks the ties, but
+		// keep the ordering unambiguous for the assertion's sake.
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	finish("c1", protocol.CommandEnsureUser, "1", map[string]any{"bindingId": "b1", "email": "recycled@chordv", "uuid": "u"})
+	finish("c2", protocol.CommandEnsureUser, "2", map[string]any{"bindingId": "b2", "email": "kept@chordv", "uuid": "u"})
+	finish("c3", protocol.CommandRemoveUser, "3", map[string]any{"bindingId": "b1", "email": "recycled@chordv"})
+	// A rename: b2 moves, so its old address is released.
+	finish("c4", protocol.CommandEnsureUser, "4", map[string]any{"bindingId": "b2", "email": "moved@chordv", "uuid": "u"})
+
+	if _, err := state.db.Exec(`DELETE FROM provisioned_accounts_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`DELETE FROM meta_v2 WHERE key = 'provisioned_backfilled'`); err != nil {
+		t.Fatal(err)
+	}
+	state.Close()
+
+	reopened := openAt(t, path, "node-1", "boot-2")
+	got, err := reopened.ProvisionedAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "moved@chordv" {
+		t.Fatalf("升级后的供给凭据 = %v，want 仅 [moved@chordv]："+
+			"recycled@chordv 已被移除（面板可能已重用该地址），kept@chordv 已被改名释放", got)
+	}
+}
