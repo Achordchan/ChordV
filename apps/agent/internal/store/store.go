@@ -22,7 +22,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
+	"strings"
 	"time"
 
 	"github.com/Achordchan/ChordV/apps/agent/internal/decimal"
@@ -413,19 +413,16 @@ func (s *Store) provisionedFromHistory() (int, error) {
 		return 0, err
 	}
 	rows.Close()
-	// A stable sort keeps the completion/row order the query established as the
-	// tiebreaker within a revision.
-	var sortErr error
-	sort.SliceStable(history, func(i, j int) bool {
-		order, err := decimal.Cmp(history[i].revision, history[j].revision)
-		if err != nil && sortErr == nil {
-			sortErr = err
-		}
-		return order < 0
-	})
-	if sortErr != nil {
-		return 0, sortErr
-	}
+	// Left in COMPLETION order, which is the order the agent actually processed
+	// them — and the guards below are the ones execution applied.
+	//
+	// Sorting by revision was an earlier attempt to make superseded commands
+	// harmless, and it cannot: it reorders the history into something that never
+	// happened. A binding-only rotation at revision 6 followed by a delayed
+	// rename to Y at revision 5 — which execution SKIPPED — sorts the rename
+	// first, and the rotation then resolves its missing email against Y instead
+	// of the address it really rotated. Replaying the real order and re-applying
+	// the real staleness checks reproduces both the work and the no-ops.
 	// bindingId -> the account it currently holds. The uuid travels with it: a
 	// recovered claim without an identity can be contradicted by nothing, so a
 	// panel account that reused the address would be accepted as ours.
@@ -479,6 +476,18 @@ func (s *Store) provisionedFromHistory() (int, error) {
 			}
 			if superseded {
 				continue
+			}
+			// And the same per-binding guard supersededBinding applies: an
+			// instruction that is not newer than what this binding has already
+			// had did nothing at execution time, so it must do nothing here.
+			if current, had := owned[id]; had {
+				stale, err := notNewer(entry.revision, current.revision)
+				if err != nil {
+					return 0, err
+				}
+				if stale {
+					continue
+				}
 			}
 			// MERGED, not replaced — the same thing resolveUser does at
 			// execution time. An ENABLE_USER may legitimately carry only a
@@ -1007,12 +1016,38 @@ func replaceDesiredUsersTx(tx *sql.Tx, users []protocol.DesiredUser, revision st
 	// the only path a snapshot takes on that track. Without it a snapshot that
 	// swaps two bindings' addresses hits the unique email constraint and fails on
 	// every retry — a snapshot the direct track applies without trouble.
-	if err := parkContestedEmailsTx(tx, users); err != nil {
-		return err
-	}
 	keep := make(map[string]bool, len(users))
 	for _, user := range users {
 		keep[user.BindingID] = true
+	}
+	// Rows this snapshot no longer names are about to be deleted, so parking one
+	// strands nothing — and a snapshot that REPLACES one binding with another at
+	// the same address needs exactly that, or the newcomer's upsert hits the
+	// unique email constraint before the deletion below can run, on every retry.
+	existingIDs, err := tx.Query(`SELECT binding_id FROM desired_users_v2`)
+	if err != nil {
+		return err
+	}
+	omitted := map[string]bool{}
+	for existingIDs.Next() {
+		var id string
+		if err := existingIDs.Scan(&id); err != nil {
+			existingIDs.Close()
+			return err
+		}
+		if !keep[id] {
+			omitted[id] = true
+		}
+	}
+	if err := existingIDs.Err(); err != nil {
+		existingIDs.Close()
+		return err
+	}
+	existingIDs.Close()
+	if err := parkContestedEmailsTx(tx, users, omitted); err != nil {
+		return err
+	}
+	for _, user := range users {
 		if err := upsertDesiredUserTx(tx, user, fallback); err != nil {
 			return err
 		}
@@ -1053,7 +1088,7 @@ func replaceDesiredUsersTx(tx *sql.Tx, users []protocol.DesiredUser, revision st
 		// tombstone that now makes every later instruction about the binding
 		// look superseded, so the stale enabled row is what a merge preserves —
 		// and the revoked account goes back in.
-		if err := recordTombstoneTx(tx, id, revision, current.email); err != nil {
+		if err := recordTombstoneTx(tx, id, revision, originalEmail(current.email, id)); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(`DELETE FROM desired_users_v2 WHERE binding_id = ?`, id); err != nil {
@@ -1785,6 +1820,27 @@ func (s *Store) ClearPendingRemoval(emails []string) error {
 // can never collide with a real one.
 const reassignPlaceholder = "\x00reassign:"
 
+// parkedAs builds the placeholder, keeping the ORIGINAL address inside it.
+//
+// A parked row can still be deleted before it ever receives its replacement —
+// that is exactly what happens when a snapshot hands one binding's address to
+// another and omits the first. The tombstone written at that moment is the last
+// place the address survives (a binding-only REMOVE_USER retry resolves its
+// target from it), so the placeholder has to carry it rather than erase it.
+func parkedAs(bindingID, email string) string {
+	return reassignPlaceholder + bindingID + ":" + email
+}
+
+// originalEmail recovers the address a parked row held, or returns the value
+// unchanged when it is a real address.
+func originalEmail(stored, bindingID string) string {
+	prefix := reassignPlaceholder + bindingID + ":"
+	if after, parked := strings.CutPrefix(stored, prefix); parked {
+		return after
+	}
+	return stored
+}
+
 // ApplyDesiredUsers writes a whole desired set in ONE transaction, resolving the
 // email hand-offs inside it.
 //
@@ -1806,7 +1862,7 @@ const reassignPlaceholder = "\x00reassign:"
 // retires it.
 func (s *Store) ApplyDesiredUsers(users []protocol.DesiredUser) error {
 	return s.transact(func(tx *sql.Tx) error {
-		if err := parkContestedEmailsTx(tx, users); err != nil {
+		if err := parkContestedEmailsTx(tx, users, nil); err != nil {
 			return err
 		}
 		for _, user := range users {
@@ -1830,7 +1886,7 @@ func (s *Store) ApplyDesiredUsers(users []protocol.DesiredUser) error {
 // So a row is parked only when its own replacement will actually apply. If the
 // hand-off cannot complete, nothing is parked and the colliding upsert fails the
 // whole transaction — visible, and leaving the addresses as they were.
-func parkContestedEmailsTx(tx *sql.Tx, users []protocol.DesiredUser) error {
+func parkContestedEmailsTx(tx *sql.Tx, users []protocol.DesiredUser, omitted map[string]bool) error {
 	rows, err := tx.Query(`SELECT binding_id, email, revision FROM desired_users_v2`)
 	if err != nil {
 		return err
@@ -1882,14 +1938,19 @@ func parkContestedEmailsTx(tx *sql.Tx, users []protocol.DesiredUser) error {
 		if !contested || to == row.id {
 			continue
 		}
-		if _, willMove := applying[row.id]; !willMove {
+		if _, willMove := applying[row.id]; !willMove && !omitted[row.id] {
 			// This row is not going anywhere, so parking it would strand it on a
 			// placeholder. Leave it and let the collision surface.
+			//
+			// An OMITTED row is the exception: the caller is about to delete it,
+			// so it is not stranded — and refusing to park it would block a
+			// legitimate replacement of one binding by another at the same
+			// address, on every retry.
 			continue
 		}
 		if _, err := tx.Exec(
 			`UPDATE desired_users_v2 SET email = ? WHERE binding_id = ?`,
-			reassignPlaceholder+row.id, row.id); err != nil {
+			parkedAs(row.id, row.email), row.id); err != nil {
 			return err
 		}
 	}

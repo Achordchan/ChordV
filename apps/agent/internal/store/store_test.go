@@ -1778,3 +1778,106 @@ func TestAStaleSwapDoesNotStrandARowOnAPlaceholder(t *testing.T) {
 		t.Fatalf("b1 被搁置在占位符地址上：%+v", b1)
 	}
 }
+
+// TestASnapshotMayReplaceOneBindingWithAnother covers a hand-off FROM a binding
+// the snapshot drops.
+//
+// The old owner is not moving to another address — it is going away entirely —
+// so refusing to park it would have the newcomer's upsert hit the unique email
+// constraint before the deletion could run, on every retry. And because a parked
+// row can be deleted before it ever receives a replacement, the placeholder has
+// to keep the original address: the tombstone written at that moment is the last
+// place it survives, and a binding-only REMOVE_USER retry resolves its target
+// from there.
+func TestASnapshotMayReplaceOneBindingWithAnother(t *testing.T) {
+	state := newStore(t, "node-1", "boot-1")
+	user := func(id, email, revision string) protocol.DesiredUser {
+		return protocol.DesiredUser{
+			BindingID: id, Email: email, UUID: "uuid-" + id, Revision: revision,
+			Enabled: true, QuotaRemainingBytes: "100", OfflineAllowanceBytes: allowance,
+		}
+	}
+	if _, err := state.ApplyConfigSnapshot(protocol.ConfigSnapshot{
+		NodeID: "node-1", Revision: "5", ControlMode: protocol.ModeDirectPrimary,
+		Users: []protocol.DesiredUser{user("old", "shared@chordv", "5")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.ApplyConfigSnapshot(protocol.ConfigSnapshot{
+		NodeID: "node-1", Revision: "6", ControlMode: protocol.ModeDirectPrimary,
+		Users: []protocol.DesiredUser{user("new", "shared@chordv", "6")},
+	}); err != nil {
+		t.Fatalf("换一个 binding 接手同一个地址失败了，且每次重试都会重复：%v", err)
+	}
+	moved, _ := state.UserByBindingID("new")
+	if moved == nil || moved.Email != "shared@chordv" {
+		t.Fatalf("接手方没有拿到地址：%+v", moved)
+	}
+	// The departed binding's address must survive in its tombstone, or a
+	// binding-only removal retry has nothing to aim at.
+	remembered, err := state.TombstonedEmail("old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remembered != "shared@chordv" {
+		t.Fatalf("墓碑记下的是占位符而不是真实地址：%q", remembered)
+	}
+}
+
+// TestTheUpgradeReplayFollowsExecutionOrder is why the replay is no longer
+// sorted by revision.
+//
+// Sorting reorders the history into something that never happened. A
+// binding-only rotation at revision 6 followed by a delayed rename to Y at
+// revision 5 — which execution SKIPPED — sorts the rename first, and the
+// rotation then resolves its missing email against Y instead of the address it
+// really rotated. The strict collision guard would then refuse to manage the
+// account that IS installed, and omission cleanup would leave it serving.
+func TestTheUpgradeReplayFollowsExecutionOrder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+
+	finish := func(id string, kind protocol.CommandType, revision string, payload map[string]any) {
+		t.Helper()
+		if _, err := state.BeginCommand(protocol.Command{
+			CommandID: id, Type: kind, TargetRevision: revision, Payload: payload,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.CompleteCommand(protocol.CommandResult{
+			CommandID: id, Status: protocol.StatusCompleted,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	finish("c1", protocol.CommandEnsureUser, "1", map[string]any{
+		"bindingId": "b1", "email": "x@chordv", "uuid": "old-uuid",
+	})
+	// A rotation at 6, carrying only the binding and the replacement identity.
+	finish("c2", protocol.CommandEnsureUser, "6", map[string]any{
+		"bindingId": "b1", "uuid": "new-uuid",
+	})
+	// A rename delayed from 5, which execution skipped as stale.
+	finish("c3", protocol.CommandEnsureUser, "5", map[string]any{
+		"bindingId": "b1", "email": "y@chordv", "uuid": "new-uuid",
+	})
+
+	if _, err := state.db.Exec(`DELETE FROM provisioned_accounts_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`DELETE FROM meta_v2 WHERE key = 'provisioned_backfilled'`); err != nil {
+		t.Fatal(err)
+	}
+	state.Close()
+
+	reopened := openAt(t, path, "node-1", "boot-2")
+	claims, err := reopened.ProvisionedAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, held := claims["x@chordv"]; !held || len(claims) != 1 {
+		t.Fatalf("回放认领了执行时从未安装过的地址：%v", claims)
+	}
+}
