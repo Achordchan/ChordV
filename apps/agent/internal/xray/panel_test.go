@@ -11,12 +11,21 @@ import (
 	"github.com/xtls/xray-core/app/proxyman"
 	handler "github.com/xtls/xray-core/app/proxyman/command"
 	"github.com/xtls/xray-core/common/serial"
+	vin "github.com/xtls/xray-core/proxy/vless/inbound"
 	"github.com/xtls/xray-core/transport/internet"
 	"github.com/xtls/xray-core/transport/internet/reality"
 	"google.golang.org/protobuf/proto"
 )
 
 func TestPanelValidationReadsActualRealityWithoutMutation(t *testing.T) {
+	testPanelValidation(t, "none", false)
+}
+
+func TestPanelValidationRejectsEncryptedVLESS(t *testing.T) {
+	testPanelValidation(t, base64.RawURLEncoding.EncodeToString([]byte(strings.Repeat("e", 32))), true)
+}
+
+func testPanelValidation(t *testing.T, decryption string, reject bool) {
 	key, err := ecdh.X25519().NewPrivateKey([]byte(strings.Repeat("k", 32)))
 	if err != nil {
 		t.Fatal(err)
@@ -24,7 +33,7 @@ func TestPanelValidationReadsActualRealityWithoutMutation(t *testing.T) {
 	stream := &internet.StreamConfig{ProtocolName: "tcp", SecurityType: "xray.transport.internet.reality.Config", SecuritySettings: []*serial.TypedMessage{
 		serial.ToTypedMessage(&reality.Config{Dest: "127.0.0.1:1", Type: "tcp", PrivateKey: key.Bytes(), ServerNames: []string{"example.com"}, ShortIds: [][]byte{{0xab, 0xcd, 0, 0, 0, 0, 0, 0}}}),
 	}}
-	g, _ := configuredServer(t, false, stream)
+	g, _ := configuredProxyServer(t, false, stream, &vin.Config{Decryption: decryption})
 	ctx := context.Background()
 	inbounds, err := g.handler.ListInbounds(ctx, &handler.ListInboundsRequest{})
 	if err != nil {
@@ -38,6 +47,12 @@ func TestPanelValidationReadsActualRealityWithoutMutation(t *testing.T) {
 		"realityPublicKey": base64.RawURLEncoding.EncodeToString(key.PublicKey().Bytes()), "shortId": "abcd", "serverNames": []any{"example.com"},
 		"serverHost": "node.example.com", "flow": "xtls-rprx-vision", "fingerprint": "chrome", "spiderX": "/"}
 	result, err := g.ValidatePanel(ctx, spec)
+	if reject {
+		if err == nil || !strings.Contains(err.Error(), "decryption") {
+			t.Fatalf("encrypted inbound accepted: %+v %v", result, err)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

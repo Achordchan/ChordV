@@ -10,6 +10,7 @@ import (
 
 	"github.com/xtls/xray-core/app/proxyman"
 	handler "github.com/xtls/xray-core/app/proxyman/command"
+	vin "github.com/xtls/xray-core/proxy/vless/inbound"
 	"github.com/xtls/xray-core/transport/internet/reality"
 	"google.golang.org/protobuf/proto"
 )
@@ -38,6 +39,17 @@ func (g *GRPC) ValidatePanel(ctx context.Context, payload map[string]any) (map[s
 	for _, in := range response.GetInbounds() {
 		if in.Tag != g.tag {
 			continue
+		}
+		var proxy vin.Config
+		if in.GetProxySettings().GetType() != "xray.proxy.vless.inbound.Config" {
+			return nil, fmt.Errorf("目标入站不是 VLESS")
+		}
+		if err := proto.Unmarshal(in.GetProxySettings().GetValue(), &proxy); err != nil {
+			return nil, fmt.Errorf("无法读取 VLESS 配置")
+		}
+		// Upstream treats both empty and none as no extra VLESS encryption.
+		if proxy.Decryption != "" && proxy.Decryption != "none" {
+			return nil, fmt.Errorf("目标入站启用了不支持的 VLESS decryption，客户端仅支持 encryption=none")
 		}
 		var receiver proxyman.ReceiverConfig
 		if err := proto.Unmarshal(in.GetReceiverSettings().GetValue(), &receiver); err != nil {

@@ -44,6 +44,10 @@ func realServer(t *testing.T, unix bool) (*GRPC, *core.Instance) {
 }
 
 func configuredServer(t *testing.T, unix bool, stream *internet.StreamConfig) (*GRPC, *core.Instance) {
+	return configuredProxyServer(t, unix, stream, &vin.Config{Decryption: "none"})
+}
+
+func configuredProxyServer(t *testing.T, unix bool, stream *internet.StreamConfig, proxy *vin.Config) (*GRPC, *core.Instance) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -57,7 +61,7 @@ func configuredServer(t *testing.T, unix bool, stream *internet.StreamConfig) (*
 		serial.ToTypedMessage(&proxyman.OutboundConfig{}), serial.ToTypedMessage(&statsapp.Config{}),
 	}, Outbound: []*core.OutboundHandlerConfig{{Tag: "direct", ProxySettings: serial.ToTypedMessage(&freedom.Config{})}}, Inbound: []*core.InboundHandlerConfig{{Tag: "inbound-test", ReceiverSettings: serial.ToTypedMessage(&proxyman.ReceiverConfig{
 		StreamSettings: stream, Listen: xnet.NewIPOrDomain(xnet.LocalHostIP), PortList: &xnet.PortList{Range: []*xnet.PortRange{{From: port, To: port}}},
-	}), ProxySettings: serial.ToTypedMessage(&vin.Config{Decryption: "none"})}}})
+	}), ProxySettings: serial.ToTypedMessage(proxy)}}})
 	if err != nil {
 		t.Fatal(err)
 	}
