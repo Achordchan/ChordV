@@ -576,12 +576,10 @@ func index(values []string, want string) int {
 // record still names it.
 func TestReconcileRetiresARenamedAccountBeforeOverwritingItsRecord(t *testing.T) {
 	processor, fake, state := newProcessor(t, false)
-	if err := state.UpsertDesiredUser(protocol.DesiredUser{
+	seedOwned(t, state, protocol.DesiredUser{
 		BindingID: "b1", Email: "old@chordv", UUID: "u1", Revision: "1",
 		Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	fake.live = []xray.LiveUser{{Email: "old@chordv"}}
 	// The install fails, which is exactly when the ordering matters.
 	fake.ensureErr = errors.New("gRPC 断开")
@@ -1612,5 +1610,47 @@ func TestASnapshotMaySwapTwoBindingsEmails(t *testing.T) {
 	b2, _ := state.UserByBindingID("b2")
 	if b1 == nil || b2 == nil || b1.Email != "b@chordv" || b2.Email != "a@chordv" {
 		t.Fatalf("记录没有完成互换：%+v %+v", b1, b2)
+	}
+}
+
+// TestARenameDoesNotUninstallAPanelAccount closes the second way into the
+// disaster TestPromotionDoesNotUninstallPanelAccountsItMerelyObserved describes.
+//
+// A binding observed in shadow mode keeps its binding id and may arrive on
+// promotion with a DIFFERENT email. The rename pass then retires the old
+// address — which, for an observed binding, is the panel's account. Ownership
+// has to be checked here too, or the guard is only half applied.
+func TestARenameDoesNotUninstallAPanelAccount(t *testing.T) {
+	for _, viaCommand := range []bool{false, true} {
+		name := "reconcile"
+		if viaCommand {
+			name = "ensure_user"
+		}
+		t.Run(name, func(t *testing.T) {
+			processor, fake, state := newProcessor(t, false)
+			fake.live = []xray.LiveUser{{Email: "panel@panel"}}
+			// Observed in shadow mode: a record, but nothing installed by us.
+			run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", map[string]any{
+				"controlMode": string(protocol.ModeShadowDirect),
+				"users":       []any{map[string]any(userPayload("bp", "panel@panel"))},
+			}), false)
+			if provisioned, _ := state.ProvisionedAccounts(); len(provisioned) != 0 {
+				t.Fatalf("前提没成立：观察态不该产生供给凭据 %v", provisioned)
+			}
+
+			fake.calls = nil
+			renamed := userPayload("bp", "moved@chordv")
+			if viaCommand {
+				run(t, processor, command("c2", protocol.CommandEnsureUser, "6", renamed), true)
+			} else {
+				run(t, processor, command("c2", protocol.CommandReconcileUsers, "6", map[string]any{
+					"controlMode": string(protocol.ModeDirectPrimary),
+					"users":       []any{map[string]any(renamed)},
+				}), true)
+			}
+			if contains(fake.calls, "remove:panel@panel") {
+				t.Fatalf("改名把面板管理员的账号卸载了：%v", fake.calls)
+			}
+		})
 	}
 }

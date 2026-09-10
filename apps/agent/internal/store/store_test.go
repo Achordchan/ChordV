@@ -1059,3 +1059,90 @@ func TestAnUpgradeKeepsProvisioningEvidenceOnADirectNode(t *testing.T) {
 		})
 	}
 }
+
+// TestAnUpgradeRecoversOwnershipFromTheCommandLog covers the node the current
+// mode cannot describe: it provisioned accounts in direct_primary and has since
+// been moved to an observing mode.
+//
+// Reading only the desired set there claims nothing (correctly — those rows may
+// be the panel's) and, if the migration were then marked done, the node would be
+// frozen in permanent unownership. The command log is never pruned, and a
+// COMPLETED ENSURE_USER is a record of what this agent actually installed.
+func TestAnUpgradeRecoversOwnershipFromTheCommandLog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+
+	cmd := protocol.Command{
+		CommandID: "c1", Type: protocol.CommandEnsureUser, TargetRevision: "5",
+		Payload: map[string]any{"bindingId": "b1", "email": "ours@chordv", "uuid": "u"},
+	}
+	if _, err := state.BeginCommand(cmd); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.CompleteCommand(protocol.CommandResult{
+		CommandID: "c1", Status: protocol.StatusCompleted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The node has since been moved to an observing mode, and holds a record for
+	// a PANEL binding it merely observed.
+	if _, err := state.ApplyConfigSnapshot(protocol.ConfigSnapshot{
+		NodeID: "node-1", Revision: "6", ControlMode: protocol.ModeShadowDirect,
+		Users: []protocol.DesiredUser{{
+			BindingID: "bp", Email: "panel@panel", UUID: "u", Revision: "6",
+			Enabled: true, QuotaRemainingBytes: "1", OfflineAllowanceBytes: allowance,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-migration state.
+	if _, err := state.db.Exec(`DELETE FROM provisioned_accounts_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`DELETE FROM meta_v2 WHERE key = 'provisioned_backfilled'`); err != nil {
+		t.Fatal(err)
+	}
+	state.Close()
+
+	reopened := openAt(t, path, "node-1", "boot-2")
+	got, err := reopened.ProvisionedAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "ours@chordv" {
+		t.Fatalf("升级后的供给凭据 = %v，want 仅 [ours@chordv]（面板账号不得被认领）", got)
+	}
+}
+
+// TestAnAmbiguousUpgradeIsNotMarkedDone is the other half: when there is nothing
+// to go on, the migration must stay open so a later promotion can finish it,
+// rather than freezing the node into permanent unownership.
+func TestAnAmbiguousUpgradeIsNotMarkedDone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+	if _, err := state.ApplyConfigSnapshot(protocol.ConfigSnapshot{
+		NodeID: "node-1", Revision: "6", ControlMode: protocol.ModeShadowDirect,
+		Users: []protocol.DesiredUser{{
+			BindingID: "bp", Email: "panel@panel", UUID: "u", Revision: "6",
+			Enabled: true, QuotaRemainingBytes: "1", OfflineAllowanceBytes: allowance,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`DELETE FROM meta_v2 WHERE key = 'provisioned_backfilled'`); err != nil {
+		t.Fatal(err)
+	}
+	state.Close()
+
+	reopened := openAt(t, path, "node-1", "boot-2")
+	done, err := reopened.meta("provisioned_backfilled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done != "" {
+		t.Fatal("含糊不清的升级被标记成已完成，节点就此永久失去所有权恢复的机会")
+	}
+	if got, _ := reopened.ProvisionedAccounts(); len(got) != 0 {
+		t.Fatalf("观察态的记录被认领了：%v", got)
+	}
+}

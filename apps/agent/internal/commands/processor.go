@@ -165,14 +165,30 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 	// removal off nothing would ever clean it up. It would keep serving, with no
 	// desired-user record left to account for its traffic.
 	//
-	// The metering baseline follows on its own: the new account's counters start
-	// at zero, which reads as a counter reset, so the next sample bumps the
-	// generation and bills the new account's traffic in full.
+	// The metering baseline is reset by the store when the email changes; see
+	// upsertDesiredUserTx.
+	//
+	// Guarded by ownership, exactly as Reconcile's rename pass is: a stored row
+	// can name a PANEL account this node merely observed in shadow mode, and
+	// uninstalling it here would walk straight past the protection that keeps
+	// the shared inbound safe.
 	if stored != nil && stored.Email != user.Email {
-		if err := p.deps.Xray.RemoveUser(ctx, stored.Email); err != nil {
+		owned, err := p.owns(stored.Email)
+		if err != nil {
 			return err
 		}
-		p.logf("[agent] 用户 %s 的 email 由 %s 变更为 %s，已卸载旧账号", user.BindingID, stored.Email, user.Email)
+		if !owned {
+			p.logf("[agent] 用户 %s 的 email 由 %s 变更为 %s，但旧账号不是本节点装的（可能属于面板），未卸载",
+				user.BindingID, stored.Email, user.Email)
+		} else {
+			if err := p.deps.Xray.RemoveUser(ctx, stored.Email); err != nil {
+				return err
+			}
+			if err := p.deps.Store.ForgetProvisioned([]string{stored.Email}); err != nil {
+				return err
+			}
+			p.logf("[agent] 用户 %s 的 email 由 %s 变更为 %s，已卸载旧账号", user.BindingID, stored.Email, user.Email)
+		}
 	}
 	// Store BEFORE Xray: a crash between the two leaves a user the store knows
 	// about but Xray does not, which the next reconcile repairs. The reverse
@@ -504,6 +520,30 @@ func (p *Processor) reconcileCommand(ctx context.Context, command protocol.Comma
 //
 // The ownership snapshot is taken BEFORE the desired set is written, because
 // that write is what erases the evidence.
+// owns reports whether this agent installed the account, by the same two pieces
+// of evidence Reconcile's ownership map is built from.
+func (p *Processor) owns(email string) (bool, error) {
+	provisioned, err := p.deps.Store.ProvisionedAccounts()
+	if err != nil {
+		return false, err
+	}
+	for _, candidate := range provisioned {
+		if candidate == email {
+			return true, nil
+		}
+	}
+	pending, err := p.deps.Store.PendingRemovals()
+	if err != nil {
+		return false, err
+	}
+	for _, candidate := range pending {
+		if candidate == email {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // validateUser checks everything the store will check, BEFORE the caller does
 // anything it cannot take back.
 //
@@ -643,6 +683,16 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	for _, user := range users {
 		old, known := previousEmail[user.BindingID]
 		if !known || old == user.Email {
+			continue
+		}
+		// The same ownership test the omission cleanup applies, and for the same
+		// reason. `recorded` includes PANEL bindings observed in shadow mode, so
+		// a binding that keeps its id but arrives with a different email on
+		// promotion would otherwise have the panel's account uninstalled here —
+		// straight past the guard that is supposed to make that impossible.
+		if !ours[old] {
+			p.logf("[agent] 用户 %s 的 email 由 %s 变更为 %s，但旧账号不是本节点装的（可能属于面板），未卸载",
+				user.BindingID, old, user.Email)
 			continue
 		}
 		if err := p.deps.Xray.RemoveUser(ctx, old); err != nil {

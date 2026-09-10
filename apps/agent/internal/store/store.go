@@ -275,7 +275,23 @@ func (s *Store) backfillSnapshotRevision() error {
 // bindings, and claiming them is the exact accident provisioned_accounts_v2
 // exists to prevent — so nothing is claimed there.
 //
-// Runs once. A fresh database has no rows and simply records that it ran.
+// The current mode is not proof that the agent never provisioned anything: a
+// node that ran in direct_primary and has since been moved to shadow_direct or
+// rollback_pending really does own accounts. So the desired set is only ONE of
+// two sources, and the other is the command history — which is never pruned:
+//
+//   - a completed ENSURE_USER installed the account it names;
+//   - a completed RECONCILE_USERS whose payload carried controlMode
+//     direct_primary installed every user in it.
+//
+// Both are records of what this agent DID, so neither can claim a panel account.
+// They can name accounts since removed, which costs one no-op RemoveUser — the
+// same trade RecordProvisioned already makes.
+//
+// When the picture is still ambiguous — desired rows exist, the mode is not
+// direct_primary, and the history yielded nothing — the migration is NOT marked
+// done. Leaving it open lets a later promotion complete it rather than freezing
+// a node into permanent unownership.
 func (s *Store) backfillProvisioned() error {
 	done, err := s.meta("provisioned_backfilled")
 	if err != nil || done != "" {
@@ -285,16 +301,108 @@ func (s *Store) backfillProvisioned() error {
 	if err != nil {
 		return err
 	}
+	recovered, err := s.provisionedFromHistory()
+	if err != nil {
+		return err
+	}
 	if mode == protocol.ModeDirectPrimary {
-		if _, err := s.db.Exec(`
+		result, err := s.db.Exec(`
 			INSERT INTO provisioned_accounts_v2(email, binding_id, recorded_at)
 			SELECT email, binding_id, ? FROM desired_users_v2
 			WHERE email NOT LIKE ? || '%'
-			ON CONFLICT(email) DO NOTHING`, isoMillis(time.Now()), reassignPlaceholder); err != nil {
+			ON CONFLICT(email) DO NOTHING`, isoMillis(time.Now()), reassignPlaceholder)
+		if err != nil {
 			return err
 		}
+		adopted, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		recovered += int(adopted)
+		return s.setMeta("provisioned_backfilled", "1")
 	}
-	return s.setMeta("provisioned_backfilled", "1")
+	var rows int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM desired_users_v2`).Scan(&rows); err != nil {
+		return err
+	}
+	if rows == 0 || recovered > 0 {
+		return s.setMeta("provisioned_backfilled", "1")
+	}
+	// Deliberately left unfinished: see above.
+	return nil
+}
+
+// provisionedFromHistory adopts the accounts the command log proves this agent
+// installed, and reports how many it added.
+func (s *Store) provisionedFromHistory() (int, error) {
+	rows, err := s.db.Query(`
+		SELECT command_type, payload FROM commands_v2
+		WHERE completed_at IS NOT NULL AND result LIKE '%"status":"completed"%'
+		  AND command_type IN ('ENSURE_USER', 'RECONCILE_USERS')`)
+	if err != nil {
+		return 0, err
+	}
+	type claim struct{ bindingID, email string }
+	var claims []claim
+	for rows.Next() {
+		var kind, raw string
+		if err := rows.Scan(&kind, &raw); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		// The column holds the whole marshalled Command, not just its payload.
+		var stored protocol.Command
+		if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+			continue // an unreadable payload is not evidence, but is not fatal either
+		}
+		payload := stored.Payload
+		if protocol.CommandType(kind) == protocol.CommandEnsureUser {
+			email, _ := payload["email"].(string)
+			if email == "" {
+				email, _ = payload["userKey"].(string)
+			}
+			id, _ := payload["bindingId"].(string)
+			if email != "" {
+				claims = append(claims, claim{id, email})
+			}
+			continue
+		}
+		if value, _ := payload["controlMode"].(string); protocol.ControlMode(value) != protocol.ModeDirectPrimary {
+			continue
+		}
+		items, _ := payload["users"].([]any)
+		for _, item := range items {
+			user, _ := item.(map[string]any)
+			email, _ := user["email"].(string)
+			if email == "" {
+				email, _ = user["userKey"].(string)
+			}
+			id, _ := user["bindingId"].(string)
+			if email != "" {
+				claims = append(claims, claim{id, email})
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+	added := 0
+	for _, c := range claims {
+		result, err := s.db.Exec(`
+			INSERT INTO provisioned_accounts_v2(email, binding_id, recorded_at) VALUES(?, ?, ?)
+			ON CONFLICT(email) DO NOTHING`, c.email, c.bindingID, isoMillis(time.Now()))
+		if err != nil {
+			return 0, err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		added += int(affected)
+	}
+	return added, nil
 }
 
 // RecordBindingTombstone remembers the revision at which a binding was DELETED.
