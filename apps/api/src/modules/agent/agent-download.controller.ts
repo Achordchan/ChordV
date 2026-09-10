@@ -1,70 +1,30 @@
-import { BadRequestException, Controller, Get, NotFoundException, ServiceUnavailableException, Param, Res } from "@nestjs/common";
+import { BadRequestException, Controller, Get, GoneException, NotFoundException, ServiceUnavailableException, Param, Res } from "@nestjs/common";
 import type { Response } from "express";
 import { pipeline } from "node:stream/promises";
+import path from "node:path";
+import { agentReleaseRoot, loadGoRelease } from "./agent-go-release";
 
-/**
- * Serves the node-agent release tarball for the install script. The tarball is
- * provisioned on the API host (a volume path named by CHORDV_AGENT_DIST_DIR, e.g.
- * /app/agent-dist/chordv-agent-linux-x64.tar.gz) — no build-time bundling, so an
- * agent update is a file drop plus this route, independent of API releases.
- * Public by design: the install command runs on a fresh VPS with no credentials;
- * the artifact is not secret (its integrity matters, and the tarball layout is
- * validated by the install script).
- *
- * The Xray binary is served the same way and for the same reason: the installer
- * only trusts this origin, so adding a second download host would widen the
- * trust set and make installs depend on that host's reachability.
- */
-const ALLOWED_ARCHES = new Set(["linux-x64", "linux-arm64"]);
-
+/** Downloads are pinned to this running backend's bundled Go release. */
 @Controller()
 export class AgentDownloadController {
-  @Get("agent-download/node/:name")
-  async downloadNode(@Param("name") name: string, @Res() response: Response) {
-    const digest = name.endsWith(".sha256");
-    const arch = digest ? name.slice(0, -".sha256".length) : name;
-    if (!ALLOWED_ARCHES.has(arch)) throw new BadRequestException("不支持的架构。");
-    const distDir = process.env.CHORDV_AGENT_DIST_DIR?.trim();
-    if (!distDir) throw new NotFoundException("该服务器未配置 Node 运行环境分发。");
-    const path = await import("node:path");
-    await sendArtifact(path.join(distDir, `node-20.19.0-${arch}.tar.gz${digest ? ".sha256" : ""}`),
-      digest ? "text/plain; charset=utf-8" : "application/gzip", `Node 运行环境（${arch}）`, response);
+  @Get("agent-download/go/:version/:arch")
+  async downloadGo(@Param("version") version: string, @Param("arch") arch: string, @Res() response: Response) {
+    if (arch !== "amd64" && arch !== "arm64") throw new BadRequestException("不支持的架构");
+    const release = loadGoRelease();
+    if (version !== release.version) throw new NotFoundException("安装命令对应的后台版本已改变，请重新生成命令");
+    await sendArtifact(path.join(agentReleaseRoot(), "agent-go-dist", `chordv-agent-linux-${arch}`),
+      "application/octet-stream", `Go agent（${arch}）`, response);
   }
 
-  @Get("agent-download/:arch")
-  async download(@Param("arch") arch: string, @Res() response: Response) {
-    if (!ALLOWED_ARCHES.has(arch)) throw new BadRequestException("不支持的架构。");
-    const distDir = process.env.CHORDV_AGENT_DIST_DIR?.trim();
-    if (!distDir) {
-      throw new NotFoundException("该服务器未配置 Agent 安装包分发（CHORDV_AGENT_DIST_DIR）。");
-    }
-    const path = await import("node:path");
-    await sendArtifact(path.join(distDir, `chordv-agent-${arch}.tar.gz`), "application/gzip", `Agent 安装包（${arch}）`, response);
-  }
-
-  /**
-   * `:name` is `<arch>` for the tarball and `<arch>.sha256` for its digest — one
-   * route so both can never diverge on lookup rules, with the arch allowlisted
-   * either way so nothing user-supplied reaches the filename.
-   */
-  @Get("agent-download/xray/:name")
-  async downloadXray(@Param("name") name: string, @Res() response: Response) {
-    const digest = name.endsWith(".sha256");
-    const arch = digest ? name.slice(0, -".sha256".length) : name;
-    if (!ALLOWED_ARCHES.has(arch)) throw new BadRequestException("不支持的架构。");
-    const distDir = process.env.CHORDV_XRAY_DIST_DIR?.trim();
-    // Explicitly unconfigured is an error in its own right: falling back to some
-    // other download source would quietly widen what an install trusts.
-    if (!distDir) {
-      throw new NotFoundException("该服务器未配置 Xray 分发（CHORDV_XRAY_DIST_DIR）。");
-    }
-    const path = await import("node:path");
-    const file = path.join(distDir, `xray-${arch}.tar.gz${digest ? ".sha256" : ""}`);
-    await sendArtifact(file, digest ? "text/plain; charset=utf-8" : "application/gzip", `Xray 安装包（${arch}）`, response);
+  // Previously copied Node/Xray commands must fail before fetching executable
+  // content. Existing VPS services and their files are not removed or stopped.
+  @Get(["agent-download/:arch", "agent-download/node/:name", "agent-download/xray/:name"])
+  retiredInstaller() {
+    throw new GoneException("旧 Node/Xray 安装入口已停用，请在后台重新生成 Go agent 接入命令");
   }
 }
 
-async function sendArtifact(file: string, contentType: string, label: string, response: Response) {
+export async function sendArtifact(file: string, contentType: string, label: string, response: Response) {
   const fs = await import("node:fs");
   if (typeof fs.constants.O_NOFOLLOW !== "number") {
     throw new ServiceUnavailableException("当前平台不支持安全读取安装包。");

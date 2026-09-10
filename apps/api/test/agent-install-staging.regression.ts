@@ -1,213 +1,59 @@
 import "reflect-metadata";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { renderInstallScript, renderXrayInstall } from "../src/modules/agent/agent-install.controller";
+import { createHash } from "node:crypto";
+import { normalizeOrigin, renderInstallScript } from "../src/modules/agent/agent-install.controller";
+import { normalizePanelInbound } from "../src/modules/agent/panel-inbound";
 
-const root = mkdtempSync(path.join(tmpdir(), "agent-install-staging-"));
-try {
-  const script = renderInstallScript({ token: "test-token", apiBase: "https://example.com" });
-  const end = script.indexOf('install -d -m 0750 -o'); assert.ok(end > 0);
-  writeFileSync(path.join(root, "stage.sh"), script.slice(0, end));
-  writeFileSync(path.join(root, "health-check.sh"), readFileSync(path.resolve(__dirname, "../../node-agent/deploy/health-check.sh")));
-  for (const name of ["valid", "next", "incomplete"]) {
-    const dir = path.join(root, name);
-    mkdirSync(path.join(dir, "dist/src"), { recursive: true }); mkdirSync(path.join(dir, "node_modules"));
-    writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "@chordv/node-agent", version: "1.0.0", type: "module" }));
-    if (name !== "incomplete") writeFileSync(path.join(dir, "dist/src/main.js"), `console.log('${name}');\n`);
-    assert.equal(spawnSync("tar", ["-czf", path.join(root, `${name}.tgz`), "-C", dir, "."]).status, 0);
-  }
-  writeFileSync(path.join(root, "corrupt.tgz"), "not an archive");
-  writeFileSync(path.join(root, "curl"), `#!/bin/bash
-url=""
-while [[ $# -gt 0 ]]; do
-  if [[ "$1" == -o ]]; then output="$2"; shift 2;
-  else [[ "$1" == http* ]] && url="$1"; shift; fi
-done
-# The Xray section fetches the artifact and its digest from the same origin, so
-# the stub has to answer both.
-if [[ "$url" == *.sha256 ]]; then cp "\${TEST_SHA:-/dev/null}" "$output"; exit 0; fi
-if [[ "\${TEST_PARTIAL:-false}" == true ]]; then head -c 64 "$TEST_PAYLOAD" > "$output"; exit 18; fi
-cp "$TEST_PAYLOAD" "$output"
-`, { mode: 0o755 });
-  const setup = `
-mkdir -p /test-bin /opt/chordv-node-agent/dist/src /opt/chordv-node-agent/releases/old/dist/src
-cp /test/curl /test-bin/curl
-export PATH=/test-bin:$PATH
-printf 'legacy' > /opt/chordv-node-agent/dist/src/main.js
-printf 'old' > /opt/chordv-node-agent/releases/old/dist/src/main.js
-ln -s /opt/chordv-node-agent/releases/old /opt/chordv-node-agent/current
+const spec = normalizePanelInbound({ mode: "validate_panel", panelVersion: "auto", listenPort: 443,
+  serverHost: "node.example.com", realityPublicKey: Buffer.alloc(32, 1).toString("base64url"),
+  shortId: "ab", serverNames: ["example.com"], flow: "xtls-rprx-vision" });
+// Executable fixture is confined to the disposable installer container. Real
+// protocol and Xray validation are covered separately, not simulated here.
+const fixture = `#!/bin/bash
+case "$1" in
+  --version) echo 0.0.11 ;;
+  --inspect-panel) [[ ! -f /scenario/preflight-fails ]] || exit 1
+    printf 'XRAY_API_ADDRESS=127.0.0.1:62789\\nXRAY_INBOUND_TAG=inbound-443\\nCHORDV_PANEL_VERSION=3.7.0\\n' ;;
+  --health) test -f /var/lib/chordv-node-agent/credentials.json ;;
+  --verify-inbound) : ;;
+  *) exit 1 ;;
+esac
 `;
-  for (const [name, payload, partial] of [["interrupted", "valid", true], ["corrupt", "corrupt", false], ["incomplete", "incomplete", false]] as const) {
-    const run = spawnSync("docker", ["run", "--rm", "--network", "none", "--entrypoint", "bash", "-v", `${root}:/test:ro`, "chordv-api:latest", "-ec", setup + `
-if TEST_PAYLOAD=/test/${payload}.tgz TEST_PARTIAL=${partial} bash /test/stage.sh; then exit 99; fi
-[[ "$(readlink /opt/chordv-node-agent/current)" == /opt/chordv-node-agent/releases/old ]]
-[[ "$(cat /opt/chordv-node-agent/current/dist/src/main.js)" == old ]]
-[[ "$(cat /opt/chordv-node-agent/dist/src/main.js)" == legacy ]]
-[[ -z "$(find /opt/chordv-node-agent/releases -maxdepth 1 -name '.staging.*' -print)" ]]
-`], { encoding: "utf8" });
-    assert.equal(run.status, 0, `${name}: ${run.stdout}\n${run.stderr}`);
-  }
-  // A host whose identity lives only in the env file must be refused before the
-  // installer touches anything (no download, no release switch).
-  const legacyIdentity = spawnSync("docker", ["run", "--rm", "--network", "none", "--entrypoint", "bash", "-v", `${root}:/test:ro`, "chordv-api:latest", "-ec", setup + `
-mkdir -p /etc/chordv
-printf 'CHORDV_AGENT_ID=agent-old\\nCHORDV_AGENT_TOKEN=chordv_agent_old\\n' > /etc/chordv/node-agent.env
-if TEST_PAYLOAD=/test/valid.tgz bash /test/stage.sh 2>/tmp/guard.err; then exit 99; fi
-grep -q "已存在以环境变量配置的 Agent 身份" /tmp/guard.err
-[[ "$(readlink /opt/chordv-node-agent/current)" == /opt/chordv-node-agent/releases/old ]]
-[[ -z "$(find /opt/chordv-node-agent/releases -maxdepth 1 -name '.staging.*' -print)" ]]
-`], { encoding: "utf8" });
-  assert.equal(legacyIdentity.status, 0, `legacy env identity: ${legacyIdentity.stdout}\n${legacyIdentity.stderr}`);
+const digest = createHash("sha256").update(fixture).digest("hex");
+const input = { token: "chordv_register_test", apiBase: "https://control.example.com", nodeId: "test-node", usable: true,
+  spec, release: { version: "0.0.11", commit: "a".repeat(40), sha256: { amd64: digest, arm64: digest } } };
+const script = renderInstallScript(input);
+assert.equal(spawnSync("bash", ["-n"], { input: script, encoding: "utf8" }).status, 0);
+assert.equal(script.includes("@@"), false);
+assert.equal(script.includes("NODE_BIN"), false);
+assert.equal(script.includes("chordv-xray.service"), false);
+assert.equal(script.includes("REGISTER_TOKEN='chordv_register_test'"), true);
+assert.equal(script.includes("agent-download/go/$VERSION/$ARCH"), true);
+for (const hostile of ["https://$(id).example.com", "https://user:pw@example.com", "https://a.example.com/$(id)", "http://a.example.com", "https://a.example.com\nexit 0"]) {
+  assert.equal(normalizeOrigin(hostile), "");
+  assert.throws(() => renderInstallScript({ ...input, apiBase: hostile }), /公网地址无效/);
+}
+assert.throws(() => renderInstallScript({ ...input, token: "$(id)" }), /注册令牌格式无效/);
+assert.throws(() => renderInstallScript({ ...input, spec: { ...spec, inboundTag: "$(id)" } }), /tag/);
+assert.equal(normalizeOrigin("http://127.0.0.1:3000"), "http://127.0.0.1:3000");
 
-  const success = spawnSync("docker", ["run", "--rm", "--network", "none", "--entrypoint", "bash", "-v", `${root}:/test:ro`, "chordv-api:latest", "-ec", setup + `
-TEST_PAYLOAD=/test/valid.tgz bash /test/stage.sh
-first="$(readlink /opt/chordv-node-agent/current)"
-grep -q valid "$first/dist/src/main.js"
-TEST_PAYLOAD=/test/next.tgz bash /test/stage.sh
-second="$(readlink /opt/chordv-node-agent/current)"
-[[ "$first" != "$second" ]]
-grep -q next "$second/dist/src/main.js"
-mkdir -p /etc/chordv
-printf 'CHORDV_AGENT_NODE_BIN=/usr/local/bin/node\\n' > /etc/chordv/node-agent.env
-bash /test/health-check.sh | grep -qx next
-# The health check sources this file as shell code and normally runs as root, so
-# a non-root owner or a group/other-writable mode must abort instead of loading it.
-chown 65534 /etc/chordv/node-agent.env
-if bash /test/health-check.sh; then exit 98; fi
-chown 0 /etc/chordv/node-agent.env
-chmod 0660 /etc/chordv/node-agent.env
-if bash /test/health-check.sh; then exit 97; fi
-chmod 0640 /etc/chordv/node-agent.env
-bash /test/health-check.sh | grep -qx next
-# The probe opens the service's sqlite database, and SQLite creates the WAL
-# sidecars when they are missing — as root those files would lock the
-# unprivileged agent out of its own state. So a root-run health check must
-# drop to the database's owner before executing the agent.
-mkdir -p /var/lib/chordv-node-agent
-: > /var/lib/chordv-node-agent/agent.db
-chown -R 65534:65534 /var/lib/chordv-node-agent
-printf 'CHORDV_AGENT_NODE_BIN=/usr/local/bin/node\nAGENT_DATABASE_PATH=/var/lib/chordv-node-agent/agent.db\n' > /etc/chordv/node-agent.env
-printf 'console.log(process.getuid());\n' > "$second/dist/src/main.js"
-[[ "$(bash /test/health-check.sh)" == 65534 ]]
-printf 'console.log("next");\n' > "$second/dist/src/main.js"
-printf 'CHORDV_AGENT_NODE_BIN=/usr/local/bin/node\n' > /etc/chordv/node-agent.env
-rm -rf /var/lib/chordv-node-agent
-bash /test/health-check.sh | grep -qx next
-grep -q valid "$first/dist/src/main.js"
-[[ "$(cat /opt/chordv-node-agent/dist/src/main.js)" == legacy ]]
-[[ -z "$(find /opt/chordv-node-agent/releases -maxdepth 1 -name '.staging.*' -print)" ]]
-`], { encoding: "utf8" });
-  assert.equal(success.status, 0, `${success.stdout}\n${success.stderr}`);
-
-  // The Xray section runs as root on a fresh host: verify what it actually
-  // creates, not just what the rendered text says.
-  writeFileSync(path.join(root, "xray.sh"), `#!/bin/bash
-set -euo pipefail
-API_BASE='https://example.com/api'
-ARCH=linux-x64
-SERVICE_USER=chordv-agent
-NODE_BIN=/usr/local/bin/node
-STAGING_DIR="$(mktemp -d)"
-ARCHIVE=/tmp/agent.tgz
-CURRENT_LINK=/opt/chordv-node-agent/current
-${renderXrayInstall()}
-`);
-  const xrayInstall = spawnSync("docker", ["run", "--rm", "--network", "none", "--entrypoint", "bash", "-v", `${root}:/test:ro`, "chordv-api:latest", "-ec", `
-mkdir -p /test-bin /release/deploy /release/dist/src
-cp /test/curl /test-bin/curl
-export PATH=/test-bin:$PATH
-id chordv-agent >/dev/null 2>&1 || useradd --system chordv-agent
-printf '{"log":{}}' > /release/deploy/xray-base.json
-printf '{"api":{},"inbounds":[{"tag":"api-in","listen":"127.0.0.1","port":10085}]}' > /release/deploy/xray-api.fragment.json
-printf 'console.log("helper");' > /release/dist/src/xray-apply.js
-# The section installs root-executed files from the ARCHIVE root downloaded,
-# never through the release tree the service user extracts.
-tar -czf /tmp/agent.tgz -C /release ./deploy/xray-base.json ./deploy/xray-api.fragment.json ./dist/src/xray-apply.js
-mkdir -p /opt/chordv-node-agent && ln -sfn /release /opt/chordv-node-agent/current
-mkdir -p /payload && printf '#!/bin/sh\necho stub-xray\n' > /payload/xray && chmod 0755 /payload/xray
-tar -czf /tmp/xray.tgz -C /payload xray
-sha256sum /tmp/xray.tgz | cut -d' ' -f1 > /tmp/xray.sha256
-
-# An Xray unit this installer did not write must not be replaced: doing so
-# would point an operator's own service at a config directory with no
-# user-facing inbound and restart it.
-mkdir -p /etc/systemd/system
-printf '[Unit]\\nDescription=Someone else Xray\\n' > /etc/systemd/system/chordv-xray.service
-TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh 2>/tmp/takeover.err && exit 96
-grep -q 'ChordV 专用服务名已被其他服务占用' /tmp/takeover.err
-grep -q 'Someone else Xray' /etc/systemd/system/chordv-xray.service
-[[ ! -e /opt/chordv-xray/bin/xray ]]
-rm -f /etc/systemd/system/chordv-xray.service
-
-# A vendor unit lives under /usr/lib; writing ours into /etc would override it
-# without ever touching the file the guard used to check.
-mkdir -p /usr/lib/systemd/system
-printf '[Unit]\\nDescription=Vendor Xray\\n' > /usr/lib/systemd/system/chordv-xray.service
-TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh 2>/tmp/vendor.err && exit 95
-grep -q '/usr/lib/systemd/system/chordv-xray.service' /tmp/vendor.err
-[[ ! -e /etc/systemd/system/chordv-xray.service ]]
-rm -f /usr/lib/systemd/system/chordv-xray.service
-
-# A drop-in is someone's deliberate customization of that service too.
-mkdir -p /etc/systemd/system/chordv-xray.service.d
-TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh 2>/tmp/dropin.err && exit 94
-grep -q 'chordv-xray.service.d' /tmp/dropin.err
-rmdir /etc/systemd/system/chordv-xray.service.d
-
-mkdir -p /usr/local/bin
-printf 'original-xray-binary' > /usr/local/bin/xray
-printf '[Unit]\\nDescription=Legacy Xray\\n' > /etc/systemd/system/xray.service
-# A digest that does not match must abort before anything is installed.
-TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/dev/null bash /test/xray.sh 2>/tmp/xray.err && exit 99
-# Fail for the RIGHT reason: the digest check, not a missing tool upstream of it.
-grep -qi 'sha256sum' /tmp/xray.err
-[[ ! -e /opt/chordv-xray/bin/xray ]]
-[[ ! -e /etc/chordv/xray/conf.d/00-base.json ]]
-
-TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh
-[[ "$(cat /usr/local/bin/xray)" == original-xray-binary ]]
-grep -q 'Legacy Xray' /etc/systemd/system/xray.service
-[[ "$(stat -c '%U:%G:%a' /etc/chordv/xray/conf.d/00-base.json)" == root:root:644 ]]
-[[ "$(stat -c '%U:%G:%a' /etc/chordv/xray/conf.d/10-api.json)" == root:root:644 ]]
-[[ ! -e /etc/chordv/xray/conf.d/50-inbound.json ]]
-[[ "$(stat -c '%U:%G:%a' /usr/local/lib/chordv/xray-apply.js)" == root:root:755 ]]
-# Both handoff directories hang off a ROOT-owned parent: the agent must never
-# own a directory that root walks, or a symlink swapped in there would redirect
-# what root writes — and, on reinstall, what "install -d -o chordv-agent"
-# chowns (that is how the helper script itself could be handed to the agent).
-[[ "$(stat -c '%U:%G:%a' /var/lib/chordv-xray)" == root:root:755 ]]
-[[ "$(stat -c '%U:%a' /var/lib/chordv-xray/requests)" == chordv-agent:700 ]]
-# Root's results must land outside anything the agent can write or replace.
-[[ "$(stat -c '%U:%G:%a' /var/lib/chordv-xray/results)" == root:root:755 ]]
-# A planted symlink must be refused, not followed and chowned.
-rm -rf /var/lib/chordv-xray/requests
-ln -s /usr/local/lib/chordv /var/lib/chordv-xray/requests
-TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh 2>/tmp/symlink.err && exit 98
-grep -q '符号链接' /tmp/symlink.err
-[[ "$(stat -c '%U:%G' /usr/local/lib/chordv)" == root:root ]]
-rm -f /var/lib/chordv-xray/requests
-TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh
-[[ "$(stat -c '%U:%a' /var/lib/chordv-xray/requests)" == chordv-agent:700 ]]
-[[ "$(stat -c '%a' /opt/chordv-xray/bin/xray)" == 755 ]]
-grep -q 'ReadOnlyPaths=/etc/chordv/xray' /etc/systemd/system/chordv-xray.service
-grep -q 'PathChanged=/var/lib/chordv-xray/requests/pending.json' /etc/systemd/system/chordv-xray-apply.path
-grep -q '/usr/local/lib/chordv/xray-apply.js' /etc/systemd/system/chordv-xray-apply.service
-grep -q 'chordv-managed: xray' /etc/systemd/system/chordv-xray.service
-# What root runs must come from the archive, not from the release tree: replace
-# the release copy with a marker and confirm it never reaches the helper path.
-printf 'ATTACKER' > /release/dist/src/xray-apply.js
-TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh
-! grep -q ATTACKER /usr/local/lib/chordv/xray-apply.js
-# Re-running the installer over its OWN unit is a normal upgrade — but it must
-# not overwrite a metering fragment the operator has tuned.
-printf '{"api":{"tag":"api"},"operator":true,"inbounds":[{"tag":"api-in","listen":"127.0.0.1","port":11086}]}' > /etc/chordv/xray/conf.d/10-api.json
-TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh 2>/tmp/upgrade.err
-grep -q operator /etc/chordv/xray/conf.d/10-api.json
-grep -q '保留了本机已有' /tmp/upgrade.err
-`], { encoding: "utf8" });
-  assert.equal(xrayInstall.status, 0, `xray install: ${xrayInstall.stdout}\n${xrayInstall.stderr}`);
-  console.log("agent install staging passed (interrupted/corrupt/incomplete preserved, two atomic switches retained old releases, legacy env identity refused before download, health check rejects non-root/writable env file and drops to the state database owner, xray install verifies its digest, refuses to take over a foreign xray unit, keeps config root-owned)");
-} finally { rmSync(root, { recursive: true, force: true }); }
+if (process.env.CHORDV_INSTALLER_E2E === "1") {
+  const dir = mkdtempSync(path.join(tmpdir(), "chordv-go-installer-test-"));
+  try {
+    writeFileSync(path.join(dir, "agent"), fixture);
+    writeFileSync(path.join(dir, "install.sh"), script);
+    writeFileSync(path.join(dir, "expired.sh"), renderInstallScript({ ...input, usable: false }));
+    writeFileSync(path.join(dir, "other.sh"), renderInstallScript({ ...input, nodeId: "another-node" }));
+    writeFileSync(path.join(dir, "corrupt.sh"), renderInstallScript({ ...input, release: { ...input.release, sha256: { amd64: "0".repeat(64), arm64: "0".repeat(64) } } }));
+    const harness = path.resolve(__dirname, "fixtures/go-install-host.sh");
+    const result = spawnSync("docker", ["run", "--rm", "--network", "none", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev", "-v", `${dir}:/payload:ro`,
+      "-v", `${harness}:/test.sh:ro`, "node:20.19.0-bookworm", "bash", "/test.sh"], { encoding: "utf8", timeout: 120_000 });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    process.stdout.write(result.stdout);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+console.log("Go installer rendering and origin safety passed");

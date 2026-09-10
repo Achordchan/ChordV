@@ -44,13 +44,13 @@ async function assertSharedUpdateLimitDeploymentArtifacts() {
   assert.equal(esmLimits.default.MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES, MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES);
 
   const onePanelBundleSource = readFileSync(
-    path.join(workspaceRoot, "scripts", "prepare-1panel-chordv-bundle.mjs"),
+    path.join(workspaceRoot, "scripts", "prepare-backend-bundle.mjs"),
     "utf8"
   );
   assert.match(
     onePanelBundleSource,
     /["']packages\/shared\/scripts["']/,
-    "1Panel bundle must include the shared runtime generator used by the Docker build"
+    "Backend bundle must include the shared runtime generator used by the Docker build"
   );
 }
 

@@ -143,6 +143,19 @@ jobs:
           pnpm --filter @chordv/api build
           pnpm --filter @chordv/admin build
 
+      - name: Setup Go for bundled node agent
+        if: steps.publication.outputs.mode == 'build'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/agent/go.mod
+          cache-dependency-path: apps/agent/go.sum
+
+      - name: Verify and build bundled Go agent
+        if: steps.publication.outputs.mode == 'build'
+        run: |
+          (cd apps/agent && go test -race ./... && go vet ./...)
+          node scripts/build-go-agent.mjs
+
       - name: Assemble relocatable release tree
         if: steps.publication.outputs.mode == 'build'
         env:
@@ -157,6 +170,7 @@ jobs:
           COMMON="SYSTEM_VERSION
           package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json
           scripts/prisma-migrate-with-baseline.mjs
+          scripts/install-go-agent.sh agent-go-dist
           packages/shared/package.json packages/shared/dist
           apps/api/package.json apps/api/dist apps/api/prisma
           apps/admin/dist"

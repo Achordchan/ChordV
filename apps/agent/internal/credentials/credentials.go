@@ -412,12 +412,13 @@ func (r *Resolver) register(ctx context.Context, fingerprint string) (*Credentia
 		return nil, err
 	}
 	response, err := r.Register(ctx, r.Config.APIBaseURL, protocol.RegisterRequest{
-		RegisterToken: r.Config.RegisterToken,
-		AgentToken:    agentToken,
-		Hostname:      hostname,
-		Arch:          Arch(),
-		AgentVersion:  version.Wire(),
-		BootID:        bootID,
+		RegisterToken:  r.Config.RegisterToken,
+		AgentToken:     agentToken,
+		Hostname:       hostname,
+		Arch:           Arch(),
+		AgentVersion:   version.Wire(),
+		XrayInboundTag: r.Config.XrayInboundTag,
+		BootID:         bootID,
 	})
 	if err != nil {
 		return nil, err

@@ -57,7 +57,7 @@ export function retryAdminLeaseRevocationJobsForNode(nodeId: string) {
   });
 }
 
-// Agent-native onboarding: create a pending_register node + one-time
+// Persist the pending node and imported public parameters atomically with its
 // registration token. The plaintext token returns exactly once.
 export function createAgentNode(input: CreateAgentNodeInputDto) {
   return request<CreateAgentNodeResultDto>("/admin/nodes/agent-native", {
@@ -65,6 +65,19 @@ export function createAgentNode(input: CreateAgentNodeInputDto) {
     body: JSON.stringify(input),
     timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
+}
+
+export interface AgentOnboardingStatus {
+  mode: "panel" | "legacy";
+  node: AdminNodeRecordDto;
+  spec: Record<string, unknown> | null;
+  command: { id: string; status: string; lastError: string | null; targetRevision: string } | null;
+}
+export function fetchAgentOnboarding(nodeId: string) {
+  return request<AgentOnboardingStatus>(`/admin/nodes/${nodeId}/onboarding`, { timeoutMs: ADMIN_READ_TIMEOUT_MS });
+}
+export function retryAgentOnboarding(nodeId: string) {
+  return request<AgentCommandDto>(`/admin/nodes/${nodeId}/onboarding/retry`, { method: "POST", timeoutMs: ADMIN_ACTION_TIMEOUT_MS });
 }
 
 // Re-mint the registration token for a still-pending node (admin "regenerate

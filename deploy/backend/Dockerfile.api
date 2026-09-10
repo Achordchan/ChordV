@@ -3,11 +3,37 @@
 #
 # Unlike a classic "bake the app into the image and run it" Dockerfile, the app
 # here runs out of a *writable* release directory so it can update itself in
-# place (see deploy/1panel/chordv/entrypoint.sh). The image ships a self-contained
+# place (see deploy/backend/entrypoint.sh). The image ships a self-contained
 # "seed" release at /app/seed; on first boot the supervisor copies it into the
 # releases volume as /app/releases/<version> and points /app/current at it.
 #
 # Build context is the REPO ROOT (see docker-compose.yml build.context).
+
+# Fresh seed images carry the same two static Go binaries as self-update bundles.
+# Git metadata is deliberately absent from the build context. A caller may pin
+# its commit; otherwise a reproducible digest of Go sources identifies this build.
+FROM golang:1.26-alpine AS agent-build
+ARG CHORDV_SOURCE_COMMIT=""
+WORKDIR /agent
+COPY apps/agent/go.mod apps/agent/go.sum ./
+RUN go mod download
+COPY apps/agent ./
+COPY SYSTEM_VERSION /SYSTEM_VERSION
+RUN set -eu; \
+    version="$(tr -d ' \t\r\n' </SYSTEM_VERSION)"; \
+    echo "$version" | grep -Eq '^[0-9A-Za-z.+-]{1,61}$'; \
+    source_ref="$CHORDV_SOURCE_COMMIT"; \
+    if [ -n "$source_ref" ]; then echo "$source_ref" | grep -Eq '^[0-9a-f]{40}$'; \
+    else source_ref="source-sha256:$(find . -type f \( -name '*.go' -o -name go.mod -o -name go.sum \) -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"; fi; \
+    mkdir /dist; \
+    for arch in amd64 arm64; do \
+      CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -buildvcs=false \
+        -ldflags "-s -w -X github.com/Achordchan/ChordV/apps/agent/internal/version.Version=$version -X github.com/Achordchan/ChordV/apps/agent/internal/version.Commit=$source_ref" \
+        -o "/dist/chordv-agent-linux-$arch" ./cmd/chordv-agent; \
+      (cd /dist && sha256sum "chordv-agent-linux-$arch" > "chordv-agent-linux-$arch.sha256"); \
+    done; \
+    printf '{"version":"%s","commit":"%s","sha256":{"amd64":"%s","arm64":"%s"}}\n' \
+      "$version" "$source_ref" "$(cut -d' ' -f1 /dist/chordv-agent-linux-amd64.sha256)" "$(cut -d' ' -f1 /dist/chordv-agent-linux-arm64.sha256)" > /dist/manifest.json
 
 # ---- build stage: install deps, build shared + api + admin, generate prisma client ----
 # api and admin are ONE release unit: the built tree carries both apps/api/dist and
@@ -34,6 +60,8 @@ COPY apps/api apps/api
 COPY apps/admin apps/admin
 COPY packages/shared packages/shared
 COPY scripts/prisma-migrate-with-baseline.mjs scripts/prisma-migrate-with-baseline.mjs
+COPY scripts/install-go-agent.sh scripts/install-go-agent.sh
+COPY --from=agent-build /dist /build/agent-go-dist
 COPY SYSTEM_VERSION SYSTEM_VERSION
 
 RUN pnpm --filter @chordv/shared build \
@@ -67,7 +95,7 @@ WORKDIR /app
 # Seed release = the whole built tree (pnpm node_modules symlinks are relative and
 # stay valid when the supervisor relocates this into /app/releases/<version>).
 COPY --from=build /build /app/seed
-COPY deploy/1panel/chordv/entrypoint.sh /app/entrypoint.sh
+COPY deploy/backend/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 ENV NODE_ENV=production

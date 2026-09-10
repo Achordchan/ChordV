@@ -3,7 +3,6 @@ import { Prisma } from "@prisma/client";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { AgentService } from "../src/modules/agent/agent.service";
-import { renderInstallScript, renderXrayInstall } from "../src/modules/agent/agent-install.controller";
 import {
   INBOUND_DEFAULTS,
   inboundSpecKey,
@@ -583,80 +582,9 @@ async function testDedupeInterleavedRequests() {
   assert.match(String(store.rows.find((row: Record<string, any>) => row.id === port443.commandId)?.dedupeKey), /:superseded:/);
 }
 
-function testInstallerAndDownloadRoute() {
-  const script = renderInstallScript({ token: "chordv_register_" + "a".repeat(20), apiBase: "https://example.com" });
-  const section = renderXrayInstall();
-  assert.ok(script.includes(section), "安装脚本必须内联 Xray 安装段，便于单独回归");
-
-  // Same origin as the agent tarball: a second download host would widen what
-  // an install trusts and add a reachability dependency.
-  assert.match(section, /\$API_BASE\/agent-download\/xray\/\$ARCH/);
-  assert.match(section, /sha256sum -c -/);
-  // Xray's config belongs to root; the agent may not write what root runs.
-  assert.match(section, /install -d -m 0755 -o root -g root \/etc\/chordv\/xray/);
-  // The fragments are seeded from the trusted copy, and only when absent.
-  assert.match(section, /source="\$TRUSTED_DIR\/deploy\/\$\{fragment##\*:\}"/);
-  assert.match(section, /install -m 0644 -o root -g root "\$source" "\$target"/);
-  // The helper is copied OUT of the agent-writable release directory.
-  // Root must not load anything through the release tree: the service user
-  // extracts it, so a compromised agent could substitute the script root runs.
-  assert.equal(/\$CURRENT_LINK/.test(section), false, "root 执行/加载的文件不得取自发布目录");
-  assert.match(section, /install -d -m 0700 -o root -g root "\$TRUSTED_DIR"/);
-  assert.match(section, /tar[^\n]*-xzf "\$ARCHIVE" -C "\$TRUSTED_DIR"/);
-  assert.match(section, /install -m 0755 -o root -g root "\$TRUSTED_DIR\/dist\/src\/xray-apply.js" "\$HELPER_DIR\/xray-apply.js"/);
-  assert.match(section, /ExecStart=\$\{NODE_BIN@Q\} \$HELPER_DIR\/xray-apply.js/);
-  assert.equal(/ExecStart=.*\$CURRENT_LINK/.test(section), false, "root 助手不得直接从发布目录执行");
-  assert.match(section, /install -d -m 0700 -o "\$SERVICE_USER" -g "\$SERVICE_USER" "\$REQUEST_DIR"/);
-  // Root publishes results outside anything the agent can write: an
-  // agent-owned result directory can be swapped for a symlink into confdir.
-  assert.match(section, /install -d -m 0755 -o root -g root "\$RESULT_DIR"/);
-  assert.match(script, /CHORDV_XRAY_RESULT_DIR=\/var\/lib\/chordv-xray/);
-  // Reinstalls must not silently replace an operator's metering fragment.
-  assert.match(section, /cmp -s "\$target" "\$source"/);
-  assert.match(section, /PathChanged=\$REQUEST_DIR\/pending.json/);
-  // The oneshot helper synchronously restarts Xray; ordering it after
-  // chordv-xray.service lets systemd hold that restart until this start job finishes.
-  const applyUnit = section.slice(section.indexOf("chordv-xray-apply.service <<APPLYUNIT"), section.indexOf("APPLYUNIT\n\ncat"));
-  assert.equal(/After=chordv-xray.service/.test(applyUnit), false, "助手单元不得排在 chordv-xray.service 之后");
-  assert.match(section, /ReadOnlyPaths=\/etc\/chordv\/xray/);
-  // An operator's own Xray must not be taken over: replacing that unit points it
-  // at a config directory with no user-facing inbound and restarts it.
-  assert.match(section, /chordv-managed: xray/);
-  assert.match(section, /ChordV 专用服务名已被其他服务占用/);
-  // A vendor unit under /usr/lib or /lib is overridden by ours in /etc, so the
-  // guard must ask systemd what it resolves rather than only looking in /etc.
-  assert.match(section, /systemctl show -p FragmentPath --value chordv-xray.service/);
-  assert.match(section, /\/usr\/lib\/systemd\/system\/chordv-xray.service/);
-  assert.match(section, /DropInPaths/);
-  assert.match(section, /NoNewPrivileges=true/);
-  // The agent unit keeps its hardening and now depends on Xray.
-  // Ordering only: Requires= would stop the agent every time the helper
-  // restarts Xray, killing the very command that asked for the restart.
-  assert.match(script, /Wants=network-online.target chordv-xray.service/);
-  assert.equal(/^Requires=chordv-xray.service$/m.test(script), false);
-  assert.match(script, /NoNewPrivileges=true/);
-  // The rendered unit may REQUIRE the handoff directory: this installer creates
-  // it in the same run. (The checked-in deploy/chordv-node-agent.service serves
-  // the agent-only install-systemd.sh and must keep that same path optional —
-  // a hard path the installer does not create would stop systemd from setting
-  // up the mount namespace at all.)
-  assert.match(script, /^ReadWritePaths=\/var\/lib\/chordv-xray\/requests$/m);
-  // The installer's own staging cleanup must survive: the Xray section must not
-  // install an EXIT trap of its own.
-  assert.equal(/trap [^\n]*EXIT/.test(section), false);
-
-  const controller = read("../src/modules/agent/agent-download.controller.ts");
-  assert.match(controller, /CHORDV_XRAY_DIST_DIR/);
-  assert.match(controller, /agent-download\/xray\/:name/);
-  // Unconfigured is an error in its own right; falling back to another source
-  // would quietly widen the trust set.
-  assert.match(controller, /未配置 Xray 分发/);
-  assert.match(controller, /O_NOFOLLOW/);
-}
-
 /**
  * whoami's observed address is what a node deploys as its serverHost, and in
- * the supplied 1Panel topology it arrives through TWO appending proxies
+ * the supplied Docker reverse-proxy topology it arrives through TWO appending proxies
  * (openresty → admin nginx → api). This exercises the exact express/proxy-addr
  * resolution main.ts configures, over a real socket: the walk must land on the
  * agent's address past both proxy hops, and a peer outside the trusted set
@@ -818,7 +746,6 @@ function main() {
   testSpecNormalization();
   testPublicAddressPolicy();
   testReportValidation();
-  testInstallerAndDownloadRoute();
   testAdminNodeRecordInboundFields();
   return testGetInboundSpec().then(() => {
   return testWhoamiAcrossProxyHops()

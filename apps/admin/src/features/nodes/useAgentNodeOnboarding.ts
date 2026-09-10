@@ -1,18 +1,17 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
-import { notifications } from "@mantine/notifications";
 import type { AdminNodeRecordDto, CreateAgentNodeInputDto, CreateAgentNodeResultDto } from "@chordv/shared";
-import { createAgentNode, fetchAdminNodes, issueNodeRegisterToken } from "../../api/nodes";
+import { createAgentNode, fetchAgentOnboarding, issueNodeRegisterToken, retryAgentOnboarding } from "../../api/nodes";
+import { subscribeAdminRuntimeEvents } from "../../api/client";
 
-type Stage = "form" | "resume" | "awaiting" | "ready" | "failed";
-const POLL_INTERVAL_MS = 3_000;
-const POLL_TIMEOUT_MS = 15 * 60 * 1000;
+type Stage = "form" | "resume" | "awaiting" | "validating" | "ready" | "failed" | "legacy";
 function errorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   try { const body = JSON.parse(raw); if (typeof body?.message === "string") return body.message; } catch { /* plain error */ }
   return raw;
 }
 
-/** Each open modal owns a session; completed requests from older sessions cannot update its UI. */
+/** Each modal session owns its requests and event subscription. Reconnection
+ * snapshots close missed-event gaps; no registration or command polling. */
 export function useAgentNodeOnboarding(opened: boolean, initialNode: AdminNodeRecordDto | null,
   onNodeChanged: (node: AdminNodeRecordDto) => void) {
   const [stage, setStage] = useState<Stage>("form");
@@ -21,71 +20,87 @@ export function useAgentNodeOnboarding(opened: boolean, initialNode: AdminNodeRe
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
-  const session = useRef(0), pollEpoch = useRef(0);
+  const session = useRef(0), watchEpoch = useRef(0);
   const active = useRef(false), requestBusy = useRef(false);
-  const timer = useRef<number | null>(null);
+  const resultAvailable = useRef(false);
+  const unsubscribe = useRef<(() => void) | null>(null);
+  const deadline = useRef<number | null>(null);
   const changed = useRef(onNodeChanged);
   changed.current = onNodeChanged;
   const current = useCallback((epoch: number) => active.current && session.current === epoch, []);
-  const stopPolling = useCallback(() => {
-    pollEpoch.current++;
-    if (timer.current !== null) window.clearTimeout(timer.current);
-    timer.current = null;
+  const stopWatching = useCallback(() => {
+    watchEpoch.current++;
+    unsubscribe.current?.(); unsubscribe.current = null;
+    if (deadline.current !== null) window.clearTimeout(deadline.current);
+    deadline.current = null;
   }, []);
   const invalidate = useCallback(() => {
-    session.current++;
-    active.current = false;
-    requestBusy.current = false;
-    stopPolling();
-  }, [stopPolling]);
+    session.current++; active.current = false; requestBusy.current = false; resultAvailable.current = false; stopWatching();
+  }, [stopWatching]);
 
-  // Registration does not yet publish an SSE event in R1. Reuse the bounded status
-  // check: normal 3s, failures back off to 30s, exit on close/new session/ready/15m.
-  const pollRegistration = useCallback((nodeId: string, epoch: number) => {
-    stopPolling();
-    const poll = pollEpoch.current;
-    const deadline = Date.now() + POLL_TIMEOUT_MS;
-    let interval = POLL_INTERVAL_MS;
-    const valid = () => current(epoch) && pollEpoch.current === poll;
-    const tick = async () => {
+  const watchRegistration = useCallback((nodeId: string, epoch: number, preservePendingError = false) => {
+    stopWatching();
+    const watch = watchEpoch.current;
+    const valid = () => current(epoch) && watchEpoch.current === watch;
+    let busy = false, dirty = false;
+    const refresh = async () => {
       if (!valid()) return;
+      if (busy) { dirty = true; return; }
+      busy = true;
       try {
-        const nodes = await fetchAdminNodes();
+        const status = await fetchAgentOnboarding(nodeId);
         if (!valid()) return;
-        interval = POLL_INTERVAL_MS;
-        const registered = nodes.find(item => item.id === nodeId);
-        if (registered?.registrationStatus === "agent_ready") {
-          stopPolling();
-          setNode(registered); setStage("ready"); setError(null);
-          changed.current(registered);
-          notifications.show({ color: "teal", title: "节点已接入", message: `节点「${registered.name}」的 Agent 已完成注册。` });
+        const registered = status.node;
+        setNode(registered); changed.current(registered);
+        if (status.mode === "legacy") {
+          resultAvailable.current = false;
+          setResult(null); setStage("legacy"); setError(null); stopWatching(); return;
+        }
+        if (registered.registrationStatus !== "agent_ready") {
+          if (!preservePendingError) { setStage(resultAvailable.current ? "awaiting" : "resume"); setError(null); }
           return;
         }
-      } catch {
-        if (!valid()) return;
-        interval = Math.min(interval * 2, 30_000);
+        resultAvailable.current = false;
+        setResult(null);
+        if (!status.spec || !status.command) {
+          setStage("failed"); setError("缺少入站校验任务，请在节点控制器重新导入参数并校验。");
+        } else if (status.command.status === "completed" && registered.inboundAppliedRevision === status.command.targetRevision) {
+          setStage("ready"); setError(null); stopWatching();
+        } else if (["failed", "cancelled", "completed"].includes(status.command.status)) {
+          setStage("failed"); setError(status.command.lastError || "本次校验结果已过期，请刷新后重新校验。");
+        } else {
+          setStage("validating"); setError(null);
+        }
+      } catch (error) {
+        if (valid()) setError(errorMessage(error));
+      } finally {
+        busy = false;
+        // An event received during a read requests one follow-up snapshot; this
+        // is event coalescing, never a timer-driven status loop.
+        if (dirty && valid()) { dirty = false; void refresh(); }
       }
-      if (!valid()) return;
-      if (Date.now() >= deadline) {
-        stopPolling(); setStage("failed");
-        setError("等待超时：15 分钟内未检测到 Agent 注册。请检查 VPS 安装输出，或重新生成安装命令。");
-        return;
-      }
-      timer.current = window.setTimeout(() => void tick(), Math.min(interval, deadline - Date.now()));
     };
-    timer.current = window.setTimeout(() => void tick(), POLL_INTERVAL_MS);
-  }, [current, stopPolling]);
+    unsubscribe.current = subscribeAdminRuntimeEvents(event => {
+      // AdminRuntimeEventsService sends an unscoped node_access_updated every
+      // time stream() opens, including reconnects with no replay history.
+      if (event.type === "node_access_updated" && (!event.nodeId || event.nodeId === nodeId)) void refresh();
+    });
+    deadline.current = window.setTimeout(() => {
+      if (!valid()) return;
+      stopWatching(); setStage("failed");
+      setError("等待已超过 15 分钟，请检查 VPS 安装输出，再点击刷新状态。");
+    }, 15 * 60 * 1000);
+    void refresh();
+  }, [current, stopWatching]);
 
   useLayoutEffect(() => {
-    invalidate();
-    active.current = opened;
+    invalidate(); active.current = opened;
     setResult(null); setNode(opened ? initialNode : null); setError(null);
     setCreating(false); setRegenerating(false);
-    setStage(opened && initialNode ? (initialNode.registrationStatus === "agent_ready" ? "ready" : "resume") : "form");
-    if (opened && initialNode?.registrationStatus === "pending_register") pollRegistration(initialNode.id, session.current);
+    setStage(opened && initialNode ? (initialNode.registrationStatus === "agent_ready" ? "validating" : "resume") : "form");
+    if (opened && initialNode) watchRegistration(initialNode.id, session.current);
     return invalidate;
-    // Node object refreshes must not invalidate the same open session.
-  }, [opened, initialNode?.id, invalidate, pollRegistration]);
+  }, [opened, initialNode?.id, invalidate, watchRegistration]);
 
   const submit = useCallback(async (input: CreateAgentNodeInputDto) => {
     if (!active.current || requestBusy.current || !input.name.trim()) return;
@@ -93,38 +108,56 @@ export function useAgentNodeOnboarding(opened: boolean, initialNode: AdminNodeRe
     requestBusy.current = true; setCreating(true); setError(null);
     try {
       const created = await createAgentNode(input);
-      // Creation may commit after close. Refresh the parent list, but never reopen
-      // the old modal or show its one-time credential in a new session.
       changed.current(created.node);
       if (!current(epoch)) return;
+      resultAvailable.current = true;
       setNode(created.node); setResult(created); setStage("awaiting");
-      pollRegistration(created.node.id, epoch);
+      watchRegistration(created.node.id, epoch);
     } catch (error) {
       if (!current(epoch)) return;
       setError(errorMessage(error)); setStage("form");
     } finally {
       if (current(epoch)) { requestBusy.current = false; setCreating(false); }
     }
-  }, [current, pollRegistration]);
+  }, [current, watchRegistration]);
 
   const regenerate = useCallback(async () => {
     if (!node || !active.current || requestBusy.current) return;
     const epoch = session.current;
-    requestBusy.current = true; stopPolling(); setRegenerating(true); setError(null);
+    requestBusy.current = true; stopWatching(); setRegenerating(true); setError(null);
     try {
       const fresh = await issueNodeRegisterToken(node.id);
       if (!current(epoch)) return;
+      resultAvailable.current = true;
       setResult({ node, registerToken: fresh.token, registerTokenExpiresAt: fresh.expiresAt });
-      setStage("awaiting"); pollRegistration(node.id, epoch);
-      notifications.show({ color: "teal", title: "安装命令已重新生成", message: "旧命令已作废，请使用新的安装命令。" });
+      setStage("awaiting"); watchRegistration(node.id, epoch);
     } catch (error) {
       if (!current(epoch)) return;
+      resultAvailable.current = false;
       setResult(null); setStage("failed"); setError(errorMessage(error));
-      pollRegistration(node.id, epoch);
+      // Observe a concurrent registration without hiding the failed token
+      // mutation. A user-triggered refresh can explicitly resume waiting.
+      watchRegistration(node.id, epoch, true);
     } finally {
       if (current(epoch)) { requestBusy.current = false; setRegenerating(false); }
     }
-  }, [node, current, pollRegistration, stopPolling]);
+  }, [node, current, watchRegistration, stopWatching]);
 
-  return { stage, result, node, error, creating, regenerating, submit, regenerate, invalidate };
+  const retryValidation = useCallback(async () => {
+    if (!node || !active.current || requestBusy.current) return;
+    const epoch = session.current;
+    requestBusy.current = true; setRegenerating(true); setError(null);
+    try {
+      await retryAgentOnboarding(node.id);
+      if (!current(epoch)) return;
+      setStage("validating"); watchRegistration(node.id, epoch);
+    } catch (error) {
+      if (current(epoch)) setError(errorMessage(error));
+    } finally {
+      if (current(epoch)) { requestBusy.current = false; setRegenerating(false); }
+    }
+  }, [node, current, watchRegistration]);
+
+  const refresh = () => { if (node && active.current) watchRegistration(node.id, session.current); };
+  return { stage, result, node, error, creating, regenerating, submit, regenerate, retryValidation, refresh, invalidate };
 }

@@ -440,6 +440,8 @@ model Node {
   // the install command to be run) -> agent_ready (agent registered and holds
   // credentials). Null for legacy nodes that predate agent-native onboarding.
   registrationStatus NodeRegistrationStatus?
+  /// Public panel parameters awaiting registration; never contains a share UUID or private key.
+  onboardingSpec Json?
   agentLastSeenAt  DateTime?
   agentConfigRevision BigInt       @default(0)
   /// Revision of the ENSURE_INBOUND deployment whose parameters this row holds;

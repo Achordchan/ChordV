@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException, UnauthorizedException } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException, Optional, UnauthorizedException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { randomBytes, randomUUID } from "node:crypto";
 import type { AdminNodeRecordDto, CreateAgentNodeInputDto, CreateAgentNodeResultDto } from "@chordv/shared";
@@ -6,6 +6,8 @@ import { PrismaService } from "../common/prisma.service";
 import { toAdminNodeRecord } from "../common/node-import.utils";
 import { hashAgentToken } from "./agent.service";
 import type { AgentRegisterDto, AgentRegisterResultDto } from "./agent.dto";
+import { normalizePanelInbound } from "./panel-inbound";
+import { AdminRuntimeEventsService } from "../common/admin-runtime-events.service";
 
 // A registration token's lifetime: generous enough for a slow VPS provision +
 // install, short enough that a leaked command is a bounded window.
@@ -16,24 +18,23 @@ const MAX_REGISTER_ATTEMPTS = 3;
 
 @Injectable()
 export class AgentRegisterService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, @Optional() private readonly adminEvents?: AdminRuntimeEventsService) {}
 
   /**
-   * Agent-native node creation: descriptive fields only (name/region/tags),
-   * NO connection parameters — those arrive from the agent itself once it
-   * registers. The row is created directly in pending_register and a one-time
-   * registration token is minted in the same transaction, so the admin UI can
-   * render the install command immediately.
+   * Persist public imported parameters with the pending node and token. They
+   * remain separate from usable connection fields until live validation passes.
    */
   async createAgentNode(input: CreateAgentNodeInputDto): Promise<CreateAgentNodeResultDto> {
     if (!input.name?.trim()) throw new BadRequestException("节点名称不能为空");
     if (input.name.trim().length > 120) throw new BadRequestException("节点名称过长");
+    const spec = normalizePanelInbound(input.panelInbound ?? {});
     const token = `chordv_register_${randomBytes(32).toString("base64url")}`;
     const { node, expiresAt } = await this.prisma.$transaction(async (tx) => {
       const row = await tx.node.create({
         data: {
           id: randomUUID(),
           name: input.name.trim(),
+          onboardingSpec: spec as unknown as Prisma.InputJsonValue,
           countryCode: input.countryCode?.trim() || null,
           region: input.region?.trim() || "未指定",
           provider: input.provider?.trim() || "未指定",
@@ -80,6 +81,34 @@ export class AgentRegisterService {
       node: toAdminNodeRecord(node),
       registerToken: token,
       registerTokenExpiresAt: expiresAt.toISOString()
+    };
+  }
+
+  requireOnboardingSpec(): never {
+    throw new BadRequestException("该待接入节点没有面板入站参数，请删除此未接入节点后重新添加并导入链接");
+  }
+
+  async getOnboarding(nodeId: string) {
+    // The job and applied revision must come from one snapshot. A completion
+    // between two independent reads would otherwise look like a stale failure.
+    const { node, job } = await this.prisma.$transaction(async tx => {
+      const node = await tx.node.findUnique({ where: { id: nodeId },
+        include: { nodeAgents: { where: { revokedAt: null }, orderBy: { createdAt: "desc" }, take: 1 } } });
+      if (!node) throw new NotFoundException("节点不存在");
+      const job = await tx.nodeCommandJob.findFirst({
+        where: { nodeId, commandType: "ENSURE_INBOUND" }, orderBy: { targetRevision: "desc" },
+        select: { id: true, status: true, lastError: true, targetRevision: true, payload: true }
+      });
+      return { node, job };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    const candidate = job?.payload ?? node.onboardingSpec;
+    const panelMode = candidate !== null && typeof candidate === "object" && !Array.isArray(candidate)
+      && candidate.mode === "validate_panel";
+    return {
+      node: toAdminNodeRecord(node),
+      mode: panelMode ? "panel" as const : "legacy" as const,
+      spec: panelMode ? normalizePanelInbound(candidate as Record<string, unknown>) : null,
+      command: job ? { id: job.id, status: job.status, lastError: job.lastError, targetRevision: job.targetRevision.toString() } : null
     };
   }
 
@@ -191,7 +220,7 @@ export class AgentRegisterService {
           if (!record) throw new UnauthorizedException("注册令牌无效");
           const node = await tx.node.findUnique({
             where: { id: record.nodeId },
-            select: { id: true, registrationStatus: true, nodeAgents: { where: { revokedAt: null }, select: { id: true, agentId: true, tokenHash: true } } }
+            select: { id: true, registrationStatus: true, onboardingSpec: true, nodeAgents: { where: { revokedAt: null }, select: { id: true, agentId: true, tokenHash: true } } }
           });
           if (!node) throw new UnauthorizedException("注册令牌对应的节点不存在");
           // `NodeAgent.tokenHash` is globally unique, so two agents can never
@@ -225,6 +254,21 @@ export class AgentRegisterService {
           if (node.registrationStatus !== "pending_register") {
             throw new UnauthorizedException("节点不处于待注册状态，不能签发 Agent 凭据");
           }
+          let spec = node.onboardingSpec ? normalizePanelInbound(node.onboardingSpec as Record<string, unknown>) : null;
+          if (spec && !input.agentVersion.startsWith("go-")) {
+            throw new BadRequestException("此节点需要 Go agent，不能使用旧 Node 安装器注册");
+          }
+          if (spec) {
+            if (!input.xrayInboundTag || !/^[A-Za-z0-9_-]{1,32}$/.test(input.xrayInboundTag)) {
+              throw new BadRequestException("缺少安装器核实的实际入站 tag，请使用新版 Go 接入命令");
+            }
+            if (spec.tagOverrideConfirmed && spec.inboundTag !== input.xrayInboundTag) {
+              throw new BadRequestException("Agent 实际 tag 与手工确认的目标不一致");
+            }
+            // Automatic matching is confirmed by the installer's live probe;
+            // freeze that exact tag for all subsequent validation and retries.
+            spec = { ...spec, inboundTag: input.xrayInboundTag, tagOverrideConfirmed: true };
+          }
           const agent = await tx.nodeAgent.create({
             data: {
               id: randomUUID(),
@@ -242,17 +286,27 @@ export class AgentRegisterService {
             where: { id: record.id },
             data: { usedAt: new Date() }
           });
-          await tx.node.update({
+          const registered = await tx.node.update({
             where: { id: node.id },
             data: {
               registrationStatus: "agent_ready",
+              ...(spec ? { agentConfigRevision: { increment: 1n }, onboardingSpec: spec as unknown as Prisma.InputJsonValue } : {}),
               agentLastSeenAt: new Date()
             }
           });
+          // Identity and initial validation are committed together. Replayed
+          // registration returns above, so it cannot enqueue a duplicate job.
+          // The agent's existing SSE backlog delivers this after its first connect.
+          if (spec) await tx.nodeCommandJob.create({ data: {
+            id: randomUUID(), nodeId: node.id, agentId: agent.id,
+            commandType: "ENSURE_INBOUND", targetRevision: registered.agentConfigRevision,
+            dedupeKey: `onboarding:${node.id}`, payload: spec as unknown as Prisma.InputJsonValue
+          } });
           return { agent, replay: false as const, node };
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
       );
+    this.adminEvents?.publish({ type: "node_access_updated", nodeId: result.node.id, occurredAt: new Date().toISOString() });
     return {
       accepted: true,
       agentId: result.agent.agentId,
@@ -267,16 +321,17 @@ export class AgentRegisterService {
    * install-script route, which must render a script even for an exhausted
    * token so the operator sees a clear error instead of a bare 404.
    */
-  async resolveTokenNode(token: string): Promise<{ nodeId: string; usable: boolean } | null> {
+  async resolveTokenNode(token: string) {
     if (!token || token.length > 128) return null;
     const record = await this.prisma.agentRegisterToken.findUnique({
       where: { tokenHash: hashAgentToken(token) },
-      select: { nodeId: true, usedAt: true, expiresAt: true }
+      select: { nodeId: true, usedAt: true, expiresAt: true, node: { select: { onboardingSpec: true, registrationStatus: true } } }
     });
     if (!record) return null;
     return {
       nodeId: record.nodeId,
-      usable: !record.usedAt && record.expiresAt.getTime() > Date.now()
+      usable: !record.usedAt && record.expiresAt.getTime() > Date.now(),
+      spec: record.node?.onboardingSpec ? normalizePanelInbound(record.node.onboardingSpec as Record<string, unknown>) : null
     };
   }
 }

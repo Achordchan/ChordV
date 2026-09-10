@@ -219,14 +219,28 @@ pnpm --filter @chordv/desktop check
 
 ## 部署说明
 
-后台系统（`apps/api` + `apps/admin`）作为一个整体发布单元，运行在 1Panel 管理的 Docker 容器上，支持在运营后台内“一键更新 / 失败自动回滚”，上线后除极少数异常场景外不再需要 SSH 到服务器操作。详见 [`docs/prd/backend-self-update.md`](docs/prd/backend-self-update.md)。
+后台系统（`apps/api` + `apps/admin`）作为一个整体发布单元，通过 Docker Compose 运行，由容器内监督脚本负责版本提升、健康门控和失败回退；日常升级在运营后台完成，不依赖服务器管理面板。详见 [`docs/prd/backend-self-update.md`](docs/prd/backend-self-update.md)。
 
-### 容器部署（`deploy/1panel/chordv/`）
+### 容器部署（`deploy/backend/`）
 
 ```bash
 # 在仓库根目录执行（compose 的 build.context 指向仓库根）
-docker compose -f deploy/1panel/chordv/docker-compose.yml up -d --build
+docker compose -f deploy/backend/docker-compose.yml up -d --build
 ```
+
+独立部署包由 `corepack pnpm prepare:backend-bundle` 生成，输出到 `.deploy/chordv-backend-bundle`，包含后台和 Go agent 的构建输入。
+
+**已有部署不要迁移数据目录。** `deploy/backend` 是源码中的通用部署入口；服务器原来的 `.env`、数据库、发布目录和备份仍留在原处。使用新模板维护已有部署时，显式绑定原项目目录，并使用原来的 Compose 项目名（默认 `chordv`）：
+
+```bash
+# RUNTIME_DIR 指向已有部署目录，先设置为实际路径；以下仅检查配置，不启动服务。
+: "${RUNTIME_DIR:?请先指定已有部署目录}"
+CHORDV_BUILD_CONTEXT="$PWD" docker compose -p chordv \
+  --project-directory "$RUNTIME_DIR" --env-file "$RUNTIME_DIR/.env" \
+  -f deploy/backend/docker-compose.yml config --quiet
+```
+
+维护窗口中的 stop/up 命令也必须使用相同的 project-directory、env-file 和构建上下文，避免把相对挂载解析到新源码目录而连接空数据库。原项目名若不是 `chordv`，保留其原值。
 
 - `chordv-api`：入口是监督者脚本 `entrypoint.sh`，代码运行在可写的 `api-releases` 卷中，按版本目录存放并用 `current` 软链接指向当前版本；自更新时应用只“下载→校验→暂存→停止接单并排空工作→Nest 关闭→写 pending 标记→退出”，由监督者提升新版本、按需执行迁移前快照与迁移、健康门控、失败自动回滚。`restart: unless-stopped` 是监督者自身异常时的兜底。
 - `chordv-admin`：nginx 只读挂载 `api-releases` / `api-public-state`，**不挂载 `api-state` 或 `api-backups`**；网页根指向通过健康门控的版本的 `apps/admin/dist`，随 api 自更新自动跟随，同时把 `/api` 反代到 `chordv-api`。公开标记目录只由监督者在健康门控和私有 last-good 写入成功后原子发布 `last-good-version`，不复制私有状态或从 desired-version 初始化；首次启动等待该标记。
@@ -238,10 +252,11 @@ docker compose -f deploy/1panel/chordv/docker-compose.yml up -d --build
 这是 **compose 挂载及镜像入口脚本**的安全修复，仅在后台“一键更新”应用代码不会生效。维护窗口内停止旧 api/admin，保留 PostgreSQL 及所有持久数据；部署新的 compose、Dockerfile 与入口脚本后，在仓库根执行：
 
 ```bash
-docker compose -f deploy/1panel/chordv/docker-compose.yml stop admin api
+: "${RUNTIME_DIR:?请先指定已有部署目录}"
+CHORDV_BUILD_CONTEXT="$PWD" docker compose -p chordv --project-directory "$RUNTIME_DIR" --env-file "$RUNTIME_DIR/.env" -f deploy/backend/docker-compose.yml stop admin api
 # 不输出含数据库口令的展开配置
-docker compose -f deploy/1panel/chordv/docker-compose.yml config --quiet
-docker compose -f deploy/1panel/chordv/docker-compose.yml up -d --build --force-recreate api admin
+CHORDV_BUILD_CONTEXT="$PWD" docker compose -p chordv --project-directory "$RUNTIME_DIR" --env-file "$RUNTIME_DIR/.env" -f deploy/backend/docker-compose.yml config --quiet
+CHORDV_BUILD_CONTEXT="$PWD" docker compose -p chordv --project-directory "$RUNTIME_DIR" --env-file "$RUNTIME_DIR/.env" -f deploy/backend/docker-compose.yml up -d --build --force-recreate api admin
 ```
 
 - **保留现有 `.env` 和密钥，不覆盖或重新生成。** 新 compose 的 `environment` 明确固定 `CHORDV_SYSTEM_STATE_DIR=/app/state`、`CHORDV_SYSTEM_PUBLIC_STATE_DIR=/app/public-state`、`CHORDV_SYSTEM_UPDATE_BACKUP_DIR=/app/backups`，优先于旧 `.env`（包括旧 `/app/state/backups` 值）；以后可人工清理过时项，不是安全修复生效的前提。自定义 compose 覆盖文件、`docker run -e` 不受该固定配置保护，必须同步调整环境变量和挂载，确保三个宿主目录真实独立、不是彼此的子目录或指向同一位置的符号链接。

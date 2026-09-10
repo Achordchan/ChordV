@@ -1,14 +1,17 @@
-# ChordV backend Docker deployment (1Panel), with in-place self-update.
+# ChordV backend Docker deployment, with in-place self-update.
 #
 # Build context is the repo root so the Dockerfiles can see the whole workspace;
 # run this from the repo root, e.g.:
-#   docker compose -f deploy/1panel/chordv/docker-compose.yml up -d --build
+#   docker compose -f deploy/backend/docker-compose.yml up -d --build
 #
 # The api/admin code lives in the `*-releases` volumes (not baked read-only into
 # the image), so a self-update writes a new release dir and flips a symlink; the
 # `*-state` volumes persist which version is current + rollback bookkeeping across
 # container recreation. `restart: unless-stopped` is the safety net if the
 # in-container supervisor itself dies (normal self-updates never exit the container).
+# Keep the existing Compose project identity when source directories are renamed.
+name: chordv
+
 services:
   postgres:
     image: postgres:16
@@ -28,8 +31,8 @@ services:
 
   api:
     build:
-      context: ../../..
-      dockerfile: deploy/1panel/chordv/Dockerfile.api
+      context: ${CHORDV_BUILD_CONTEXT:-../..}
+      dockerfile: deploy/backend/Dockerfile.api
     image: chordv-api:latest
     container_name: chordv-api
     restart: unless-stopped
@@ -53,10 +56,8 @@ services:
       CHORDV_SYSTEM_STATE_DIR: /app/state
       CHORDV_SYSTEM_PUBLIC_STATE_DIR: /app/public-state
       CHORDV_SYSTEM_UPDATE_BACKUP_DIR: /app/backups
-      # Agent-native onboarding: public origin for generated install commands
-      # (CHORDV_PUBLIC_BASE_URL comes from .env) and the node-agent tarball
-      # distribution directory (files are dropped there by the release flow,
-      # independent of API releases).
+      # Preserve the older releases' paths for explicit backend rollbacks.
+      # New Go downloads are bundled with the running release and ignore them.
       CHORDV_AGENT_DIST_DIR: /app/agent-dist
       CHORDV_XRAY_DIST_DIR: /app/xray-dist
     ports:
@@ -70,15 +71,14 @@ services:
       # the previous compose used, so existing release-center artifacts and the
       # /data/releases/... paths stored in the DB remain valid after the switch.
       - ./releases:/data/releases
-      # Node-agent install tarballs (chordv-agent-linux-x64.tar.gz /
-      # chordv-agent-linux-arm64.tar.gz) served by /api/agent-download/:arch.
+      # Existing legacy artifacts remain intact for an explicit rollback.
       - ./api-agent-dist:/app/agent-dist
       - ./api-xray-dist:/app/xray-dist
 
   admin:
     build:
-      context: ../../..
-      dockerfile: deploy/1panel/chordv/Dockerfile.admin
+      context: ${CHORDV_BUILD_CONTEXT:-../..}
+      dockerfile: deploy/backend/Dockerfile.admin
     image: chordv-admin:latest
     container_name: chordv-admin
     restart: unless-stopped

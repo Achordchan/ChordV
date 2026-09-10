@@ -6,7 +6,7 @@ root="$(mktemp -d)"
 reader=""
 trap '[ -z "$reader" ] || kill "$reader" 2>/dev/null || true; rm -rf "$root"' EXIT
 log() { printf '%s\n' "$*" >&2; }
-eval "$(sed -n '/^point_webroot() {/,/^}/p' "$REPO/deploy/1panel/chordv/admin-entrypoint.sh")"
+eval "$(sed -n '/^point_webroot() {/,/^}/p' "$REPO/deploy/backend/admin-entrypoint.sh")"
 mkdir "$root/old" "$root/new"
 printf old > "$root/old/index.html"
 printf new > "$root/new/index.html"

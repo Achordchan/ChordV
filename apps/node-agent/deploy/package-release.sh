@@ -10,7 +10,7 @@ set -euo pipefail
 #   arm64 VPS:   ./package-release.sh /opt/chordv-node-agent.release linux-arm64
 #
 # Drop the resulting tarball into the api container's agent-dist directory
-# (./api-agent-dist in the 1Panel compose, or CHORDV_AGENT_DIST_DIR).
+# (./api-agent-dist in legacy Docker deployments, or CHORDV_AGENT_DIST_DIR).
 
 fail() {
   printf '打包失败：%s\n' "$1" >&2

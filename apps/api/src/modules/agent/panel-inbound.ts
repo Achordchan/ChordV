@@ -45,7 +45,9 @@ export function normalizePanelInbound(input: Record<string, unknown>): PanelInbo
   if (inboundTag !== derived && input.tagOverrideConfirmed !== true) throw new BadRequestException("自定义 tag 可能指向其他入站，必须确认覆盖警告");
   const panelVersion = text("panelVersion").replace(/^v/, "");
   const version = /^(\d+)\.(\d+)\.(\d+)$/.exec(panelVersion);
-  if (!version || (Number(version[1]) < 3 || (Number(version[1]) === 3 && Number(version[2]) < 7))) {
+  // "auto" defers the version check to the installer's local, read-only probe.
+  // It is never interpreted as proof that the panel supports shared metering.
+  if (panelVersion !== "auto" && (!version || (Number(version[1]) < 3 || (Number(version[1]) === 3 && Number(version[2]) < 7)))) {
     throw new BadRequestException("面板版本必须为稳定版 3.7.0 或以上，请先升级并核对版本");
   }
   const realityPublicKey = text("realityPublicKey");

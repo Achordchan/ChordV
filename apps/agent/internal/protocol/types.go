@@ -189,13 +189,14 @@ type WhoAmI struct {
 // the AGENT and sent here; the server stores only its hash, which is what makes
 // a replayed registration idempotent instead of node-bricking.
 type RegisterRequest struct {
-	RegisterToken string `json:"registerToken"`
-	AgentToken    string `json:"agentToken"`
-	Hostname      string `json:"hostname"`
-	Arch          string `json:"arch"`
-	AgentVersion  string `json:"agentVersion"`
-	XrayVersion   string `json:"xrayVersion,omitempty"`
-	BootID        string `json:"bootId"`
+	RegisterToken  string `json:"registerToken"`
+	AgentToken     string `json:"agentToken"`
+	Hostname       string `json:"hostname"`
+	Arch           string `json:"arch"`
+	AgentVersion   string `json:"agentVersion"`
+	XrayInboundTag string `json:"xrayInboundTag,omitempty"`
+	XrayVersion    string `json:"xrayVersion,omitempty"`
+	BootID         string `json:"bootId"`
 }
 
 // Architectures the control plane accepts (AgentRegisterDto @IsIn).

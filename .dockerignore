@@ -1,17 +1,17 @@
 # Keep the Docker build context (repo root, see docker-compose.yml build.context)
-# free of runtime state and local artifacts: the deploy/1panel/chordv volumes grow
+# free of runtime state and local artifacts: deployment runtime directories grow
 # with production data (releases, postgres, snapshots) and .env carries secrets —
 # none of them belong in image builds. The Dockerfiles COPY explicit paths only
-# (apps/, packages/, scripts/, SYSTEM_VERSION, deploy/1panel/chordv/*-entrypoint*.sh,
+# (apps/, packages/, scripts/, SYSTEM_VERSION, deploy/backend/*-entrypoint*.sh,
 # admin.nginx.conf), which stay outside these exclusions.
 .git
 **/node_modules
 **/.env
-deploy/1panel/chordv/releases
-deploy/1panel/chordv/postgres-data
-deploy/1panel/chordv/api-state
-deploy/1panel/chordv/api-public-state
-deploy/1panel/chordv/api-backups
+deploy/**/releases
+deploy/**/postgres-data
+deploy/**/api-state
+deploy/**/api-public-state
+deploy/**/api-backups
 apps/desktop
 apps/node-agent
 docs

@@ -1,8 +1,7 @@
 // Command chordv-agent is the ChordV node agent.
 //
-// It replaces apps/node-agent on a host by swapping the binary: every
-// environment variable, every wire field and the systemd unit name are
-// unchanged (see apps/agent/README.md).
+// It reuses the existing agent service name and credential environment. The
+// one-click installer refuses automatic takeover of an existing Node identity.
 //
 // Panel onboarding uses explicit read-only validation. This binary never
 // creates panel inbounds; production activation still requires a traffic test.
@@ -23,6 +22,8 @@ import (
 	"github.com/Achordchan/ChordV/apps/agent/internal/apiclient"
 	"github.com/Achordchan/ChordV/apps/agent/internal/commands"
 	"github.com/Achordchan/ChordV/apps/agent/internal/credentials"
+	"github.com/Achordchan/ChordV/apps/agent/internal/durable"
+	"github.com/Achordchan/ChordV/apps/agent/internal/onboarding"
 	"github.com/Achordchan/ChordV/apps/agent/internal/runner"
 	"github.com/Achordchan/ChordV/apps/agent/internal/store"
 	"github.com/Achordchan/ChordV/apps/agent/internal/uuid"
@@ -33,10 +34,33 @@ import (
 func main() {
 	health := flag.Bool("health", false, "只读健康检查，输出 JSON 后退出（以服务用户执行）")
 	showVersion := flag.Bool("version", false, "打印版本号后退出")
+	buildInfo := flag.Bool("build-info", false, "输出构建版本与源码提交")
+	verifyInbound := flag.Bool("verify-inbound", false, "以服务用户只读检查实际入站和 API 权限")
+	inspectPanel := flag.Bool("inspect-panel", false, "安装前只读检查运行中的 3x-ui 与目标入站")
+	panelPID := flag.Int("panel-pid", 0, "运行中的 x-ui.service 主进程")
+	specPath := flag.String("spec-file", "", "服务端确认的公共入站参数文件")
 	flag.Parse()
+	if *buildInfo {
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]string{"version": version.Version, "commit": version.Commit})
+		return
+	}
 
 	if *showVersion {
 		fmt.Println(version.Version)
+		return
+	}
+	if *inspectPanel {
+		result, err := onboarding.Inspect(context.Background(), *panelPID, *specPath)
+		if err != nil {
+			fail(err)
+		}
+		fmt.Print(result)
+		return
+	}
+	if *verifyInbound {
+		if err := onboarding.Verify(context.Background(), os.Getenv("XRAY_API_ADDRESS"), os.Getenv("XRAY_INBOUND_TAG"), *specPath); err != nil {
+			fail(err)
+		}
 		return
 	}
 
@@ -96,6 +120,11 @@ func serve(config *agentcfg.Config) error {
 		return err
 	}
 
+	releaseLock, err := durable.AcquireProcessLock(config.DatabasePath)
+	if err != nil {
+		return err
+	}
+	defer releaseLock()
 	resolver := credentials.NewResolver(config)
 	resolver.Logf = logf
 	identity, err := resolver.Resolve(ctx)
