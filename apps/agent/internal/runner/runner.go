@@ -59,6 +59,8 @@ const (
 	// FlushInterval is the Node agent's, and it is deliberately short: a batch
 	// sitting in the local queue is traffic the control plane cannot bill yet.
 	FlushInterval = time.Second
+	// The boot transport lock must yield to heartbeats even during a backlog.
+	UploadRoundTimeout = 10 * time.Second
 	// ReconnectDelay paces the events loop after the stream ends, for ANY
 	// reason. The Node agent delayed only after an error, so a control plane
 	// that accepts the connection and closes it immediately — a proxy with no
@@ -581,6 +583,8 @@ func (r *Runner) flushBatches(ctx context.Context) error {
 func (r *Runner) uploadPending(ctx context.Context) error {
 	r.transport.Lock()
 	defer r.transport.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, UploadRoundTimeout)
+	defer cancel()
 	r.state.Lock()
 	batches, err := r.deps.Store.ListPendingBatches(0)
 	r.state.Unlock()
@@ -588,6 +592,9 @@ func (r *Runner) uploadPending(ctx context.Context) error {
 		return err
 	}
 	for _, batch := range batches {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if batch.BootID != batches[0].BootID {
 			break
 		}

@@ -1580,3 +1580,46 @@ func TestPanelReplacementCountersDoNotChargePreviousBinding(t *testing.T) {
 		t.Fatalf("queued panel delta: %d", pending)
 	}
 }
+
+type budgetAPI struct {
+	*fakeAPI
+	deadlines []time.Time
+}
+
+func (a *budgetAPI) UploadBatch(ctx context.Context, batch protocol.UsageBatch) (protocol.UsageBatchAck, error) {
+	deadline, _ := ctx.Deadline()
+	a.deadlines = append(a.deadlines, deadline)
+	return a.fakeAPI.UploadBatch(ctx, batch)
+}
+
+func TestUploadsShareOneRoundDeadline(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "7", protocol.ModeShadowDirect, user("b1", "a@example.com", "7", true, "1000"))
+	r := h.build(t)
+	for _, count := range []string{"0", "10"} {
+		h.xray.counters = []protocol.AbsoluteCounter{{Email: "a@example.com", UplinkBytes: count, DownlinkBytes: "0"}}
+		if err := r.sample(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := &budgetAPI{fakeAPI: h.api}
+	r.deps.API = a
+	before := time.Now()
+	if err := r.uploadPending(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.deadlines) != 2 {
+		t.Fatalf("uploads: %v", a.deadlines)
+	}
+	for _, deadline := range a.deadlines {
+		if deadline.IsZero() || deadline.After(time.Now().Add(UploadRoundTimeout)) || deadline.Before(before) {
+			t.Fatalf("unbounded round: %v", deadline)
+		}
+		if !deadline.Equal(a.deadlines[0]) {
+			t.Fatal("budget reset per request")
+		}
+	}
+	if err := r.sendHeartbeat(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
