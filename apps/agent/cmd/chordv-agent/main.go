@@ -4,12 +4,8 @@
 // environment variable, every wire field and the systemd unit name are
 // unchanged (see apps/agent/README.md).
 //
-// THIS BUILD CANNOT PROVISION ANYONE. The Xray gRPC adapter arrives in P2, so
-// internal/xray.Unavailable is what gets wired in below and every call to it
-// fails loudly. The agent registers, heartbeats (reporting xrayStatus=offline,
-// which is the truth) and keeps its local state, which is what the protocol
-// canary needs — but a node running it serves no traffic. main refuses to start
-// without an explicit acknowledgement for exactly that reason.
+// The real adapter is available, but P2-b control-plane onboarding must land
+// before production migration. This binary never creates panel inbounds.
 package main
 
 import (
@@ -33,15 +29,6 @@ import (
 	"github.com/Achordchan/ChordV/apps/agent/internal/version"
 	"github.com/Achordchan/ChordV/apps/agent/internal/xray"
 )
-
-// AcknowledgeNoXrayEnv is the operator's explicit consent to run a build that
-// cannot talk to Xray at all.
-//
-// Without it this binary would be a trap: it registers, goes online, reports a
-// plausible-looking heartbeat and serves nobody — the "在线但无法服务" state the
-// PRD and the ENSURE_INBOUND refusal both warn about. The variable disappears
-// with P2, together with the placeholder adapter.
-const AcknowledgeNoXrayEnv = "AGENT_ALLOW_NO_XRAY"
 
 func main() {
 	health := flag.Bool("health", false, "只读健康检查，输出 JSON 后退出（以服务用户执行）")
@@ -89,17 +76,25 @@ func serve(config *agentcfg.Config) error {
 	if err := version.Validate(); err != nil {
 		return err
 	}
-	if !truthy(os.Getenv(AcknowledgeNoXrayEnv)) {
-		return fmt.Errorf(
-			"本构建尚未包含 Xray gRPC 适配器（P2 提供）：节点会注册成功、心跳正常，但无法给任何用户下发配置。"+
-				"若确认只是做协议联调，请以 %s=1 启动；正式节点请等待 P2 构建", AcknowledgeNoXrayEnv)
-	}
 
 	// One context for the whole process. It is established BEFORE registration
 	// so a Ctrl-C during a slow first boot stops at the network call instead of
 	// being ignored until the loop starts.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	adapter, err := xray.New(config.XrayAPIAddress, config.XrayInboundTag)
+	if err != nil {
+		return err
+	}
+	defer adapter.Close()
+	// Validate read-only before registering or opening a writable database.
+	if err := adapter.ValidateInbound(ctx); err != nil {
+		return err
+	}
+	if err := adapter.Health(ctx); err != nil {
+		return err
+	}
 
 	resolver := credentials.NewResolver(config)
 	resolver.Logf = logf
@@ -127,10 +122,10 @@ func serve(config *agentcfg.Config) error {
 			AgentID: identity.AgentID,
 			NodeID:  identity.NodeID,
 		}),
-		Xray: xray.Unavailable{},
+		Xray: adapter,
 		Commands: commands.New(commands.Deps{
 			Store:                 state,
-			Xray:                  xray.Unavailable{},
+			Xray:                  adapter,
 			RemoveUnknownUsers:    config.RemoveUnknownUsers,
 			AdoptExistingAccounts: config.AdoptExistingAccounts,
 			Logf:                  logf,
@@ -194,8 +189,7 @@ func openStore(config *agentcfg.Config, resolver *credentials.Resolver, identity
 // a second generated secret would race the service's own registration. So it
 // reports the service's state rather than producing it.
 //
-// It reports ok:false in this build, always: the Xray adapter is the placeholder
-// and its Health call is the last thing checked. That is not a bug in the probe.
+// Health checks the real API and target tag without adding a probe account.
 func healthCheck(config *agentcfg.Config) bool {
 	report := func(payload map[string]any) {
 		encoded, err := json.Marshal(payload)
@@ -234,19 +228,19 @@ func healthCheck(config *agentcfg.Config) bool {
 	}
 	// Xray last, so a failure here still leaves the store's numbers available in
 	// the reason line an operator reads.
-	if err := (xray.Unavailable{}).Health(context.Background()); err != nil {
+	adapter, err := xray.New(config.XrayAPIAddress, config.XrayInboundTag)
+	if err != nil {
+		return fail(err.Error())
+	}
+	defer adapter.Close()
+	if err := adapter.ValidateInbound(context.Background()); err != nil {
+		return fail(err.Error())
+	}
+	if err := adapter.Health(context.Background()); err != nil {
 		return fail(fmt.Sprintf("Xray 不可用：%v（本地状态：revision=%v 待上报批次=%v）",
 			err, snapshot["configRevision"], snapshot["pendingBatches"]))
 	}
 	snapshot["ok"] = true
 	report(snapshot)
 	return true
-}
-
-func truthy(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "1", "true", "yes":
-		return true
-	}
-	return false
 }
