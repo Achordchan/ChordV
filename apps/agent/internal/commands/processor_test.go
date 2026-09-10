@@ -2365,3 +2365,46 @@ func TestARemovalRetryFindsItsTargetAfterACrash(t *testing.T) {
 		t.Fatalf("崩溃后的重投找不到目标，永远失败：%+v", result)
 	}
 }
+
+// TestARemovalRetryWillNotTakeAnotherBindingsAccount is the hazard the tombstone
+// fallback opened.
+//
+// A remembered address can be REASSIGNED in the meantime. Remove A, give A's old
+// email to B, then retry A's removal after a crash: the address comes back from
+// the tombstone, and `owns` accepts B's claim because it matches by address and
+// identity, not by binding. The retry would uninstall B and clear B's evidence
+// while reporting success.
+func TestARemovalRetryWillNotTakeAnotherBindingsAccount(t *testing.T) {
+	processor, fake, state := newStrictProcessor(t)
+	seedOwned(t, state, protocol.DesiredUser{
+		BindingID: "a", Email: "shared@chordv", UUID: "uuid-a", Revision: "1",
+		Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
+	})
+	fake.live = []xray.LiveUser{{Email: "shared@chordv", UUID: "uuid-a"}}
+	run(t, processor, command("c1", protocol.CommandRemoveUser, "2",
+		map[string]any{"bindingId": "a"}), true)
+
+	// The address is handed to another binding.
+	if err := state.UpsertDesiredUser(protocol.DesiredUser{
+		BindingID: "b", Email: "shared@chordv", UUID: "uuid-b", Revision: "3",
+		Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.RecordProvisioned("b", "shared@chordv", "uuid-b"); err != nil {
+		t.Fatal(err)
+	}
+	fake.live = []xray.LiveUser{{Email: "shared@chordv", UUID: "uuid-b"}}
+	fake.calls = nil
+
+	// A's removal is redelivered after the crash.
+	run(t, processor, command("c1-retry", protocol.CommandRemoveUser, "2",
+		map[string]any{"bindingId": "a"}), true)
+	if contains(fake.calls, "remove:shared@chordv") {
+		t.Fatalf("A 的重投把 B 的账号卸载了：%v", fake.calls)
+	}
+	claims, _ := state.ProvisionedAccounts()
+	if _, held := claims["shared@chordv"]; !held {
+		t.Fatalf("A 的重投清掉了 B 的所有权凭据：%v", claims)
+	}
+}

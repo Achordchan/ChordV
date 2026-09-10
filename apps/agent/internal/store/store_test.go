@@ -1544,3 +1544,59 @@ func TestTheUpgradeReplayMergesPartialPayloads(t *testing.T) {
 		t.Fatalf("局部 payload 把已知身份抹掉了：%+v", claims)
 	}
 }
+
+// TestTheUpgradeReplayKeepsNewerBindingState reproduces mergeNewerBindings.
+//
+// A snapshot can carry a binding at an OLDER revision than a per-binding
+// instruction that already landed; the live merge keeps the newer state, so the
+// account really installed is the newer one. Replaying the stale snapshot
+// identity instead leaves the actual account with no recovered claim at all —
+// which the default collision handling refuses to manage, and a later omission
+// leaves serving.
+func TestTheUpgradeReplayKeepsNewerBindingState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+
+	finish := func(id string, kind protocol.CommandType, revision string, payload map[string]any) {
+		t.Helper()
+		if _, err := state.BeginCommand(protocol.Command{
+			CommandID: id, Type: kind, TargetRevision: revision, Payload: payload,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.CompleteCommand(protocol.CommandResult{
+			CommandID: id, Status: protocol.StatusCompleted,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	finish("c1", protocol.CommandEnsureUser, "6", map[string]any{
+		"bindingId": "b1", "email": "new@chordv", "uuid": "uuid-new",
+	})
+	// A snapshot at 10 still carrying b1's OLD address at ITS revision 5.
+	finish("c2", protocol.CommandReconcileUsers, "10", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users": []any{
+			map[string]any{"bindingId": "b1", "email": "old@chordv", "uuid": "uuid-old", "revision": "5"},
+		},
+	})
+
+	if _, err := state.db.Exec(`DELETE FROM provisioned_accounts_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`DELETE FROM meta_v2 WHERE key = 'provisioned_backfilled'`); err != nil {
+		t.Fatal(err)
+	}
+	state.Close()
+
+	reopened := openAt(t, path, "node-1", "boot-2")
+	claims, err := reopened.ProvisionedAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, held := claims["new@chordv"]; !held || len(claims) != 1 {
+		t.Fatalf("回放采用了过期快照的身份，实际安装的账号没有被认领：%v", claims)
+	}
+}

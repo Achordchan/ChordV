@@ -429,7 +429,9 @@ func (s *Store) provisionedFromHistory() (int, error) {
 	// bindingId -> the account it currently holds. The uuid travels with it: a
 	// recovered claim without an identity can be contradicted by nothing, so a
 	// panel account that reused the address would be accepted as ours.
-	type held struct{ email, uuid string }
+	// revision is the binding-level revision the claim was established at, so the
+	// replay can apply mergeNewerBindings the way execution does.
+	type held struct{ email, uuid, revision string }
 	owned := map[string]held{}
 	floors := map[string]string{} // bindingId -> the revocation floor, as tombstones do
 	// The effective mode is tracked, not required of every payload: an ABSENT
@@ -479,7 +481,7 @@ func (s *Store) provisionedFromHistory() (int, error) {
 			if uuid == "" {
 				uuid = owned[id].uuid
 			}
-			owned[id] = held{email, uuid}
+			owned[id] = held{email, uuid, entry.revision}
 			// The live path clears the tombstone when a binding legitimately
 			// comes back; the replay has to do the same or every later snapshot
 			// carrying it would look revoked.
@@ -568,7 +570,25 @@ func (s *Store) provisionedFromHistory() (int, error) {
 					}
 					continue
 				}
-				next[id] = held{email, uuid}
+				// mergeNewerBindings, reproduced: a snapshot carrying a binding at
+				// an OLDER revision than a per-binding instruction that already
+				// landed does not replace it. The live merge keeps the newer state,
+				// so the account really installed is the newer one — replaying the
+				// stale snapshot identity instead leaves the actual account with no
+				// recovered claim at all, which the default collision handling then
+				// refuses to manage and a later omission leaves serving.
+				if current, had := owned[id]; had {
+					older, err := decimal.Less(revision, current.revision)
+					if err != nil {
+						return 0, err
+					}
+					if older {
+						next[id] = current
+						delete(floors, id)
+						continue
+					}
+				}
+				next[id] = held{email, uuid, revision}
 				delete(floors, id)
 			}
 			// Omitting a binding is a revocation, and it leaves a floor — the
@@ -1945,10 +1965,14 @@ type Claim struct {
 	UUID string
 	// NextUUID is a rotation that was in flight: Xray may already carry it.
 	NextUUID string
+	// BindingID is WHOSE claim this is. An address can be reassigned between
+	// bindings, so a caller acting on behalf of one binding must not treat
+	// another binding's claim on the same address as its own.
+	BindingID string
 }
 
 func (s *Store) ProvisionedAccounts() (map[string]Claim, error) {
-	rows, err := s.db.Query(`SELECT email, uuid, next_uuid FROM provisioned_accounts_v2 WHERE state = 'owned' ORDER BY rowid`)
+	rows, err := s.db.Query(`SELECT email, uuid, next_uuid, binding_id FROM provisioned_accounts_v2 WHERE state = 'owned' ORDER BY rowid`)
 	if err != nil {
 		return nil, err
 	}
@@ -1957,7 +1981,7 @@ func (s *Store) ProvisionedAccounts() (map[string]Claim, error) {
 	for rows.Next() {
 		var email string
 		var claim Claim
-		if err := rows.Scan(&email, &claim.UUID, &claim.NextUUID); err != nil {
+		if err := rows.Scan(&email, &claim.UUID, &claim.NextUUID, &claim.BindingID); err != nil {
 			return nil, err
 		}
 		claims[email] = claim

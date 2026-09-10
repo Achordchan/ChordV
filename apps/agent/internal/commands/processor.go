@@ -476,10 +476,30 @@ func (p *Processor) terminalUser(ctx context.Context, command protocol.Command, 
 		// redelivered command carries only a bindingId — the shape the control
 		// plane sends. Without this the retry has no target and fails forever,
 		// and the staleness guard deliberately does not skip it either.
+		//
+		// A REMEMBERED address can have been reassigned in the meantime, and it
+		// is only safe to act on while it is still this binding's. Remove A,
+		// give A's old email to B, then retry A's removal after a crash: the
+		// address comes back from the tombstone, `owns` accepts B's claim
+		// (it matches by address and identity, not by binding), and the retry
+		// uninstalls B and clears B's evidence while reporting success.
 		if email == "" && bindingID != "" {
-			if email, err = p.deps.Store.TombstonedEmail(bindingID); err != nil {
+			remembered, err := p.deps.Store.TombstonedEmail(bindingID)
+			if err != nil {
 				return err
 			}
+			if remembered != "" {
+				owner, err := p.addressOwner(remembered)
+				if err != nil {
+					return err
+				}
+				if owner != "" && owner != bindingID {
+					p.logf("[agent] 命令 %s 跳过卸载：binding %s 曾用的 email %s 现在属于 binding %s",
+						command.Type, bindingID, remembered, owner)
+					remembered = ""
+				}
+			}
+			email = remembered
 		}
 	}
 	// The adapter addresses accounts by email, and its contract says removing an
@@ -858,6 +878,31 @@ func claimStands(present string, live bool, claimed ...string) bool {
 		}
 	}
 	return !known
+}
+
+// addressOwner reports which binding an address currently belongs to, or "".
+//
+// Ownership of an ADDRESS is not the same question as ownership of an ACCOUNT:
+// `owns` asks whether this agent installed what lives there, which is answered
+// the same way no matter who is asking. This one asks whose it is.
+func (p *Processor) addressOwner(email string) (string, error) {
+	recorded, err := p.deps.Store.ListDesiredUsers()
+	if err != nil {
+		return "", err
+	}
+	for _, user := range recorded {
+		if user.Email == email {
+			return user.BindingID, nil
+		}
+	}
+	claims, err := p.deps.Store.ProvisionedAccounts()
+	if err != nil {
+		return "", err
+	}
+	if claim, held := claims[email]; held {
+		return claim.BindingID, nil
+	}
+	return "", nil
 }
 
 // owns answers the same question for one address, fetching Xray's view only when
