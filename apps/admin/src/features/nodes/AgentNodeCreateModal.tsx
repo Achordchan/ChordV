@@ -52,7 +52,7 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
       title={initialNode ? "继续接入节点" : "添加节点（Agent 接入）"}
       centered
       size="lg"
-      closeOnClickOutside={stage === "form" || stage === "ready" || stage === "failed"}
+      closeOnClickOutside={stage === "form" || stage === "ready" || stage === "failed" || stage === "legacy"}
     >
       {stage === "form" ? (
         <Stack gap="sm">
@@ -145,6 +145,15 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
         <Group gap="xs"><Loader size="sm" /><Text size="sm">Agent 已注册，正在核对实际入站参数…</Text></Group>
         {error && <Alert color="red">{error}</Alert>}
         <Group justify="flex-end"><Button variant="default" onClick={refresh}>刷新状态</Button><Button onClick={handleClose}>关闭</Button></Group>
+      </Stack> : null}
+
+      {stage === "legacy" && node ? <Stack gap="sm">
+        <Alert color="blue">
+          {node.registrationStatus === "agent_ready"
+            ? "旧版节点已注册。Go 一键接入不覆盖其现有身份，请按迁移流程处理。"
+            : "该旧版节点缺少 Go 接入参数，请重新添加节点并导入面板链接。"}
+        </Alert>
+        <Group justify="flex-end"><Button onClick={handleClose}>关闭</Button></Group>
       </Stack> : null}
 
       {stage === "ready" && node ? (

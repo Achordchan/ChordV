@@ -94,6 +94,10 @@ const completedStatus = { node: registeredNode, spec: {}, command: { status: 'co
 const completed = await watchFixture(completedStatus);
 assert.ok(completed.mutations.some(([key, value]) => key === 'setStage' && value === 'ready'));
 assert.equal(completed.stopped(), 1);
+const legacy = await watchFixture({ mode: 'legacy', node: registeredNode, spec: null, command: { status: 'completed', targetRevision: '1' } });
+assert.ok(legacy.mutations.some(([key, value]) => key === 'setStage' && value === 'legacy'));
+assert.ok(!legacy.mutations.some(([key, value]) => key === 'setStage' && (value === 'ready' || value === 'failed')));
+assert.equal(legacy.stopped(), 1, 'legacy status must not wait for a Go validation event');
 const inFlight = deferred();
 const mergedEvents = await watchFixture(completedStatus, inFlight.promise);
 for (let i = 0; i < 10; i++) mergedEvents.event();

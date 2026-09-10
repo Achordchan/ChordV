@@ -14,6 +14,8 @@
 6. 首次注册携带真实 tag，服务端在注册事务中冻结该 tag 并建立一次只读校验任务。注册响应丢失后的重放不会重复创建身份或任务。
 7. 后台通过现有 SSE 获取变更通知并读取一致的状态快照。界面分别显示等待注册、正在校验、失败和校验完成。只有本次任务 completed 且 applied revision 对应，才显示校验完成；不会自动激活。
 
+旧版节点的历史部署任务不作为 Go 面板参数解析。状态接口明确返回 legacy 模式并保留注册、启用和命令状态；窗口显示旧接入提示，Go 重试入口明确拒绝，不创建新任务或覆盖旧身份。
+
 ### 真实联调发现并处理的差异
 
 官方 3x-ui 3.7.0 的测试安装实际生成：API 协议名 `tunnel`、API 地址 `127.0.0.1:62789`，测试入站 tag 为 `in-18443-tcp`。交接中的 `dokodemo-door` 和 `inbound-端口` 不能作为唯一格式假设。现已同时识别 `tunnel` / `dokodemo-door`，并通过实际入站参数匹配 tag。
@@ -43,7 +45,7 @@
 | `corepack pnpm --filter @chordv/admin build` | 管理端 TypeScript / Vite 构建通过 |
 | `corepack pnpm --filter @chordv/api test:direct` | 接入、命令、注册、计量门禁及相关前端回归通过；新增 SSE 状态与关闭竞态测试 |
 | `CHORDV_INSTALLER_E2E=1 corepack pnpm --filter @chordv/api test:agent-install-staging` | 在 `/tmp` 实际挂载为 noexec 的隔离 Linux 容器中通过：损坏下载、网络失败、预检失败、旧身份拒绝、部分文件恢复、重复执行、提升失败回退、面板文件保留 |
-| `tsx --tsconfig tsconfig.json test/agent-onboarding-postgres.regression.ts` | 独立 PostgreSQL 16 测试库：规范化保存、原子注册/排队、插入失败回滚、并发重放、错误回报拒绝、真实 tag 冻结、人工激活边界通过 |
+| `tsx --tsconfig tsconfig.json test/agent-onboarding-postgres.regression.ts` | 独立 PostgreSQL 16 测试库：规范化保存、原子注册/排队、插入失败回滚、并发重放、错误回报拒绝、真实 tag 冻结、人工激活边界，以及旧 Node 节点状态读取/重试拒绝通过 |
 | `go test -race ./...` / `go vet ./...` | Go agent 全部测试、竞态检测与 vet 通过，含真实 Xray gRPC/VLESS 既有回归及新增探测、进程锁测试 |
 | `node scripts/build-go-agent.mjs <临时产物目录>` | linux amd64 / arm64 静态编译通过；版本、源码提交及哈希写入产物 |
 | `docker build --target agent-build -f deploy/backend/Dockerfile.api -t chordv-go-seed-test .` | 新建镜像的 Go 构建阶段通过，双架构校验和通过，运行 arm64 `--build-info` 返回版本及源码指纹 |
@@ -71,7 +73,7 @@ SSE 重连回归使用真实 AdminRuntimeEventsService 的初始事件、真实�
 
 ### 反向行为验证
 
-在独立临时副本中分别撤掉以下逻辑，再运行对应测试；八次都因**业务断言失败**被捕获，未把构建或测试框架错误计入通过：
+在独立临时副本中分别撤掉以下逻辑，再运行对应测试；九类反向验证均捕获了业务错误，未把构建或测试框架错误计入通过：
 
 - 去掉 `tunnel` 识别 → 实际面板监听测试失败。
 - 去掉进程互斥锁 → 第二个 writer 被错误接受，测试失败。
@@ -81,6 +83,7 @@ SSE 重连回归使用真实 AdminRuntimeEventsService 的初始事件、真实�
 - 去掉服务端连接建立时的节点刷新事件 → 断线期间完成任务的重连回归失败。
 - 恢复在 `/tmp` 执行下载的程序 → 实际 noexec tmpfs 上的安装成功断言失败，输出权限拒绝。
 - 允许服务不可见的 socket 路径 → 预检拒绝测试失败。
+- 使用旧状态接口/旧 watcher → 真实旧 Node 部署任务读取报错、旧节点状态展示断言失败。
 
 ## 4. 尚未执行与发布门槛
 

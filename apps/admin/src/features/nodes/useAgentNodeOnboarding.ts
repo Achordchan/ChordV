@@ -3,7 +3,7 @@ import type { AdminNodeRecordDto, CreateAgentNodeInputDto, CreateAgentNodeResult
 import { createAgentNode, fetchAgentOnboarding, issueNodeRegisterToken, retryAgentOnboarding } from "../../api/nodes";
 import { subscribeAdminRuntimeEvents } from "../../api/client";
 
-type Stage = "form" | "resume" | "awaiting" | "validating" | "ready" | "failed";
+type Stage = "form" | "resume" | "awaiting" | "validating" | "ready" | "failed" | "legacy";
 function errorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   try { const body = JSON.parse(raw); if (typeof body?.message === "string") return body.message; } catch { /* plain error */ }
@@ -51,6 +51,9 @@ export function useAgentNodeOnboarding(opened: boolean, initialNode: AdminNodeRe
         if (!valid()) return;
         const registered = status.node;
         setNode(registered); changed.current(registered);
+        if (status.mode === "legacy") {
+          setResult(null); setStage("legacy"); setError(null); stopWatching(); return;
+        }
         if (registered.registrationStatus !== "agent_ready") return;
         setResult(null);
         if (!status.spec || !status.command) {

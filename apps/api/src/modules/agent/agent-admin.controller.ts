@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Post, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Delete, Get, Param, Post, UseGuards } from "@nestjs/common";
 import { IsArray, IsBoolean, IsIn, IsObject, IsOptional, IsString, MaxLength } from "class-validator";
 import { AdminAuthGuard } from "../common/admin-auth.guard";
 import { AgentRegisterDto, CreateAgentCredentialDto, QueueAgentCommandDto } from "./agent.dto";
@@ -89,6 +89,7 @@ export class AgentAdminController {
   @Post(":nodeId/onboarding/retry")
   async retryOnboarding(@Param("nodeId") nodeId: string) {
     const status = await this.registerService.getOnboarding(nodeId);
+    if (status.mode === "legacy") throw new BadRequestException("旧版节点不适用 Go 接入重试，请保留现有身份并按迁移流程处理");
     if (!status.spec) return this.registerService.requireOnboardingSpec();
     return this.service.queueCommand(nodeId, {
       type: "ENSURE_INBOUND", payload: { ...status.spec },

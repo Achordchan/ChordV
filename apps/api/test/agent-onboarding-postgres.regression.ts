@@ -1,9 +1,10 @@
 import "reflect-metadata";
 import assert from "node:assert/strict";
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { AgentRegisterService } from "../src/modules/agent/agent-register.service";
 import { AgentService } from "../src/modules/agent/agent.service";
+import { AgentAdminController } from "../src/modules/agent/agent-admin.controller";
 import { normalizePanelInbound } from "../src/modules/agent/panel-inbound";
 
 async function main() {
@@ -46,6 +47,23 @@ async function main() {
     assert.deepEqual(one, two);
     assert.equal(await prisma.nodeAgent.count({ where: { nodeId: created.node.id } }), 1);
     assert.equal(await prisma.nodeCommandJob.count({ where: { nodeId: created.node.id } }), 1);
+    const legacyId = randomUUID(); ids.push(legacyId);
+    await prisma.node.create({ data: { ...stored, id: legacyId, name: 'Existing Node agent', onboardingSpec: Prisma.DbNull,
+      registrationStatus: 'agent_ready', isActive: true, serverHost: spec.serverHost, serverPort: 443,
+      agentConfigRevision: 1n, inboundAppliedRevision: 1n } });
+    const legacyAgent = await prisma.nodeAgent.create({ data: { id: randomUUID(), agentId: `legacy-${legacyId}`, nodeId: legacyId,
+      tokenHash: randomUUID(), tokenPrefix: 'legacy-test', version: '0.0.10' } });
+    await prisma.nodeCommandJob.create({ data: { id: randomUUID(), nodeId: legacyId, agentId: legacyAgent.id,
+      commandType: 'ENSURE_INBOUND', targetRevision: 1n, status: 'completed', dedupeKey: `legacy:${legacyId}`,
+      payload: { inboundTag: 'vless-in', listenPort: 443, serverNames: ['example.com'], realityDest: 'example.com:443' } } });
+    const legacy = await registration.getOnboarding(legacyId);
+    assert.equal(legacy.mode, 'legacy'); assert.equal(legacy.spec, null);
+    assert.equal(legacy.node.registrationStatus, 'agent_ready'); assert.equal(legacy.node.isActive, true);
+    assert.equal(legacy.node.agent?.version, '0.0.10');
+    assert.equal(legacy.command?.status, 'completed');
+    const controller = new AgentAdminController(service, registration);
+    await assert.rejects(controller.retryOnboarding(legacyId), /旧版节点不适用/);
+    assert.equal(await prisma.nodeCommandJob.count({ where: { nodeId: legacyId } }), 1, 'legacy retries must not enqueue panel jobs');
     const state = await registration.getOnboarding(created.node.id);
     assert.equal(state.node.agent?.version, 'go-0.0.11');
     assert.equal(state.command?.status, 'pending');

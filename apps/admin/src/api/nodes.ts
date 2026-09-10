@@ -68,6 +68,7 @@ export function createAgentNode(input: CreateAgentNodeInputDto) {
 }
 
 export interface AgentOnboardingStatus {
+  mode: "panel" | "legacy";
   node: AdminNodeRecordDto;
   spec: Record<string, unknown> | null;
   command: { id: string; status: string; lastError: string | null; targetRevision: string } | null;

@@ -101,9 +101,13 @@ export class AgentRegisterService {
       });
       return { node, job };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    const candidate = job?.payload ?? node.onboardingSpec;
+    const panelMode = candidate !== null && typeof candidate === "object" && !Array.isArray(candidate)
+      && candidate.mode === "validate_panel";
     return {
       node: toAdminNodeRecord(node),
-      spec: (job?.payload ?? node.onboardingSpec) ? normalizePanelInbound((job?.payload ?? node.onboardingSpec) as Record<string, unknown>) : null,
+      mode: panelMode ? "panel" as const : "legacy" as const,
+      spec: panelMode ? normalizePanelInbound(candidate as Record<string, unknown>) : null,
       command: job ? { id: job.id, status: job.status, lastError: job.lastError, targetRevision: job.targetRevision.toString() } : null
     };
   }
