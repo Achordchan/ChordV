@@ -459,52 +459,10 @@ func (p *Processor) reconcileCommand(ctx context.Context, command protocol.Comma
 		// and, under the panel-shared inbound, leave them serving.
 		return err
 	}
-	// A snapshot that OMITS a binding is a revocation, and it has to leave the
-	// same evidence a terminal command does.
-	//
-	// ApplyConfigSnapshot below deletes the omitted rows. Without a floor, the
-	// binding's whole history is gone: an enable arriving at the snapshot's own
-	// revision finds neither a row nor a tombstone, passes the strict
-	// older-than checks, and reinstalls the account the snapshot just revoked.
-	// The individual terminal path has always recorded this floor even when it
-	// had no row to act on; a snapshot omission is the same event arriving in
-	// bulk.
-	//
-	// Recorded on BOTH tracks. Whether this node may write Xray does not change
-	// what the control plane just said about the binding — and an observing node
-	// that is later promoted would otherwise carry a gap in its evidence.
-	if err := p.recordOmissionFloors(users, command.TargetRevision); err != nil {
-		return err
-	}
 	_, err = p.deps.Store.ApplyConfigSnapshot(protocol.ConfigSnapshot{
 		NodeID: current.NodeID, Revision: command.TargetRevision, ControlMode: mode, Users: users,
 	})
 	return err
-}
-
-// recordOmissionFloors tombstones every binding this snapshot drops.
-//
-// The set handed in is the MERGED one, so a binding kept by mergeNewerBindings
-// because a newer command added it is not in the dropped list — only bindings
-// the control plane genuinely stopped naming.
-func (p *Processor) recordOmissionFloors(users []protocol.DesiredUser, revision string) error {
-	recorded, err := p.deps.Store.ListDesiredUsers()
-	if err != nil {
-		return err
-	}
-	kept := make(map[string]bool, len(users))
-	for _, user := range users {
-		kept[user.BindingID] = true
-	}
-	for _, user := range recorded {
-		if kept[user.BindingID] {
-			continue
-		}
-		if err := p.deps.Store.RecordBindingTombstone(user.BindingID, revision); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // Reconcile makes Xray's installed accounts match the desired set.

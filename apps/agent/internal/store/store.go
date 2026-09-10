@@ -593,6 +593,21 @@ func replaceDesiredUsersTx(tx *sql.Tx, users []protocol.DesiredUser, revision st
 		if keep[id] {
 			continue
 		}
+		// A snapshot that stops naming a binding is revoking it, and the row
+		// about to be deleted is the binding's whole local history. Without a
+		// floor, an enable arriving at this snapshot's own revision finds
+		// neither a row nor a tombstone and reinstalls what the snapshot just
+		// revoked.
+		//
+		// Written HERE, in the same transaction and from the same list, rather
+		// than by the caller beforehand. A floor that lands while the deletion
+		// does not is worse than no floor: the enabled row survives next to a
+		// tombstone that now makes every later instruction about the binding
+		// look superseded, so the stale enabled row is what a merge preserves —
+		// and the revoked account goes back in.
+		if err := recordTombstoneTx(tx, id, revision); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(`DELETE FROM desired_users_v2 WHERE binding_id = ?`, id); err != nil {
 			return err
 		}
@@ -658,6 +673,42 @@ func upsertDesiredUserTx(tx *sql.Tx, user protocol.DesiredUser, fallback *big.In
 			quota_remaining = excluded.quota_remaining,
 			offline_allowance = excluded.offline_allowance, updated_at = excluded.updated_at
 	`, user.BindingID, user.Email, user.UUID, user.Flow, enabled, revision, quota, allowance, isoMillis(time.Now()))
+	if err != nil {
+		return err
+	}
+	// A CHANGED EMAIL is the exception to that rule, and it must be handled here
+	// rather than by the caller.
+	//
+	// Xray addresses accounts by email, so a rename is a different account with
+	// its own counter starting at zero. Keeping the old baseline makes the next
+	// sample compute current − old_baseline. The reset detector cannot save us:
+	// it fires only when the reading goes DOWN, so if the new account has moved
+	// more bytes than the old baseline before the first sample, nothing looks
+	// wrong and the difference is all that gets billed.
+	//
+	// So the rename explicitly starts a new generation from a zero baseline —
+	// exactly the state a detected reset produces, which makes the next sample
+	// bill the new account's counter in full.
+	//
+	// In the same transaction as the row change on purpose: a rename that lands
+	// without its baseline reset is the under-billing this is here to prevent.
+	//
+	// KNOWN LOSS, and it is not fixable from the store: whatever the OLD account
+	// moved between the last sample and its uninstall is never observed by
+	// anyone. It is bounded by one sampling interval and it under-counts, which
+	// is the safe direction.
+	if current == nil || current.Email == user.Email {
+		return nil
+	}
+	generation, err := decimal.Parse(current.Generation)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`
+		UPDATE desired_users_v2
+		SET generation = ?, uplink = '0', downlink = '0', counter_initialized = 1
+		WHERE binding_id = ?`,
+		new(big.Int).Add(generation, big.NewInt(1)).String(), user.BindingID)
 	return err
 }
 

@@ -911,3 +911,96 @@ func TestApplyTerminalRollsTheTombstoneBackWithTheRow(t *testing.T) {
 		}
 	}
 }
+
+// TestARenameStartsANewMeteringGeneration covers the case the reset detector
+// cannot see.
+//
+// Xray addresses accounts by email, so renaming a binding hands it a different
+// account whose counter starts at zero. The detector only fires when a reading
+// goes DOWN — so if the new account moves MORE bytes than the old baseline
+// before the first sample, nothing looks wrong and only the difference gets
+// billed. Here the old baseline is 100 and the new account's first reading is
+// 150: the whole 150 must be billed, not 50.
+func TestARenameStartsANewMeteringGeneration(t *testing.T) {
+	state := newStore(t, "node-1", "boot-1")
+	seed(t, state, protocol.DesiredUser{
+		BindingID: "b1", Email: "old@chordv", UUID: "u", Revision: "1", Enabled: true,
+		QuotaRemainingBytes: "1000000", OfflineAllowanceBytes: allowance,
+	})
+	// Establish the baseline, then bill 100 bytes against it.
+	sampleAt(t, state, true, counter("old@chordv", "0", "0"))
+	sampleAt(t, state, true, counter("old@chordv", "100", "0"))
+
+	before := storedUser(t, state, "b1")
+	if err := state.UpsertDesiredUser(protocol.DesiredUser{
+		BindingID: "b1", Email: "new@chordv", UUID: "u", Revision: "2", Enabled: true,
+		QuotaRemainingBytes: "1000000", OfflineAllowanceBytes: allowance,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	after := storedUser(t, state, "b1")
+	if after.Uplink != "0" || after.Downlink != "0" {
+		t.Fatalf("改名后基线没有归零：%s/%s", after.Uplink, after.Downlink)
+	}
+	if after.Generation == before.Generation {
+		t.Fatalf("改名后 generation 没有推进：%s", after.Generation)
+	}
+	if !after.CounterInitialized {
+		t.Fatal("改名后应保持已初始化，否则第一份样本只建基线、白丢一段流量")
+	}
+
+	result := sampleAt(t, state, true, counter("new@chordv", "150", "0"))
+	if result.Batch == nil || len(result.Batch.Samples) != 1 {
+		t.Fatalf("batch = %+v", result.Batch)
+	}
+	if got := result.Batch.Samples[0].UplinkDeltaBytes; got != "150" {
+		t.Fatalf("改名后第一次采样计费 %s，应为 150（旧基线 100 被当成了新账号的已计费量）", got)
+	}
+}
+
+// TestAnOmissionFloorCannotOutliveItsDeletion is why the floor is written inside
+// replaceDesiredUsersTx rather than by the caller beforehand.
+//
+// A tombstone that lands while the deletion does not is WORSE than no tombstone:
+// the enabled row survives next to a floor that now makes every later
+// instruction about the binding look superseded, so a merge preserves the stale
+// enabled row and the revoked account goes back in.
+func TestAnOmissionFloorCannotOutliveItsDeletion(t *testing.T) {
+	state := newStore(t, "node-1", "boot-1")
+	seed(t, state, protocol.DesiredUser{
+		BindingID: "b1", Email: "u1@chordv", UUID: "u", Revision: "1", Enabled: true,
+		QuotaRemainingBytes: "100", OfflineAllowanceBytes: allowance,
+	})
+	if _, err := state.db.Exec(`CREATE TRIGGER boom BEFORE DELETE ON desired_users_v2
+		BEGIN SELECT RAISE(ABORT, 'boom'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := state.ApplyConfigSnapshot(protocol.ConfigSnapshot{
+		NodeID: "node-1", Revision: "7", ControlMode: protocol.ModeDirectPrimary,
+	}); err == nil {
+		t.Fatal("删除失败时快照仍然被当成应用成功")
+	}
+	if floor, _ := state.BindingTombstone("b1"); floor != "0" {
+		t.Fatalf("行没删成功，吊销下限却留下了 %s", floor)
+	}
+
+	if _, err := state.db.Exec(`DROP TRIGGER boom`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.ApplyConfigSnapshot(protocol.ConfigSnapshot{
+		NodeID: "node-1", Revision: "7", ControlMode: protocol.ModeDirectPrimary,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if floor, _ := state.BindingTombstone("b1"); floor != "7" {
+		t.Fatalf("快照遗漏没有留下吊销下限：%s", floor)
+	}
+	users, err := state.ListDesiredUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 0 {
+		t.Fatalf("被遗漏的记录还在：%+v", users)
+	}
+}
