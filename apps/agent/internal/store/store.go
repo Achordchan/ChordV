@@ -441,6 +441,10 @@ func (s *Store) provisionedFromHistory() (int, error) {
 	// Starting from the store's own default for an unset mode keeps replay and
 	// runtime reading the history the same way.
 	mode := protocol.ModeShadowDirect
+	// The snapshot watermark, tracked the way the processor tracks it: a full
+	// reconcile that lands replaces everything older than itself, so a delayed
+	// individual command below it did nothing at execution time.
+	watermark := ""
 	for _, entry := range history {
 		kind, raw := entry.kind, entry.raw
 		// The column holds the whole marshalled Command, not just its payload.
@@ -468,6 +472,17 @@ func (s *Store) provisionedFromHistory() (int, error) {
 				email = owned[id].email
 			}
 			if id == "" || email == "" {
+				continue
+			}
+			// The SNAPSHOT WATERMARK, first — supersededBinding checks it before
+			// anything about the binding. A full reconcile that landed replaces
+			// everything older than itself, whatever the binding's own revision
+			// says.
+			below, err := decimal.Less(entry.revision, orZero(watermark))
+			if err != nil {
+				return 0, err
+			}
+			if below {
 				continue
 			}
 			superseded, err := notNewer(entry.revision, floors[id])
@@ -506,7 +521,7 @@ func (s *Store) provisionedFromHistory() (int, error) {
 			delete(floors, id)
 		case protocol.CommandRemoveUser:
 			if id, _ := payload["bindingId"].(string); id != "" {
-				stale, err := staleTerminalReplay(entry.revision, owned[id].revision, floors[id])
+				stale, err := staleTerminalReplay(entry.revision, owned[id].revision, floors[id], watermark)
 				if err != nil {
 					return 0, err
 				}
@@ -523,7 +538,7 @@ func (s *Store) provisionedFromHistory() (int, error) {
 					if current.email != email {
 						continue
 					}
-					stale, err := staleTerminalReplay(entry.revision, current.revision, floors[id])
+					stale, err := staleTerminalReplay(entry.revision, current.revision, floors[id], watermark)
 					if err != nil {
 						return 0, err
 					}
@@ -540,7 +555,7 @@ func (s *Store) provisionedFromHistory() (int, error) {
 			// exactly as terminalUser does. A snapshot carrying this binding at
 			// an older per-user revision must not re-enable it.
 			if id, _ := payload["bindingId"].(string); id != "" {
-				stale, err := staleTerminalReplay(entry.revision, owned[id].revision, floors[id])
+				stale, err := staleTerminalReplay(entry.revision, owned[id].revision, floors[id], watermark)
 				if err != nil {
 					return 0, err
 				}
@@ -641,12 +656,31 @@ func (s *Store) provisionedFromHistory() (int, error) {
 			}
 			// Omitting a binding is a revocation, and it leaves a floor — the
 			// same one replaceDesiredUsersTx writes.
-			for id := range owned {
-				if _, kept := next[id]; !kept {
-					floors[id] = entry.revision
+			//
+			// Except when the binding is NEWER than the snapshot omitting it.
+			// mergeNewerBindings keeps exactly those — an ENSURE_USER at 9 that
+			// completed before a delayed empty snapshot at 5 leaves the account
+			// installed — so dropping the claim here would leave a live account
+			// unowned, unmanageable under the strict collision check, and
+			// unremovable by a later omission.
+			for id, current := range owned {
+				if _, kept := next[id]; kept {
+					continue
 				}
+				newer, err := decimal.Less(entry.revision, current.revision)
+				if err != nil {
+					return 0, err
+				}
+				if newer {
+					next[id] = current
+					continue
+				}
+				floors[id] = entry.revision
 			}
 			owned = next
+			// The snapshot watermark moves only here, as ApplyConfigSnapshot
+			// moves it only there.
+			watermark = entry.revision
 		}
 	}
 	added := 0
@@ -681,8 +715,8 @@ func (s *Store) provisionedFromHistory() (int, error) {
 //
 // Strictly older, as staleTerminal is: an equal revision is not proof the
 // terminal operation already happened.
-func staleTerminalReplay(revision, bindingRevision, floor string) (bool, error) {
-	for _, against := range []string{bindingRevision, floor} {
+func staleTerminalReplay(revision, bindingRevision, floor, watermark string) (bool, error) {
+	for _, against := range []string{bindingRevision, floor, watermark} {
 		if against == "" {
 			continue
 		}
@@ -692,6 +726,14 @@ func staleTerminalReplay(revision, bindingRevision, floor string) (bool, error) 
 		}
 	}
 	return false, nil
+}
+
+// orZero makes an unset watermark comparable.
+func orZero(value string) string {
+	if value == "" {
+		return "0"
+	}
+	return value
 }
 
 // notNewer reports whether a revision fails to clear a floor, matching the live

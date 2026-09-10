@@ -1930,3 +1930,109 @@ func TestTheUpgradeReplayHonorsTerminalStaleness(t *testing.T) {
 		t.Fatalf("执行时被跳过的移除，在回放里把认领删掉了：%v", claims)
 	}
 }
+
+// TestTheUpgradeReplayTracksTheSnapshotWatermark is the last guard the replay
+// was missing.
+//
+// A snapshot at revision 10 can carry a binding last modified at revision 1;
+// runtime then skips a delayed REMOVE_USER at 5 on the WATERMARK, not on the
+// binding's own revision. Replay that compares only the binding revision and the
+// floor deletes the recovered claim — and marks the backfill permanently done,
+// so the installed account fails strict collision checks forever and cannot be
+// cleaned up on omission either.
+func TestTheUpgradeReplayTracksTheSnapshotWatermark(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+
+	finish := func(id string, kind protocol.CommandType, revision string, payload map[string]any) {
+		t.Helper()
+		if _, err := state.BeginCommand(protocol.Command{
+			CommandID: id, Type: kind, TargetRevision: revision, Payload: payload,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.CompleteCommand(protocol.CommandResult{
+			CommandID: id, Status: protocol.StatusCompleted,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	finish("c1", protocol.CommandReconcileUsers, "10", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users": []any{
+			map[string]any{"bindingId": "b1", "email": "u1@chordv", "uuid": "uuid-b1", "revision": "1"},
+		},
+	})
+	// Delayed from revision 5 — below the watermark, so runtime skipped it.
+	finish("c2", protocol.CommandRemoveUser, "5", map[string]any{"bindingId": "b1"})
+
+	if _, err := state.db.Exec(`DELETE FROM provisioned_accounts_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`DELETE FROM meta_v2 WHERE key = 'provisioned_backfilled'`); err != nil {
+		t.Fatal(err)
+	}
+	state.Close()
+
+	reopened := openAt(t, path, "node-1", "boot-2")
+	claims, err := reopened.ProvisionedAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims["u1@chordv"].UUID != "uuid-b1" {
+		t.Fatalf("水位线之下的移除在回放里把认领删掉了：%v", claims)
+	}
+}
+
+// TestTheUpgradeReplayKeepsBindingsNewerThanTheSnapshotOmittingThem matches
+// mergeNewerBindings on the omission side.
+//
+// An ENSURE_USER at revision 9 that completed before a delayed EMPTY snapshot at
+// 5 leaves the account installed — the live merge keeps it. Dropping the claim
+// in the replay leaves a live account unowned: unmanageable under the strict
+// collision check, and unremovable by a later omission.
+func TestTheUpgradeReplayKeepsBindingsNewerThanTheSnapshotOmittingThem(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+
+	finish := func(id string, kind protocol.CommandType, revision string, payload map[string]any) {
+		t.Helper()
+		if _, err := state.BeginCommand(protocol.Command{
+			CommandID: id, Type: kind, TargetRevision: revision, Payload: payload,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.CompleteCommand(protocol.CommandResult{
+			CommandID: id, Status: protocol.StatusCompleted,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	finish("c1", protocol.CommandEnsureUser, "9", map[string]any{
+		"bindingId": "b1", "email": "u1@chordv", "uuid": "uuid-b1",
+	})
+	finish("c2", protocol.CommandReconcileUsers, "5", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary), "users": []any{},
+	})
+
+	if _, err := state.db.Exec(`DELETE FROM provisioned_accounts_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`DELETE FROM meta_v2 WHERE key = 'provisioned_backfilled'`); err != nil {
+		t.Fatal(err)
+	}
+	state.Close()
+
+	reopened := openAt(t, path, "node-1", "boot-2")
+	claims, err := reopened.ProvisionedAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims["u1@chordv"].UUID != "uuid-b1" {
+		t.Fatalf("比遗漏它的快照更新的 binding 被回放丢掉了：%v", claims)
+	}
+}
