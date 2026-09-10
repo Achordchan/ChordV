@@ -555,6 +555,14 @@ func (s *Store) provisionedFromHistory() (int, error) {
 					return 0, err
 				}
 				if superseded {
+					// The live merge does not DROP a superseded binding it has a
+					// row for — it keeps the stored state. Dropping it here loses
+					// the claim entirely, and a later binding-only ENABLE_USER
+					// then has no email to resolve from either, so an account
+					// that was legitimately re-enabled ends up unclaimed.
+					if current, had := owned[id]; had {
+						next[id] = current
+					}
 					continue
 				}
 				// A DISABLED user in the payload is only ever uninstalled, never
@@ -1812,20 +1820,26 @@ func (s *Store) ApplyDesiredUsers(users []protocol.DesiredUser) error {
 
 // parkContestedEmailsTx moves every row whose address another binding is taking
 // over onto a placeholder, so the writes that follow cannot collide.
+// Parking runs BEFORE upsertDesiredUserTx, and upsertDesiredUserTx silently
+// skips a user whose revision is not newer than the stored row. A row parked for
+// a replacement that is then skipped keeps its PLACEHOLDER address — metering
+// can no longer match the account, and terminal commands aim at a name Xray has
+// never heard of. A stale update that used to be harmless would become
+// corruption.
+//
+// So a row is parked only when its own replacement will actually apply. If the
+// hand-off cannot complete, nothing is parked and the colliding upsert fails the
+// whole transaction — visible, and leaving the addresses as they were.
 func parkContestedEmailsTx(tx *sql.Tx, users []protocol.DesiredUser) error {
-	taker := make(map[string]string, len(users))
-	for _, user := range users {
-		taker[user.Email] = user.BindingID
-	}
-	rows, err := tx.Query(`SELECT binding_id, email FROM desired_users_v2`)
+	rows, err := tx.Query(`SELECT binding_id, email, revision FROM desired_users_v2`)
 	if err != nil {
 		return err
 	}
-	type held struct{ id, email string }
+	type held struct{ id, email, revision string }
 	var current []held
 	for rows.Next() {
 		var row held
-		if err := rows.Scan(&row.id, &row.email); err != nil {
+		if err := rows.Scan(&row.id, &row.email, &row.revision); err != nil {
 			rows.Close()
 			return err
 		}
@@ -1836,8 +1850,41 @@ func parkContestedEmailsTx(tx *sql.Tx, users []protocol.DesiredUser) error {
 		return err
 	}
 	rows.Close()
+	stored := make(map[string]held, len(current))
 	for _, row := range current {
-		if to, contested := taker[row.email]; !contested || to == row.id {
+		stored[row.id] = row
+	}
+	// Only the users that will really be written count as takers.
+	applying := make(map[string]protocol.DesiredUser, len(users))
+	for _, user := range users {
+		existing, known := stored[user.BindingID]
+		if known {
+			normalized, err := decimal.Normalize(user.Revision)
+			if err != nil {
+				return err
+			}
+			newer, err := decimal.Less(existing.revision, normalized)
+			if err != nil {
+				return err
+			}
+			if !newer {
+				continue
+			}
+		}
+		applying[user.BindingID] = user
+	}
+	taker := make(map[string]string, len(applying))
+	for id, user := range applying {
+		taker[user.Email] = id
+	}
+	for _, row := range current {
+		to, contested := taker[row.email]
+		if !contested || to == row.id {
+			continue
+		}
+		if _, willMove := applying[row.id]; !willMove {
+			// This row is not going anywhere, so parking it would strand it on a
+			// placeholder. Leave it and let the collision surface.
 			continue
 		}
 		if _, err := tx.Exec(

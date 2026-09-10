@@ -1686,3 +1686,95 @@ func TestTheUpgradeReplayResolvesBindingOnlyRotations(t *testing.T) {
 		t.Fatalf("只带 bindingId 的轮换被跳过了，恢复的是旧身份：%+v", claims)
 	}
 }
+
+// TestTheUpgradeReplayKeepsClaimsForDisabledBindings follows a binding through a
+// disable and a snapshot that still names it.
+//
+// The floor from the disable makes the snapshot's copy superseded — but the live
+// merge does not DROP a superseded binding it has a row for, it keeps the stored
+// state. Dropping it in the replay loses the claim entirely, and a later
+// binding-only ENABLE_USER then has no email to resolve from either, so an
+// account that was legitimately re-enabled ends up unclaimed after the upgrade.
+func TestTheUpgradeReplayKeepsClaimsForDisabledBindings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+
+	finish := func(id string, kind protocol.CommandType, revision string, payload map[string]any) {
+		t.Helper()
+		if _, err := state.BeginCommand(protocol.Command{
+			CommandID: id, Type: kind, TargetRevision: revision, Payload: payload,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.CompleteCommand(protocol.CommandResult{
+			CommandID: id, Status: protocol.StatusCompleted,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	finish("c1", protocol.CommandEnsureUser, "1", map[string]any{
+		"bindingId": "b1", "email": "u1@chordv", "uuid": "uuid-b1",
+	})
+	finish("c2", protocol.CommandDisableUser, "2", map[string]any{"bindingId": "b1"})
+	finish("c3", protocol.CommandReconcileUsers, "3", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users": []any{
+			map[string]any{"bindingId": "b1", "email": "u1@chordv", "uuid": "uuid-b1",
+				"revision": "2", "enabled": false},
+		},
+	})
+	// Re-enabled with nothing but a bindingId — the shape that needs the claim's
+	// email to resolve.
+	finish("c4", protocol.CommandEnableUser, "4", map[string]any{"bindingId": "b1"})
+
+	if _, err := state.db.Exec(`DELETE FROM provisioned_accounts_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`DELETE FROM meta_v2 WHERE key = 'provisioned_backfilled'`); err != nil {
+		t.Fatal(err)
+	}
+	state.Close()
+
+	reopened := openAt(t, path, "node-1", "boot-2")
+	claims, err := reopened.ProvisionedAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims["u1@chordv"].UUID != "uuid-b1" {
+		t.Fatalf("重新启用的账号在升级后无人认领：%v", claims)
+	}
+}
+
+// TestAStaleSwapDoesNotStrandARowOnAPlaceholder is the cost of parking too
+// eagerly.
+//
+// Parking runs before the per-row revision guard, and upsertDesiredUserTx
+// silently skips a user that is not newer. A row parked for a replacement that
+// never arrives keeps its PLACEHOLDER address: metering can no longer match the
+// account, and terminal commands aim at a name Xray has never heard of. A stale
+// update that used to be harmless would become corruption.
+func TestAStaleSwapDoesNotStrandARowOnAPlaceholder(t *testing.T) {
+	state := newStore(t, "node-1", "boot-1")
+	user := func(id, email, revision string) protocol.DesiredUser {
+		return protocol.DesiredUser{
+			BindingID: id, Email: email, UUID: "uuid-" + id, Revision: revision,
+			Enabled: true, QuotaRemainingBytes: "100", OfflineAllowanceBytes: allowance,
+		}
+	}
+	seed(t, state, user("b1", "a@chordv", "10"), user("b2", "b@chordv", "10"))
+
+	// b2 takes a@chordv at a NEWER revision; b1's own move is stale and will be
+	// skipped, so the hand-off cannot complete.
+	err := state.ApplyDesiredUsers([]protocol.DesiredUser{
+		user("b2", "a@chordv", "11"), user("b1", "b@chordv", "5"),
+	})
+	if err == nil {
+		t.Fatal("无法完成的交接被静默接受了")
+	}
+	b1, _ := state.UserByBindingID("b1")
+	if b1 == nil || b1.Email != "a@chordv" {
+		t.Fatalf("b1 被搁置在占位符地址上：%+v", b1)
+	}
+}
