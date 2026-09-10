@@ -1247,3 +1247,54 @@ func TestTheUpgradeReplayIncludesEnableCommands(t *testing.T) {
 		t.Fatalf("升级后的供给凭据 = %v，want 仅 [after@chordv]：ENABLE_USER 改名释放了 before@chordv", got)
 	}
 }
+
+// TestTheUpgradeReplayIgnoresSupersededCommands is why the replay is ordered by
+// REVISION rather than by completion.
+//
+// "completed" does not mean "changed something": a command the staleness guards
+// skipped reports completed too, because from the control plane's side it is
+// settled. In completion order a delayed install at revision 5 — which arrived
+// after the removal at 6 and did nothing — re-claims an address it never
+// reinstalled. If the panel has since reused it, the next direct reconcile
+// deletes the panel's account.
+func TestTheUpgradeReplayIgnoresSupersededCommands(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+
+	finish := func(id string, kind protocol.CommandType, revision string, payload map[string]any) {
+		t.Helper()
+		if _, err := state.BeginCommand(protocol.Command{
+			CommandID: id, Type: kind, TargetRevision: revision, Payload: payload,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.CompleteCommand(protocol.CommandResult{
+			CommandID: id, Status: protocol.StatusCompleted,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	finish("c1", protocol.CommandEnsureUser, "5", map[string]any{"bindingId": "b1", "email": "recycled@chordv", "uuid": "u"})
+	finish("c2", protocol.CommandRemoveUser, "6", map[string]any{"bindingId": "b1", "email": "recycled@chordv"})
+	// Delivered late, superseded on arrival, and recorded as completed.
+	finish("c3", protocol.CommandEnsureUser, "5", map[string]any{"bindingId": "b1", "email": "recycled@chordv", "uuid": "u"})
+
+	if _, err := state.db.Exec(`DELETE FROM provisioned_accounts_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`DELETE FROM meta_v2 WHERE key = 'provisioned_backfilled'`); err != nil {
+		t.Fatal(err)
+	}
+	state.Close()
+
+	reopened := openAt(t, path, "node-1", "boot-2")
+	got, err := reopened.ProvisionedAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("升级后的供给凭据 = %v，want 空：revision 5 的安装已被 revision 6 的移除取代", got)
+	}
+}

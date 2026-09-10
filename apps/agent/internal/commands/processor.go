@@ -389,8 +389,15 @@ func (p *Processor) terminalUser(ctx context.Context, command protocol.Command, 
 	}
 	// A REMOVE ends the agent's claim on the account; a DISABLE does not — the
 	// record survives and a later enable puts the same account back.
+	//
+	// BOTH forms of evidence go, not just the provisioning record: a pending note
+	// left behind would keep asserting ownership of an address the control plane
+	// has released, and the panel may reuse it.
 	if remove {
 		if err := p.deps.Store.ForgetProvisioned([]string{email}); err != nil {
+			return err
+		}
+		if err := p.deps.Store.ClearPendingRemoval([]string{email}); err != nil {
 			return err
 		}
 	}
@@ -801,6 +808,22 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 	// keeping it would make the list grow without bound.
 	for email := range stillPending {
 		if !liveEmails[email] {
+			retired = append(retired, email)
+		}
+	}
+	// The same for a PROVISIONING claim, and it matters more.
+	//
+	// The cleanup above only ever sees accounts Xray reports. An account that is
+	// neither desired nor installed — Xray restarted and did not bring it back,
+	// and the snapshot has since dropped it — is reachable by nothing: no row, no
+	// live entry, so its claim would sit there forever. Then a panel
+	// administrator reuses the address, and the next reconcile deletes THEIR
+	// account as ours.
+	//
+	// Nothing is lost by releasing it: a claim only earns its keep while the
+	// account still exists to be retired.
+	for _, email := range provisioned {
+		if !desired[email] && !liveEmails[email] {
 			retired = append(retired, email)
 		}
 	}

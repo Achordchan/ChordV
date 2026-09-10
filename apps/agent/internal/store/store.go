@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/Achordchan/ChordV/apps/agent/internal/decimal"
@@ -352,24 +353,63 @@ func (s *Store) backfillProvisioned() error {
 //   - a direct_primary RECONCILE_USERS is a full statement: it claims every
 //     binding it names and releases every binding it does not.
 //
-// Ordered by completion, with the row order as a tiebreaker for commands that
-// finished within the same millisecond.
+// Ordered by TARGET REVISION, not by completion.
+//
+// "completed" does not mean "changed something": a command the staleness guards
+// skipped reports completed too, because from the control plane's side it is
+// settled. Replaying in completion order therefore lets a delayed install at
+// revision 5, which arrived after the removal at 6 and did nothing, re-claim the
+// address it never reinstalled — and if the panel has since reused it, the next
+// direct reconcile deletes the panel's account.
+//
+// Revision order is the order the live guards enforce, so replaying in it gives
+// the same outcome those guards produced: the stale install sorts BEFORE the
+// removal that superseded it, and the removal wins. Completion time and row
+// order only break ties within one revision.
 func (s *Store) provisionedFromHistory() (int, error) {
 	rows, err := s.db.Query(`
-		SELECT command_type, payload FROM commands_v2
+		SELECT command_type, target_revision, payload FROM commands_v2
 		WHERE completed_at IS NOT NULL AND result LIKE '%"status":"completed"%'
 		  AND command_type IN ('ENSURE_USER', 'ENABLE_USER', 'REMOVE_USER', 'RECONCILE_USERS')
 		ORDER BY completed_at ASC, rowid ASC`)
 	if err != nil {
 		return 0, err
 	}
-	owned := map[string]string{} // bindingId -> the email it currently holds
+	type event struct {
+		kind     string
+		revision string
+		raw      string
+	}
+	var history []event
 	for rows.Next() {
-		var kind, raw string
-		if err := rows.Scan(&kind, &raw); err != nil {
+		var entry event
+		if err := rows.Scan(&entry.kind, &entry.revision, &entry.raw); err != nil {
 			rows.Close()
 			return 0, err
 		}
+		history = append(history, entry)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+	// A stable sort keeps the completion/row order the query established as the
+	// tiebreaker within a revision.
+	var sortErr error
+	sort.SliceStable(history, func(i, j int) bool {
+		order, err := decimal.Cmp(history[i].revision, history[j].revision)
+		if err != nil && sortErr == nil {
+			sortErr = err
+		}
+		return order < 0
+	})
+	if sortErr != nil {
+		return 0, sortErr
+	}
+	owned := map[string]string{} // bindingId -> the email it currently holds
+	for _, entry := range history {
+		kind, raw := entry.kind, entry.raw
 		// The column holds the whole marshalled Command, not just its payload.
 		var stored protocol.Command
 		if err := json.Unmarshal([]byte(raw), &stored); err != nil {
@@ -421,11 +461,6 @@ func (s *Store) provisionedFromHistory() (int, error) {
 			owned = next
 		}
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return 0, err
-	}
-	rows.Close()
 	added := 0
 	for id, email := range owned {
 		result, err := s.db.Exec(`

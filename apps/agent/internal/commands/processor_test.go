@@ -1755,3 +1755,37 @@ func TestAPromotionMustCarryItsOwnUserSet(t *testing.T) {
 		t.Fatalf("晋升装上了面板账号：%v", fake.calls)
 	}
 }
+
+// TestAClaimIsReleasedWhenTheAccountIsGoneFromXrayToo closes the last way a
+// claim outlives what it describes.
+//
+// The cleanup pass only ever sees accounts Xray reports. An account that is
+// neither desired nor installed — Xray restarted without bringing it back, and
+// the snapshot has since dropped it — is reachable by nothing, so its claim
+// would sit there forever. A panel administrator then reuses the address, and
+// the next reconcile deletes THEIR account as ours.
+func TestAClaimIsReleasedWhenTheAccountIsGoneFromXrayToo(t *testing.T) {
+	processor, fake, state := newProcessor(t, false)
+	seedOwned(t, state, protocol.DesiredUser{
+		BindingID: "b1", Email: "recycled@chordv", UUID: "u1", Revision: "1",
+		Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
+	})
+	// Xray restarted: our injected account is gone, and the snapshot drops it.
+	fake.live = nil
+	run(t, processor, command("c1", protocol.CommandReconcileUsers, "5", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary), "users": []any{},
+	}), true)
+	if provisioned, _ := state.ProvisionedAccounts(); len(provisioned) != 0 {
+		t.Fatalf("认领比它描述的账号活得还久：%v", provisioned)
+	}
+
+	// The panel reuses the address. It must be left alone.
+	fake.live = []xray.LiveUser{{Email: "recycled@chordv"}}
+	fake.calls = nil
+	run(t, processor, command("c2", protocol.CommandReconcileUsers, "6", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary), "users": []any{},
+	}), true)
+	if contains(fake.calls, "remove:recycled@chordv") {
+		t.Fatalf("面板重用了这个地址，却被当成本节点的遗留账号删掉：%v", fake.calls)
+	}
+}
