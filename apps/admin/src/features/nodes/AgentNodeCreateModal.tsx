@@ -16,6 +16,7 @@ import {
 } from "@mantine/core";
 import type { AdminNodeRecordDto } from "@chordv/shared";
 import { useAgentNodeOnboarding } from "./useAgentNodeOnboarding";
+import { PanelInboundForm } from "./PanelInboundForm";
 
 export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNode = null }: {
   opened: boolean;
@@ -27,11 +28,12 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
   const [region, setRegion] = useState("");
   const [provider, setProvider] = useState("");
   const [tags, setTags] = useState("");
-  const { stage, result, node, error, creating, regenerating, submit, regenerate, invalidate } =
+  const [panelInbound, setPanelInbound] = useState<Record<string, unknown> | null>(null);
+  const { stage, result, node, error, creating, regenerating, submit, regenerate, retryValidation, refresh, invalidate } =
     useAgentNodeOnboarding(opened, initialNode, onNodeChanged);
-  useLayoutEffect(() => { setName(""); setRegion(""); setProvider(""); setTags(""); }, [opened, initialNode?.id]);
+  useLayoutEffect(() => { setName(""); setRegion(""); setProvider(""); setTags(""); setPanelInbound(null); }, [opened, initialNode?.id]);
   const handleClose = () => { invalidate(); onClose(); };
-  const create = () => submit({ name: name.trim(), region: region.trim() || undefined,
+  const create = () => panelInbound && submit({ name: name.trim(), panelInbound, region: region.trim() || undefined,
     provider: provider.trim() || undefined, tags: tags.trim() ? tags.split(/[,，\s]+/).filter(Boolean) : undefined });
 
   // The install command references the origin the admin is already using. The
@@ -40,7 +42,7 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
   // access logs record paths and query strings, and a URL-embedded token would
   // let a log reader race the installer.
   const installCommand = result
-    ? `curl -fsSL -X POST -H 'content-type: application/json' -d '{"token":"${result.registerToken}"}' ${window.location.origin}/api/agent-install/script.sh | bash`
+    ? `(umask 077; f=$(mktemp) || exit 1; trap 'rm -f "$f"' EXIT; curl -fsSL --connect-timeout 15 --max-time 60 -X POST -H 'content-type: application/json' -d '{"token":"${result.registerToken}"}' '${window.location.origin}/api/agent-install/script.sh' -o "$f" && bash "$f")`
     : "";
 
   return (
@@ -56,7 +58,7 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
         <Stack gap="sm">
           <Alert color="blue" variant="light" p="xs">
             <Text size="xs">
-              这里生成的是旧 Node/Xray 安装命令，仅供非面板共存节点。3x-ui 共存节点不要执行此脚本：创建后按 Go agent 接入手册手工注册，再在节点控制器导入面板链接。
+              在原生 3x-ui 面板中准备 VLESS + Reality 入站，设为不限期、不限流量，再导入分享链接。安装器会自动检查面板版本、API 和实际入站；校验完成后由你验收并激活。
             </Text>
           </Alert>
           <TextInput label="节点名称" required value={name} onChange={(event) => setName(event.currentTarget.value)} />
@@ -70,6 +72,7 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
             value={tags}
             onChange={(event) => setTags(event.currentTarget.value)}
           />
+          <PanelInboundForm onParsed={setPanelInbound} />
           {error ? (
             <Alert color="red" variant="light" p="xs">
               <Text size="xs">{error}</Text>
@@ -79,7 +82,7 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
             <Button variant="default" onClick={handleClose}>
               取消
             </Button>
-            <Button loading={creating} disabled={!name.trim()} onClick={() => void create()}>
+            <Button loading={creating} disabled={!name.trim() || !panelInbound} onClick={() => void create()}>
               创建并生成安装命令
             </Button>
           </Group>
@@ -108,7 +111,7 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
             在目标 VPS 上执行以下命令（有效期至 {new Date(result.registerTokenExpiresAt).toLocaleString()}）：
           </Text>
           <Group gap="xs" wrap="nowrap" align="flex-start">
-            <Code block style={{ flex: 1, wordBreak: "break-all" }}>
+            <Code block style={{ flex: 1, minWidth: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
               {installCommand}
             </Code>
             <CopyButton value={installCommand} timeout={2000}>
@@ -138,12 +141,18 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
         </Stack>
       ) : null}
 
+      {stage === "validating" ? <Stack gap="sm">
+        <Group gap="xs"><Loader size="sm" /><Text size="sm">Agent 已注册，正在核对实际入站参数…</Text></Group>
+        {error && <Alert color="red">{error}</Alert>}
+        <Group justify="flex-end"><Button variant="default" onClick={refresh}>刷新状态</Button><Button onClick={handleClose}>关闭</Button></Group>
+      </Stack> : null}
+
       {stage === "ready" && node ? (
         <Stack gap="sm">
           <Alert color="teal" variant="light">
             <Group gap="xs">
-              <Badge color="teal" variant="light" size="sm">已就绪</Badge>
-              <Text size="sm">节点「{node.name}」的 Agent 已注册。连接参数将由入站部署完成后生效。</Text>
+              <Badge color="teal" variant="light" size="sm">校验完成</Badge>
+              <Text size="sm">节点「{node.name}」已注册，实际入站参数核对通过。完成客户端连接和计量验收后，再手工激活。</Text>
             </Group>
           </Alert>
           <Group justify="flex-end">
@@ -171,10 +180,11 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
               color="blue"
               variant="light"
               loading={regenerating}
-              onClick={() => void regenerate()}
+              onClick={() => void (node?.registrationStatus === "agent_ready" ? retryValidation() : regenerate())}
             >
-              重新生成安装命令并继续等待
+              {node?.registrationStatus === "agent_ready" ? "重新校验入站" : "重新生成安装命令"}
             </Button>
+            <Button variant="default" size="xs" onClick={refresh}>刷新状态</Button>
             <Button variant="default" onClick={handleClose}>
               关闭
             </Button>

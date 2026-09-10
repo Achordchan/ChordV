@@ -57,6 +57,23 @@ func testPanelValidation(t *testing.T, decryption string, reject bool) {
 		t.Fatal(err)
 	}
 	encoded, _ := json.Marshal(result)
+	automatic := make(map[string]any, len(spec))
+	for k, value := range spec {
+		automatic[k] = value
+	}
+	automatic["inboundTag"] = "inbound-old-convention"
+	if tag, err := g.DiscoverPanelTag(ctx, automatic); err != nil || tag != g.tag {
+		t.Fatalf("automatic matching depended on tag naming: %s %v", tag, err)
+	}
+	automatic["tagOverrideConfirmed"] = true
+	if _, err := g.DiscoverPanelTag(ctx, automatic); err == nil {
+		t.Fatal("manual tag was silently substituted")
+	}
+	automatic["tagOverrideConfirmed"] = false
+	automatic["realityPublicKey"] = "wrong"
+	if _, err := g.DiscoverPanelTag(ctx, automatic); err == nil {
+		t.Fatal("automatic match ignored the public key")
+	}
 	if strings.Contains(string(encoded), base64.StdEncoding.EncodeToString(key.Bytes())) || strings.Contains(string(encoded), "private") {
 		t.Fatal("private material leaked")
 	}

@@ -35,6 +35,7 @@ async function serviceRegression() {
     node: { findUnique: async () => ({ isActive: active }), update: async () => { throw new Error("past-guards"); } }
   };
   const service = new AgentService({ nodeAgent: { findFirst: async () => ({ id: "agent-1", version }) },
+    node: { findUnique: async () => ({ inboundAppliedRevision: 0n }) },
     $transaction: async (run: (tx: unknown) => Promise<unknown>) => run(tx) } as never, {} as never, {} as never);
   const input = { type: "ENSURE_INBOUND", payload: spec, expectedInboundAppliedRevision: "0" };
   await assert.rejects(() => service.queueCommand("node-1", input as never), /旧 Node agent/);

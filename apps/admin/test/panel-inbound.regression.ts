@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import ts from "typescript";
 
-const source = readFileSync(resolve(import.meta.dirname, "../src/features/nodes/PanelInboundSection.tsx"), "utf8");
+const source = readFileSync(resolve(import.meta.dirname, "../src/features/nodes/PanelInboundForm.tsx"), "utf8");
 const tree = ts.createSourceFile("panel.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 let expression = "";
 (function visit(node: ts.Node) {
@@ -23,7 +23,7 @@ for (const manual of [false, true]) {
     link: "vless://placeholder@node.example.com:443?security=reality", panelVersion: "3.7.0", tag: "", confirmed: false,
     fields: { serverHost: "2001:db8::1", port: "8443", pbk: "key", sid: "ab", sni: "example.com", flow: "", fp: "chrome", spx: "/" },
     parsePanelInboundLink: (input: unknown) => { request = input; return pending; }, URLSearchParams };
-  for (const name of ["setBusy", "setError", "setSpec", "setRevision", "setLink"]) scope[name] = (value: unknown) => changes.push([name, value]);
+  for (const name of ["setBusy", "setError", "setSpec", "setLink", "onParsed"]) scope[name] = (value: unknown) => changes.push([name, value]);
   const task = build(scope)();
   if (manual) {
     const parsed = new URL(request.link);
@@ -36,6 +36,7 @@ for (const manual of [false, true]) {
   await task;
   assert.equal(changes.length, before, "late parse response must not mutate newer form");
 }
-assert.match(source, /node\.isActive \|\| revision !==/);
-assert.match(source, /startsWith\("go-"\)/);
+const section = readFileSync(resolve(import.meta.dirname, "../src/features/nodes/PanelInboundSection.tsx"), "utf8");
+assert.match(section, /node\.isActive \|\| revision !==/);
+assert.match(section, /startsWith\("go-"\)/);
 console.log("panel inbound UI parsing/session regressions passed");

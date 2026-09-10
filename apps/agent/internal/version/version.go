@@ -13,6 +13,7 @@ import "strings"
 // heartbeat require a non-empty value (server: IsNotEmpty, MaxLength 64), so a
 // stamped-empty binary must be rejected before it can register.
 var Version = "0.0.0-dev"
+var Commit = "development"
 
 // MaxLength mirrors the control plane's AgentRegisterDto/AgentHeartbeatDto bound.
 const MaxLength = 64

@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Post, UseGuards } from "@nestjs/common";
-import { IsArray, IsBoolean, IsIn, IsOptional, IsString, MaxLength } from "class-validator";
+import { IsArray, IsBoolean, IsIn, IsObject, IsOptional, IsString, MaxLength } from "class-validator";
 import { AdminAuthGuard } from "../common/admin-auth.guard";
 import { AgentRegisterDto, CreateAgentCredentialDto, QueueAgentCommandDto } from "./agent.dto";
 import { AgentRegisterService } from "./agent-register.service";
@@ -10,6 +10,9 @@ import { parsePanelLink } from "./panel-inbound";
 // class-decorated bodies — an interface-only DTO reaches the service as an
 // unvalidated Object.
 class CreateAgentNodeDto {
+  @IsObject()
+  panelInbound!: Record<string, unknown>;
+
   @IsString()
   @MaxLength(120)
   name!: string;
@@ -76,6 +79,21 @@ export class AgentAdminController {
   @Post("agent-native")
   createAgentNode(@Body() body: CreateAgentNodeDto) {
     return this.registerService.createAgentNode(body);
+  }
+
+  @Get(":nodeId/onboarding")
+  getOnboarding(@Param("nodeId") nodeId: string) {
+    return this.registerService.getOnboarding(nodeId);
+  }
+
+  @Post(":nodeId/onboarding/retry")
+  async retryOnboarding(@Param("nodeId") nodeId: string) {
+    const status = await this.registerService.getOnboarding(nodeId);
+    if (!status.spec) return this.registerService.requireOnboardingSpec();
+    return this.service.queueCommand(nodeId, {
+      type: "ENSURE_INBOUND", payload: { ...status.spec },
+      expectedInboundAppliedRevision: status.node.inboundAppliedRevision ?? "0"
+    });
   }
 
   @Post("panel-inbound/parse")

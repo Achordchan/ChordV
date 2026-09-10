@@ -27,6 +27,7 @@ _deploy/
 .data/
 
 .tmp-*
+agent-go-dist/
 *.tgz
 
 # 1Panel Docker deployment runtime data (created by docker compose bind mounts)

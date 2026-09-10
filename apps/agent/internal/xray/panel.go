@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/xtls/xray-core/app/proxyman"
@@ -14,6 +15,55 @@ import (
 	"github.com/xtls/xray-core/transport/internet/reality"
 	"google.golang.org/protobuf/proto"
 )
+
+var panelTagPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
+
+// DiscoverPanelTag resolves automatic onboarding from live parameters, not a
+// panel-version naming convention. A manual tag is never silently substituted.
+func (g *GRPC) DiscoverPanelTag(ctx context.Context, payload map[string]any) (string, error) {
+	if payload["tagOverrideConfirmed"] == true {
+		_, err := g.ValidatePanel(ctx, payload)
+		return g.tag, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, CallTimeout)
+	defer cancel()
+	response, err := g.handler.ListInbounds(ctx, &handler.ListInboundsRequest{})
+	if err != nil {
+		return "", fmt.Errorf("无法读取面板实际入站列表")
+	}
+	port, ok := payload["listenPort"].(float64)
+	if !ok {
+		return "", fmt.Errorf("缺少待接入端口")
+	}
+	var matches []string
+	for _, inbound := range response.GetInbounds() {
+		if !panelTagPattern.MatchString(inbound.Tag) || inbound.GetProxySettings().GetType() != "xray.proxy.vless.inbound.Config" {
+			continue
+		}
+		var receiver proxyman.ReceiverConfig
+		if proto.Unmarshal(inbound.GetReceiverSettings().GetValue(), &receiver) != nil {
+			continue
+		}
+		ranges := receiver.GetPortList().GetRange()
+		if len(ranges) != 1 || float64(ranges[0].From) != port || ranges[0].From != ranges[0].To {
+			continue
+		}
+		candidate := *g
+		candidate.tag = inbound.Tag
+		spec := make(map[string]any, len(payload))
+		for key, value := range payload {
+			spec[key] = value
+		}
+		spec["inboundTag"] = inbound.Tag
+		if _, err := candidate.ValidatePanel(ctx, spec); err == nil {
+			matches = append(matches, inbound.Tag)
+		}
+	}
+	if len(matches) != 1 {
+		return "", fmt.Errorf("未找到唯一匹配端口、公钥、SNI 和 shortId 的实际入站，请核对导入链接")
+	}
+	return matches[0], nil
+}
 
 // ValidatePanel compares imported public parameters to the running inbound.
 // Private key material is used only to derive its public key, never returned.

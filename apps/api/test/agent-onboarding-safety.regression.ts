@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { spawnSync } from "node:child_process";
-import { Module, BadRequestException, ForbiddenException } from "@nestjs/common";
+import { Module, Controller, Get, Res, BadRequestException, ForbiddenException } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { WorkLifecycle } from "../src/work-lifecycle";
-import { AgentDownloadController } from "../src/modules/agent/agent-download.controller";
+import { AgentDownloadController, sendArtifact } from "../src/modules/agent/agent-download.controller";
 import { isNodeOnboardingReady } from "../src/modules/common/node-onboarding-policy";
 import { AdminNodeService } from "../src/modules/common/admin-node.service";
 import { ClientAccessService } from "../src/modules/common/client-access.service";
@@ -51,13 +51,21 @@ async function nodeGuards() {
   assert.deepEqual(await access.getNodes(), [], "bad persisted activation must not leak endpoints to clients");
 }
 
+let artifactUnderTest = "";
+class DownloadFixtureController {
+  download(response: any) { return sendArtifact(artifactUnderTest, "application/octet-stream", "测试产物", response); }
+}
+Controller()(DownloadFixtureController);
+Get("fixture-artifact")(DownloadFixtureController.prototype, "download", Object.getOwnPropertyDescriptor(DownloadFixtureController.prototype, "download")!);
+Res()(DownloadFixtureController.prototype, "download", 0);
 class DownloadModule {}
-Module({ controllers: [AgentDownloadController] })(DownloadModule);
+Module({ controllers: [AgentDownloadController, DownloadFixtureController] })(DownloadModule);
 async function abortedDownloadDrain() {
   const dir = await fs.mkdtemp(path.join(tmpdir(), "chordv-download-drain-"));
   const old = process.env.CHORDV_AGENT_DIST_DIR;
   process.env.CHORDV_AGENT_DIST_DIR = dir;
   const file = path.join(dir, "chordv-agent-linux-x64.tar.gz");
+  artifactUnderTest = file;
   const app = await NestFactory.create(DownloadModule, { logger: false });
   const lifecycle = new WorkLifecycle();
   app.use(lifecycle.middleware); app.useGlobalInterceptors(lifecycle); app.setGlobalPrefix("api");
@@ -65,17 +73,18 @@ async function abortedDownloadDrain() {
     await fs.writeFile(file, "complete artifact");
     await app.listen(0, "127.0.0.1");
     const server = app.getHttpServer(), port = server.address().port;
-    assert.equal(await (await fetch(`http://127.0.0.1:${port}/api/agent-download/linux-x64`)).text(), "complete artifact");
+    assert.equal(await (await fetch(`http://127.0.0.1:${port}/api/fixture-artifact`)).text(), "complete artifact");
+    assert.equal((await fetch(`http://127.0.0.1:${port}/api/agent-download/linux-x64`)).status, 410);
     const secret = path.join(dir, "private-secret");
     await fs.writeFile(secret, "PRIVATE_SENTINEL");
     await fs.unlink(file); await fs.symlink(secret, file);
-    const linked = await fetch(`http://127.0.0.1:${port}/api/agent-download/linux-x64`);
+    const linked = await fetch(`http://127.0.0.1:${port}/api/fixture-artifact`);
     assert.equal(linked.status, 404); assert.ok(!(await linked.text()).includes("PRIVATE_SENTINEL"));
     await fs.unlink(file); await fs.mkdir(file);
-    assert.equal((await fetch(`http://127.0.0.1:${port}/api/agent-download/linux-x64`)).status, 404);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/api/fixture-artifact`)).status, 404);
     await fs.rmdir(file);
     const fifo = spawnSync("mkfifo", [file]); assert.equal(fifo.status, 0);
-    assert.equal((await fetch(`http://127.0.0.1:${port}/api/agent-download/linux-x64`, { signal: AbortSignal.timeout(1500) })).status, 404);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/api/fixture-artifact`, { signal: AbortSignal.timeout(1500) })).status, 404);
     await fs.unlink(file); await fs.writeFile(file, "original-opened-artifact");
     const opened = path.join(dir, "opened-artifact");
     const originalOpen = fs.open;
@@ -93,7 +102,7 @@ async function abortedDownloadDrain() {
       return handle;
     }) as typeof fs.open;
     try {
-      const raced = await fetch(`http://127.0.0.1:${port}/api/agent-download/linux-x64`);
+      const raced = await fetch(`http://127.0.0.1:${port}/api/fixture-artifact`);
       assert.equal(await raced.text(), "original-opened-artifact", "filename replacement cannot redirect the opened descriptor");
     } finally { fs.open = originalOpen; }
     assert.equal(swapped, true);
@@ -101,7 +110,7 @@ async function abortedDownloadDrain() {
     const handle = await fs.open(file, "w"); await handle.truncate(128 * 1024 * 1024); await handle.close();
     for (let attempt = 0; attempt < 5; attempt++) {
       await new Promise<void>((resolve, reject) => {
-        const req = http.get(`http://127.0.0.1:${port}/api/agent-download/linux-x64`, res => {
+        const req = http.get(`http://127.0.0.1:${port}/api/fixture-artifact`, res => {
           res.once("data", () => { res.destroy(); req.destroy(); });
           res.once("close", () => resolve());
           res.on("error", () => undefined);

@@ -116,6 +116,11 @@ export class AgentCommandResultDto {
 }
 
 export class AgentRegisterDto {
+  @IsOptional()
+  @IsString()
+  @Matches(/^[A-Za-z0-9_-]{1,32}$/)
+  xrayInboundTag?: string;
+
   // One-time registration token from the install command.
   @IsString()
   @IsNotEmpty()
@@ -194,4 +199,3 @@ export class QueueAgentCommandDto {
   @Matches(DECIMAL_INTEGER)
   expectedInboundAppliedRevision?: string;
 }
-

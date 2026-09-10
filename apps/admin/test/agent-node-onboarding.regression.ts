@@ -33,7 +33,7 @@ function fixture() {
     session, active, requestBusy, node,
     current: (epoch: number) => active.current && session.current === epoch,
     changed: { current: (value: unknown) => changedNodes.push(value) },
-    stopPolling: () => undefined, pollRegistration: (...args: unknown[]) => polls.push(args),
+    stopWatching: () => undefined, watchRegistration: (...args: unknown[]) => polls.push(args),
     notifications: { show: (value: unknown) => notified.push(value) }, errorMessage: (error: Error) => error.message
   };
   for (const key of ["setCreating", "setError", "setNode", "setResult", "setStage", "setRegenerating"]) {
@@ -66,3 +66,44 @@ assert.deepEqual(resumed.polls, [[node.id, 1]], "resume must work without a prev
 assert.ok(resumed.mutations.some(([name, value]) => name === "setStage" && value === "awaiting"));
 assert.equal(resumed.requestBusy.current, false);
 console.log("agent-node-onboarding callbacks passed (late success/error/finally, close/reopen, pending resume)");
+
+// Status comes from one command outcome, never registration or revision alone.
+async function watchFixture(status: unknown, pendingRead?: Promise<unknown>) {
+  const f = fixture();
+  const watchEpoch = { current: 0 }, unsubscribe: { current: (() => void) | null } = { current: null };
+  let listener!: (event: unknown) => void, reads = 0, stopped = 0;
+  Object.assign(f.scope, {
+    watchEpoch, unsubscribe, deadline: { current: null },
+    window: { setTimeout: () => 1 },
+    stopWatching: () => { watchEpoch.current++; unsubscribe.current?.(); unsubscribe.current = null; },
+    subscribeAdminRuntimeEvents: (callback: (event: unknown) => void) => { listener = callback; return () => { stopped++; }; },
+    fetchAgentOnboarding: () => { reads++; return reads === 1 && pendingRead ? pendingRead : Promise.resolve(status); }
+  });
+  callback("watchRegistration", f.scope)(node.id, 1);
+  const flush = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+  await flush();
+  return { ...f, flush, event: () => listener({ type: 'node_access_updated', nodeId: node.id }), reads: () => reads, stopped: () => stopped };
+}
+const registeredNode = { ...node, registrationStatus: 'agent_ready', inboundAppliedRevision: '1' };
+const validating = await watchFixture({ node: registeredNode, spec: {}, command: { status: 'pending', targetRevision: '2' } });
+assert.ok(validating.mutations.some(([key, value]) => key === 'setStage' && value === 'validating'));
+assert.ok(!validating.mutations.some(([key, value]) => key === 'setStage' && value === 'ready'));
+const staleOutcome = await watchFixture({ node: registeredNode, spec: {}, command: { status: 'completed', targetRevision: '2' } });
+assert.ok(staleOutcome.mutations.some(([key, value]) => key === 'setStage' && value === 'failed'));
+const completedStatus = { node: registeredNode, spec: {}, command: { status: 'completed', targetRevision: '1' } };
+const completed = await watchFixture(completedStatus);
+assert.ok(completed.mutations.some(([key, value]) => key === 'setStage' && value === 'ready'));
+assert.equal(completed.stopped(), 1);
+const inFlight = deferred();
+const mergedEvents = await watchFixture(completedStatus, inFlight.promise);
+for (let i = 0; i < 10; i++) mergedEvents.event();
+inFlight.resolve({ node, spec: {}, command: null });
+await mergedEvents.flush();
+assert.equal(mergedEvents.reads(), 2, 'events during one request collapse to one following snapshot');
+const lateRead = deferred();
+const closed = await watchFixture(completedStatus, lateRead.promise);
+callback('invalidate', closed.scope)();
+const beforeLateRead = closed.mutations.length;
+lateRead.resolve(completedStatus); await closed.flush();
+assert.equal(closed.mutations.length, beforeLateRead, 'a closed SSE session cannot publish a late status');
+console.log('onboarding SSE state regressions passed (registration is not validation, exact outcome, coalescing, close)');

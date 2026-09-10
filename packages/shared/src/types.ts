@@ -1060,12 +1060,11 @@ export interface UpdateNodeInputDto {
   recommended?: boolean;
 }
 
-// Agent-native node creation (docs/prd/node-revision-agent-native.md, R1):
-// creates a pending_register node with descriptive fields only, then issues
-// the one-time registration token the install command carries. Connection
-// parameters arrive later from the agent itself.
+// Go onboarding stores public imported parameters separately from usable node
+// endpoints. Live validation must succeed before connection fields are applied.
 export interface CreateAgentNodeInputDto {
   name: string;
+  panelInbound: Record<string, unknown>;
   countryCode?: string;
   region?: string;
   provider?: string;

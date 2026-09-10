@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, NotFoundException, Optional } from "@nestjs/common";
 import type {
   AdminCreateNodeAgentCredentialResultDto,
   AdminNodeAgentDto,
@@ -20,6 +20,7 @@ import { runWithNodeAndSubscriptionUsageLocks, runWithNodeUsageLock } from "../c
 import { applyDirectBatch, type SubscriptionTransition } from "./agent-direct-metering";
 
 import { normalizePanelInbound, parsePanelReport } from "./panel-inbound";
+import { AdminRuntimeEventsService } from "../common/admin-runtime-events.service";
 
 const OFFLINE_ALLOWANCE_BYTES = 64n * 1024n * 1024n;
 const MAX_SERIALIZABLE_RETRIES = 3;
@@ -27,7 +28,8 @@ const MAX_CONTIGUOUS_BATCHES_PER_TRANSACTION = 4;
 
 @Injectable()
 export class AgentService {
-  constructor(private readonly prisma: PrismaService, private readonly events: AgentEventsService, private readonly clientEvents: ClientEventsPublisher) {}
+  constructor(private readonly prisma: PrismaService, private readonly events: AgentEventsService, private readonly clientEvents: ClientEventsPublisher,
+    @Optional() private readonly adminEvents?: AdminRuntimeEventsService) {}
 
   async authenticate(authorization?: string): Promise<NodeAgent | null> {
     const token = readBearerToken(authorization);
@@ -286,6 +288,7 @@ export class AgentService {
       return true;
     });
     if (!updated) throw new NotFoundException("命令不存在、已结束或不属于当前 Agent");
+    this.adminEvents?.publish({ type: "node_access_updated", nodeId: agent.nodeId, occurredAt: new Date().toISOString() });
     return { accepted: true };
   }
 
@@ -378,19 +381,27 @@ export class AgentService {
       const mode = (input.payload as Record<string, unknown> | undefined)?.mode;
       if (mode !== undefined && mode !== "validate_panel") throw new BadRequestException("未知入站模式，拒绝降级为部署");
       if (agent.version?.startsWith("go-") && mode !== "validate_panel") throw new BadRequestException("Go agent 仅接受面板只读校验，请导入面板链接");
+      if (mode === "validate_panel" && !agent.version?.startsWith("go-")) {
+        throw new BadRequestException("面板校验需要 go- 版本标识的 Go agent，禁止交给旧 Node agent 部署");
+      }
     }
     // The inbound spec is the one payload the server must understand: it is
     // what the agent's report is later compared against field by field, and a
     // command dispatched with an unvalidated spec could never be verified.
+    let inboundInput = input.payload as Record<string, unknown> | undefined;
+    if (input.type === "ENSURE_INBOUND" && inboundInput?.mode === "validate_panel" && inboundInput.tagOverrideConfirmed !== true) {
+      const applied = await this.getInboundSpec(nodeId);
+      if (applied.spec?.mode === "validate_panel" && typeof applied.spec.inboundTag === "string") {
+        // A registered node already has a confirmed runtime tag. Blank-tag
+        // revalidation keeps it rather than reviving a parser naming guess.
+        inboundInput = { ...inboundInput, inboundTag: applied.spec.inboundTag, tagOverrideConfirmed: true };
+      }
+    }
     const payload = input.type === "ENSURE_INBOUND"
       ? ((input.payload as Record<string, unknown> | undefined)?.mode === "validate_panel"
-        ? normalizePanelInbound(input.payload as Record<string, unknown>)
+        ? normalizePanelInbound(inboundInput as Record<string, unknown>)
         : normalizeInboundSpec((input.payload ?? {}) as Record<string, unknown>))
       : input.payload;
-    if (input.type === "ENSURE_INBOUND" && (payload as Record<string, unknown>)?.mode === "validate_panel"
-      && !agent.version?.startsWith("go-")) {
-      throw new BadRequestException("面板校验需要 go- 版本标识的 Go agent，禁止交给旧 Node agent 部署");
-    }
     // Deduplicate RETRIES of an operation, not every historical occurrence of a
     // spec: an outstanding identical request is the double-click we want to
     // collapse, while a finished one must be repeatable (deploy 443 → 8443 →
@@ -553,6 +564,7 @@ export class AgentService {
     });
     const command = serializeCommand(job);
     if (job.agentId) this.events.publish(job.agentId, command);
+    this.adminEvents?.publish({ type: "node_access_updated", nodeId, occurredAt: new Date().toISOString() });
     return command;
   }
 
