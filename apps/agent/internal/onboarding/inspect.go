@@ -106,9 +106,9 @@ func APIAddress(data []byte) (string, error) {
 	}
 	address := addresses[0]
 	if strings.HasPrefix(address, "unix:") {
-		path := strings.TrimPrefix(strings.TrimPrefix(address, "unix:"), "//")
-		if !socketPattern.MatchString(path) {
-			return "", fmt.Errorf("面板 API socket 路径无效")
+		path := filepath.Clean(strings.TrimPrefix(strings.TrimPrefix(address, "unix:"), "//"))
+		if !socketPattern.MatchString(path) || !serviceSocketPath(path) {
+			return "", fmt.Errorf("面板 API socket 必须位于服务可见的 /run 或 /var/run，不能位于临时目录或用户目录")
 		}
 		return "unix:" + path, nil
 	}
@@ -150,6 +150,9 @@ func Inspect(ctx context.Context, panelPID int, specPath string) (string, error)
 	}
 	address, err := APIAddress(data)
 	if err != nil {
+		return "", err
+	}
+	if err := validateServiceSocket(address); err != nil {
 		return "", err
 	}
 	specData, err := readBounded(specPath, 16*1024)
@@ -199,6 +202,9 @@ func readBounded(path string, limit int64) ([]byte, error) {
 // Verify repeats the live check under the service account. A root probe alone
 // cannot prove that the service can access a Unix socket's permissions.
 func Verify(ctx context.Context, address, tag, specPath string) error {
+	if err := validateServiceSocket(address); err != nil {
+		return err
+	}
 	data, err := readBounded(specPath, 16*1024)
 	if err != nil {
 		return fmt.Errorf("服务用户无法读取公共入站参数")
@@ -217,6 +223,33 @@ func Verify(ctx context.Context, address, tag, specPath string) error {
 		return err
 	}
 	return adapter.Health(ctx)
+}
+
+// PrivateTmp hides temporary directories, and ProtectHome also hides /run/user.
+// Validate both the configured name and the resolved socket to reject symlink
+// aliases into those namespaces before replacing any existing service.
+func serviceSocketPath(path string) bool {
+	return (strings.HasPrefix(path, "/run/") || strings.HasPrefix(path, "/var/run/")) &&
+		path != "/run/user" && !strings.HasPrefix(path, "/run/user/") &&
+		path != "/var/run/user" && !strings.HasPrefix(path, "/var/run/user/")
+}
+
+func validateServiceSocket(address string) error {
+	if !strings.HasPrefix(address, "unix:") {
+		return nil
+	}
+	path := filepath.Clean(strings.TrimPrefix(strings.TrimPrefix(address, "unix:"), "//"))
+	if !serviceSocketPath(path) {
+		return fmt.Errorf("面板 API socket 被服务隔离设置隐藏，请使用 /run 下的系统级 socket")
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return fmt.Errorf("面板 API socket 不存在或服务用户不可访问")
+	}
+	if !serviceSocketPath(resolved) {
+		return fmt.Errorf("面板 API socket 链接指向服务不可见的临时或用户目录")
+	}
+	return nil
 }
 
 func runningConfig(panelPID int) (string, error) {

@@ -50,7 +50,7 @@ if (process.env.CHORDV_INSTALLER_E2E === "1") {
     writeFileSync(path.join(dir, "other.sh"), renderInstallScript({ ...input, nodeId: "another-node" }));
     writeFileSync(path.join(dir, "corrupt.sh"), renderInstallScript({ ...input, release: { ...input.release, sha256: { amd64: "0".repeat(64), arm64: "0".repeat(64) } } }));
     const harness = path.resolve(__dirname, "fixtures/go-install-host.sh");
-    const result = spawnSync("docker", ["run", "--rm", "--network", "none", "-v", `${dir}:/payload:ro`,
+    const result = spawnSync("docker", ["run", "--rm", "--network", "none", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev", "-v", `${dir}:/payload:ro`,
       "-v", `${harness}:/test.sh:ro`, "node:20.19.0-bookworm", "bash", "/test.sh"], { encoding: "utf8", timeout: 120_000 });
     assert.equal(result.status, 0, result.stdout + result.stderr);
     process.stdout.write(result.stdout);

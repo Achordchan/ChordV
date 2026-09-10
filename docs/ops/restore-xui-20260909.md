@@ -2,7 +2,9 @@
 
 日期：2026-09-09。用户明确要求暂停 Agent 改版，先恢复老用户临时使用。
 
-## 当前运行状态
+本文是当次恢复记录，机器目录和备份位置保留原值，不作为当前部署方式说明。当前通用部署入口见 `README.md` 的 `deploy/backend`；历史目录名称不代表运行依赖。
+
+## 当次运行状态
 
 - 生产 API 和管理端已回退到 `0.0.8`，公开 readiness 返回 `ready / 0.0.8`，监督程序 last-good-version 同为 0.0.8。
 - 管理端 `/usr/share/nginx/current` 指向 `releases/0.0.8/apps/admin/dist`。

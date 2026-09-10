@@ -11,8 +11,8 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 # `${CHORDV_API_UPSTREAM}` in the template is substituted at container start.
-COPY deploy/1panel/chordv/admin.nginx.conf /etc/nginx/templates/default.conf.template
-COPY deploy/1panel/chordv/admin-entrypoint.sh /usr/local/bin/admin-entrypoint.sh
+COPY deploy/backend/admin.nginx.conf /etc/nginx/templates/default.conf.template
+COPY deploy/backend/admin-entrypoint.sh /usr/local/bin/admin-entrypoint.sh
 RUN chmod +x /usr/local/bin/admin-entrypoint.sh
 
 ENV CHORDV_API_UPSTREAM=http://api:3000

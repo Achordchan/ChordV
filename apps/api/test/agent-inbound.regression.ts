@@ -584,7 +584,7 @@ async function testDedupeInterleavedRequests() {
 
 /**
  * whoami's observed address is what a node deploys as its serverHost, and in
- * the supplied 1Panel topology it arrives through TWO appending proxies
+ * the supplied Docker reverse-proxy topology it arrives through TWO appending proxies
  * (openresty → admin nginx → api). This exercises the exact express/proxy-addr
  * resolution main.ts configures, over a real socket: the walk must land on the
  * agent's address past both proxy hops, and a peer outside the trusted set

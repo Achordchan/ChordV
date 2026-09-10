@@ -85,7 +85,7 @@ exec /bin/mv "$@"
 `, { mode: 0o755 });
   writeFileSync(path.join(state, "promoting.json"), JSON.stringify({ version: "0.0.2", operationId: "sysop-admission", kind: "update", migrationApplied: false }));
   writeFileSync(path.join(state, "last-good-version"), "0.0.1");
-  const child = spawn("bash", [path.resolve(__dirname, "../../../deploy/1panel/chordv/entrypoint.sh")], {
+  const child = spawn("bash", [path.resolve(__dirname, "../../../deploy/backend/entrypoint.sh")], {
     detached: true, stdio: ["ignore", "ignore", "pipe"], env: {
       ...process.env, PATH: `${bin}:${process.env.PATH}`, CHORDV_TEST_APPROVAL: approval, CHORDV_TEST_BLOCKER: blocker,
       TSX_TSCONFIG_PATH: path.resolve(__dirname, "../tsconfig.json"),

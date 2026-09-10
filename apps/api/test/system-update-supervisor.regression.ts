@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
  * Integration test for the supervisor's central failure mode: a promoted release
  * that fails the readiness/health gate must be AUTOMATICALLY ROLLED BACK to the
  * last-good version, and a terminal audit result must be recorded for the app to
- * consume. This drives the real deploy/1panel/chordv/entrypoint.sh with stub
+ * consume. This drives the real deploy/backend/entrypoint.sh with stub
  * releases (a healthy good version and a crash-on-start bad version), so a
  * regression that leaves `current`/`desired-version` on the broken release, or
  * that never records the outcome, is caught in CI — none of which the metadata /
@@ -22,10 +22,10 @@ const ADMIN_ENTRY = "apps/admin/dist/index.html";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = [path.resolve(here, "../../.."), process.cwd(), path.resolve(process.cwd(), "../..")].find(
-  (candidate) => existsSync(path.join(candidate, "deploy/1panel/chordv/entrypoint.sh"))
+  (candidate) => existsSync(path.join(candidate, "deploy/backend/entrypoint.sh"))
 );
 assert.ok(repoRoot, "must locate repo root containing the supervisor entrypoint");
-const entrypoint = path.join(repoRoot, "deploy/1panel/chordv/entrypoint.sh");
+const entrypoint = path.join(repoRoot, "deploy/backend/entrypoint.sh");
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {

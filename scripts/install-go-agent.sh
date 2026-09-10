@@ -16,7 +16,7 @@ ARM64_SHA=@@ARM64_SHA@@
 fail() { printf '安装中止：%s\n' "$1" >&2; exit 1; }
 [[ $(id -u) -eq 0 ]] || fail '请以 root 执行安装命令'
 [[ $(uname -s) == Linux ]] || fail '仅支持使用 systemd 的 Linux VPS'
-for command in curl sha256sum systemctl flock runuser useradd install readlink sync; do
+for command in curl sha256sum systemctl flock runuser useradd install readlink sync stat; do
   command -v "$command" >/dev/null || fail "缺少系统命令：$command，请先安装对应系统软件包"
 done
 [[ -d /run/systemd/system ]] || fail '未检测到 systemd，暂不支持容器或其他服务管理器'
@@ -60,7 +60,11 @@ for unitdir in /etc/systemd/system /usr/lib/systemd/system /lib/systemd/system; 
   [[ ! -e "$unitdir/$SERVICE.d" ]] || fail 'Agent 服务存在附加配置目录'
 done
 
-STAGE=$(mktemp -d /tmp/chordv-go-install.XXXXXX)
+# Stage on the program's installation filesystem: hardened hosts commonly
+# mount /tmp noexec. The parent must not let another account replace our tree.
+[[ -d /opt && $(stat -c %u /opt) == 0 ]] || fail '/opt 必须是 root 管理的程序目录'
+[[ $(( 8#$(stat -c %a /opt) & 0022 )) -eq 0 ]] || fail '/opt 不得允许组或其他用户写入'
+STAGE=$(mktemp -d /opt/.chordv-go-install.XXXXXX)
 PROMOTING=0
 WAS_ACTIVE=0
 COMMITTED=0

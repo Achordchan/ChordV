@@ -30,16 +30,16 @@ _deploy/
 agent-go-dist/
 *.tgz
 
-# 1Panel Docker deployment runtime data (created by docker compose bind mounts)
-deploy/1panel/chordv/api-releases/
-deploy/1panel/chordv/admin-releases/
-deploy/1panel/chordv/admin-state/
-deploy/1panel/chordv/releases/
-deploy/1panel/chordv/postgres-data/
+# Docker deployment runtime data (including legacy directory layouts) (created by docker compose bind mounts)
+deploy/**/api-releases/
+deploy/**/admin-releases/
+deploy/**/admin-state/
+deploy/**/releases/
+deploy/**/postgres-data/
 
 # API private journals and database recovery points must never enter source control.
-deploy/1panel/chordv/api-state/
-deploy/1panel/chordv/api-backups/
-deploy/1panel/chordv/api-agent-dist/
+deploy/**/api-state/
+deploy/**/api-backups/
+deploy/**/api-agent-dist/
 # Public health-approved markers are runtime state, not release source files.
-deploy/1panel/chordv/api-public-state/
+deploy/**/api-public-state/

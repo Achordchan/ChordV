@@ -8,7 +8,7 @@
 >
 > v0.3 变更：确认服务器为国内节点，用加速镜像访问 GitHub（如 `https://ghfast.top/`）。发现仓库里已有现成的全局加速镜像机制（`DownloadMirrorService`，与发布中心、运行时组件共用），直接复用即可，不新增任何下载基础设施，见 4.4 节。第 14 节待确认事项全部解决。
 >
-> v0.4 变更（实现阶段）：见下方「实现说明」——在 4.1「应用自己切软链接后退出」之外，落地时增加了一个**容器内进程外监督者**（`deploy/1panel/chordv/entrypoint.sh`），由它负责“提升新版本 → 健康门控 → 失败自动回滚”，这样 6.3 的“健康检查不过自动回滚”才真正有一个活着的角色去执行（应用自己退出后无法给自己做健康门控）。检查更新的数据源也从 `api.github.com` 调整为 raw manifest（ghfast 可代理，`api.github.com` 不可）。
+> v0.4 变更（实现阶段）：见下方「实现说明」——在 4.1「应用自己切软链接后退出」之外，落地时增加了一个**容器内进程外监督者**（`deploy/backend/entrypoint.sh`），由它负责“提升新版本 → 健康门控 → 失败自动回滚”，这样 6.3 的“健康检查不过自动回滚”才真正有一个活着的角色去执行（应用自己退出后无法给自己做健康门控）。检查更新的数据源也从 `api.github.com` 调整为 raw manifest（ghfast 可代理，`api.github.com` 不可）。
 
 ---
 
@@ -72,11 +72,11 @@
 
 ## 1. 背景
 
-当前后台（`apps/api` + `apps/admin`）的上线方式：push `main` → GitHub Actions（`.github/workflows/deploy-baota.yml`）→ SSH 到服务器 → rsync 构建产物 → 通过宝塔面板 Python API 停止/启动一个 pm2 式 Node 进程，`apps/admin` 编译产物另外 rsync 到 openresty 静态目录。整条链路都需要工程师在 GitHub 侧操作，出问题还需要 SSH 上服务器确认。
+迁移前后台（`apps/api` + `apps/admin`）曾通过 push `main` → GitHub Actions（`.github/workflows/deploy-baota.yml`）→ SSH/rsync → 宝塔 Node 进程管理上线，admin 静态产物单独部署。该工作流现已停用自动触发，以下通用容器和应用内更新流程是当前实现。
 
-仓库里已经存在一套面向 1Panel 的 Docker 化部署骨架（`deploy/1panel/chordv/`：`Dockerfile.api` + `docker-compose.yml` + openresty 反代配置），但目前不是自动化流水线的一部分。
+仓库中的通用后台部署入口为 `deploy/backend/`，包含 Dockerfile、Compose 和反向代理模板；运行依赖 Docker 与容器内监督脚本，不依赖服务器管理面板。
 
-**本次要做的事**：桌面客户端的打包发布（`release-desktop.yml`）保持不变；后台（api + admin，以下统称"**后台系统**"）改为跑在 1Panel 管理的 Docker 容器上，并在运营后台左上角提供版本管理入口——查看当前版本、检查新版本、一键更新、失败自动回滚——上线后除了极少数异常情况，不再需要 SSH 到服务器操作。宝塔 pm2 那条流水线（`deploy-baota.yml` / `deploy-baota.sh`）随之退役。
+**当前实现**：桌面客户端由 `release-desktop.yml` 打包发布；后台（api + admin，以下统称"**后台系统**"）通过 Docker Compose 运行，并在运营后台提供版本管理入口——查看当前版本、检查新版本、一键更新、失败自动回滚。后台发布走 `release-backend.yml`；旧宝塔部署工作流已停用自动触发。
 
 ## 2. 范围
 
@@ -128,7 +128,7 @@
    - 如检测到数据库 schema 变更：先做一次快照，再执行 `prisma migrate deploy`；
    - 原子切换 `/app/current` 软链接指向新目录；
    - 调用 `process.exit(0)` 自行退出。
-4. **重启接管**：容器的 `restart: unless-stopped`（Docker 原生策略，`deploy/1panel/chordv/docker-compose.yml` 现在 `api` 服务已经是这个配置，不用改）检测到进程退出后自动把同一个容器重新拉起来，入口脚本走的还是 `/app/current`，此时已指向新版本，新代码生效。全程没有"重建容器""重新拉镜像"这类更重的操作。
+4. **重启接管**：容器的 `restart: unless-stopped`（Docker 原生策略，`deploy/backend/docker-compose.yml` 现在 `api` 服务已经是这个配置，不用改）检测到进程退出后自动把同一个容器重新拉起来，入口脚本走的还是 `/app/current`，此时已指向新版本，新代码生效。全程没有"重建容器""重新拉镜像"这类更重的操作。
 
    > 注意 Docker restart policy 的一个常见误区：`on-failure` 只在退出码非 0 时才重启，我们这里是主动 `exit(0)` 正常退出，必须用 `unless-stopped` 或 `always`（现状已经是 `unless-stopped`，符合预期）。
 5. **admin 更简单**：纯静态文件，同样走"新版本目录 + 当前版本软链接"，更新 = 下载解压 + 切软链接，**连重启都不需要**，nginx/openresty 下一个请求就是新内容。
@@ -142,7 +142,7 @@ flowchart LR
         CI --> Rel
     end
 
-    subgraph Server["生产服务器 (1Panel / Docker)"]
+    subgraph Server["生产服务器 (Docker)"]
         subgraph ApiC["chordv-api 容器\nrestart: unless-stopped"]
             Cur["/app/current -> releases/0.0.3"]
             Old["releases/0.0.2 (保留,供回滚)"]
@@ -320,7 +320,7 @@ sequenceDiagram
 
 ## 12. 分期交付计划
 
-- **Phase 1（打基础）**：`deploy/1panel/chordv` 补全为可用的生产 Docker 部署（含 admin 容器化），CI 改造为"编译产物 + 发布到 GitHub Release + 写发布中心记录"，退役 `deploy-baota.yml`。此阶段版本切换仍是**手动**执行一次脚本（SSH 跑一条命令下载解压切换），但已经具备"软链接切版本 + Docker 重启策略"的基础结构。
+- **Phase 1（打基础）**：`deploy/backend` 补全为可用的生产 Docker 部署（含 admin 容器化），CI 改造为"编译产物 + 发布到 GitHub Release + 写发布中心记录"，退役 `deploy-baota.yml`。此阶段版本切换仍是**手动**执行一次脚本（SSH 跑一条命令下载解压切换），但已经具备"软链接切版本 + Docker 重启策略"的基础结构。
 - **Phase 2（核心能力）**：`chordv-api` / `chordv-admin` 内置检查更新、一键更新、失败自动回滚、前端版本徽标，覆盖第 6-8 节主流程。相比 v0.1 方案，这一期不再需要开发独立的 `chordv-updater` 组件，工作量明显更小。
 - **Phase 3（收尾加固）**：迁移前自动快照、操作审计历史列表、回滚到任意历史版本的完整 UI。
 

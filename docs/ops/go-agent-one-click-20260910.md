@@ -20,16 +20,17 @@
 
 ## 2. 安装与分发约束
 
-- 支持 amd64 / arm64、原生 systemd、面板二进制 `/usr/local/x-ui/x-ui`、3.7.0 及以上的 3.x 稳定版；其他布局或版本明确失败，不猜测默认配置路径或 API 端口。
+- 支持 amd64 / arm64、原生 systemd、面板二进制 `/usr/local/x-ui/x-ui`、3.7.0 及以上的 3.x 稳定版；其他布局或版本明确失败，不猜测默认配置路径或 API 端口。Unix socket 必须位于服务可见的系统级 `/run` 或 `/var/run`，配置路径与符号链接解析后的路径都不得进入临时目录或 `/run/user`。
 - `--inspect-panel` 由 root 读取面板配置，仅输出经过约束的公共连接信息；私钥仅在本地用于派生公钥。`--verify-inbound` 以服务用户再次检查权限；`--health` 检查已有身份、状态库及 API。
 - 同一状态库由进程锁保护，拒绝并行注册和重复计量。安装器另有宿主安装锁；已接受任务通过 root 管理的 identity marker 识别重复执行。
 - 现有 Node 身份、其他节点身份和额外 systemd 配置不会被接管。旧下载入口返回 HTTP 410；既有 VPS 上的服务和文件不会被远程停止或删除。
 - 安装中断留下的部分发布文件、临时发布链接可由同一任务重试恢复。环境与服务提升失败时恢复已有服务文件、链接，保留凭据及未结算计量。
+- 可执行程序在 root 管理且其他用户不可写的 `/opt` 私有临时目录暂存，不依赖 `/tmp` 允许执行；下载、预检失败仍清理暂存目录。
 - 更换注册令牌、复用已有主机或已有身份迁移仍必须尊重本地身份边界；不会通过删除凭据或清空状态强行接入另一任务。
 - 发行工作流构建双架构 Go 程序并写入版本、Git 提交、校验和；后台包内含 `agent-go-dist` 与安装脚本。下载目录从正在运行的发布树定位，避免读取旧容器挂载或可变 current 链接。
 - 本地未提交构建使用实际 Go 源码的 SHA-256 指纹，不将其标记成干净 HEAD 对应的字节；正式 CI 的干净构建使用 Git 提交。
 - 新建后台镜像同样构建并携带 Go 产物。可通过构建参数 `CHORDV_SOURCE_COMMIT` 指定 Git 提交；未提供 Git 元数据时，镜像明确使用 `source-sha256:...` 源码指纹，不冒充某次提交。
-- 现有 1Panel 独立后台部署包也包含 Go 的 go.mod/go.sum、cmd、internal 及安装脚本；白名单不打包 agent 目录中的本地交接文档。这是后台构建输入，不要求节点 VPS 使用 1Panel。
+- 通用的独立后台部署包包含 Go 的 go.mod/go.sum、cmd、internal 及安装脚本；白名单不打包 agent 目录中的本地交接文档。后台与节点接入均不依赖服务器管理面板。
 - 原有后台包整体签名、自更新健康门控和回退流程保持不变。本次没有签发或发布正式更新清单。
 
 ## 3. 已执行验证
@@ -41,13 +42,13 @@
 | `corepack pnpm --filter @chordv/api check` | API 编译通过 |
 | `corepack pnpm --filter @chordv/admin build` | 管理端 TypeScript / Vite 构建通过 |
 | `corepack pnpm --filter @chordv/api test:direct` | 接入、命令、注册、计量门禁及相关前端回归通过；新增 SSE 状态与关闭竞态测试 |
-| `CHORDV_INSTALLER_E2E=1 corepack pnpm --filter @chordv/api test:agent-install-staging` | 隔离 Linux 文件系统测试通过：损坏下载、网络失败、预检失败、旧身份拒绝、部分文件恢复、重复执行、提升失败回退、面板文件保留 |
+| `CHORDV_INSTALLER_E2E=1 corepack pnpm --filter @chordv/api test:agent-install-staging` | 在 `/tmp` 实际挂载为 noexec 的隔离 Linux 容器中通过：损坏下载、网络失败、预检失败、旧身份拒绝、部分文件恢复、重复执行、提升失败回退、面板文件保留 |
 | `tsx --tsconfig tsconfig.json test/agent-onboarding-postgres.regression.ts` | 独立 PostgreSQL 16 测试库：规范化保存、原子注册/排队、插入失败回滚、并发重放、错误回报拒绝、真实 tag 冻结、人工激活边界通过 |
 | `go test -race ./...` / `go vet ./...` | Go agent 全部测试、竞态检测与 vet 通过，含真实 Xray gRPC/VLESS 既有回归及新增探测、进程锁测试 |
 | `node scripts/build-go-agent.mjs <临时产物目录>` | linux amd64 / arm64 静态编译通过；版本、源码提交及哈希写入产物 |
-| `docker build --target agent-build -f deploy/1panel/chordv/Dockerfile.api -t chordv-go-seed-test .` | 新建镜像的 Go 构建阶段通过，双架构校验和通过，运行 arm64 `--build-info` 返回版本及源码指纹 |
+| `docker build --target agent-build -f deploy/backend/Dockerfile.api -t chordv-go-seed-test .` | 新建镜像的 Go 构建阶段通过，双架构校验和通过，运行 arm64 `--build-info` 返回版本及源码指纹 |
 | `tsx test/system-update-deployment.regression.ts` / `tsx test/runtime-release-contract.regression.ts` | 自更新部署与运行目录契约回归通过 |
-| `CHORDV_TEST_BUNDLE_DOCKER=1 ... tsx test/system-update-deployment.regression.ts` | 从实际生成的独立部署包构建 agent-build 阶段通过，确认 Go 构建输入和安装模板齐全，私有交接文档未打包 |
+| `CHORDV_TEST_BUNDLE_DOCKER=1 ... tsx test/system-update-deployment.regression.ts` | 从实际生成的通用后台部署包构建 agent-build 阶段通过；新部署构建根目录正确，已有部署的数据库/状态挂载保持原位置，Compose 项目名保持 chordv；构建输入齐全，私有交接文档未打包 |
 | `git diff --check` | 无空白错误 |
 
 本机 Node 为 20.20.2，项目声明 20.19.x，产生 engine 警告；真实隔离联调使用 Node 20.19.0。管理端保留原有大体积 chunk 提示，本次没有扩展做打包优化。
@@ -70,7 +71,7 @@ SSE 重连回归使用真实 AdminRuntimeEventsService 的初始事件、真实�
 
 ### 反向行为验证
 
-在独立临时副本中分别撤掉以下逻辑，再运行对应测试；六次都因**业务断言失败**被捕获，未把构建或测试框架错误计入通过：
+在独立临时副本中分别撤掉以下逻辑，再运行对应测试；八次都因**业务断言失败**被捕获，未把构建或测试框架错误计入通过：
 
 - 去掉 `tunnel` 识别 → 实际面板监听测试失败。
 - 去掉进程互斥锁 → 第二个 writer 被错误接受，测试失败。
@@ -78,6 +79,8 @@ SSE 重连回归使用真实 AdminRuntimeEventsService 的初始事件、真实�
 - 去掉注册事务中的校验任务创建 → PostgreSQL 回滚测试发现注册不再随排队失败回滚，测试失败。
 - 使用缺少 Go 输入的旧独立部署包生成器 → 必需构建文件断言失败。
 - 去掉服务端连接建立时的节点刷新事件 → 断线期间完成任务的重连回归失败。
+- 恢复在 `/tmp` 执行下载的程序 → 实际 noexec tmpfs 上的安装成功断言失败，输出权限拒绝。
+- 允许服务不可见的 socket 路径 → 预检拒绝测试失败。
 
 ## 4. 尚未执行与发布门槛
 
@@ -143,9 +146,9 @@ SSE 重连回归使用真实 AdminRuntimeEventsService 的初始事件、真实�
 | --- | --- |
 | `scripts/install-go-agent.sh` | root 预检、校验下载、服务用户预检、受限 systemd 服务、身份保护、重复执行及提升恢复 |
 | `scripts/build-go-agent.mjs` | 双架构静态编译、版本和提交注入、哈希与清单生成 |
-| `scripts/prepare-1panel-chordv-bundle.mjs` | 补齐独立后台部署包的 Go 构建输入和安装模板，继续排除本地交接资料 |
+| `scripts/prepare-backend-bundle.mjs` | 补齐独立后台部署包的 Go 构建输入和安装模板，继续排除本地交接资料 |
 | `.github/workflows/release-backend.yml` | 后台发行中验证/构建 Go，并把 Go 产物与脚本纳入自更新包 |
-| `deploy/1panel/chordv/Dockerfile.api` | 为新建 seed 镜像构建并携带同样的 Go 产物与脚本 |
+| `deploy/backend/Dockerfile.api` | 为新建 seed 镜像构建并携带同样的 Go 产物与脚本 |
 | `.gitignore` | 排除本地生成的 `agent-go-dist` |
 
 ### 后端与安装回归
@@ -180,3 +183,34 @@ SSE 重连回归使用真实 AdminRuntimeEventsService 的初始事件、真实�
 | 文件 | 修改 |
 | --- | --- |
 | `docs/ops/go-agent-one-click-20260910.md` | 本文：实现、逐文件说明、验证证据和未验收边界 |
+
+## 6. 通用后台部署入口清理
+
+代码调用链使用 Docker Compose、容器内监督脚本和 `release-backend.yml`，没有服务器管理面板 API 依赖。旧面板专用命名已从运行入口、打包命令、测试和当前部署说明中移除，统一为 `deploy/backend`、`scripts/prepare-backend-bundle.mjs`、`prepare:backend-bundle` 和 `.deploy/chordv-backend-bundle`。
+
+本次只移动版本控制中的配置/脚本。已有宿主目录和本地原 `.env` 保留原位置；历史恢复记录中的真实备份路径不改写，并标明它们是当次记录。现有部署使用新源码模板时，必须通过 `--project-directory` / `--env-file` 保留原运行目录，通过 `CHORDV_BUILD_CONTEXT` 指向源码根；通用模板固定默认 Compose 项目名 `chordv`，自定义部署继续指定原项目名。
+
+### 部署文件与说明
+
+| 文件 | 本次清理 |
+| --- | --- |
+| `deploy/backend/Dockerfile.api`、`deploy/backend/Dockerfile.admin` | 移至通用目录，更新 Docker COPY 路径 |
+| `deploy/backend/docker-compose.yml` | 更新 Dockerfile 路径和构建根目录，保留项目身份及容器内路径，支持显式源码构建上下文 |
+| `deploy/backend/entrypoint.sh`、`deploy/backend/admin-entrypoint.sh` | 仅移动路径，监督和公开健康标记逻辑不变 |
+| `deploy/backend/admin.nginx.conf`、`deploy/backend/openresty.v.baymaxgroup.com.conf` | 仅移动路径，代理配置内容不变 |
+| `scripts/prepare-backend-bundle.mjs`、`package.json` | 更换通用打包入口与输出名，更新白名单并附带 `.dockerignore` |
+| `.gitignore`、`.dockerignore`、`.env.example` | 对所有部署目录层级统一排除运行数据，清理过时配置说明，继续保护旧目录遗留数据 |
+| `README.md`、`docs/prd/backend-self-update.md` | 更新实际运行方式、新入口，以及已有部署保留原数据位置的配置方法 |
+| `docs/prd/node-revision-agent-native.md`、`.github/workflows/deploy-baota.yml`、`apps/node-agent/deploy/package-release.sh` | 清除过时的管理面板归属描述；旧宝塔工作流仍保持停用自动触发 |
+| `docs/ops/agent-distribution.md`、`docs/ops/restore-xui-20260909.md` | 明确标为历史记录，保留当时真实机器路径而不将其描述为当前部署入口 |
+
+### 受影响测试
+
+| 文件 | 本次清理 |
+| --- | --- |
+| `apps/api/test/system-update-deployment.regression.ts` | 使用通用打包器，验证新构建上下文与旧运行目录绑定，执行实际生成包的 Go 构建 |
+| `apps/api/test/runtime-release-contract.regression.ts` | 更新通用打包命令引用 |
+| `apps/api/test/system-update-supervisor.regression.ts`、`apps/api/test/system-update-journal-recovery.regression.ts` | 更新监督者脚本路径 |
+| `apps/api/test/system-update-snapshot-security.regression.ts`、`apps/api/test/system-update-release-policy.regression.ts` | 更新监督者脚本路径 |
+| `apps/api/test/promotion-admission.regression.ts`、`apps/api/test/system-update-webroot.regression.sh` | 更新脚本路径；保留准入与公开页面目录原子替换回归 |
+| `apps/api/test/agent-inbound.regression.ts` | 将代理链说明改为实际 Docker 反向代理拓扑 |

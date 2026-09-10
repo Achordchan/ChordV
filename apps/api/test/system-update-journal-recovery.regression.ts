@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const entrypoint = path.resolve(__dirname, "../../../deploy/1panel/chordv/entrypoint.sh");
+const entrypoint = path.resolve(__dirname, "../../../deploy/backend/entrypoint.sh");
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check: () => boolean, logs: () => string) {
   const deadline = Date.now() + 15_000;

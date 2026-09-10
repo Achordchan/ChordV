@@ -91,3 +91,21 @@ func TestSocketCannotInjectEnvironment(t *testing.T) {
 		t.Fatal("shell syntax accepted in EnvironmentFile value")
 	}
 }
+
+func TestServiceSocketNamespace(t *testing.T) {
+	for _, address := range []string{"unix:/tmp/api.sock", "unix:/var/tmp/api.sock", "unix:/run/../tmp/api.sock",
+		"unix:/home/panel/api.sock", "unix:/root/api.sock", "unix:/run/user/1000/api.sock", "unix:/var/run/user/1000/api.sock"} {
+		c := sampleConfig()
+		delete(c, "inbounds")
+		c["api"].(map[string]any)["listen"] = address
+		data, _ := json.Marshal(c)
+		if _, err := APIAddress(data); err == nil {
+			t.Fatalf("service-invisible socket accepted: %s", address)
+		}
+	}
+	for _, path := range []string{"/tmp/api.sock", "/var/tmp/api.sock", "/run/user/1000/api.sock"} {
+		if serviceSocketPath(path) {
+			t.Fatalf("resolved socket alias accepted: %s", path)
+		}
+	}
+}

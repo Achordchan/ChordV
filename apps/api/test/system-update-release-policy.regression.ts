@@ -81,7 +81,7 @@ async function supervisorRetention(healthy: boolean) {
   }
   writeFileSync(path.join(state, "last-good-version"), "1.0.2");
   writeFileSync(path.join(state, "pending.json"), JSON.stringify({ version: "1.0.3", operationId: "sysop-retention", kind: "update", migrationApplied: false }));
-  const child = spawn("bash", [path.resolve(__dirname, "../../../deploy/1panel/chordv/entrypoint.sh")], {
+  const child = spawn("bash", [path.resolve(__dirname, "../../../deploy/backend/entrypoint.sh")], {
     detached: true, stdio: ["ignore", "ignore", "pipe"], env: {
       ...process.env, TSX_TSCONFIG_PATH: path.resolve(__dirname, "../tsconfig.json"),
       CHORDV_SYSTEM_NODE_BIN: process.execPath, CHORDV_SYSTEM_RELEASES_DIR: releases, CHORDV_SYSTEM_STATE_DIR: state,

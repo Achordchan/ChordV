@@ -5,7 +5,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { resolveSystemUpdateRuntimeConfig } from "../src/modules/common/system-update.constants";
 const root = mkdtempSync(path.join(tmpdir(), "chordv-snapshot-security-"));
-const script = readFileSync(path.resolve(__dirname, "../../../deploy/1panel/chordv/entrypoint.sh"), "utf8");
+const script = readFileSync(path.resolve(__dirname, "../../../deploy/backend/entrypoint.sh"), "utf8");
 const definitions = script.slice(0, script.indexOf('\nAPP_PID=""'));
 const backup = path.join(root, "backups"), calls = path.join(root, "calls");
 mkdirSync(backup, { mode: 0o755 });
@@ -53,7 +53,7 @@ try {
       const result = run("invalid-setting", "1", { CHORDV_SYSTEM_UPDATE_SNAPSHOT: value });
       assert.notEqual(result.status, 0); assert.equal(existsSync(calls), false);
       const state = path.join(root, "invalid-state");
-      const startup = spawnSync("bash", [path.resolve(__dirname, "../../../deploy/1panel/chordv/entrypoint.sh")], {
+      const startup = spawnSync("bash", [path.resolve(__dirname, "../../../deploy/backend/entrypoint.sh")], {
         encoding: "utf8", env: { ...process.env, CHORDV_SYSTEM_NODE_BIN: process.execPath, CHORDV_SYSTEM_STATE_DIR: state }
       });
       assert.equal(startup.status, 1); assert.equal(existsSync(state), false, "reject before startup mutates state");

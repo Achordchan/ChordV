@@ -3,7 +3,7 @@
 #
 # Unlike a classic "bake the app into the image and run it" Dockerfile, the app
 # here runs out of a *writable* release directory so it can update itself in
-# place (see deploy/1panel/chordv/entrypoint.sh). The image ships a self-contained
+# place (see deploy/backend/entrypoint.sh). The image ships a self-contained
 # "seed" release at /app/seed; on first boot the supervisor copies it into the
 # releases volume as /app/releases/<version> and points /app/current at it.
 #
@@ -95,7 +95,7 @@ WORKDIR /app
 # Seed release = the whole built tree (pnpm node_modules symlinks are relative and
 # stay valid when the supervisor relocates this into /app/releases/<version>).
 COPY --from=build /build /app/seed
-COPY deploy/1panel/chordv/entrypoint.sh /app/entrypoint.sh
+COPY deploy/backend/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 ENV NODE_ENV=production

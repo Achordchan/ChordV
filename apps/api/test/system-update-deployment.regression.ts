@@ -7,7 +7,7 @@ import { resolveSystemUpdateRuntimeConfig } from "../src/modules/common/system-u
 import { MAX_VERSION_LENGTH } from "../src/modules/common/release-center.utils";
 
 const root = path.resolve(__dirname, "../../..");
-const deploy = "deploy/1panel/chordv";
+const deploy = "deploy/backend";
 const read = (file: string) => readFileSync(path.join(root, file), "utf8");
 const compose = read(`${deploy}/docker-compose.yml`);
 const api = compose.match(/^  api:\n([\s\S]*?)(?=^  admin:)/m)?.[1];
@@ -35,7 +35,7 @@ for (const [directory, target, envName] of [
   // Literal environment mappings override env_file, including legacy backup paths.
   assert.match(api, new RegExp(`^      ${envName}: ${target}$`, "m"));
   assert.match(read(`${deploy}/Dockerfile.api`), new RegExp(`^ENV ${envName}=${target}$`, "m"));
-  assert.ok(read(".gitignore").split("\n").includes(`${deploy}/${directory}/`));
+  assert.ok(read(".gitignore").split("\n").includes(`deploy/**/${directory}/`), "current and legacy runtime directories must stay ignored");
   const ignored = spawnSync("git", ["check-ignore", "--no-index", `${deploy}/${directory}/private-sentinel`], {
     cwd: root, encoding: "utf8"
   });
@@ -135,7 +135,7 @@ try {
   // directories and a private .env must not enter the bundle; never inspect live data.
   const fixture = path.join(temp, "package-fixture");
   mkdirSync(fixture);
-  const packaging = read("scripts/prepare-1panel-chordv-bundle.mjs");
+  const packaging = read("scripts/prepare-backend-bundle.mjs");
   const inventory = packaging.match(/const copyTargets = \[([\s\S]*?)\n\];/)?.[1];
   assert.ok(inventory);
   const targets = [...inventory.matchAll(/^  "([^"]+)"/gm)].map((match) => match[1]);
@@ -153,11 +153,11 @@ try {
   writeFileSync(path.join(fixture, deploy, ".env"), "PRIVATE_SECRET=must-not-ship\n");
   mkdirSync(path.join(fixture, "apps/agent"), { recursive: true });
   writeFileSync(path.join(fixture, "apps/agent/HANDOFF-ONE-CLICK.md"), "PRIVATE_HANDOFF=must-not-ship\n");
-  const packaged = spawnSync(process.execPath, [path.join(root, "scripts/prepare-1panel-chordv-bundle.mjs")], {
+  const packaged = spawnSync(process.execPath, [path.join(root, "scripts/prepare-backend-bundle.mjs")], {
     cwd: fixture, encoding: "utf8"
   });
   assert.equal(packaged.status, 0, packaged.stderr);
-  const bundle = path.join(fixture, ".deploy/chordv-1panel-bundle");
+  const bundle = path.join(fixture, ".deploy/chordv-backend-bundle");
   assert.equal(readFileSync(path.join(bundle, deploy, "docker-compose.yml"), "utf8"), compose);
   for (const required of ["apps/agent/go.mod", "apps/agent/go.sum", "apps/agent/cmd/chordv-agent/main.go",
     "apps/agent/internal/onboarding/inspect.go", "scripts/install-go-agent.sh"]) {
@@ -165,7 +165,32 @@ try {
     assert.equal(readFileSync(path.join(bundle, required), "utf8"), read(required));
   }
   assert.equal(existsSync(path.join(bundle, "apps/agent/HANDOFF-ONE-CLICK.md")), false, "local handoff notes must not ship");
+  assert.equal(readFileSync(path.join(bundle, ".dockerignore"), "utf8"), read(".dockerignore"));
   if (process.env.CHORDV_TEST_BUNDLE_DOCKER === "1") {
+    const retained = path.join(fixture, "retained-runtime");
+    mkdirSync(retained);
+    writeFileSync(path.join(retained, ".env"), "POSTGRES_PASSWORD=isolated-config-test\n");
+    const resolved = spawnSync("docker", ["compose", "--project-directory", retained, "--env-file", path.join(retained, ".env"),
+      "-f", path.join(bundle, deploy, "docker-compose.yml"), "config", "--format", "json"], {
+      encoding: "utf8", env: { ...process.env, CHORDV_BUILD_CONTEXT: bundle }, timeout: 15_000
+    });
+    assert.equal(resolved.status, 0, resolved.stderr);
+    const config = JSON.parse(resolved.stdout);
+    assert.equal(config.name, "chordv", "renaming source directories must not change the Compose project");
+    assert.equal(config.services.api.build.context, bundle);
+    assert.equal(config.services.api.build.dockerfile, `${deploy}/Dockerfile.api`);
+    assert.equal(config.services.postgres.volumes.find((volume: { target: string }) => volume.target === "/var/lib/postgresql/data").source,
+      path.join(retained, "postgres-data"), "existing runtime data must stay in its original directory");
+    assert.equal(config.services.api.volumes.find((volume: { target: string }) => volume.target === "/app/state").source,
+      path.join(retained, "api-state"));
+    // Fresh standalone builds use the bundle root without an override.
+    writeFileSync(path.join(bundle, deploy, ".env"), "POSTGRES_PASSWORD=isolated-config-test\n");
+    const freshEnv = { ...process.env }; delete freshEnv.CHORDV_BUILD_CONTEXT;
+    const fresh = spawnSync("docker", ["compose", "-f", path.join(bundle, deploy, "docker-compose.yml"), "config", "--format", "json"],
+      { encoding: "utf8", env: freshEnv, timeout: 15_000 });
+    assert.equal(fresh.status, 0, fresh.stderr);
+    assert.equal(JSON.parse(fresh.stdout).services.api.build.context, bundle);
+    rmSync(path.join(bundle, deploy, ".env"));
     const built = spawnSync("docker", ["build", "--target", "agent-build", "-f", `${deploy}/Dockerfile.api`, "."],
       { cwd: bundle, encoding: "utf8", timeout: 180_000 });
     assert.equal(built.status, 0, built.stdout + built.stderr);
