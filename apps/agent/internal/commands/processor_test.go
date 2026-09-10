@@ -1789,3 +1789,57 @@ func TestAClaimIsReleasedWhenTheAccountIsGoneFromXrayToo(t *testing.T) {
 		t.Fatalf("面板重用了这个地址，却被当成本节点的遗留账号删掉：%v", fake.calls)
 	}
 }
+
+// TestARenameReleasesBothFormsOfOwnership covers the note that can outlive the
+// address it names.
+//
+// A pending-removal note survives a re-enable — ENSURE_USER records provisioning
+// but does not clear the note. Renaming the binding then uninstalls the old
+// account and drops its provisioning claim, and if the note stays behind it goes
+// on asserting ownership of an address the binding has released. A panel
+// administrator reuses it, and the next reconcile deletes their account.
+func TestARenameReleasesBothFormsOfOwnership(t *testing.T) {
+	for _, viaCommand := range []bool{true, false} {
+		name := "reconcile"
+		if viaCommand {
+			name = "ensure_user"
+		}
+		t.Run(name, func(t *testing.T) {
+			processor, fake, state := newProcessor(t, false)
+			seedOwned(t, state, protocol.DesiredUser{
+				BindingID: "b1", Email: "old@chordv", UUID: "u1", Revision: "1",
+				Enabled: true, QuotaRemainingBytes: "1000", OfflineAllowanceBytes: "1000",
+			})
+			if err := state.RecordPendingRemoval([]string{"old@chordv"}); err != nil {
+				t.Fatal(err)
+			}
+			fake.live = []xray.LiveUser{{Email: "old@chordv"}}
+
+			renamed := userPayload("b1", "new@chordv")
+			if viaCommand {
+				run(t, processor, command("c1", protocol.CommandEnsureUser, "2", renamed), true)
+			} else {
+				// The install fails, so the cleanup pass — which would otherwise
+				// release the note on its way past — never runs. That is the only
+				// window in which the rename's own release is load-bearing, and
+				// it is a real one: the old account is already uninstalled, so a
+				// surviving note asserts ownership of an address the panel may
+				// take over before the next reconcile.
+				fake.ensureErr = errors.New("gRPC 断开")
+				run(t, processor, command("c1", protocol.CommandReconcileUsers, "2", map[string]any{
+					"controlMode": string(protocol.ModeDirectPrimary),
+					"users":       []any{map[string]any(renamed)},
+				}), true)
+			}
+			pending, err := state.PendingRemovals()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, email := range pending {
+				if email == "old@chordv" {
+					t.Fatal("改名之后旧地址仍被 pending 记录主张所有权")
+				}
+			}
+		})
+	}
+}

@@ -1298,3 +1298,55 @@ func TestTheUpgradeReplayIgnoresSupersededCommands(t *testing.T) {
 		t.Fatalf("升级后的供给凭据 = %v，want 空：revision 5 的安装已被 revision 6 的移除取代", got)
 	}
 }
+
+// TestTheUpgradeReplayInheritsTheControlMode covers the reconcile that does not
+// repeat the mode.
+//
+// An ABSENT controlMode means "keep whatever this node is on", and the processor
+// honours that. A replay that requires every payload to repeat it drops those
+// reconciles — including their RELEASES. A mode-omitted direct reconcile that
+// removes everyone would then leave the previous install claimed, and a panel
+// account reusing that address could be deleted as ours.
+func TestTheUpgradeReplayInheritsTheControlMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-agent.db")
+	state := openAt(t, path, "node-1", "boot-1")
+
+	finish := func(id string, kind protocol.CommandType, revision string, payload map[string]any) {
+		t.Helper()
+		if _, err := state.BeginCommand(protocol.Command{
+			CommandID: id, Type: kind, TargetRevision: revision, Payload: payload,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.CompleteCommand(protocol.CommandResult{
+			CommandID: id, Status: protocol.StatusCompleted,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	finish("c1", protocol.CommandReconcileUsers, "1", map[string]any{
+		"controlMode": string(protocol.ModeDirectPrimary),
+		"users":       []any{map[string]any{"bindingId": "b1", "email": "recycled@chordv", "uuid": "u"}},
+	})
+	// No controlMode: the node stays on direct_primary, and this removes everyone.
+	finish("c2", protocol.CommandReconcileUsers, "2", map[string]any{"users": []any{}})
+
+	if _, err := state.db.Exec(`DELETE FROM provisioned_accounts_v2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.Exec(`DELETE FROM meta_v2 WHERE key = 'provisioned_backfilled'`); err != nil {
+		t.Fatal(err)
+	}
+	state.Close()
+
+	reopened := openAt(t, path, "node-1", "boot-2")
+	got, err := reopened.ProvisionedAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("升级后的供给凭据 = %v，want 空：省略 controlMode 的那次 reconcile 清空了用户集", got)
+	}
+}

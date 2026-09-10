@@ -187,6 +187,12 @@ func (p *Processor) ensureUser(ctx context.Context, command protocol.Command) er
 			if err := p.deps.Store.ForgetProvisioned([]string{stored.Email}); err != nil {
 				return err
 			}
+			// BOTH forms, as REMOVE_USER does: a pending note left behind keeps
+			// asserting ownership of an address this binding has released, and
+			// the panel may reuse it before the next reconcile looks again.
+			if err := p.deps.Store.ClearPendingRemoval([]string{stored.Email}); err != nil {
+				return err
+			}
 			p.logf("[agent] 用户 %s 的 email 由 %s 变更为 %s，已卸载旧账号", user.BindingID, stored.Email, user.Email)
 		}
 	}
@@ -727,6 +733,10 @@ func (p *Processor) Reconcile(ctx context.Context, users []protocol.DesiredUser)
 		// The old email is gone for good; the new one is claimed by the install
 		// pass below.
 		if err := p.deps.Store.ForgetProvisioned([]string{old}); err != nil {
+			return err
+		}
+		// BOTH forms — see the same handover in ensureUser.
+		if err := p.deps.Store.ClearPendingRemoval([]string{old}); err != nil {
 			return err
 		}
 		p.logf("[agent] 用户 %s 的 email 由 %s 变更为 %s，已卸载旧账号", user.BindingID, old, user.Email)

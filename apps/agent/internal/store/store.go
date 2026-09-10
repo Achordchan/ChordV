@@ -408,6 +408,16 @@ func (s *Store) provisionedFromHistory() (int, error) {
 		return 0, sortErr
 	}
 	owned := map[string]string{} // bindingId -> the email it currently holds
+	// The effective mode is tracked, not required of every payload: an ABSENT
+	// controlMode means "keep whatever this node is on", and the processor
+	// honours that. Ignoring those reconciles would drop their releases —
+	// a mode-omitted direct reconcile that removes everyone would leave the
+	// previous install claimed, and a panel account reusing that address could
+	// then be deleted.
+	//
+	// Starting from the store's own default for an unset mode keeps replay and
+	// runtime reading the history the same way.
+	mode := protocol.ModeShadowDirect
 	for _, entry := range history {
 		kind, raw := entry.kind, entry.raw
 		// The column holds the whole marshalled Command, not just its payload.
@@ -441,7 +451,10 @@ func (s *Store) provisionedFromHistory() (int, error) {
 				}
 			}
 		case protocol.CommandReconcileUsers:
-			if value, _ := payload["controlMode"].(string); protocol.ControlMode(value) != protocol.ModeDirectPrimary {
+			if value, _ := payload["controlMode"].(string); protocol.IsControlMode(value) {
+				mode = protocol.ControlMode(value)
+			}
+			if mode != protocol.ModeDirectPrimary {
 				continue
 			}
 			items, present := payload["users"].([]any)
