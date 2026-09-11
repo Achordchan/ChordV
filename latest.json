@@ -1,0 +1,17 @@
+{
+  "version": "0.0.14",
+  "channel": "stable",
+  "tag": "backend-v0.0.14",
+  "publishedAt": "2026-09-11T03:49:08Z",
+  "htmlUrl": "https://github.com/Achordchan/ChordV/releases/tag/backend-v0.0.14",
+  "changelog": [
+    "将 3x-ui 最低接入版本调整为 3.1.0，支持该版本及以上的 3.x 稳定版。",
+    "统一后台与 Go 安装器的版本门槛，保留 Xray API、统计配置及入站参数检查。",
+    "补充最低版本边界回归用例；3.1.0 的实际安装、连接和计量尚未完成实机验收。"
+  ],
+  "artifact": {
+    "url": "https://github.com/Achordchan/ChordV/releases/download/backend-v0.0.14/chordv-backend-0.0.14.tar.gz",
+    "sha256": "761bf11a7cf2d7be6cc305c0092ed80cf2d100600233de236e87402ebf57d375",
+    "sizeBytes": 103164848
+  }
+}
