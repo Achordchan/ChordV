@@ -298,9 +298,8 @@ export class AgentService {
 
   /**
    * Writes the connection parameters an agent reported for a deployed inbound.
-   * The node stays inactive: this only makes activation POSSIBLE (the shared
-   * onboarding invariant starts passing), because shipping users to an inbound
-   * nobody has smoke-tested is the operator's call, not ours.
+   * Newly created nodes opt into activation after their first validated report.
+   * Existing nodes and later revalidations preserve the administrator's state.
    */
   private async applyInboundReport(
     tx: Prisma.TransactionClient,
@@ -321,9 +320,16 @@ export class AgentService {
       const report = (input.result as { inbound: { inboundTag: string } }).inbound;
       await tx.nodeCommandJob.update({ where: { id: job.id }, data: { payload: { ...payload, inboundTag: report.inboundTag, tagOverrideConfirmed: true } as Prisma.InputJsonValue } });
     }
+    const current = payload.mode === "validate_panel" ? await tx.node.findUnique({
+      where: { id: nodeId },
+      select: { inboundAppliedRevision: true, onboardingSpec: true, registrationStatus: true }
+    }) : null;
+    const activate = current?.registrationStatus === "agent_ready"
+      && current.inboundAppliedRevision === 0n
+      && (current.onboardingSpec as Record<string, unknown> | null)?.activateOnFirstValidation === true;
     const updated = await tx.node.updateMany({
       where: { id: nodeId, inboundAppliedRevision: { lt: job.targetRevision }, ...(payload.mode === "validate_panel" ? { isActive: false } : {}) },
-      data: { ...fields, inboundAppliedRevision: job.targetRevision }
+      data: { ...fields, inboundAppliedRevision: job.targetRevision, ...(activate ? { isActive: true } : {}) }
     });
     if (payload.mode === "validate_panel" && updated.count === 0) {
       throw new BadRequestException("节点已激活或校验结果已过期，请停用并基于当前 revision 重新校验");
