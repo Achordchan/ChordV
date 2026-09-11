@@ -7,8 +7,14 @@ fail() {
   exit 1
 }
 
+local_agent_requested=false
+if [ "${1:-}" = "--with-agent" ]; then
+  local_agent_requested=true
+  shift
+fi
+
 if [ "$#" -gt 1 ]; then
-  fail "只接受一个可选的 API 端口参数，例如 ./start.sh 3100"
+  fail "只接受一个可选的后台页面端口，例如 bash ./start.sh 5174"
 fi
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -60,21 +66,19 @@ load_env_file ".env"
 
 # shellcheck source=scripts/local-runtime-bootstrap.sh
 source "$script_dir/scripts/local-runtime-bootstrap.sh"
-select_compatible_node
+select_node_runtime
 
-api_port=${1:-${CHORDV_API_PORT:-3000}}
-case "$api_port" in
-  ''|*[!0-9]*) fail "API 端口必须是 1..65535 的整数" ;;
-esac
-if [ "$api_port" -lt 1 ] || [ "$api_port" -gt 65535 ]; then
-  fail "API 端口必须是 1..65535 的整数"
-fi
-
-desktop_port=5173
-admin_port=5174
-if [ "$api_port" -eq "$desktop_port" ] || [ "$api_port" -eq "$admin_port" ]; then
-  fail "API 端口不能与桌面客户端端口 $desktop_port 或运营后台端口 $admin_port 相同"
-fi
+admin_port=${1:-${CHORDV_ADMIN_PORT:-5174}}
+api_port=${CHORDV_API_PORT:-3000}
+for port in "$admin_port" "$api_port"; do
+  case "$port" in
+    ''|*[!0-9]*) fail "端口必须是 1..65535 的整数" ;;
+  esac
+  if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+    fail "端口必须是 1..65535 的整数"
+  fi
+done
+[ "$api_port" -ne "$admin_port" ] || fail "内部 API 端口与后台页面端口不能相同；浏览器只需访问后台页面端口"
 
 check_port_available() {
   host=$1
@@ -95,28 +99,30 @@ NODE
   fi
 }
 
-check_port_available "127.0.0.1" "$api_port" "API"
-check_port_available "localhost" "$desktop_port" "桌面客户端"
-check_port_available "127.0.0.1" "$admin_port" "运营后台"
+check_port_available "127.0.0.1" "$api_port" "内部 API"
+check_port_available "127.0.0.1" "$admin_port" "后台页面"
 
-export NODE_ENV=${NODE_ENV:-development}
+export CHORDV_DEV_WITH_AGENT=0
+if [ "$local_agent_requested" = true ]; then export CHORDV_DEV_WITH_AGENT=1; fi
+export NODE_ENV=development
 export CHORDV_API_PORT=$api_port
-export CHORDV_API_HOST=${CHORDV_API_HOST:-127.0.0.1}
+export CHORDV_API_HOST=127.0.0.1
+export CHORDV_ADMIN_PORT=$admin_port
 export CHORDV_API_BASE_URL="http://127.0.0.1:$api_port"
-export VITE_API_BASE_URL=$CHORDV_API_BASE_URL
+export CHORDV_DEV_API_TARGET="$CHORDV_API_BASE_URL"
+export CHORDV_ADMIN_BASE_URL="http://127.0.0.1:$admin_port"
+export CHORDV_ALLOW_LOCAL_DEV_ORIGINS=true
+export VITE_API_BASE_URL=""
 
 ensure_pnpm_and_dependencies
 install_local_runtime_cleanup
+ensure_prisma_client
+# Both the API and development seed import this package's compiled exports.
+# Prepare it once here; the API watcher below does not rebuild it a second time.
+printf '正在准备后台共享模块。\n'
+corepack pnpm --filter @chordv/shared build || fail "后台共享模块准备失败"
 prepare_local_database
 
-printf 'API 地址：http://127.0.0.1:%s/api\n' "$api_port"
-printf '运营后台：http://127.0.0.1:%s\n' "$admin_port"
-printf '正在启动 Tauri 桌面客户端（开发页面端口：%s）。\n' "$desktop_port"
-printf '日志将直接显示在当前终端；按 Ctrl+C 同时停止运营后台、桌面客户端、API 和项目本地 PostgreSQL。\n'
-
-if [ "${CHORDV_LOCAL_AGENT_ENABLED:-false}" = "true" ]; then
-  printf '已启用隔离的本地 Node Agent / Xray 测试链路。\n'
-  corepack pnpm dev:local:agent
-else
-  corepack pnpm dev:local
-fi
+printf '正在启动后台页面和 API，等待服务就绪…\n'
+printf '按 Ctrl+C 停止本次启动的后台服务。\n'
+node "$script_dir/scripts/local-backend-dev.mjs"

@@ -44,26 +44,6 @@ to_windows_path() {
   fi
 }
 
-node_version_is_compatible() {
-  version=${1#v}
-  required=$(tr -d '[:space:]' < .nvmrc)
-  old_ifs=$IFS
-  IFS=.
-  set -- $version
-  actual_major=${1:-0}
-  actual_minor=${2:-0}
-  actual_patch=${3:-0}
-  set -- $required
-  required_major=${1:-0}
-  required_minor=${2:-0}
-  required_patch=${3:-0}
-  IFS=$old_ifs
-
-  [ "$actual_major" -eq "$required_major" ] 2>/dev/null &&
-    [ "$actual_minor" -eq "$required_minor" ] 2>/dev/null &&
-    [ "$actual_patch" -ge "$required_patch" ] 2>/dev/null
-}
-
 ensure_windows_pnpm_shim() {
   is_windows_bash || return 0
   mkdir -p "$runtime_root/bin"
@@ -72,46 +52,38 @@ ensure_windows_pnpm_shim() {
   hash -r
 }
 
-select_compatible_node() {
-  [ -f .nvmrc ] || runtime_fail "缺少 .nvmrc，无法确定项目 Node.js 版本"
-  required_node=$(tr -d '[:space:]' < .nvmrc)
-
-  if command -v node >/dev/null 2>&1 && node_version_is_compatible "$(node --version)"; then
-    ensure_windows_pnpm_shim
-    return 0
-  fi
-
-  if is_windows_bash; then
-    nvm_root=${NVM_HOME:-}
-    if [ -z "$nvm_root" ] && command -v nvm >/dev/null 2>&1; then
-      nvm_root=$(nvm root 2>/dev/null | tr -d '\r' | sed 's/^Current Root:[[:space:]]*//')
-    fi
-    if [ -n "$nvm_root" ]; then
-      nvm_root=$(to_posix_path "$nvm_root")
-      required_series=${required_node%.*}
-      compatible_dir=$(find "$nvm_root" -mindepth 1 -maxdepth 1 -type d -name "v$required_series.*" -print 2>/dev/null | sort -V | tail -n 1)
-      if [ -n "$compatible_dir" ] && [ -x "$compatible_dir/node.exe" ]; then
-        export PATH="$compatible_dir:$PATH"
-        hash -r
-      fi
-    fi
-  fi
-
-  if ! command -v node >/dev/null 2>&1; then
-    runtime_fail "未找到 Node.js；项目需要 $required_node 或同系列更新补丁版本"
-  fi
-
-  actual_node=$(node --version)
-  if ! node_version_is_compatible "$actual_node"; then
-    runtime_fail "Node.js 版本为 ${actual_node#v}；请安装 $required_node 或 20.19.x 更新补丁版本"
-  fi
-
+select_node_runtime() {
+  # Local development uses the caller's Node runtime. .nvmrc remains the CI
+  # baseline, not a restriction or an automatic version switch on this machine.
+  command -v node >/dev/null 2>&1 || runtime_fail "未找到 Node.js，请先安装并加入 PATH"
+  actual_node=$(node --version) || runtime_fail "当前 Node.js 无法执行"
   ensure_windows_pnpm_shim
-  printf '已使用项目兼容 Node.js %s，不修改系统全局版本。\n' "${actual_node#v}"
+  printf '使用当前 Node.js %s。\n' "${actual_node#v}"
+}
+
+ensure_local_corepack() {
+  command -v corepack >/dev/null 2>&1 && return 0
+
+  # Keep the launcher local and versioned. Newer Node distributions may omit
+  # Corepack; installing it here must not modify global npm or Node files.
+  local corepack_version="0.34.5"
+  local tooling_dir="$runtime_root/tooling/corepack-$corepack_version"
+  if [ ! -f "$tooling_dir/node_modules/corepack/dist/corepack.js" ] ||
+    [ ! -f "$tooling_dir/node_modules/.bin/corepack" ] ||
+    { is_windows_bash && [ ! -f "$tooling_dir/node_modules/.bin/corepack.cmd" ]; }; then
+    command -v npm >/dev/null 2>&1 || runtime_fail "未找到 Corepack 或 npm，请安装带 npm 的 Node.js 后重试"
+    mkdir -p "$tooling_dir"
+    printf '首次运行：正在项目目录准备 Corepack %s。\n' "$corepack_version"
+    npm install --prefix "$tooling_dir" --no-save --package-lock=false --no-audit --no-fund "corepack@$corepack_version" ||
+      runtime_fail "项目本地 Corepack 安装失败，请检查 npm 网络连接后重试"
+  fi
+  export PATH="$tooling_dir/node_modules/.bin:$PATH"
+  hash -r
+  command -v corepack >/dev/null 2>&1 || runtime_fail "项目本地 Corepack 不可用，请检查 .data/local-runtime/tooling 目录"
 }
 
 ensure_pnpm_and_dependencies() {
-  command -v corepack >/dev/null 2>&1 || runtime_fail "当前 Node.js 缺少 Corepack"
+  ensure_local_corepack
   export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
   required_pnpm=$(node -p "(require('./package.json').packageManager || '').split('@')[1] || ''")
@@ -123,6 +95,29 @@ ensure_pnpm_and_dependencies() {
   if [ ! -f node_modules/.modules.yaml ]; then
     printf '首次运行：正在安装项目依赖。\n'
     corepack pnpm install --frozen-lockfile || runtime_fail "依赖安装失败"
+  fi
+}
+
+ensure_prisma_client() {
+  # Compare the generated client with the actual schema instead of regenerating
+  # unchanged files on every startup. This reads files only, not the database.
+  if node <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+try {
+  const clientPackage = require.resolve("@prisma/client/package.json", { paths: [path.resolve("apps/api")] });
+  const generated = require.resolve(".prisma/client/default", { paths: [path.dirname(clientPackage)] });
+  const schema = path.join(path.dirname(generated), "schema.prisma");
+  const sameSchema = fs.readFileSync(schema).equals(fs.readFileSync("apps/api/prisma/schema.prisma"));
+  const generatedVersion = require(generated).Prisma.prismaVersion.client;
+  process.exit(sameSchema && generatedVersion === require(clientPackage).version ? 0 : 1);
+} catch { process.exit(1); }
+NODE
+  then
+    printf '复用已生成的 Prisma Client。\n'
+  else
+    printf '正在生成 Prisma Client。\n'
+    corepack pnpm --filter @chordv/api db:generate || runtime_fail "Prisma Client 生成失败"
   fi
 }
 
@@ -298,7 +293,6 @@ prepare_local_database() {
     ensure_local_dev_secrets
     ensure_local_database_exists
     printf '正在同步本地数据库结构。\n'
-    corepack pnpm --filter @chordv/api db:generate || runtime_fail "Prisma Client 生成失败"
     corepack pnpm --filter @chordv/api db:migrate:baseline-deploy || runtime_fail "本地数据库迁移失败"
 
     seed_marker="$postgres_data_dir/.chordv-seeded"
