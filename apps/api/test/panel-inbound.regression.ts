@@ -3,13 +3,19 @@ import { parsePanelLink, normalizePanelInbound, parsePanelReport } from "../src/
 
 const publicKey = Buffer.alloc(32, 7).toString("base64url");
 const link = `vless://discard-this-placeholder@node.example.com:8443?security=reality&type=tcp&pbk=${publicKey}&sid=abcd&sni=example.com&fp=chrome&flow=xtls-rprx-vision#Panel`;
-const spec = parsePanelLink(link, "3.7.0");
+const spec = parsePanelLink(link, "3.1.0");
 assert.equal(spec.inboundTag, "inbound-8443");
 assert.equal(spec.listenPort, 8443);
 assert.equal(spec.realityPublicKey, publicKey);
 assert.equal(JSON.stringify(spec).includes("discard-this-placeholder"), false);
 assert.equal("dest" in spec, false, "SNI is not proof of server-side dest");
-assert.throws(() => parsePanelLink(link, "3.6.9"), /3.7.0/);
+for (const version of ["3.1.0", "v3.1.0", "3.1.1", "3.4.2", "3.6.99", "3.7.0", "v3.7.2", "3.10.0"]) {
+  assert.equal(parsePanelLink(link, version).panelVersion, version.replace(/^v/, ""));
+}
+for (const version of ["2.8.10", "2.9.4", "3.0.0", "3.0.2", "3.0.99", "3.1.0-beta", "4.0.0", ""]) {
+  assert.throws(() => parsePanelLink(link, version), /3.1.0/);
+}
+assert.equal(parsePanelLink(link, "auto").panelVersion, "auto", "automatic detection remains the installer's responsibility");
 assert.throws(() => parsePanelLink(link, "3.7.0-beta"), /稳定版/);
 assert.throws(() => parsePanelLink(link, "3.7.0", "other"), /覆盖/);
 assert.equal(parsePanelLink(link, "3.7.0", "other", true).inboundTag, "other");

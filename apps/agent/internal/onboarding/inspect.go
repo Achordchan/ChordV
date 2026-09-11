@@ -55,7 +55,9 @@ func SupportedVersion(value string) bool {
 		return false
 	}
 	minor, err := strconv.Atoi(parts[1])
-	return err == nil && minor >= 7
+	// 3.1.0 is the first stable release after non-resetting traffic collection
+	// landed in the 3.0 prereleases. API and policy checks remain mandatory.
+	return err == nil && minor >= 1
 }
 
 // APIAddress accepts one unambiguous local control listener. No default port is
@@ -138,7 +140,7 @@ func Inspect(ctx context.Context, panelPID int, specPath string) (string, error)
 	output, err := exec.CommandContext(versionCtx, panelExe, "-v").Output()
 	panelVersion := strings.TrimSpace(string(output))
 	if err != nil || !SupportedVersion(panelVersion) {
-		return "", fmt.Errorf("运行中的 3x-ui 必须为 3.7.0 或以上的 3.x 稳定版")
+		return "", fmt.Errorf("运行中的 3x-ui 必须为 3.1.0 或以上的 3.x 稳定版")
 	}
 	configPath, err := runningConfig(panelPID)
 	if err != nil {

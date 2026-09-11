@@ -47,8 +47,10 @@ export function normalizePanelInbound(input: Record<string, unknown>): PanelInbo
   const version = /^(\d+)\.(\d+)\.(\d+)$/.exec(panelVersion);
   // "auto" defers the version check to the installer's local, read-only probe.
   // It is never interpreted as proof that the panel supports shared metering.
-  if (panelVersion !== "auto" && (!version || (Number(version[1]) < 3 || (Number(version[1]) === 3 && Number(version[2]) < 7)))) {
-    throw new BadRequestException("面板版本必须为稳定版 3.7.0 或以上，请先升级并核对版本");
+  // Match the installer's supported release family. 3.0.x was prerelease;
+  // 3.1.0 is the first stable release with non-resetting traffic collection.
+  if (panelVersion !== "auto" && (!version || Number(version[1]) !== 3 || Number(version[2]) < 1)) {
+    throw new BadRequestException("面板版本必须为 3.1.0 或以上的 3.x 稳定版，请先升级并核对版本");
   }
   const realityPublicKey = text("realityPublicKey");
   if (!/^[A-Za-z0-9_-]{43}$/.test(realityPublicKey) || Buffer.from(realityPublicKey, "base64url").toString("base64url") !== realityPublicKey) {

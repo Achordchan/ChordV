@@ -16,12 +16,12 @@ func sampleConfig() map[string]any {
 }
 
 func TestVersionGate(t *testing.T) {
-	for _, value := range []string{"3.7.0", "v3.7.2", "3.10.0"} {
+	for _, value := range []string{"3.1.0", "v3.1.0", "3.1.1", "3.4.2", "3.6.99", "3.7.0", "v3.7.2", "3.10.0"} {
 		if !SupportedVersion(value) {
 			t.Fatalf("supported version rejected: %s", value)
 		}
 	}
-	for _, value := range []string{"2.8.10", "3.4.2", "3.6.99", "3.7.0-beta", "4.0.0", "", "3.7.0\nsecret"} {
+	for _, value := range []string{"2.8.10", "2.9.4", "3.0.0", "3.0.2", "3.0.99", "3.1.0-beta", "3.7.0-beta", "4.0.0", "", "3.1.0\nsecret"} {
 		if SupportedVersion(value) {
 			t.Fatalf("unverified version accepted: %s", value)
 		}

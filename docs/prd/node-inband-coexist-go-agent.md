@@ -15,13 +15,15 @@
 
 | 事实 | 证据 |
 | --- | --- |
-| 3x-ui 与 ChordV 可以同读同一份计数器而不互相偷数 | 3x-ui v3.7.0 `QueryStats{Reset_: false}`，软件层自行算增量；ChordV agent 亦为 `getAllUsersStats(false)`（`xray-adapter.ts:57`） |
+| 3x-ui 与 ChordV 可以同读同一份计数器而不互相偷数 | 3x-ui v3.1.0 已使用 `QueryStats{Reset_: false}`，软件层自行算增量；ChordV agent 同样不重置计数器 |
 | **旧版会清零，必须先升级** | 3x-ui v2.8.10 的 `GetXrayTraffic` 调用 `s.xrayAPI.GetTraffic(true)` —— reset=true |
 | 面板的 gRPC 端口可从磁盘读到 | 面板自动生成 `/usr/local/x-ui/bin/config.json`，内含 tag=`api` 的 dokodemo-door 入站 |
 | agent 早已参数化，指向别的 Xray 是配置不是重构 | `config.ts:92` `XRAY_API_ADDRESS`（强制 loopback/unix socket）、`config.ts:136` `XRAY_INBOUND_TAG` |
 | gRPC 接口比面板 HTTP API 稳定得多 | 它是 xray-core 的 protobuf，3x-ui 自己也依赖它；对比已删的 `XuiService` 1,356 行 + cookie 会话 + 两处 `allowedIPs` 版本兼容 hack |
 
-**前置条件（阻断性）**：三台面板全部升级到 ≥ v3.7.0 并复核 `Reset_` 仍为 false。
+**前置条件（阻断性）**：面板使用 v3.1.0 及以上的 3.x 稳定版，并满足本机 Xray API 与用户统计配置检查。
+
+2026-09-11 修订依据：官方提交 `14165fc54d7be2bb465feb3bdc914b28dc747aa6` 在 3.0.0 引入非清零流量读取；3.0.0–3.0.2 为预发布，3.1.0 是其后的首个稳定版。2.9.4 仍使用 `GetTraffic(true)`。因此最低版本门槛从 3.7.0 调整为 3.1.0；不因版本达标跳过 HandlerService、StatsService、level 0 上下行统计和实际入站校验。本次下探依据为源码调查，未完成 3.1.0 的运行验收，不能视为所有 3.x 版本均已实测。
 当前 DMIT 与搬瓦工顶尖已在 3.x，**CN2-GIA 仍为 2.8.10，未升级前不得接入**，否则流量静默漏计。
 
 ## 2. 目标形态
@@ -109,7 +111,7 @@ VPS 上（已有 3x-ui + 它的 xray）
   （每个 ChordV 用户有自己的 UUID）。这是必须的，因为**桌面客户端的连接参数由控制面实时下发**，
   后台不知道这些值就没法告诉客户端连哪里。手工逐字段填写作为兜底保留。
 - 节点新增字段：面板 api 端口、入站 tag、上述 Reality 参数、面板版本（探测所得）、共存模式标记。
-- 新增预检：接入前校验面板版本 ≥ 3.7.0，不达标拒绝激活并给出升级提示。
+- 接入预检：校验面板为 3.1.0 及以上的 3.x 稳定版，不达标拒绝接入并给出升级提示；版本通过后继续检查实际 API 与统计能力。
 
 **接入一台节点时的面板侧要求（写进安装手册与验收）：**
 
