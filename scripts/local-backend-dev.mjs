@@ -19,7 +19,11 @@ const childCommands = [
   { name: 'admin', prefixColor: 'green', command: `corepack pnpm --filter @chordv/admin dev --host 127.0.0.1 --port ${port} --strictPort --logLevel warn` }
 ];
 if (process.env.CHORDV_DEV_WITH_AGENT === '1') childCommands.push({name:'node-agent',prefixColor:'cyan',command:'node ./scripts/local-node-agent-dev.mjs'});
-const { commands, result } = concurrently(childCommands, { cwd: root, prefix: 'name', killOthersOn: ['success', 'failure'], killSignal: 'SIGTERM', killTimeout: 10_000, successCondition: 'all' });
+const { commands, result } = concurrently(childCommands, { cwd: root, prefix: 'name', killOthersOn: ['success', 'failure'], killSignal: 'SIGTERM', successCondition: 'all' });
+const childExitSubscriptions = commands.map(command => command.close.subscribe(() => {
+  lifetime.abort();
+  armStopDeadline();
+}));
 const finished = result.then(() => { lifetime.abort(); return 0; }, () => { lifetime.abort(); return 1; });
 
 function armStopDeadline() {
@@ -74,5 +78,6 @@ try {
 }
 const exitCode = await finished;
 clearTimeout(forceStop);
+childExitSubscriptions.forEach(subscription => subscription.unsubscribe());
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.off(signal, onSignal);
 process.exitCode = interrupted ? 0 : startupFailed ? 1 : exitCode;

@@ -4,7 +4,8 @@ import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, rmSync, chmodSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
 
 // The supervisor runs unchanged; only child processes and HTTP are simulated.
 // No server, database, package download or user's local environment is touched.
@@ -20,16 +21,23 @@ function run(mode) {
         let resolve;
         const result = process.env.TEST_SCENARIO === 'child-failed' ? Promise.reject(new Error('child failed')) : new Promise(r => resolve=r);
         if(['ready','agent'].includes(process.env.TEST_SCENARIO)) setTimeout(()=>resolve([]),40);
-        return {result, commands:input.map(()=>({kill(signal){console.log('stop:'+signal);resolve?.([]);}}))};
+        return {result, commands:input.map(()=>({close:{subscribe(){return {unsubscribe(){}};}},kill(signal){console.log('stop:'+signal);resolve?.([]);}}))};
       }
     `);
     writeFileSync(join(dir,'setup.mjs'), `
       globalThis.fetch = async (url) => {
         console.log('probe:'+url);
-        return {ok:['ready','agent'].includes(process.env.TEST_SCENARIO),headers:new Map([['content-type','text/html']]),body:{cancel:async()=>{}},json:async()=>({status:'ready'})};
+        return {ok:['ready','agent','real-child'].includes(process.env.TEST_SCENARIO),headers:new Map([['content-type','text/html']]),body:{cancel:async()=>{}},json:async()=>({status:'ready'})};
       };
       if(process.env.TEST_SCENARIO==='timeout'){let now=0;Date.now=()=>now+=50000;}
     `);
+    if(mode==='real-child') {
+      const entry=createRequire(import.meta.url).resolve('concurrently');
+      writeFileSync(join(dir,'node_modules/concurrently/index.js'),'export {default} from '+JSON.stringify(pathToFileURL(entry).href)+';');
+      mkdirSync(join(dir,'bin'));
+      writeFileSync(join(dir,'bin/corepack'),'#!/bin/sh\ncase "$*" in\n*dev:prepared*) exec '+JSON.stringify(process.execPath)+' -e "setTimeout(() => process.exit(1), 250)";;\n*) exec '+JSON.stringify(process.execPath)+' -e "setInterval(() => {}, 1000)";;\nesac\n');chmodSync(join(dir,'bin/corepack'),0o755);
+      return spawnSync(process.execPath,['--import',join(dir,'setup.mjs'),join(dir,'scripts/local-backend-dev.mjs')],{encoding:'utf8',timeout:5000,env:{...process.env,PATH:join(dir,'bin')+':'+process.env.PATH,CHORDV_ADMIN_PORT:'5188',TEST_SCENARIO:mode}});
+    }
     if(mode==='agent') {
       copyFileSync(fileURLToPath(new URL('../start.sh',import.meta.url)),join(dir,'start.sh'));
       writeFileSync(join(dir,'.env'),'CHORDV_AGENT_ID=fixture-agent\nCHORDV_NODE_ID=fixture-node\nCHORDV_AGENT_TOKEN=fixture-only\nCHORDV_LOCAL_XRAY_BINARY=fixture-bin\nCHORDV_LOCAL_XRAY_CONFIG=fixture-config\nCHORDV_API_PORT=3127\n');
@@ -50,7 +58,7 @@ test('only launches API/admin and probes through the selected same-origin addres
   const {input,options}=JSON.parse(result.stdout.split('\n')[0]);
   assert.deepEqual(input.map(x=>x.name),['api','admin']);
   assert.match(input[0].command,/dev:prepared/);assert.match(input[1].command,/--port 5188/);
-  assert.equal(options.killTimeout,10000);assert.match(result.stdout,/probe:http:\/\/127.0.0.1:5188\/api\/health\/ready/);
+  assert.equal(options.killTimeout,undefined);assert.deepEqual(options.killOthersOn,["success","failure"]);assert.match(result.stdout,/probe:http:\/\/127.0.0.1:5188\/api\/health\/ready/);
   assert.match(result.stdout,/后台服务已就绪/);
 });
 test('child failure never announces readiness',()=>{const result=run('child-failed');assert.equal(result.status,1);assert.doesNotMatch(result.stdout,/后台服务已就绪/);});
@@ -64,3 +72,5 @@ test('explicit Agent entry loads root .env before launching every child',()=>{
   assert.deepEqual(record.input.map(item=>item.name),['api','admin','node-agent']);
   assert.equal(record.agentId,'fixture-agent');assert.equal(record.api,'http://127.0.0.1:3127');
 });
+
+test('real concurrently 9.2.1 terminates the live sibling when API exits',()=>{const result=run('real-child');assert.equal(result.error,undefined,result.stdout+"\n"+result.stderr);assert.equal(result.status,1,result.stdout+'\n'+result.stderr);assert.match(result.stdout,/SIGTERM/);});
