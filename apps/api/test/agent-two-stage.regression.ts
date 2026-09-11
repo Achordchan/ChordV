@@ -70,7 +70,7 @@ async function main() {
   const service = new AgentService(prisma, { publish() {} } as never, {} as never, adminEvents as never);
   const controller = new AgentAdminController(service, register);
   const created = await register.createAgentNode({ name: "two-stage-server" });
-  assert.deepEqual(node.onboardingSpec, { mode: "awaiting_panel" });
+  assert.deepEqual(node.onboardingSpec, { mode: "awaiting_panel", activateOnFirstValidation: true });
   assert.equal(created.node.isActive, false);
   assert.equal((await register.getOnboarding(node.id)).mode, "environment");
   const registration = { registerToken: created.registerToken, agentToken: "chordv_agent_" + "a".repeat(43),
@@ -110,6 +110,14 @@ async function main() {
   assert.equal((await register.getOnboarding(node.id)).command?.status, "pending");
   assert.equal(node.isActive, false);
   assert.equal(node.inboundAppliedRevision, 0n);
+  const latestJob = jobs.at(-1);
+  const inbound = {mode:"validate_panel",validated:true,inboundTag:"actual-inbound",serverPort:payload.listenPort,serverHost:payload.serverHost,realityPublicKey:payload.realityPublicKey,shortId:payload.shortId,serverName:payload.serverNames[0],flow:payload.flow,fingerprint:payload.fingerprint,spiderX:payload.spiderX};
+  await service.completeCommand(agent, latestJob.id, {status:"completed",result:{inbound}});
+  assert.equal(node.isActive,true,"first verified onboarding activates the new node");
+  node.isActive=false;
+  const recheck=await service.queueCommand(node.id,{type:"ENSURE_INBOUND",payload,expectedInboundAppliedRevision:String(node.inboundAppliedRevision)});
+  await service.completeCommand(agent,recheck.commandId,{status:"completed",result:{inbound}});
+  assert.equal(node.isActive,false,"revalidation cannot undo an operator's deactivation");
   assert.ok(events.some(event => event.type === "node_access_updated"));
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
