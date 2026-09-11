@@ -65,7 +65,9 @@ bash ./start.sh 5180
 
 未配置 `DATABASE_URL` 时默认使用本机 `127.0.0.1:54329` 的开发数据库；Windows Git Bash 可自动下载并启动项目内 PostgreSQL，其他系统需已有可用 PostgreSQL。显式配置外部数据库时，不执行迁移、Seed 或替换数据库。按 Ctrl+C 会停止本次后台进程，以及本次启动的项目内 PostgreSQL；不关闭其他项目的进程。
 
-`pnpm dev:local` 使用同一个启动入口。需要独立联调节点 Agent 时才使用 `pnpm dev:local:agent` 并配置相应身份与 Xray 路径；默认后台启动不会读取该开关来增加额外进程。
+`pnpm dev:local` 使用同一个启动入口。需要联调节点 Agent 时使用 `pnpm dev:local:agent`（等价于 `bash ./start.sh --with-agent`），在根目录 `.env` 配置身份与 Xray 路径；脚本先加载配置、准备依赖及数据库，再让后台与 Agent 继承同一个 API 地址。默认后台启动不会读取旧 Agent 开关来增加额外进程。
+
+单独启动后台页面对接远程 API 时，可显式设置 `CHORDV_DEV_API_TARGET`，兼容原来的 `VITE_API_BASE_URL` 环境变量；前端仍通过 Vite 的同源 `/api` 代理。`start.sh` 会明确指定本机 API，不受远程地址影响。
 
 ### 启动桌面客户端
 

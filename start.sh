@@ -7,6 +7,12 @@ fail() {
   exit 1
 }
 
+local_agent_requested=false
+if [ "${1:-}" = "--with-agent" ]; then
+  local_agent_requested=true
+  shift
+fi
+
 if [ "$#" -gt 1 ]; then
   fail "只接受一个可选的后台页面端口，例如 bash ./start.sh 5174"
 fi
@@ -96,6 +102,8 @@ NODE
 check_port_available "127.0.0.1" "$api_port" "内部 API"
 check_port_available "127.0.0.1" "$admin_port" "后台页面"
 
+export CHORDV_DEV_WITH_AGENT=0
+if [ "$local_agent_requested" = true ]; then export CHORDV_DEV_WITH_AGENT=1; fi
 export NODE_ENV=development
 export CHORDV_API_PORT=$api_port
 export CHORDV_API_HOST=127.0.0.1

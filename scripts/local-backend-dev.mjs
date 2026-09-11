@@ -12,11 +12,14 @@ let startupFailed = false;
 let forceStop;
 
 // Reuse concurrently's process-tree handling on Windows and Unix. A stopped
-// child ends the whole backend session; no desktop or node agent is launched.
-const { commands, result } = concurrently([
+// child ends the whole session. Agent opt-in is passed by start.sh only after
+// shared configuration and dependencies are ready.
+const childCommands = [
   { name: 'api', prefixColor: 'blue', command: 'corepack pnpm --filter @chordv/api dev:prepared' },
   { name: 'admin', prefixColor: 'green', command: `corepack pnpm --filter @chordv/admin dev --host 127.0.0.1 --port ${port} --strictPort --logLevel warn` }
-], { cwd: root, prefix: 'name', killOthersOn: ['success', 'failure'], killSignal: 'SIGTERM', killTimeout: 10_000, successCondition: 'all' });
+];
+if (process.env.CHORDV_DEV_WITH_AGENT === '1') childCommands.push({name:'node-agent',prefixColor:'cyan',command:'node ./scripts/local-node-agent-dev.mjs'});
+const { commands, result } = concurrently(childCommands, { cwd: root, prefix: 'name', killOthersOn: ['success', 'failure'], killSignal: 'SIGTERM', killTimeout: 10_000, successCondition: 'all' });
 const finished = result.then(() => { lifetime.abort(); return 0; }, () => { lifetime.abort(); return 1; });
 
 function armStopDeadline() {

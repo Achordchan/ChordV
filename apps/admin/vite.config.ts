@@ -1,11 +1,13 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath, URL } from "node:url";
 import { readFileSync } from "node:fs";
 
 const backendVersion = readFileSync(new URL("../../SYSTEM_VERSION", import.meta.url), "utf8").trim();
 
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, fileURLToPath(new URL(".", import.meta.url)), "");
+  return {
   plugins: [react(), {
     name: "chordv-backend-version",
     transformIndexHtml: () => [{ tag: "meta", attrs: { name: "chordv-backend-version", content: backendVersion }, injectTo: "head" }]
@@ -27,11 +29,12 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       "/api": {
-        target: process.env.CHORDV_DEV_API_TARGET ?? `http://127.0.0.1:${process.env.CHORDV_API_PORT ?? 3000}`,
+        target: process.env.CHORDV_DEV_API_TARGET || env.CHORDV_DEV_API_TARGET || process.env.VITE_API_BASE_URL || env.VITE_API_BASE_URL || `http://127.0.0.1:${process.env.CHORDV_API_PORT ?? 3000}`,
         changeOrigin: true,
         secure: true,
         ws: true
       }
     }
   }
+  };
 });
