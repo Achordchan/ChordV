@@ -22,12 +22,15 @@ export default defineConfig({
     }
   },
   server: {
-    port: 5174,
+    host: "127.0.0.1",
+    port: Number(process.env.CHORDV_ADMIN_PORT ?? 5174),
+    strictPort: true,
     proxy: {
       "/api": {
-        target: process.env.VITE_API_BASE_URL ?? "https://v.baymaxgroup.com",
+        target: process.env.CHORDV_DEV_API_TARGET ?? `http://127.0.0.1:${process.env.CHORDV_API_PORT ?? 3000}`,
         changeOrigin: true,
-        secure: true
+        secure: true,
+        ws: true
       }
     }
   }
