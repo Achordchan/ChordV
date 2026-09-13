@@ -1,3 +1,5 @@
+import { Optional } from "@nestjs/common";
+import { RuntimeVersionService } from "./runtime-version.service";
 import { workLifecycle } from "../../work-lifecycle";
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import type {
@@ -59,7 +61,8 @@ export class RuntimeComponentsService {
     private readonly prisma: PrismaService,
     private readonly authSessionService: AuthSessionService,
     private readonly downloadMirrorService: DownloadMirrorService,
-    private readonly adminRuntimeEventsService?: AdminRuntimeEventsService
+    private readonly adminRuntimeEventsService?: AdminRuntimeEventsService,
+    @Optional() private readonly runtimeVersions?: RuntimeVersionService
   ) {}
 
   async listAdminRuntimeComponents(): Promise<AdminRuntimeComponentRecordDto[]> {
@@ -471,7 +474,8 @@ export class RuntimeComponentsService {
       throwLocalReadAsServiceUnavailable(error, "Runtime component plan is temporarily unavailable.");
     }
     const sharedRulesetRows = dedupeSharedRulesets(sharedRuleRowsRaw);
-    const rows = await filterClientUsableRuntimeComponents([...runtimeRows, ...sharedRulesetRows]);
+    const candidates = [...runtimeRows, ...sharedRulesetRows];
+    const rows = await filterClientUsableRuntimeComponents(this.runtimeVersions ? await this.runtimeVersions.clientRows(candidates) : candidates);
     const globalMirror = await this.downloadMirrorService.getEffectiveConfig();
     const components = await Promise.all(
       rows.map(async (row) => {
@@ -517,7 +521,7 @@ export class RuntimeComponentsService {
             archiveEntryName: row.archiveEntryName
           }),
           expectedHash,
-          versionLabel: latestAsset?.versionLabel ?? null,
+          versionLabel: (row as typeof row & { runtimeVersionLabel?: string }).runtimeVersionLabel ?? latestAsset?.versionLabel ?? null,
           updatedAt: latestAsset?.revision
             ?? (row.updatedAt instanceof Date ? row.updatedAt.toISOString() : new Date(0).toISOString()),
           allowClientMirror,
