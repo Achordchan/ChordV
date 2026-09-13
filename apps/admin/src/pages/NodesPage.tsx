@@ -1,27 +1,16 @@
-import { useState } from "react";
-import { ActionIcon, Badge, Button, Drawer, Group, Stack, Table, Text } from "@mantine/core";
-import type { AdminLeaseRevocationJobDto, AdminNodeCommandQueueDto, AdminNodeCommandSummariesDto, AdminNodeRecordDto } from "@chordv/shared";
-import { IconBolt, IconListDetails, IconPencil, IconPlus, IconSettingsAutomation, IconTrash } from "@tabler/icons-react";
+import { Fragment, useState } from "react";
+import { ActionIcon, Button, Group, Menu, SegmentedControl, Table, Text, TextInput } from "@mantine/core";
+import type { AdminLeaseRevocationJobDto, AdminNodeCommandQueueDto, AdminNodeRecordDto } from "@chordv/shared";
+import { IconAlertCircle, IconArrowRight, IconChevronDown, IconChevronUp, IconDots, IconPencil, IconSearch, IconTrash } from "@tabler/icons-react";
 import { CountryFlag } from "../components/CountryFlag";
 import { DataTable } from "../features/shared/DataTable";
-import { RowActions } from "../features/shared/RowActions";
-import { SectionCard } from "../features/shared/SectionCard";
-import { StatusBadge } from "../features/shared/StatusBadge";
-import { NodeControlCell, NodeControlDrawer } from "../features/nodes/NodeControlCenter";
+import { NodeControlDetails } from "../features/nodes/NodeControlCenter";
+import styles from "../features/nodes/NodesWorkspace.module.css";
 import { formatDateTime } from "../utils/admin-format";
-import { findNodeCommandSummary, sumNodeCommandSummaries } from "../utils/node-command-summary";
-import { summarizeAdminDiagnosticMessage } from "../utils/admin-filters";
+import { findNodeCommandSummary } from "../utils/node-command-summary";
+import type { LeaseRevocationQueueFilter } from "../utils/admin-queue-filters";
 import {
-  filterLeaseRevocationJobs,
-  hasLeaseRevocationQueueFilter,
-  hasNodeCommandQueueFilter,
-  type LeaseRevocationQueueFilter
-} from "../utils/admin-queue-filters";
-import {
-  nodeCommandStatusColor,
-  nodeProbeColor,
-  translateNodeCommandStatus,
-  translateNodeCommandType,
+  translateAgentStatus,
   translateProbeStatus
 } from "../utils/admin-translate";
 
@@ -34,6 +23,7 @@ type NodesPageProps = {
   leaseRevocationRetryBusyKey: string | null;
   probingNodeId: string | null;
   probingAll: boolean;
+  onProbeAll: () => void;
   onOpenLeaseRevocationQueue: (filter?: LeaseRevocationQueueFilter) => void;
   onRetryLeaseRevocationJob: (jobId: string) => void;
   onRetryNodeLeaseRevocationJobs: (nodeId: string) => void;
@@ -45,413 +35,73 @@ type NodesPageProps = {
   onResumeAgentNode: (nodeId: string) => void;
 };
 
+function needsOnboarding(node: AdminNodeRecordDto) {
+  return node.registrationStatus === "pending_register" || (node.registrationStatus === "agent_ready" && node.inboundAppliedRevision === "0");
+}
+
 export function NodesPage(props: NodesPageProps) {
-  // Same accounting as the header and overview counts: both queue kinds are
-  // outstanding work, so the button badge must not drop pending commands just
-  // because no revocation happens to be queued.
-  // Same accounting as the header and overview counts: both queue kinds are
-  // outstanding work, so the button badge must not drop pending commands just
-  // because no revocation happens to be queued.
-  const queueCount = props.leaseRevocationJobs.length
-    + sumNodeCommandSummaries(props.nodeCommandQueue.summaries, "nodes");
-  const [controlNodeId, setControlNodeId] = useState<string | null>(null);
-  const controlNode = props.nodes.find((node) => node.id === controlNodeId) ?? null;
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [filter, setFilter] = useState("全部");
+  const rows = props.nodes.map(node => {
+    const lease = summarizeLeaseRevocationJobsForNode(props.leaseRevocationJobs, node.id);
+    const command = findNodeCommandSummary(props.nodeCommandQueue.summaries, "nodes", node.id);
+    const total = lease.total + (command?.total ?? 0);
+    const failed = lease.failed + (command?.failed ?? 0);
+    const agentStatus = node.controlStatus ?? node.agent?.status;
+    const needsAttention = total > 0 || node.probeStatus === "offline" || node.probeStatus === "degraded" || agentStatus === "offline" || agentStatus === "degraded";
+    return { node, lease, total, failed, agentStatus, needsAttention };
+  }).filter(row => filter === "全部" || (filter === "待接入" ? needsOnboarding(row.node) : row.needsAttention));
 
-  return (
-    <>
-      <SectionCard
-        title="节点与同步"
-        searchValue={props.searchValue}
-        onSearchChange={props.onSearchChange}
-        searchPlaceholder="搜索节点、地区或地址"
-        actions={
-          <Group gap="xs">
-            <Button
-              size="xs"
-              leftSection={<IconPlus size={14} />}
-              onClick={props.onOpenAgentNodeCreate}
-            >
-              添加节点
-            </Button>
-            <Button
-              variant="default"
-              leftSection={<IconListDetails size={16} />}
-              onClick={() => props.onOpenLeaseRevocationQueue()}
-            >
-              同步任务
-              {queueCount > 0 ? ` · ${queueCount}` : ""}
-            </Button>
-          </Group>
-        }
-      >
-        <Stack gap="md">
-          <DataTable>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>节点</Table.Th>
-                <Table.Th>状态</Table.Th>
-                <Table.Th>地址</Table.Th>
-                <Table.Th>控制链路</Table.Th>
-                <Table.Th>同步任务</Table.Th>
-                <Table.Th>探测状态</Table.Th>
-                <Table.Th>延迟</Table.Th>
-                <Table.Th>最后检测</Table.Th>
-                <Table.Th>错误</Table.Th>
-                <Table.Th>操作</Table.Th>
+  return <section className={styles.workspace} aria-label="节点与同步">
+    <div className={styles.toolbar}>
+      <TextInput className={styles.search} aria-label="搜索节点" placeholder="搜索节点、地区或地址" leftSection={<IconSearch size={16}/>} value={props.searchValue} onChange={event => props.onSearchChange(event.currentTarget.value)}/>
+      <SegmentedControl classNames={{root: styles.filters, label: styles.filterLabel, indicator: styles.filterIndicator}} aria-label="节点筛选" value={filter} onChange={setFilter} data={["全部", "需处理", "待接入"]}/>
+      <div className={styles.toolbarActions}><Button variant="subtle" color="gray" loading={props.probingAll} disabled={props.probingNodeId !== null} onClick={props.onProbeAll}>全部探测</Button><Button className={styles.addButton} onClick={props.onOpenAgentNodeCreate}>添加节点</Button></div>
+    </div>
+    <div className={styles.tableArea}>
+      <DataTable minWidth={920}>
+        <colgroup><col/><col style={{width:"14%"}}/><col style={{width:"17%"}}/><col style={{width:"16%"}}/><col style={{width:"16%"}}/><col style={{width:190}}/></colgroup>
+        <Table.Thead><Table.Tr>{["节点", "服务状态", "控制链路", "连通性", "同步", "操作"].map(label => <Table.Th key={label}>{label}</Table.Th>)}</Table.Tr></Table.Thead>
+        <Table.Tbody>
+          {rows.length === 0 ? <Table.Tr><Table.Td colSpan={6}><Text className={styles.empty}>没有符合条件的节点</Text></Table.Td></Table.Tr> : rows.map(({node, lease, total, failed, agentStatus}) => {
+            const expanded = expandedId === node.id;
+            const toggle = () => setExpandedId(expanded ? null : node.id);
+            return <Fragment key={node.id}>
+              <Table.Tr className={expanded ? styles.expandedRow : undefined}>
+                <Table.Td><div className={styles.identity}><CountryFlag code={node.countryCode}/><div><button className={styles.nodeName} onClick={() => props.onOpenNodeDrawer(node.id)}>{node.name}</button><Text size="xs" c="dimmed" className={styles.address}>{node.serverHost}:{node.serverPort}</Text></div></div></Table.Td>
+                <Table.Td><Text className={styles.status} data-tone={node.isActive === false ? "muted" : "good"} size="sm">{node.isActive === false ? "已停用" : "已启用"}</Text></Table.Td>
+                <Table.Td><Text className={styles.status} data-tone={agentStatus === "online" || agentStatus === "active" ? "good" : agentStatus === "offline" ? "bad" : "muted"} size="sm">{node.registrationStatus === "pending_register" ? "待接入" : `Agent ${translateAgentStatus(agentStatus)}`}</Text></Table.Td>
+                <Table.Td><Text className={styles.status} data-tone={node.probeStatus === "healthy" ? "good" : node.probeStatus === "offline" ? "bad" : node.probeStatus === "degraded" ? "warning" : "muted"} size="sm">{node.probeStatus === "healthy" && node.probeLatencyMs != null ? `TCP ${node.probeLatencyMs} ms` : `TCP ${translateProbeStatus(node.probeStatus)}`}</Text></Table.Td>
+                <Table.Td>{total > 0 ? <Button className={styles.syncButton} data-tone={failed > 0 ? "warning" : "progress"} variant="subtle" size="compact-sm" color="dark" onClick={() => props.onOpenLeaseRevocationQueue({nodeId: node.id, title: node.name})}>{total} 项待处理</Button> : <Text className={styles.status} data-tone="good" size="sm">无待处理</Text>}</Table.Td>
+                <Table.Td className={styles.actionsCell}><Group gap={6} wrap="nowrap" justify="flex-end">
+                  {needsOnboarding(node) ? <Button variant="subtle" size="compact-sm" color="teal.9" onClick={() => props.onResumeAgentNode(node.id)}>继续接入</Button> : null}
+                  <ActionIcon variant="subtle" color="gray" aria-label={expanded ? "收起节点详情" : "展开节点详情"} aria-expanded={expanded} aria-controls={expanded ? `node-details-${node.id}` : undefined} onClick={toggle}>{expanded ? <IconChevronUp size={17}/> : <IconChevronDown size={17}/>}</ActionIcon>
+                  <Menu position="bottom-end" withinPortal><Menu.Target><ActionIcon variant="subtle" color="gray" aria-label={`${node.name}的更多操作`}><IconDots size={17}/></ActionIcon></Menu.Target><Menu.Dropdown>
+                    <Menu.Item leftSection={<IconPencil size={16}/>} onClick={() => props.onOpenNodeDrawer(node.id)}>编辑节点</Menu.Item>
+                    <Menu.Item color="red" leftSection={<IconTrash size={16}/>} onClick={() => props.onDeleteNode(node)}>删除节点</Menu.Item>
+                  </Menu.Dropdown></Menu>
+                </Group></Table.Td>
               </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {props.nodes.map((item) => (
-                <Table.Tr key={item.id}>
-                  <Table.Td>
-                    <div>
-                      <Text>{item.name}</Text>
-                      <Group gap={6} wrap="nowrap" align="center">
-                        <CountryFlag code={item.countryCode} size="sm" />
-                        <Text size="sm" c="dimmed" lineClamp={1} style={{ minWidth: 0, flex: 1 }}>
-                          {item.region} · {item.provider}
-                        </Text>
-                      </Group>
-                    </div>
-                  </Table.Td>
-                  <Table.Td>
-                    <Badge color={item.isActive === false ? "red" : "green"} variant="light">
-                      {item.isActive === false ? "已禁用" : "启用"}
-                    </Badge>
-                  </Table.Td>
-                  <Table.Td>{item.serverHost}:{item.serverPort}</Table.Td>
-                  <Table.Td>
-                    <NodeControlCell node={item} onOpen={() => setControlNodeId(item.id)} />
-                  </Table.Td>
-                  <Table.Td>
-                    <NodeSyncQueueCell
-                      node={item}
-                      leaseRevocationJobs={props.leaseRevocationJobs}
-                      nodeCommandSummaries={props.nodeCommandQueue.summaries}
-                      leaseRetryBusyKey={props.leaseRevocationRetryBusyKey}
-                      onOpenLeaseRevocationQueue={props.onOpenLeaseRevocationQueue}
-                      onRetryNodeLeaseRevocationJobs={props.onRetryNodeLeaseRevocationJobs}
-                    />
-                  </Table.Td>
-                  <Table.Td>
-                    <StatusBadge color={nodeProbeColor(item.probeStatus)} label={translateProbeStatus(item.probeStatus)} />
-                  </Table.Td>
-                  <Table.Td>{item.probeLatencyMs !== null ? `${item.probeLatencyMs} ms` : "-"}</Table.Td>
-                  <Table.Td>{item.probeCheckedAt ? formatDateTime(item.probeCheckedAt) : "-"}</Table.Td>
-                  <Table.Td>
-                    <Text size="sm" c="dimmed" lineClamp={2}>
-                      {summarizeAdminDiagnosticMessage(
-                        item.probeError,
-                        "节点探测失败，请稍后重试。"
-                      ) ?? "-"}
-                    </Text>
-                  </Table.Td>
-                  <Table.Td>
-                    <RowActions>
-                      {(item.registrationStatus === "pending_register" || (item.registrationStatus === "agent_ready" && item.inboundAppliedRevision === "0")) ? (
-                        <Button size="compact-xs" variant="light" onClick={() => props.onResumeAgentNode(item.id)}>继续接入</Button>
-                      ) : null}
-                      <ActionIcon
-                        variant="subtle"
-                        title="探测节点连通性"
-                        aria-label="探测节点连通性"
-                        onClick={() => props.onProbeNode(item.id)}
-                        loading={props.probingNodeId === item.id}
-                        disabled={props.probingAll || (props.probingNodeId !== null && props.probingNodeId !== item.id)}
-                      >
-                        <IconBolt size={16} />
-                      </ActionIcon>
-                      <ActionIcon
-                        variant="subtle"
-                        title="打开节点控制器"
-                        aria-label="打开节点控制器"
-                        onClick={() => setControlNodeId(item.id)}
-                      >
-                        <IconSettingsAutomation size={16} />
-                      </ActionIcon>
-                      <ActionIcon variant="subtle" title="编辑本地节点配置" aria-label="编辑本地节点配置" onClick={() => props.onOpenNodeDrawer(item.id)}>
-                        <IconPencil size={16} />
-                      </ActionIcon>
-                      <ActionIcon color="red" variant="subtle" title="删除节点" aria-label="删除节点" onClick={() => props.onDeleteNode(item)}>
-                        <IconTrash size={16} />
-                      </ActionIcon>
-                    </RowActions>
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </DataTable>
-        </Stack>
-      </SectionCard>
-      <NodeControlDrawer
-        node={controlNode}
-        opened={Boolean(controlNode)}
-        busy={false}
-        onClose={() => setControlNodeId(null)}
-        onNodeRecordChanged={props.onNodeRecordChanged}
-      />
-    </>
-  );
-}
-
-function NodeSyncQueueCell(props: {
-  node: AdminNodeRecordDto;
-  leaseRevocationJobs: AdminLeaseRevocationJobDto[];
-  // Exact per-node aggregates, not the paginated detail list: a node whose
-  // commands fell off the first page must still read as busy.
-  nodeCommandSummaries: AdminNodeCommandSummariesDto;
-  leaseRetryBusyKey: string | null;
-  onOpenLeaseRevocationQueue: (filter?: LeaseRevocationQueueFilter) => void;
-  onRetryNodeLeaseRevocationJobs: (nodeId: string) => void;
-}) {
-  const leaseSummary = summarizeLeaseRevocationJobsForNode(props.leaseRevocationJobs, props.node.id);
-  const commandSummary = findNodeCommandSummary(props.nodeCommandSummaries, "nodes", props.node.id);
-  const leaseRetryable = hasRetryableBackgroundSync(leaseSummary);
-
-  if (leaseSummary.total <= 0 && (commandSummary?.total ?? 0) <= 0) {
-    return (
-      <Badge color="green" variant="light">
-        已同步
-      </Badge>
-    );
-  }
-
-  return (
-    <Stack gap={2}>
-      {leaseSummary.total > 0 ? (
-        <Badge color="yellow" variant="light">
-          {buildBackgroundSyncLabel("连接撤销", leaseSummary)}
-        </Badge>
-      ) : null}
-      {commandSummary && commandSummary.total > 0 ? (
-        <Badge color="yellow" variant="light">
-          {buildBackgroundSyncLabel("节点命令", commandSummary)}
-        </Badge>
-      ) : null}
-      {leaseSummary.failed > 0 && leaseSummary.lastError ? (
-        <Text size="xs" c="dimmed" lineClamp={1}>
-          {summarizeAdminDiagnosticMessage(leaseSummary.lastError, "连接撤销任务失败，请稍后重试或查看服务器日志。")}
-        </Text>
-      ) : null}
-      {commandSummary && commandSummary.failed > 0 && commandSummary.lastError ? (
-        <Text size="xs" c="dimmed" lineClamp={1}>
-          {summarizeAdminDiagnosticMessage(commandSummary.lastError, "节点命令执行失败，Agent 会自动重试。")}
-        </Text>
-      ) : null}
-      <Group gap={4}>
-        <Button
-          size="xs"
-          variant="subtle"
-          onClick={() => props.onOpenLeaseRevocationQueue({ nodeId: props.node.id, title: props.node.name })}
-        >
-          查看任务
-        </Button>
-        {leaseRetryable ? (
-          <Button
-            size="xs"
-            variant="light"
-            loading={props.leaseRetryBusyKey === `lease-node:${props.node.id}`}
-            disabled={props.leaseRetryBusyKey !== null && props.leaseRetryBusyKey !== `lease-node:${props.node.id}`}
-            onClick={() => props.onRetryNodeLeaseRevocationJobs(props.node.id)}
-          >
-            重试连接撤销
-          </Button>
-        ) : null}
-      </Group>
-    </Stack>
-  );
-}
-
-export function PanelSyncQueueDrawer(props: {
-  opened: boolean;
-  leaseRevocationJobs: AdminLeaseRevocationJobDto[];
-  nodeCommandQueue: AdminNodeCommandQueueDto;
-  // Server-side filtered detail for the CURRENT target (keyed by filter in
-  // App; null when absent or failed): the cached list above is capped, so a
-  // busy target's commands may fall outside it entirely.
-  nodeCommandQueueDetail?: { queue: AdminNodeCommandQueueDto | null; failed: boolean } | null;
-  leaseRetryBusyKey: string | null;
-  filter?: LeaseRevocationQueueFilter | null;
-  onClose: () => void;
-  onShowAll?: () => void;
-  onRetryLeaseJob: (jobId: string) => void;
-  onRetryLeaseNode: (nodeId: string) => void;
-}) {
-  const filteredLeaseRevocationJobs = filterLeaseRevocationJobs(props.leaseRevocationJobs, props.filter);
-  const commandDetail = props.nodeCommandQueueDetail ?? null;
-  const filteredNodeCommandJobs = hasNodeCommandQueueFilter(props.filter)
-    ? commandDetail?.queue?.jobs ?? []
-    : props.nodeCommandQueue.jobs;
-  const listedCommandTotal = sumNodeCommandSummaries(props.nodeCommandQueue.summaries, "nodes");
-  // The drawer's title and "show all" follow the COMBINED predicate: a
-  // team-only filter fetches the team's commands (hasNodeCommandQueueFilter)
-  // even though lease jobs have no team column, so it is still a filtered
-  // view. The lease-only predicate stays reserved for lease filtering.
-  const hasFilter = hasLeaseRevocationQueueFilter(props.filter) || hasNodeCommandQueueFilter(props.filter);
-  const drawerTitle = hasFilter ? props.filter?.title ?? "当前对象待处理任务" : "后台同步任务";
-
-  return (
-    <Drawer opened={props.opened} onClose={props.onClose} title={drawerTitle} position="right" size="xl">
-      <Stack gap="lg">
-        {hasFilter ? (
-          <Group justify="space-between" gap="sm">
-            <Text size="sm" c="dimmed">
-              仅显示当前对象相关的后台同步任务。
-            </Text>
-            <Button size="xs" variant="default" onClick={props.onShowAll}>
-              查看全部
-            </Button>
-          </Group>
-        ) : null}
-        <Stack gap="xs">
-          <Text fw={600}>连接撤销同步</Text>
-          <DataTable>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>状态</Table.Th>
-                <Table.Th>节点/目标</Table.Th>
-                <Table.Th>原因</Table.Th>
-                <Table.Th>次数</Table.Th>
-                <Table.Th>下次执行</Table.Th>
-                <Table.Th>错误</Table.Th>
-                <Table.Th>操作</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {filteredLeaseRevocationJobs.length === 0 ? (
-                <Table.Tr>
-                  <Table.Td colSpan={7}>
-                    <Text c="dimmed">暂无连接撤销同步任务</Text>
-                  </Table.Td>
-                </Table.Tr>
-              ) : (
-                filteredLeaseRevocationJobs.map((job) => {
-                  const retryable = isRetryableBackgroundSyncStatus(job.status);
-                  const nodeRetryable = job.nodeId && canRetryFilteredQueueByNode(props.filter)
-                    ? filteredLeaseRevocationJobs.some(
-                        (candidate) => candidate.nodeId === job.nodeId && isRetryableBackgroundSyncStatus(candidate.status)
-                      )
-                    : false;
-                  return (
-                  <Table.Tr key={job.id}>
-                    <Table.Td>
-                      <Badge color={leaseRevocationStatusColor(job.status)} variant="light">
-                        {translateLeaseRevocationStatus(job.status)}
-                      </Badge>
-                    </Table.Td>
-                    <Table.Td>{leaseRevocationJobTargetLabel(job)}</Table.Td>
-                    <Table.Td>{translateLeaseRevocationReason(job.reason)}</Table.Td>
-                    <Table.Td>{job.attempts}</Table.Td>
-                    <Table.Td>{formatDateTime(job.nextRunAt)}</Table.Td>
-                    <Table.Td>
-                      <Text size="sm" c="dimmed" lineClamp={2}>
-                        {summarizeAdminDiagnosticMessage(job.lastError, "连接撤销任务失败，请稍后重试或查看服务器日志。") ?? "-"}
-                      </Text>
-                    </Table.Td>
-                    <Table.Td>
-                      <Group gap="xs" wrap="nowrap">
-                        <Button
-                          size="xs"
-                          variant="light"
-                          loading={props.leaseRetryBusyKey === `lease-job:${job.id}`}
-                          disabled={!retryable || (props.leaseRetryBusyKey !== null && props.leaseRetryBusyKey !== `lease-job:${job.id}`)}
-                          onClick={() => props.onRetryLeaseJob(job.id)}
-                          title={retryable ? "重试这个连接撤销任务" : "执行中的任务不可重试"}
-                        >
-                          重试
-                        </Button>
-                        {job.nodeId && canRetryFilteredQueueByNode(props.filter) ? (
-                          <Button
-                            size="xs"
-                            variant="subtle"
-                            loading={props.leaseRetryBusyKey === `lease-node:${job.nodeId}`}
-                            disabled={!nodeRetryable || (props.leaseRetryBusyKey !== null && props.leaseRetryBusyKey !== `lease-node:${job.nodeId}`)}
-                            onClick={() => props.onRetryLeaseNode(job.nodeId!)}
-                            title={nodeRetryable ? "重试这个节点的连接撤销任务" : "这个节点暂无可重试任务"}
-                          >
-                            重试节点
-                          </Button>
-                        ) : null}
-                      </Group>
-                    </Table.Td>
-                  </Table.Tr>
-                  );
-                })
-              )}
-            </Table.Tbody>
-          </DataTable>
-        </Stack>
-        <Stack gap="xs">
-          <Text fw={600}>节点命令同步</Text>
-          {commandDetail?.failed ? (
-            // Rendered regardless of row count: a refresh failure with a
-            // nonempty retained list must still warn that the rows are stale,
-            // or completed commands would read as still pending.
-            <Text size="xs" c="red">
-              该对象的节点命令刷新失败，下方为上次成功加载的内容（可能已过期）。
-            </Text>
-          ) : null}
-          {listedCommandTotal > (hasFilter ? filteredNodeCommandJobs.length : props.nodeCommandQueue.jobs.length) ? (
-            <Text size="xs" c="dimmed">
-              {hasFilter
-                ? `仅显示该对象最近 ${filteredNodeCommandJobs.length} 条命令。`
-                : `仅显示最近 ${props.nodeCommandQueue.jobs.length} 条，共 ${listedCommandTotal} 条待处理；节点状态列显示的是完整计数。`}
-            </Text>
-          ) : null}
-          <DataTable>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>状态</Table.Th>
-                <Table.Th>节点</Table.Th>
-                <Table.Th>命令</Table.Th>
-                <Table.Th>次数</Table.Th>
-                <Table.Th>下次执行</Table.Th>
-                <Table.Th>错误</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {filteredNodeCommandJobs.length === 0 ? (
-                <Table.Tr>
-                  <Table.Td colSpan={6}>
-                    {commandDetail?.failed ? (
-                      <Text c="red">该对象的节点命令加载失败，请稍后重试或刷新页面。</Text>
-                    ) : hasNodeCommandQueueFilter(props.filter) && !commandDetail?.queue ? (
-                      <Text c="dimmed">正在加载该对象的节点命令…</Text>
-                    ) : (
-                      <Text c="dimmed">暂无待处理的节点命令</Text>
-                    )}
-                  </Table.Td>
-                </Table.Tr>
-              ) : (
-                filteredNodeCommandJobs.map((job) => (
-                  <Table.Tr key={job.id}>
-                    <Table.Td>
-                      <Badge color={nodeCommandStatusColor(job.status)} variant="light">
-                        {translateNodeCommandStatus(job.status)}
-                      </Badge>
-                    </Table.Td>
-                    <Table.Td>{job.nodeName ?? job.nodeId}</Table.Td>
-                    <Table.Td>{translateNodeCommandType(job.commandType)}</Table.Td>
-                    <Table.Td>{job.attempts}</Table.Td>
-                    <Table.Td>{formatDateTime(job.nextRunAt)}</Table.Td>
-                    <Table.Td>
-                      <Text size="sm" c="dimmed" lineClamp={2}>
-                        {summarizeAdminDiagnosticMessage(job.lastError, "节点命令执行失败，Agent 会自动重试，超过上限后取消。") ?? "-"}
-                      </Text>
-                    </Table.Td>
-                  </Table.Tr>
-                ))
-              )}
-            </Table.Tbody>
-          </DataTable>
-        </Stack>
-      </Stack>
-    </Drawer>
-  );
-}
-
-function canRetryFilteredQueueByNode(filter?: LeaseRevocationQueueFilter | null) {
-  return !filter?.subscriptionId && !filter?.userId && !filter?.teamId;
+              {expanded ? <Table.Tr className={styles.detailRow}><Table.Td colSpan={6}><div id={`node-details-${node.id}`} className={styles.details}>
+                <Group className={styles.probePanel} justify="space-between" align="center" gap="lg">
+                  <div className={styles.probeInfo}>{node.probeError ? <IconAlertCircle className={styles.errorIcon} size={24}/> : null}<div><Text fw={600} c={node.probeError ? "red.8" : undefined}>{node.probeError ? "节点探测异常" : "节点运行详情"}</Text>
+                    {node.probeError ? <Text size="sm" className={styles.error}>{node.probeError}</Text> : null}
+                    <Text size="xs" c="dimmed" mt={8}>{[node.region, node.provider].filter(Boolean).join(" · ") || "未设置地区与供应商"} · 最后检测 {node.probeCheckedAt ? formatDateTime(node.probeCheckedAt) : "尚未检测"}</Text>
+                  </div></div>
+                  <Group gap="sm"><Button variant="default" size="sm" loading={props.probingNodeId === node.id} disabled={props.probingAll || (props.probingNodeId !== null && props.probingNodeId !== node.id)} onClick={() => props.onProbeNode(node.id)}>重新探测</Button>
+                    {total > 0 ? <Button variant="subtle" color="teal.9" size="sm" onClick={() => props.onOpenLeaseRevocationQueue({nodeId: node.id, title: node.name})} rightSection={<IconArrowRight size={15}/>}>查看 {total} 项同步任务</Button> : null}
+                    {hasRetryableBackgroundSync(lease) ? <Button variant="subtle" size="sm" color="teal.9" loading={props.leaseRevocationRetryBusyKey === `lease-node:${node.id}`} disabled={props.leaseRevocationRetryBusyKey !== null && props.leaseRevocationRetryBusyKey !== `lease-node:${node.id}`} onClick={() => props.onRetryNodeLeaseRevocationJobs(node.id)}>重试连接撤销</Button> : null}
+                  </Group>
+                </Group>
+                <NodeControlDetails node={node} onNodeRecordChanged={props.onNodeRecordChanged} onResume={() => props.onResumeAgentNode(node.id)} onEdit={() => props.onOpenNodeDrawer(node.id)}/>
+              </div></Table.Td></Table.Tr> : null}
+            </Fragment>;
+          })}
+        </Table.Tbody>
+      </DataTable>
+    </div>
+    <Text size="xs" c="dimmed" ta="right" mt="md">当前显示 {rows.length} 个节点</Text>
+  </section>;
 }
 
 function summarizeLeaseRevocationJobsForNode(jobs: AdminLeaseRevocationJobDto[], nodeId: string) {
@@ -475,53 +125,3 @@ function hasRetryableBackgroundSync(summary: { pending: number; failed: number }
   return summary.pending > 0 || summary.failed > 0;
 }
 
-function buildBackgroundSyncLabel(
-  prefix: string,
-  summary: { pending: number; running: number; failed: number; total: number }
-) {
-  const parts = [
-    summary.pending > 0 ? `待同步 ${summary.pending}` : null,
-    summary.running > 0 ? `执行中 ${summary.running}` : null,
-    summary.failed > 0 ? `待重试 ${summary.failed}` : null
-  ].filter(Boolean);
-  return parts.length > 0 ? `${prefix}${parts.join(" / ")}` : `${prefix}待同步`;
-}
-
-function leaseRevocationJobTargetLabel(job: AdminLeaseRevocationJobDto) {
-  return job.nodeName ?? job.nodeId ?? job.subscriptionId ?? job.userId ?? "全局连接";
-}
-
-function translateLeaseRevocationReason(reason: string) {
-  const labels: Record<string, string> = {
-    admin_user_disconnected: "管理员断开连接",
-    connection_taken_over: "连接被接管",
-    lease_expired: "连接租约过期",
-    node_access_revoked: "节点授权取消",
-    node_deleted: "节点删除",
-    subscription_expired: "订阅到期",
-    subscription_exhausted: "流量耗尽",
-    subscription_inactive: "订阅不可用",
-    subscription_paused: "订阅暂停",
-    subscription_user_disabled: "账号禁用",
-    team_disabled: "团队停用",
-    team_member_removed: "团队成员移除",
-    team_membership_missing: "团队成员关系失效",
-    user_disabled: "账号禁用"
-  };
-  return labels[reason] ?? reason.replace(/_/g, " ");
-}
-
-function translateLeaseRevocationStatus(status: AdminLeaseRevocationJobDto["status"]) {
-  if (status === "pending") return "等待";
-  if (status === "running") return "执行中";
-  if (status === "failed") return "待重试";
-  return "完成";
-}
-
-function leaseRevocationStatusColor(status: AdminLeaseRevocationJobDto["status"]) {
-  if (status === "pending") return "yellow";
-  if (status === "running") return "blue";
-  if (status === "failed") return "yellow";
-  if (status === "completed") return "green";
-  return "gray";
-}
