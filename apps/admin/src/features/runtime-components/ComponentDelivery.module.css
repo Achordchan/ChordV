@@ -1,0 +1,20 @@
+.workspace { --mantine-color-dimmed: #596454; padding: 20px 8px; color: #24362d; min-width: 0; }
+.table { border: 1px solid #dce3d5; border-radius: 5px; overflow: hidden; }
+.table :global(th) { padding: 18px 22px; color: #52604c; background: #f0f3eb; font-size: 14px; font-weight: 550; }
+.table :global(td) { padding: 24px 22px; border-color: #e1e6dc; vertical-align: top; }
+.details { font-size: 13px; color: #52604c; margin-top: 10px; max-width: 320px; }
+.details summary { cursor: pointer; padding: 5px 0; }
+.details p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.workspace :focus-visible { outline: 3px solid #245137; outline-offset: 3px; }
+.groupRow { background: #f5f7f0; }
+.table .platformRow > td:first-child { padding-left: 40px; }
+.platformRow { background: #fcfcf8; }
+.errorPanel { display: flex; gap: 12px; align-items: flex-start; border-left: 3px solid #a44339; padding: 16px 18px; background: #faf3ef; color: #82372f; margin-block: 8px 16px; }
+.errorPanel > svg { flex: 0 0 auto; margin-top: 2px; }
+.errorBody { min-width: 0; flex: 1; }
+.errorBody strong { font-size: 15px; font-weight: 600; }
+.errorBody p { margin: 8px 0; font-size: 14px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.errorBody details { margin-top: 10px; color: #655d55; font-size: 13px; }
+.errorBody summary { cursor: pointer; }
+.errorBody summary:focus-visible { outline: 2px solid #82372f; outline-offset: 4px; }
+.readSuccess { color: #285238; font-size: 14px; line-height: 1.6; border-left: 3px solid #547a49; padding: 8px 12px; background: #eff4e9; }

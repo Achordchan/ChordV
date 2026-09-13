@@ -1,3 +1,4 @@
+import { DataSkeleton } from "../shared/DataSkeleton";
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import {
   ActionIcon,
@@ -492,13 +493,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
             </Alert>
           ) : null}
 
-          {loading ? (
-            <Alert color="blue" variant="light">
-              正在加载客户端组件。
-            </Alert>
-          ) : null}
-
-          <Stack gap="md">
+          {loading && components.length === 0 ? <DataSkeleton variant="page" rows={3}/> : <Stack gap="md">
             {slotGroups.map((slot) => (
               <RuntimeComponentSlotCard
                 key={slot.key}
@@ -517,7 +512,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
                 onRemove={(record) => void removeComponent(record)}
               />
             ))}
-          </Stack>
+          </Stack>}
         </Stack>
       </Card>
 

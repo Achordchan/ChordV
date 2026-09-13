@@ -1,4 +1,5 @@
 import { Alert, Button, Checkbox, FileInput, Group, Modal, SegmentedControl, Stack, TextInput } from "@mantine/core";
+import dialogStyles from "../editors/EditorDialog.module.css";
 import { ExternalArtifactMetadataFields } from "./ExternalArtifactMetadataFields";
 import type { ArtifactEditorFormState } from "./types";
 import type { AdminReleasePlatform } from "../../api/client";
@@ -38,10 +39,11 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
       title={props.title}
       centered
       size="lg"
+      classNames={{content: dialogStyles.content, header: dialogStyles.header, title: dialogStyles.title, body: dialogStyles.body}}
       closeOnClickOutside={!props.saving}
       closeOnEscape={!props.saving}
     >
-      <Stack gap="md">
+      <Stack gap="lg" pb="lg" className={dialogStyles.form}>
         {savingMessage ? (
           <Alert color="yellow" variant="light">
             {savingMessage}
