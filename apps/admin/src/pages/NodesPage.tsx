@@ -125,3 +125,6 @@ function hasRetryableBackgroundSync(summary: { pending: number; failed: number }
   return summary.pending > 0 || summary.failed > 0;
 }
 
+
+// 兼容现有 App 入口，逐步迁移到 SyncTasksModal。
+export { SyncTasksModal as PanelSyncQueueDrawer } from "../features/nodes/SyncTasksModal";
