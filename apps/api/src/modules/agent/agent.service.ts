@@ -329,7 +329,7 @@ export class AgentService {
         onboardingSpec: { path: ["activateOnFirstValidation"], equals: true }
       },
       data: { ...fields, inboundAppliedRevision: job.targetRevision, isActive: true }
-    });
+    })
       : { count: 0 };
     if (updated.count === 0) {
       updated = await tx.node.updateMany({
