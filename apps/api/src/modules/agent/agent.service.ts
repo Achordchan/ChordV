@@ -320,17 +320,23 @@ export class AgentService {
       const report = (input.result as { inbound: { inboundTag: string } }).inbound;
       await tx.nodeCommandJob.update({ where: { id: job.id }, data: { payload: { ...payload, inboundTag: report.inboundTag, tagOverrideConfirmed: true } as Prisma.InputJsonValue } });
     }
-    const current = payload.mode === "validate_panel" ? await tx.node.findUnique({
-      where: { id: nodeId },
-      select: { inboundAppliedRevision: true, onboardingSpec: true, registrationStatus: true }
-    }) : null;
-    const activate = current?.registrationStatus === "agent_ready"
-      && current.inboundAppliedRevision === 0n
-      && (current.onboardingSpec as Record<string, unknown> | null)?.activateOnFirstValidation === true;
-    const updated = await tx.node.updateMany({
-      where: { id: nodeId, inboundAppliedRevision: { lt: job.targetRevision }, ...(payload.mode === "validate_panel" ? { isActive: false } : {}) },
-      data: { ...fields, inboundAppliedRevision: job.targetRevision, ...(activate ? { isActive: true } : {}) }
+    let updated = payload.mode === "validate_panel" ? await tx.node.updateMany({
+      where: {
+        id: nodeId,
+        inboundAppliedRevision: 0n,
+        registrationStatus: "agent_ready",
+        isActive: false,
+        onboardingSpec: { path: ["activateOnFirstValidation"], equals: true }
+      },
+      data: { ...fields, inboundAppliedRevision: job.targetRevision, isActive: true }
     });
+      : { count: 0 };
+    if (updated.count === 0) {
+      updated = await tx.node.updateMany({
+        where: { id: nodeId, inboundAppliedRevision: { lt: job.targetRevision }, ...(payload.mode === "validate_panel" ? { isActive: false } : {}) },
+        data: { ...fields, inboundAppliedRevision: job.targetRevision }
+      });
+    }
     if (payload.mode === "validate_panel" && updated.count === 0) {
       throw new BadRequestException("节点已激活或校验结果已过期，请停用并基于当前 revision 重新校验");
     }
