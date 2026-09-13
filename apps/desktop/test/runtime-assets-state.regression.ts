@@ -67,6 +67,9 @@ function testOptionalUpdateProgressStaysNonBlocking() {
 }
 
 function main() {
+  const hosted = { ...createComponent("https://panel.example.com/api/downloads/runtime-versions/fixed-id"), allowClientMirror: false };
+  assert.equal(resolveRuntimeComponentCandidate(hosted, "https://mirror.example.com")?.url, hosted.selectedUrl,
+    "server-hosted fixed versions must ignore a previously saved mirror prefix");
   testRuntimeComponentMirrorPrefixSupportsUrlPlaceholder();
   testRuntimeComponentMirrorPrefixMatchesUpdateDownloadRule();
   testRuntimeComponentRetryResetsProgress();
