@@ -63,7 +63,7 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
   const watchOutcome = useCallback((nodeId: string, commandId: string, targetRevision: string, epoch: number) => {
     stopWatching();
     const watch = watchEpoch.current;
-    let busy = false, dirty = false, retries = 0, pollAttempt = 0;
+    let busy = false, dirty = false, failureAttempt = 0, pollAttempt = 0;
     const valid = () => current(epoch) && watchEpoch.current === watch;
     const fail = (message: string) => {
       stopWatching(); setStage("failed"); setError(message);
@@ -79,6 +79,10 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
       if (pollTimer.current !== null) {
         window.clearTimeout(pollTimer.current);
         pollTimer.current = null;
+      }
+      if (retryTimer.current !== null) {
+        window.clearTimeout(retryTimer.current);
+        retryTimer.current = null;
       }
       if (busy) { dirty = true; return; }
       busy = true;
@@ -128,16 +132,16 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
           return;
         }
         setError(null);
+        failureAttempt = 0;
         pollAttempt += 1;
         const delay = Math.min(1000 * 2 ** Math.min(pollAttempt, 4), 10_000);
         pollTimer.current = window.setTimeout(() => void tick(), delay);
       } catch (reason) {
         if (valid()) {
           setError(errorMessage(reason));
-          if (retries < 3) {
-            retries++;
-            retryTimer.current = window.setTimeout(() => void tick(), retries * 1000);
-          }
+          failureAttempt += 1;
+          const delay = Math.min(1000 * 2 ** Math.min(failureAttempt - 1, 4), 10_000);
+          retryTimer.current = window.setTimeout(() => void tick(), delay);
         }
       } finally {
         busy = false;
