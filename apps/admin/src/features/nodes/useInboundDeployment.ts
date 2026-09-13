@@ -57,7 +57,7 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
   const watchOutcome = useCallback((nodeId: string, commandId: string, targetRevision: string, epoch: number) => {
     stopWatching();
     const watch = watchEpoch.current;
-    let busy = false, dirty = false;
+    let busy = false, dirty = false, retries = 0;
     const valid = () => current(epoch) && watchEpoch.current === watch;
     const fail = (message: string) => {
       stopWatching(); setStage("failed"); setError(message);
@@ -119,7 +119,7 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
         }
         setError(null);
       } catch (reason) {
-        if (valid()) setError(errorMessage(reason));
+        if (valid()) { setError(errorMessage(reason)); if (retries < 3) { retries++; timer.current = window.setTimeout(() => void tick(), retries * 1000); } }
       } finally {
         busy = false;
         if (dirty && valid()) { dirty = false; void tick(); }
