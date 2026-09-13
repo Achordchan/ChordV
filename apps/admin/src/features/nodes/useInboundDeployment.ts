@@ -33,6 +33,8 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
   const session = useRef(0), watchEpoch = useRef(0);
   const active = useRef(false), requestBusy = useRef(false);
   const timer = useRef<number | null>(null);
+  const pollTimer = useRef<number | null>(null);
+  const retryTimer = useRef<number | null>(null);
   const unsubscribe = useRef<(() => void) | null>(null);
   const refreshOutcome = useRef<(() => void) | null>(null);
   const changed = useRef(onNodeChanged);
@@ -44,6 +46,10 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
     refreshOutcome.current = null;
     if (timer.current !== null) window.clearTimeout(timer.current);
     timer.current = null;
+    if (pollTimer.current !== null) window.clearTimeout(pollTimer.current);
+    pollTimer.current = null;
+    if (retryTimer.current !== null) window.clearTimeout(retryTimer.current);
+    retryTimer.current = null;
   }, []);
   const invalidate = useCallback(() => {
     session.current++;
@@ -57,7 +63,7 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
   const watchOutcome = useCallback((nodeId: string, commandId: string, targetRevision: string, epoch: number) => {
     stopWatching();
     const watch = watchEpoch.current;
-    let busy = false, dirty = false, retries = 0;
+    let busy = false, dirty = false, retries = 0, pollAttempt = 0;
     const valid = () => current(epoch) && watchEpoch.current === watch;
     const fail = (message: string) => {
       stopWatching(); setStage("failed"); setError(message);
@@ -70,6 +76,10 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
     };
     const tick = async () => {
       if (!valid()) return;
+      if (pollTimer.current !== null) {
+        window.clearTimeout(pollTimer.current);
+        pollTimer.current = null;
+      }
       if (busy) { dirty = true; return; }
       busy = true;
       try {
@@ -118,8 +128,17 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
           return;
         }
         setError(null);
+        pollAttempt += 1;
+        const delay = Math.min(1000 * 2 ** Math.min(pollAttempt, 4), 10_000);
+        pollTimer.current = window.setTimeout(() => void tick(), delay);
       } catch (reason) {
-        if (valid()) { setError(errorMessage(reason)); if (retries < 3) { retries++; timer.current = window.setTimeout(() => void tick(), retries * 1000); } }
+        if (valid()) {
+          setError(errorMessage(reason));
+          if (retries < 3) {
+            retries++;
+            retryTimer.current = window.setTimeout(() => void tick(), retries * 1000);
+          }
+        }
       } finally {
         busy = false;
         if (dirty && valid()) { dirty = false; void tick(); }
@@ -129,7 +148,9 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
     unsubscribe.current = subscribeAdminRuntimeEvents(event => {
       if (event.type === "sync_queue_updated" || (event.type === "node_access_updated" && (!event.nodeId || event.nodeId === nodeId))) void tick();
     });
-    // One deadline, not a query loop. Expiry does not cancel the server task.
+    // A bounded backoff poll remains necessary until completion-event delivery
+    // is guaranteed. The deadline limits the observation window; expiry does
+    // not cancel the server task.
     timer.current = window.setTimeout(() => {
       if (valid()) fail("5 分钟内未确认入站操作结果。后台任务不会因此取消，请刷新节点状态后继续处理。");
     }, OBSERVATION_TIMEOUT_MS);

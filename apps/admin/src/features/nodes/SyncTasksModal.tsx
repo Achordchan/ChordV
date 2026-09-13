@@ -1,7 +1,6 @@
-import { Button, Group, Modal, Stack, Text } from "@mantine/core";
+import { Button, Group, Modal, Skeleton, Stack, Text } from "@mantine/core";
 import { IconCircleCheck } from "@tabler/icons-react";
 import type { AdminLeaseRevocationJobDto, AdminNodeCommandQueueDto } from "@chordv/shared";
-import { DataSkeleton } from "../shared/DataSkeleton";
 import { filterLeaseRevocationJobs, hasLeaseRevocationQueueFilter, hasNodeCommandQueueFilter, type LeaseRevocationQueueFilter } from "../../utils/admin-queue-filters";
 import { sumNodeCommandSummaries } from "../../utils/node-command-summary";
 import { nodeCommandStatusColor, translateNodeCommandStatus, translateNodeCommandType } from "../../utils/admin-translate";
@@ -48,7 +47,7 @@ export function SyncTasksModal(props: {
         })}</ul></section> : null}
         {loading || failed || commands.length > 0 || commandTotal > 0 ? <section><Text className={styles.heading}>节点命令</Text>
           {failed ? <Text size="sm" c="red" role="alert">节点命令加载失败。{commands.length ? "以下保留上次结果，可能已过期。" : "请关闭后重新打开任务列表。"}</Text> : null}
-          {loading ? <DataSkeleton rows={3}/> : null}
+          {loading ? <Stack gap="sm" aria-label="正在加载任务" role="status"><Skeleton height={18}/><Skeleton height={18}/><Skeleton height={18}/></Stack> : null}
           {commandTotal > commands.length ? <Text size="xs" c="dimmed">仅展示最近 {commands.length} 条命令，仍有其他待处理命令。</Text> : null}
           <ul className={styles.list}>{commands.map(job => <li key={job.id} className={styles.row}><Group justify="space-between" align="flex-start" wrap="nowrap"><div className={styles.identity}><Text fw={550}>{translateNodeCommandType(job.commandType)}</Text><Text size="sm" c="dimmed">{job.nodeName ?? job.nodeId}</Text></div><Text size="sm" c={nodeCommandStatusColor(job.status)}>{translateNodeCommandStatus(job.status)}</Text></Group><details className={styles.details}><summary>{job.lastError ? "查看错误与执行详情" : "执行详情"}</summary><dl><div><dt>尝试次数</dt><dd>{job.attempts}</dd></div><div><dt>下次执行</dt><dd>{formatDateTime(job.nextRunAt)}</dd></div></dl>{job.lastError ? <p className={styles.error}>{job.lastError}</p> : null}</details></li>)}</ul>
         </section> : null}

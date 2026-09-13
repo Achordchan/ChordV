@@ -3202,6 +3202,7 @@ export function App() {
                 leaseRevocationRetryBusyKey={leaseRevocationRetryBusyKey}
                 probingNodeId={probingNodeId}
                 probingAll={probingAll}
+                onProbeAll={() => void handleProbeAllNodes()}
                 onOpenLeaseRevocationQueue={openLeaseRevocationQueue}
                 onRetryLeaseRevocationJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}
                 onRetryNodeLeaseRevocationJobs={(nodeId) => void handleRetryNodeLeaseRevocationJobs(nodeId)}
