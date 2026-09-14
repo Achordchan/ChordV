@@ -70,7 +70,7 @@ export function useAgentNodeOnboarding(opened: boolean, initialNode: AdminNodeRe
           return;
         }
         if (!status.spec || !status.command) {
-          setStage("failed"); setError("缺少入站校验任务，请在节点控制器重新导入参数并校验。");
+          setStage("failed"); setError("缺少入站校验任务，请在节点的入站配置中重新导入参数并校验。");
         } else if (status.command.status === "completed" && registered.inboundAppliedRevision === status.command.targetRevision) {
           setStage("ready"); setError(null); stopWatching();
         } else if (["failed", "cancelled", "completed"].includes(status.command.status)) {

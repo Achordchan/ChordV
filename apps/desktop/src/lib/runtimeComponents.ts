@@ -14,6 +14,7 @@ export type RuntimeComponentDownloadItem = {
   id: string;
   revision: string | null;
   versionLabel?: string | null;
+  allowClientMirror?: boolean;
   component: RuntimeComponentKind;
   fileName: string;
   fileSizeBytes: number | null;

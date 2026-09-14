@@ -23,7 +23,16 @@ async function main() {
         probeStatus: "unknown", createdAt: new Date(), updatedAt: new Date(), ...data },
       findUnique: async () => node ? { ...node, nodeAgents: agent && !agent.revokedAt ? [agent] : [] } : null,
       update: async ({ data }: any) => assign(node, data),
-      updateMany: async ({ data }: any) => { assign(node, data); return { count: 1 }; }
+      updateMany: async ({ where, data }: any) => {
+        if (!node || (where.id && node.id !== where.id)) return { count: 0 };
+        if (where.isActive !== undefined && node.isActive !== where.isActive) return { count: 0 };
+        if (where.registrationStatus && node.registrationStatus !== where.registrationStatus) return { count: 0 };
+        if (where.onboardingSpec && node.onboardingSpec?.activateOnFirstValidation !== true) return { count: 0 };
+        const revision = where.inboundAppliedRevision;
+        if (typeof revision === "bigint" && node.inboundAppliedRevision !== revision) return { count: 0 };
+        if (revision?.lt !== undefined && node.inboundAppliedRevision >= revision.lt) return { count: 0 };
+        assign(node, data); return { count: 1 };
+      }
     },
     agentRegisterToken: {
       create: async ({ data }: any) => { const row = { usedAt: null, ...data }; tokens.push(row); return row; },
@@ -70,7 +79,7 @@ async function main() {
   const service = new AgentService(prisma, { publish() {} } as never, {} as never, adminEvents as never);
   const controller = new AgentAdminController(service, register);
   const created = await register.createAgentNode({ name: "two-stage-server" });
-  assert.deepEqual(node.onboardingSpec, { mode: "awaiting_panel" });
+  assert.deepEqual(node.onboardingSpec, { mode: "awaiting_panel", activateOnFirstValidation: true });
   assert.equal(created.node.isActive, false);
   assert.equal((await register.getOnboarding(node.id)).mode, "environment");
   const registration = { registerToken: created.registerToken, agentToken: "chordv_agent_" + "a".repeat(43),
@@ -110,6 +119,14 @@ async function main() {
   assert.equal((await register.getOnboarding(node.id)).command?.status, "pending");
   assert.equal(node.isActive, false);
   assert.equal(node.inboundAppliedRevision, 0n);
+  const latestJob = jobs.at(-1);
+  const inbound = {mode:"validate_panel",validated:true,inboundTag:"actual-inbound",serverPort:payload.listenPort,serverHost:payload.serverHost,realityPublicKey:payload.realityPublicKey,shortId:payload.shortId,serverName:payload.serverNames[0],flow:payload.flow,fingerprint:payload.fingerprint,spiderX:payload.spiderX};
+  await service.completeCommand(agent, latestJob.id, {status:"completed",result:{inbound}});
+  assert.equal(node.isActive,true,"first verified onboarding activates the new node");
+  node.isActive=false;
+  const recheck=await service.queueCommand(node.id,{type:"ENSURE_INBOUND",payload,expectedInboundAppliedRevision:String(node.inboundAppliedRevision)});
+  await service.completeCommand(agent,recheck.commandId,{status:"completed",result:{inbound}});
+  assert.equal(node.isActive,false,"revalidation cannot undo an operator's deactivation");
   assert.ok(events.some(event => event.type === "node_access_updated"));
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -59,7 +59,7 @@ function testReadErrorKeepsRequestIdForNetworkFailure() {
     "fallback"
   );
 
-  assert.match(message, /Request ID: admin-network-check/);
+  assert.match(message, /请求编号：admin-network-check/);
 }
 
 function testReadErrorKeepsRequestIdForTimeout() {
@@ -68,7 +68,7 @@ function testReadErrorKeepsRequestIdForTimeout() {
     "fallback"
   );
 
-  assert.match(message, /Request ID: admin-timeout-check/);
+  assert.match(message, /请求编号：admin-timeout-check/);
 }
 
 function testReadErrorKeepsRequestIdForExpiredSession() {
@@ -77,7 +77,7 @@ function testReadErrorKeepsRequestIdForExpiredSession() {
     "fallback"
   );
 
-  assert.match(message, /Request ID: admin-session-check/);
+  assert.match(message, /请求编号：admin-session-check/);
 }
 
 function testImageBedManageTimeoutIsUncertainMutationFailure() {
@@ -106,3 +106,9 @@ testImageBedManageTimeoutIsUncertainMutationFailure();
 testGenericUncertainMutationMessageDoesNotMentionSyncQueue();
 
 console.log("admin filter regression checks passed");
+
+const validation = readError(new Error(JSON.stringify({ statusCode: 400, message: ["name should not be empty", "maxConcurrentSessions must not be less than 1"], requestId: "admin-validation" })), "fallback");
+assert.ok(validation.includes("name should not be empty"));
+assert.ok(validation.includes("maxConcurrentSessions must not be less than 1"));
+assert.match(validation, /请求编号：admin-validation/);
+assert.equal(readError(backendError(403, "当前节点已禁用"), "fallback"), "当前节点已禁用");

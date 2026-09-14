@@ -1,0 +1,8 @@
+.routing :global(p) { color: #56634f; font-size: 13px; line-height: 1.6; }
+.aiRow { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; padding: 16px 0; border-bottom: 1px solid #e0e6d9; }
+.aiRow strong { font-size: 14px; font-weight: 550; color: #334b36; }
+.aiRow p { margin: 5px 0 0; }
+.selector { padding: 3px; background: #edf1e7; border: 1px solid #a5b49a; border-radius: 5px; }
+.label { min-width: 72px; padding: 9px 15px; font-size: 14px; color: #46553e; }
+.label[data-active] { color: #174329; font-weight: 600; text-decoration: underline; text-underline-offset: 4px; }
+.indicator { background: #fff; box-shadow: none; border-radius: 3px; }

@@ -1,3 +1,4 @@
+import { RuntimeVersionService } from "../common/runtime-version.service";
 import { Controller, Get, NotFoundException, Param, Res, ServiceUnavailableException } from "@nestjs/common";
 import type { Response } from "express";
 import { DevDataService } from "../common/dev-data.service";
@@ -7,8 +8,16 @@ import { RuntimeComponentsService } from "../common/runtime-components.service";
 export class DownloadsController {
   constructor(
     private readonly devDataService: DevDataService,
-    private readonly runtimeComponentsService: RuntimeComponentsService
+    private readonly runtimeComponentsService: RuntimeComponentsService,
+    private readonly runtimeVersions: RuntimeVersionService
   ) {}
+
+  @Get("runtime-versions/:versionId")
+  async downloadRuntimeVersion(@Param("versionId") id: string, @Res() response: Response) {
+    const file = await this.runtimeVersions.download(id);
+    response.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    return sendDownloadFile(response, file.absolutePath, file.fileName, "组件版本文件暂不可用");
+  }
 
   @Get("releases/:artifactId")
   async downloadReleaseArtifact(@Param("artifactId") artifactId: string, @Res() response: Response) {

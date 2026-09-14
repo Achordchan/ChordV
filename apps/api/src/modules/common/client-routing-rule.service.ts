@@ -1,4 +1,5 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
+import { BadRequestException, ConflictException, Injectable, NotFoundException, Optional } from "@nestjs/common";
 import type {
   ClientRoutingRuleAction,
   ClientRoutingRuleDto,
@@ -32,7 +33,8 @@ export class ClientRoutingRuleService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly authSessionService: AuthSessionService,
-    private readonly clientRuntimeEventsService: ClientRuntimeEventsService
+    private readonly clientRuntimeEventsService: ClientRuntimeEventsService,
+    @Optional() private readonly adminEvents?: AdminRuntimeEventsService
   ) {}
 
   async listRules(token?: string): Promise<ClientRoutingRuleDto[]> {
@@ -130,6 +132,7 @@ export class ClientRoutingRuleService {
   }
 
   private publishPolicyUpdatedBestEffort(userId: string) {
+    try { this.adminEvents?.publish({ type: "policy_updated", occurredAt: new Date().toISOString() }); } catch { /* The saved rule remains authoritative if notification fails. */ }
     try {
       this.clientRuntimeEventsService.publishToUser(userId, {
         type: "policy_updated",

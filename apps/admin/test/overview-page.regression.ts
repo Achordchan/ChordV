@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import ts from "typescript";
+import { sumNodeCommandSummaries } from "../src/utils/node-command-summary";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -16,12 +18,12 @@ const app = read(join(adminRoot, "src", "App.tsx"));
 
 assert.match(overviewPage, /待处理事项/);
 assert.match(overviewPage, /待回复工单/);
-assert.match(overviewPage, /后台同步任务/);
+assert.match(overviewPage, /后台同步/);
 assert.match(overviewPage, /异常节点/);
 assert.match(overviewPage, /onOpenTickets: \(\) => void/);
 assert.match(overviewPage, /onOpenSyncQueue: \(\) => void/);
 assert.ok(
-  overviewPage.indexOf("待处理事项") < overviewPage.indexOf("用户数"),
+  overviewPage.indexOf("待处理事项") < overviewPage.indexOf("className={styles.metrics}"),
   "overview should show actionable work before passive metrics"
 );
 assert.match(app, /onOpenTickets=\{\(\) => selectSection\("tickets"\)\}/);
@@ -62,11 +64,23 @@ assert.deepEqual(
   { color: "gray", label: "Agent 等待心跳" },
   "从未上报的节点按等待心跳展示"
 );
-assert.match(overviewPage, /from "\.\.\/utils\/node-status"/, "概览页必须使用共享的节点状态判定");
-assert.match(
-  overviewPage,
-  /props\.snapshot\.leaseRevocationJobs\.length \+ sumNodeCommandSummaries\(props\.snapshot\.nodeCommandQueue\.summaries, "nodes"\)/,
-  "后台同步任务计数必须同时包含连接撤销与节点命令的精确聚合，否则供给失败会显示为空队列"
-);
 
+const tree = ts.createSourceFile("OverviewPage.tsx", overviewPage, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+let attention = "", count = "";
+function visit(n: ts.Node) {
+  if (ts.isFunctionDeclaration(n) && n.name?.text === "nodeAttention") attention = n.getText(tree);
+  if (ts.isVariableDeclaration(n) && n.name.getText(tree) === "queueCount") count = n.initializer!.getText(tree);
+  ts.forEachChild(n, visit);
+}
+visit(tree);
+assert.ok(attention && count);
+const classify = new Function(ts.transpileModule(attention, {compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText + ";return nodeAttention;")();
+assert.equal(classify(node({})), 2);
+assert.equal(classify(node({probeStatus:"offline"})), 0);
+assert.equal(classify(node({controlStatus:"offline"})), 0);
+assert.equal(classify(node({isActive:false,controlStatus:"offline"})), 3);
+assert.equal(classify(node({controlStatus:undefined})), 1);
+const queue = new Function("snapshot", "sumNodeCommandSummaries", "return " + count);
+const snapshot = {leaseRevocationJobs:["pending","running","failed","completed","cancelled"].map(status=>({status})), nodeCommandQueue:{summaries:{nodes:[{key:"a",total:5},{key:"b",total:7}]}}};
+assert.equal(queue(snapshot,sumNodeCommandSummaries),15,"只统计可处理撤销任务，并使用节点命令精确聚合");
 console.log("admin overview page regression checks passed");

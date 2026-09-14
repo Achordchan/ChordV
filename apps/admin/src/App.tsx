@@ -1,3 +1,9 @@
+import { AdminBootSkeleton, DataSkeleton } from "./features/shared/DataSkeleton";
+import { useActionConfirmation } from "./features/modals/useActionConfirmation";
+import settingsDialogStyles from "./features/editors/EditorDialog.module.css";
+import { AccountSecurityModal } from "./features/system-settings/AccountSecurityModal";
+import { SystemSettingsPage } from "./pages/SystemSettingsPage";
+import { renewalBase, renewalDate } from "./features/editors/renewal-date";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ActionIcon,
@@ -8,12 +14,10 @@ import {
   Button,
   Card,
   Group,
-  Loader,
   Menu,
   Modal,
   NavLink,
   Paper,
-  PasswordInput,
   Select,
   SimpleGrid,
   Stack,
@@ -60,10 +64,9 @@ import {
   IconBolt,
   IconCloudDownload,
   IconCpu,
-  IconDotsVertical,
+  IconChevronDown,
   IconLayoutDashboard,
   IconListDetails,
-  IconLogout,
   IconMapPin,
   IconMessageCircle,
   IconPencil,
@@ -138,19 +141,20 @@ import { SystemUpdateBadge } from "./features/system-update/SystemUpdateBadge";
 import { AnnouncementsPage } from "./pages/AnnouncementsPage";
 import { CustomerSubscriptionsPage } from "./pages/CustomerSubscriptionsPage";
 import { ImageBedPage } from "./pages/ImageBedPage";
-import { NodesPage, PanelSyncQueueDrawer } from "./pages/NodesPage";
+import { NodesPage } from "./pages/NodesPage";
+import { SyncTasksModal } from "./features/nodes/SyncTasksModal";
 import { AgentNodeCreateModal } from "./features/nodes/AgentNodeCreateModal";
 import { hasNodeCommandQueueFilter, type LeaseRevocationQueueFilter } from "./utils/admin-queue-filters";
 import { sumNodeCommandSummaries } from "./utils/node-command-summary";
 import { OverviewPage } from "./pages/OverviewPage";
 import { PlansPage } from "./pages/PlansPage";
 import { PoliciesPage } from "./pages/PoliciesPage";
-import { ReleasesPage } from "./pages/ReleasesPage";
+import { UnifiedReleaseCenter } from "./features/releases/UnifiedReleaseCenter";
 import { RuntimeComponentsPage } from "./pages/RuntimeComponentsPage";
 import { SubscriptionsPage } from "./pages/SubscriptionsPage";
 import { TicketsPage } from "./pages/TicketsPage";
 import { UsersPage } from "./pages/UsersPage";
-import { shouldRefreshTicketsForAdminEvent } from "./utils/admin-runtime-events";
+import { adminEventSections, createAdminRefreshBatch } from "./utils/admin-runtime-events";
 import {
   applyPlanToChangePlanForm,
   applyPlanToCreateForm,
@@ -218,7 +222,8 @@ type SectionKey =
   | "policies"
   | "releases"
   | "runtimeComponents"
-  | "imageBed";
+  | "imageBed"
+  | "system";
 type EditorState = {
   type: DrawerType;
   recordId: string | null;
@@ -266,7 +271,7 @@ type LeaseRevocationQueueState = {
 
 const sectionMeta: Record<SectionKey, { label: string; icon: ReactNode }> = {
   overview: {
-    label: "概览",
+    label: "仪表台",
     icon: <IconLayoutDashboard size={18} />
   },
   users: {
@@ -305,6 +310,10 @@ const sectionMeta: Record<SectionKey, { label: string; icon: ReactNode }> = {
     label: "客户端组件",
     icon: <IconCpu size={18} />
   },
+  system: {
+    label: "系统设置",
+    icon: <IconShieldLock size={18} />
+  },
   imageBed: {
     label: "附件图床配置",
     icon: <IconPhoto size={18} />
@@ -312,12 +321,12 @@ const sectionMeta: Record<SectionKey, { label: string; icon: ReactNode }> = {
 };
 
 const sectionGroups: Array<{ title: string; sections: SectionKey[] }> = [
-  { title: "总览", sections: ["overview"] },
+  { title: "工作台", sections: ["overview"] },
   { title: "用户与订阅", sections: ["users", "plans"] },
   { title: "节点与任务", sections: ["nodes"] },
   { title: "客服与公告", sections: ["tickets", "announcements"] },
-  { title: "应用发布", sections: ["releases", "runtimeComponents"] },
-  { title: "系统设置", sections: ["policies", "imageBed"] }
+  { title: "应用发布", sections: ["releases"] },
+  { title: "系统", sections: ["system"] }
 ];
 
 function readSectionNavBadge(sectionKey: SectionKey, waitingAdminTicketCount: number, backgroundSyncQueueCount: number) {
@@ -342,9 +351,13 @@ export function App() {
   const [snapshot, setSnapshot] = useState<AdminSnapshotDto | null>(null);
   const [loading, setLoading] = useState(true);
   const [sectionLoading, setSectionLoading] = useState(false);
+  const [displayReadySections, setDisplayReadySections] = useState<Set<SectionKey>>(() => new Set());
+  const [sectionLoadErrors, setSectionLoadErrors] = useState<Partial<Record<SectionKey, string>>>({});
   const [loadedSections, setLoadedSections] = useState<Set<SectionKey>>(() => new Set());
   const [refreshingDashboard, setRefreshingDashboard] = useState(false);
+  const dashboardLoadingSeqRef = useRef(0);
   const [authenticated, setAuthenticated] = useState(() => hasAdminSession());
+  const actionConfirmation = useActionConfirmation(authenticated);
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authForm, setAuthForm] = useState<AdminAuthFormState>({
@@ -365,6 +378,17 @@ export function App() {
   const [releaseRefreshSignal, setReleaseRefreshSignal] = useState(0);
   const [ticketRefreshSignal, setTicketRefreshSignal] = useState(0);
   const [runtimeComponentRefreshSignal, setRuntimeComponentRefreshSignal] = useState(0);
+  const [settingsPanel, setSettingsPanel] = useState<"policies" | "imageBed" | null>(null);
+  const settingsPanelRef = useRef(settingsPanel); settingsPanelRef.current = settingsPanel;
+  const [settingsStorageBusy, setSettingsStorageBusy] = useState(false);
+  const [settingsPolicyLoading, setSettingsPolicyLoading] = useState(false);
+  const [settingsPolicyError, setSettingsPolicyError] = useState<string | null>(null);
+  const settingsPolicyRequest = useRef(0);
+  useEffect(() => {
+    if (authenticated && settingsPanel === "policies") void loadSettingsPolicy();
+    return () => { settingsPolicyRequest.current++; };
+  }, [settingsPanel, authenticated]);
+  useEffect(() => { if (!authenticated) setSettingsPanel(null); }, [authenticated]);
   const [imageBedRefreshSignal, setImageBedRefreshSignal] = useState(0);
   const [mobileNavOpened, setMobileNavOpened] = useState(false);
   const [drawer, setDrawer] = useState<EditorState>({ type: null, recordId: null, parentId: null });
@@ -384,7 +408,7 @@ export function App() {
   const [planScopeTab, setPlanScopeTab] = useState<PlanScope>("personal");
   const [subscriptionTab, setSubscriptionTab] = useState<"personal" | "team">("personal");
   const [authBootstrapped, setAuthBootstrapped] = useState(() => hasAdminSession());
-  const [search, setSearch] = useState<Record<Exclude<SectionKey, "overview" | "tickets" | "policies" | "releases" | "runtimeComponents">, string>>({
+  const [search, setSearch] = useState<Record<Exclude<SectionKey, "overview" | "tickets" | "policies" | "releases" | "runtimeComponents" | "system">, string>>({
     users: "",
     plans: "",
     subscriptions: "",
@@ -433,7 +457,6 @@ export function App() {
   const sectionLoadingOwnerSeqRef = useRef(0);
   const loadedSectionsRef = useRef<Set<SectionKey>>(new Set());
   const sectionMutationSeqRef = useRef(0);
-  const pendingSyncQueueRefreshRef = useRef(false);
 
   const [userForm, setUserForm] = useState<UserFormState>(emptyUserForm());
   const [planForm, setPlanForm] = useState<PlanFormState>(emptyPlanForm());
@@ -449,6 +472,7 @@ export function App() {
   const [announcementForm, setAnnouncementForm] = useState<AnnouncementFormState>(emptyAnnouncementForm());
   const [policyForm, setPolicyForm] = useState<PolicyFormState | null>(null);
   const [policyDirty, setPolicyDirty] = useState(false);
+  const policyDirtyRef = useRef(policyDirty); policyDirtyRef.current = policyDirty;
   const [policySaving, setPolicySaving] = useState(false);
   const policySavingRef = useRef(false);
   const [nodeAccessEditor, setNodeAccessEditor] = useState<NodeAccessEditorState | null>(null);
@@ -603,75 +627,37 @@ export function App() {
   }, [policyDirty, snapshot?.policy]);
 
   useEffect(() => {
-    if (!authenticated) {
-      return;
-    }
-    const refreshVisibleAdminData = () => {
-      if (document.visibilityState === "hidden") {
-        return;
-      }
-      if (pendingSyncQueueRefreshRef.current) {
-        pendingSyncQueueRefreshRef.current = false;
-        void refreshLeaseRevocationJobsAfterPending().catch(() => undefined);
-      }
-      if (sectionRef.current === "releases") {
-        setReleaseRefreshSignal((current) => current + 1);
-      }
-      void refreshDashboard({ silent: true });
-      void refreshCurrentSectionSilently();
-    };
-    window.addEventListener("focus", refreshVisibleAdminData);
-    document.addEventListener("visibilitychange", refreshVisibleAdminData);
-    return () => {
-      window.removeEventListener("focus", refreshVisibleAdminData);
-      document.removeEventListener("visibilitychange", refreshVisibleAdminData);
-    };
-  }, [authenticated]);
-
-  useEffect(() => {
-    if (!authenticated) {
-      return;
-    }
-    return subscribeAdminRuntimeEvents((event) => {
-      if (event.type === "keepalive") {
-        return;
-      }
-      if (event.type === "sync_queue_updated") {
-        if (document.visibilityState === "hidden") {
-          pendingSyncQueueRefreshRef.current = true;
-          return;
+    if (!authenticated) return;
+    let disposed = false;
+    const batch = createAdminRefreshBatch({
+      visible: () => document.visibilityState !== "hidden",
+      refresh: async (sections) => {
+        if (disposed) return;
+        const currentSection = sectionRef.current;
+        // Mark off-screen data stale without fetching every module. It will
+        // load once when selected; users and subscriptions share one dataset.
+        const stale = new Set([...sections].map(value => value === "users" ? "subscriptions" : value));
+        const next = new Set([...loadedSectionsRef.current].filter(value => !stale.has(value)));
+        loadedSectionsRef.current = next; setLoadedSections(next);
+        const tasks: Promise<unknown>[] = [];
+        if (sections.has("overview")) tasks.push(refreshDashboard({ silent: true }));
+        if (sections.has(currentSection)) tasks.push(Promise.resolve(refreshCurrentSectionSilently()));
+        if (settingsPanelRef.current === "imageBed" && sections.has("imageBed")) setImageBedRefreshSignal(value => value + 1);
+        if (settingsPanelRef.current === "policies" && sections.has("policies")) tasks.push(loadSettingsPolicy());
+        if (sections.has("system")) {
+          tasks.push(refreshLeaseRevocationJobsAfterPending());
+          if (leaseRevocationQueueRef.current.opened) {
+            refreshNodeCommandQueueDetail(leaseRevocationQueueRef.current.filter);
+          }
         }
-        void refreshLeaseRevocationJobsAfterPending().catch(() => undefined);
-        void refreshDashboard({ silent: true });
-        return;
+        await Promise.allSettled(tasks);
       }
-      if (document.visibilityState === "hidden") {
-        return;
-      }
-      if (event.type === "version_updated") {
-        setReleaseRefreshSignal((current) => current + 1);
-      }
-      if (event.type === "release_center_updated" && sectionRef.current === "releases") {
-        setReleaseRefreshSignal((current) => current + 1);
-        return;
-      }
-      if (event.type === "runtime_component_updated" && sectionRef.current === "runtimeComponents") {
-        setRuntimeComponentRefreshSignal((current) => current + 1);
-        return;
-      }
-      if (event.type === "image_bed_updated" && sectionRef.current === "imageBed") {
-        setImageBedRefreshSignal((current) => current + 1);
-        return;
-      }
-      void refreshDashboard({ silent: true });
-      if (sectionRef.current === "tickets") {
-        if (shouldRefreshTicketsForAdminEvent(event)) {
-          setTicketRefreshSignal((current) => current + 1);
-        }
-        return;
-      }
-      void refreshCurrentSectionSilently();
     });
+    const unsubscribe = subscribeAdminRuntimeEvents(event => batch.add(adminEventSections(event)));
+    // Returning to the window is not itself a data change. Only flush events
+    // received while hidden; a reconnected stream emits its own resync events.
+    document.addEventListener("visibilitychange", batch.resume);
+    return () => { disposed = true; unsubscribe(); batch.stop(); document.removeEventListener("visibilitychange", batch.resume); };
   }, [authenticated]);
 
   useEffect(() => {
@@ -799,7 +785,8 @@ export function App() {
     () =>
       (snapshot?.nodes ?? []).map((item) => ({
         value: item.id,
-        label: buildNodeAccessOptionLabel(item)
+        label: buildNodeAccessOptionLabel(item),
+        countryCode: resolveCountryCode({ countryCode: item.countryCode, region: item.region, name: item.name, host: item.serverHost })
       })),
     [snapshot?.nodes]
   );
@@ -911,6 +898,8 @@ export function App() {
           message: readError(dashboardResult.reason, "后台统计暂时不可用，已先进入后台。")
         });
       }
+      setDisplayReadySections(new Set());
+      setSectionLoadErrors({});
       setLoadedSections(new Set());
       loadedSectionsRef.current = new Set();
     } catch (reason) {
@@ -940,8 +929,8 @@ export function App() {
         { key: "subscriptions", sections: ["overview", "subscriptions"], task: fetchAdminSubscriptions() },
         { key: "teams", sections: ["users", "subscriptions"], task: fetchAdminTeams() },
         { key: "nodes", sections: ["overview", "nodes"], task: fetchAdminNodes() },
-        { key: "leaseRevocationJobs", sections: ["users", "subscriptions", "nodes"], task: fetchAdminLeaseRevocationJobs() },
-        { key: "nodeCommandQueue", sections: ["users", "subscriptions", "nodes"], task: fetchAdminNodeCommandJobs() },
+        { key: "leaseRevocationJobs", sections: ["users", "subscriptions", "nodes", "system"], task: fetchAdminLeaseRevocationJobs() },
+        { key: "nodeCommandQueue", sections: ["users", "subscriptions", "nodes", "system"], task: fetchAdminNodeCommandJobs() },
         { key: "announcements", sections: ["announcements"], task: fetchAdminAnnouncements() }
       ];
       const results = await Promise.allSettled(listEntries.map((item) => item.task));
@@ -965,6 +954,7 @@ export function App() {
       );
       loadedSectionsRef.current = nextLoadedSections;
       setLoadedSections(nextLoadedSections);
+      setDisplayReadySections(new Set(nextLoadedSections));
       if (failedMessages.length > 0) {
         notifications.show({
           color: "yellow",
@@ -986,7 +976,8 @@ export function App() {
   async function refreshDashboard(options?: { silent?: boolean }) {
     const requestSeq = ++dashboardRefreshSeqRef.current;
     try {
-      setRefreshingDashboard(true);
+      if (!options?.silent) setRefreshingDashboard(true);
+      if (!options?.silent) dashboardLoadingSeqRef.current = requestSeq;
       const dashboard = await fetchAdminDashboard();
       if (requestSeq !== dashboardRefreshSeqRef.current) {
         return;
@@ -998,13 +989,17 @@ export function App() {
       }
       throw reason;
     } finally {
-      if (requestSeq === dashboardRefreshSeqRef.current) {
+      if (!options?.silent && dashboardLoadingSeqRef.current === requestSeq) {
         setRefreshingDashboard(false);
       }
     }
   }
 
   function refreshCurrentSectionSilently() {
+    if (sectionRef.current === "releases") {
+      setReleaseRefreshSignal(current => current + 1);
+      return;
+    }
     if (sectionRef.current === "tickets") {
       setTicketRefreshSignal((current) => current + 1);
       return;
@@ -1018,7 +1013,7 @@ export function App() {
       return;
     }
     const dataSection = sectionRef.current === "users" ? "subscriptions" : sectionRef.current;
-    void loadSectionData(dataSection, { force: true, silent: true }).catch(() => {
+    return loadSectionData(dataSection, { force: true, silent: true }).catch(() => {
       // Silent background refreshes are opportunistic; explicit actions report refresh failures separately.
     });
   }
@@ -1111,6 +1106,8 @@ export function App() {
   }
 
   function markSectionLoaded(targetSection: SectionKey) {
+    setDisplayReadySections(current => new Set(current).add(targetSection));
+    setSectionLoadErrors(current => ({ ...current, [targetSection]: undefined }));
     setLoadedSections((current) => {
       if (current.has(targetSection)) {
         loadedSectionsRef.current = current;
@@ -1120,6 +1117,23 @@ export function App() {
       loadedSectionsRef.current = next;
       return next;
     });
+  }
+
+  async function loadSettingsPolicy() {
+    if (policyDirtyRef.current || policySavingRef.current) return;
+    const request = ++settingsPolicyRequest.current;
+    setSettingsPolicyLoading(true);
+    setSettingsPolicyError(null);
+    try {
+      const policy = await fetchAdminPolicy();
+      if (request !== settingsPolicyRequest.current) return;
+      mergeSnapshot({ policy });
+      setPolicyForm(toPolicyForm(policy));
+    } catch (reason) {
+      if (request === settingsPolicyRequest.current) setSettingsPolicyError(readError(reason, "连接策略读取失败"));
+    } finally {
+      if (request === settingsPolicyRequest.current) setSettingsPolicyLoading(false);
+    }
   }
 
   async function loadSecondarySectionData(
@@ -1156,7 +1170,7 @@ export function App() {
       return;
     }
 
-    if (targetSection !== "nodes") {
+    if (targetSection !== "nodes" && targetSection !== "system") {
       return;
     }
 
@@ -1187,6 +1201,7 @@ export function App() {
     if (!options?.force && loadedSectionsRef.current.has(targetSection)) {
       return;
     }
+    setSectionLoadErrors(current => ({ ...current, [targetSection]: undefined }));
     const requestSeq = beginSectionLoad(options);
     const mutationSeqAtStart = sectionMutationSeqRef.current;
     try {
@@ -1211,7 +1226,7 @@ export function App() {
           if (!options?.silent) {
             notifications.show({
               color: "yellow",
-              title: "概览部分数据加载失败",
+              title: "仪表台部分数据加载失败",
               message
             });
           }
@@ -1236,7 +1251,9 @@ export function App() {
             message: readError(teamsResult.reason, "团队列表加载失败")
           });
         }
-        void loadSecondarySectionData(targetSection, requestSeq, mutationSeqAtStart, options);
+        await loadSecondarySectionData(targetSection, requestSeq, mutationSeqAtStart, options);
+      } else if (targetSection === "system") {
+        await loadSecondarySectionData(targetSection, requestSeq, mutationSeqAtStart, options);
       } else if (targetSection === "plans") {
         const plans = await fetchAdminPlans();
         if (!canApplySectionResult(requestSeq, mutationSeqAtStart)) return;
@@ -1269,12 +1286,12 @@ export function App() {
             ])
           });
         }
-        void loadSecondarySectionData(targetSection, requestSeq, mutationSeqAtStart, options);
+        await loadSecondarySectionData(targetSection, requestSeq, mutationSeqAtStart, options);
       } else if (targetSection === "nodes") {
         const nodes = await fetchAdminNodes();
         if (!canApplySectionResult(requestSeq, mutationSeqAtStart)) return;
         mergeSnapshot({ nodes });
-        void loadSecondarySectionData(targetSection, requestSeq, mutationSeqAtStart, options);
+        await loadSecondarySectionData(targetSection, requestSeq, mutationSeqAtStart, options);
       } else if (targetSection === "announcements") {
         const announcements = await fetchAdminAnnouncements();
         if (!canApplySectionResult(requestSeq, mutationSeqAtStart)) return;
@@ -1287,6 +1304,7 @@ export function App() {
       markSectionLoaded(targetSection);
     } catch (reason) {
       const message = readError(reason, "加载失败");
+      if (canApplySectionResult(requestSeq, mutationSeqAtStart)) setSectionLoadErrors(current => ({ ...current, [targetSection]: message }));
       if (ensureAuthenticated(message)) {
         return;
       }
@@ -1308,7 +1326,7 @@ export function App() {
   async function refreshCurrentDataAfterAction() {
     const dataSection = section === "users" ? "subscriptions" : section;
     await Promise.all([
-      refreshDashboard(),
+      refreshDashboard({ silent: true }),
       loadSectionData(dataSection, { force: true, silent: true })
     ]);
   }
@@ -1379,7 +1397,7 @@ export function App() {
       setImageBedRefreshSignal((current) => current + 1);
       return;
     }
-    await loadSectionData(currentSection, { force: true });
+    await loadSectionData(currentSection === "users" ? "subscriptions" : currentSection, { force: true });
     if (leaseRevocationQueueRef.current.opened) {
       refreshNodeCommandQueueDetail(leaseRevocationQueueRef.current.filter);
     }
@@ -1665,7 +1683,8 @@ export function App() {
       }
       notifications.show({
         color: uncertain ? "yellow" : "red",
-        title: uncertain ? "请求状态不确定" : options.failureTitle ?? "操作失败",
+        title: uncertain ? "请求状态不确定" : options.failureTitle ?? "未能完成操作",
+        autoClose: false,
         message: uncertain
           ? options.uncertainMessage?.(message) ?? buildUncertainMutationMessage("操作", message)
           : message
@@ -1859,9 +1878,10 @@ export function App() {
         });
         return;
       }
+      const baseExpireAt = renewalBase(record.expireAt);
       setSubscriptionRenewForm({
-        expireAt: toDateTimeLocal(record.expireAt),
-        baseExpireAt: toDateTimeLocal(record.expireAt),
+        expireAt: renewalDate(baseExpireAt, 1),
+        baseExpireAt,
         resetTraffic: false,
         totalTrafficGb: ""
       });
@@ -2252,7 +2272,12 @@ export function App() {
     }
     entityActionBusyRef.current = actionKey;
     setEntityActionBusyKey(actionKey);
-    const confirmed = window.confirm("确认删除这条公告吗？删除后软件端会立即同步移除。");
+    const confirmed = await actionConfirmation.confirm({
+      title: "删除公告",
+      message: `确认删除「${snapshot?.announcements.find(item => item.id === announcementId)?.title ?? "这条公告"}」？删除后客户端将同步移除。`,
+      confirmLabel: "删除公告",
+      danger: true
+    });
     if (!confirmed) {
       entityActionBusyRef.current = null;
       setEntityActionBusyKey(null);
@@ -2288,7 +2313,8 @@ export function App() {
     }
     entityActionBusyRef.current = actionKey;
     setEntityActionBusyKey(actionKey);
-    const confirmed = window.confirm("确认移出这个团队成员吗？他的 Team 订阅访问会进入后台撤销任务。");
+    const confirmed = await actionConfirmation.confirm({ title: "移出团队成员", message: "确认移出这个团队成员吗？他的 Team 订阅访问会进入后台撤销任务。", confirmLabel: "确认移出", danger: true });
+
     if (!confirmed) {
       entityActionBusyRef.current = null;
       setEntityActionBusyKey(null);
@@ -2316,11 +2342,10 @@ export function App() {
     entityActionBusyRef.current = actionKey;
     setEntityActionBusyKey(actionKey);
     const teamScopeHint = source === "team-member" ? "这是账号级操作，不会移出团队关系。" : "";
-    const confirmed = window.confirm(
-      nextStatus === "disabled"
+    const confirmed = await actionConfirmation.confirm({ title: "更改账号状态", message: nextStatus === "disabled"
         ? `确认禁用 ${displayName} 的账号吗？这会立刻停止该账号的订阅连接。${teamScopeHint}`
-        : `确认启用 ${displayName} 的账号吗？启用后该账号可以重新登录和连接。${teamScopeHint}`
-    );
+        : `确认启用 ${displayName} 的账号吗？启用后该账号可以重新登录和连接。${teamScopeHint}`, confirmLabel: "确认更改", danger: true });
+
     if (!confirmed) {
       entityActionBusyRef.current = null;
       setEntityActionBusyKey(null);
@@ -2351,9 +2376,8 @@ export function App() {
     entityActionBusyRef.current = actionKey;
     setEntityActionBusyKey(actionKey);
     const teamScopeHint = source === "team-member" ? "这是账号级操作，不会移出团队成员。" : "";
-    const confirmed = window.confirm(
-      `确认断开 ${displayName} 的当前连接吗？账号会保持启用，用户稍后可以重新连接。${teamScopeHint}`
-    );
+    const confirmed = await actionConfirmation.confirm({ title: "断开当前连接", message: `确认断开 ${displayName} 的当前连接吗？账号会保持启用，用户稍后可以重新连接。${teamScopeHint}`, confirmLabel: "确认断开", danger: false });
+
     if (!confirmed) {
       entityActionBusyRef.current = null;
       setEntityActionBusyKey(null);
@@ -2457,9 +2481,8 @@ export function App() {
       return;
     }
     const targetKey = `${subscriptionId}:${userId ?? "all"}`;
-    const confirmed = window.confirm(
-      `确认重置 ${ownerLabel} 的流量吗？后台会立即重置本地流量，相关连接撤销会进入后台同步任务。`
-    );
+    const confirmed = await actionConfirmation.confirm({ title: "重置订阅流量", message: `确认重置 ${ownerLabel} 的流量吗？后台会立即重置本地流量，相关连接撤销会进入后台同步任务。`, confirmLabel: "确认重置", danger: true });
+
     if (!confirmed) {
       return;
     }
@@ -2834,6 +2857,8 @@ export function App() {
     }
   }
 
+  if (!authBootstrapped) return <AdminBootSkeleton />;
+
   if (!authenticated) {
     return (
       <AdminLoginPanel
@@ -2850,9 +2875,7 @@ export function App() {
 
   if (loading && !snapshot) {
     return (
-      <Group justify="center" mt="xl">
-        <Loader />
-      </Group>
+      <AdminBootSkeleton />
     );
   }
 
@@ -2873,31 +2896,31 @@ export function App() {
   const backgroundSyncQueueCount =
     snapshot.leaseRevocationJobs.length + sumNodeCommandSummaries(snapshot.nodeCommandQueue.summaries, "nodes");
   const waitingAdminTicketCount = snapshot.dashboard.waitingAdminTickets;
-  const agentNodeCount = snapshot.nodes.filter((item) => Boolean(item.agent || item.registrationStatus === "agent_ready")).length;
+  const dataSection = section === "users" ? "subscriptions" : section;
+  const parentLoadsSection = ["overview", "users", "subscriptions", "plans", "nodes", "announcements", "policies", "system"].includes(section);
+  const awaitingFirstData = parentLoadsSection && !displayReadySections.has(dataSection);
+  const firstLoadError = sectionLoadErrors[dataSection];
 
   return (
     <>
       <AppShell
         className="admin-shell"
-        navbar={{ width: 248, breakpoint: "sm", collapsed: { mobile: !mobileNavOpened } }}
-        header={{ height: 76 }}
+        navbar={{ width: 232, breakpoint: "sm", collapsed: { mobile: !mobileNavOpened } }}
         padding="lg"
       >
         <AppShell.Navbar p="md" className="admin-nav">
           <Stack justify="space-between" className="admin-nav-shell">
+            <div className="admin-brand">
+              <Group justify="space-between" wrap="nowrap">
+                <Text className="admin-wordmark">ChordV</Text>
+                <Burger opened={mobileNavOpened} onClick={() => setMobileNavOpened(false)} hiddenFrom="sm" size="sm" aria-label="关闭导航" />
+              </Group>
+              <Text className="admin-brand-caption">运营后台</Text>
+            </div>
             <Stack gap="xs" className="admin-nav-menu">
-              <div className="admin-brand">
-                <Group justify="space-between" align="flex-start" wrap="nowrap">
-                  <Text size="xs" fw={700} c="blue" tt="uppercase">
-                    ChordV
-                  </Text>
-                  <SystemUpdateBadge />
-                </Group>
-                <Title order={3}>运营后台</Title>
-              </div>
               {sectionGroups.map((group) => (
                 <Stack key={group.title} gap={4} className="admin-nav-group">
-                  <Text size="xs" fw={700} c="dimmed" tt="uppercase" className="admin-nav-group-title">
+                  <Text size="xs" fw={500} c="dimmed" className="admin-nav-group-title">
                     {group.title}
                   </Text>
                   {group.sections.map((key) => {
@@ -2912,7 +2935,10 @@ export function App() {
                         onClick={() => {
                           selectSection(key);
                         }}
-                        variant="filled"
+                        className="admin-nav-link"
+                        color="#1c4d37"
+                        variant="light"
+                        aria-current={section === key ? "page" : undefined}
                       />
                     );
                   })}
@@ -2920,26 +2946,18 @@ export function App() {
               ))}
             </Stack>
 
-            <Paper withBorder radius="xl" p="md" className="admin-side-card">
-              <Stack gap={4}>
-                <Text size="sm" fw={600}>
-                  当前接入
-                </Text>
-                <Text size="xl" fw={700}>
-                  Agent 直连
-                </Text>
-                <Text size="sm" c="dimmed">
-                  {agentNodeCount > 0
-                    ? `${agentNodeCount} 个 Agent 节点 · ${snapshot.nodes.length - agentNodeCount} 个待接入`
-                    : `默认模式 ${snapshot.policy.defaultMode === "rule" ? "规则模式" : snapshot.policy.defaultMode === "global" ? "全局代理" : "直连模式"}`}
-                </Text>
-              </Stack>
-            </Paper>
+            <div className="admin-nav-footer">
+              <SystemUpdateBadge />
+            </div>
           </Stack>
         </AppShell.Navbar>
 
-        <AppShell.Header px="lg" className="admin-header">
-          <Group justify="space-between" h="100%">
+
+
+        <AppShell.Main>
+          <Stack gap="lg">
+            <header className={`admin-page-header${section === "nodes" ? " admin-nodes-header" : section === "overview" ? " admin-dashboard-header" : ""}`}>
+          <Group justify="space-between" className="admin-header-layout">
             <Group gap="sm" wrap="nowrap" className="admin-header-title">
               <Burger
                 opened={mobileNavOpened}
@@ -2948,70 +2966,39 @@ export function App() {
                 size="sm"
                 aria-label="切换导航"
               />
-              <div>
+              <div className="admin-header-context">
+                <Text className="admin-header-breadcrumb">工作台 / {sectionGroups.find(group => group.sections.includes(section))?.title ?? "运营管理"}</Text>
                 <Title order={2}>{sectionMeta[section].label}</Title>
               </div>
             </Group>
 
             <Group className="admin-header-actions">
-              <Button variant="default" leftSection={<IconRefresh size={16} />} onClick={() => void handleHeaderRefresh()} loading={loading || sectionLoading || refreshingDashboard}>
+              {section !== "nodes" ? <Button className="admin-header-refresh" variant="subtle" color="#65746b" leftSection={<IconRefresh size={16} />} onClick={() => void handleHeaderRefresh()} loading={loading || sectionLoading || refreshingDashboard}>
                 刷新
-              </Button>
-              <Menu shadow="md" width={220} position="bottom-end" withinPortal>
-                <Menu.Target>
-                  <Button variant="default" rightSection={<IconDotsVertical size={16} />}>
-                    后台工具
-                  </Button>
-                </Menu.Target>
-                <Menu.Dropdown>
-                  <Menu.Label>后台工具</Menu.Label>
-                  <Menu.Item
-                    leftSection={<IconListDetails size={16} />}
-                    rightSection={
-                      backgroundSyncQueueCount > 0 ? (
-                        <Badge size="xs" color="yellow" variant="light" radius="xl">
-                          {backgroundSyncQueueCount > 99 ? "99+" : backgroundSyncQueueCount}
-                        </Badge>
-                      ) : undefined
-                    }
-                    onClick={() => openLeaseRevocationQueue()}
-                  >
-                    同步任务
-                  </Menu.Item>
-                  <Menu.Item leftSection={<IconShieldLock size={16} />} onClick={openAdminSecurityModal}>
-                    账号安全
-                  </Menu.Item>
-                  <Menu.Divider />
-                  <Menu.Item color="red" leftSection={<IconLogout size={16} />} onClick={() => void handleAdminLogout()}>
-                    退出登录
-                  </Menu.Item>
-                </Menu.Dropdown>
-              </Menu>
+              </Button> : null}
               {section === "users" ? (
-                <Group gap="xs">
-                  <Button leftSection={<IconPlus size={16} />} onClick={() => openDrawer("user")}>
-                    新建用户
+                <Button.Group className="admin-create-group">
+                  <Button color="#1c4d37" leftSection={<IconPlus size={16} />} onClick={() => openDrawer(userTab === "team" ? "team" : "user")}>
+                    {userTab === "team" ? "新建团队" : "新建客户"}
                   </Button>
-                  <Button variant="default" leftSection={<IconPlus size={16} />} onClick={() => openDrawer("team")}>
-                    新建团队
-                  </Button>
-                  <Button
-                    variant="default"
-                    leftSection={<IconPlus size={16} />}
-                    onClick={() => openDrawer("subscription-create")}
-                    disabled={eligiblePersonalUsers.length === 0}
-                  >
-                    新建订阅
-                  </Button>
-                </Group>
+                  <Menu shadow="sm" width={190} position="bottom-end" withinPortal>
+                    <Menu.Target><Button color="#1c4d37" className="admin-create-toggle" aria-label="更多创建操作"><IconChevronDown size={16} /></Button></Menu.Target>
+                    <Menu.Dropdown>
+                      <Menu.Label>其他创建操作</Menu.Label>
+                      <Menu.Item leftSection={<IconUsers size={16} />} onClick={() => openDrawer(userTab === "team" ? "user" : "team")}>{userTab === "team" ? "新建客户" : "新建团队"}</Menu.Item>
+                      <Menu.Item leftSection={<IconPlus size={16} />} onClick={() => openDrawer("subscription-create")} disabled={eligiblePersonalUsers.length === 0}>新建订阅</Menu.Item>
+                    </Menu.Dropdown>
+                  </Menu>
+                </Button.Group>
               ) : null}
               {section === "plans" ? (
-                <Button leftSection={<IconPlus size={16} />} onClick={() => openDrawer("plan")}>
+                <Button color="#1c4d37" leftSection={<IconPlus size={16} />} onClick={() => openDrawer("plan")}>
                   新建套餐
                 </Button>
               ) : null}
               {section === "subscriptions" ? (
                 <Button
+                  color="#1c4d37"
                   leftSection={<IconPlus size={16} />}
                   onClick={() => openDrawer("subscription-create")}
                   disabled={eligiblePersonalUsers.length === 0}
@@ -3020,38 +3007,25 @@ export function App() {
                 </Button>
               ) : null}
               {section === "nodes" ? (
-                <Group gap="xs">
-                  <Button
-                    variant="default"
-                    leftSection={<IconBolt size={16} />}
-                    onClick={() => void handleProbeAllNodes()}
-                    loading={probingAll}
-                    disabled={probingNodeId !== null}
-                  >
-                    全部探测
-                  </Button>
-                </Group>
+                <div className="admin-nodes-tabs">
+                  <span className="admin-nodes-tab-current">节点</span>
+                  <button type="button" onClick={() => openLeaseRevocationQueue()}>同步任务{backgroundSyncQueueCount > 0 ? <span>{backgroundSyncQueueCount}</span> : null}</button>
+                </div>
               ) : null}
               {section === "announcements" ? (
-                <Button leftSection={<IconPlus size={16} />} onClick={() => openDrawer("announcement")}>
+                <Button color="#1c4d37" leftSection={<IconPlus size={16} />} onClick={() => openDrawer("announcement")}>
                   新建公告
                 </Button>
               ) : null}
             </Group>
           </Group>
-        </AppShell.Header>
-
-        <AppShell.Main>
-          <Stack gap="lg">
-            {sectionLoading ? (
-              <Alert color="blue" variant="light">
-                正在加载当前模块数据
-              </Alert>
-            ) : null}
-
+            </header>
+            {awaitingFirstData ? firstLoadError ? <Alert color="red" title="数据加载失败">{firstLoadError}<Button variant="subtle" color="red" ml="sm" onClick={() => void loadSectionData(dataSection, { force: true })}>重新加载</Button></Alert> : <DataSkeleton variant={section === "users" || section === "plans" ? "workspace" : "page"}/> : <>
             {section === "overview" ? (
               <OverviewPage
                 snapshot={snapshot}
+                onOpenCustomers={() => { setUserTab("personal"); selectSection("users"); }}
+                onOpenTeams={() => { setUserTab("team"); selectSection("users"); }}
                 onOpenSubscriptions={() => {
                   selectSection("users");
                 }}
@@ -3202,6 +3176,7 @@ export function App() {
                 leaseRevocationRetryBusyKey={leaseRevocationRetryBusyKey}
                 probingNodeId={probingNodeId}
                 probingAll={probingAll}
+                onProbeAll={() => void handleProbeAllNodes()}
                 onOpenLeaseRevocationQueue={openLeaseRevocationQueue}
                 onRetryLeaseRevocationJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}
                 onRetryNodeLeaseRevocationJobs={(nodeId) => void handleRetryNodeLeaseRevocationJobs(nodeId)}
@@ -3236,26 +3211,30 @@ export function App() {
               />
             ) : null}
 
-            {section === "policies" && policyForm ? (
-              <PoliciesPage
-                policyForm={policyForm}
-                setPolicyForm={(updater) => {
-                  setPolicyDirty(true);
-                  setPolicyForm(updater);
-                }}
-                policySaving={policySaving}
-                onSave={() => void handleSavePolicy()}
-              />
-            ) : null}
-
-            {section === "releases" ? <ReleasesPage refreshSignal={releaseRefreshSignal} /> : null}
+            {section === "releases" ? <UnifiedReleaseCenter refreshSignal={releaseRefreshSignal} sessionActive={authenticated} /> : null}
 
             {section === "runtimeComponents" ? <RuntimeComponentsPage refreshSignal={runtimeComponentRefreshSignal} /> : null}
 
-            {section === "imageBed" ? <ImageBedPage refreshSignal={imageBedRefreshSignal} /> : null}
+
+            {section === "system" ? <SystemSettingsPage
+              accountLabel={getAdminProfile()?.email || "管理员"}
+              pendingTaskCount={backgroundSyncQueueCount}
+              onOpenSecurity={openAdminSecurityModal}
+              onOpenTasks={() => openLeaseRevocationQueue()}
+              onOpenPolicies={() => { setPolicyDirty(false); setSettingsPolicyLoading(true); setSettingsPanel("policies"); }}
+              onOpenImageBed={() => setSettingsPanel("imageBed")}
+              onLogout={() => void handleAdminLogout()}
+            /> : null}
+            </>}
           </Stack>
         </AppShell.Main>
       </AppShell>
+
+      <Modal opened={settingsPanel !== null} onClose={() => { if (!policySaving && !settingsStorageBusy) { setSettingsPanel(null); setPolicyDirty(false); } }} title={settingsPanel === "policies" ? "连接策略" : "附件与图床"} centered size={settingsPanel === "policies" ? 620 : 900} closeOnClickOutside={false} closeOnEscape={!policySaving && !settingsStorageBusy} withCloseButton={!policySaving && !settingsStorageBusy} classNames={{content: settingsDialogStyles.content, header: settingsDialogStyles.header, title: settingsDialogStyles.title, body: settingsDialogStyles.body}}>
+        {settingsPanel === "policies" ? settingsPolicyLoading ? <DataSkeleton rows={5}/> : settingsPolicyError ? <Alert color="red">{settingsPolicyError}<Button variant="subtle" onClick={() => { void loadSettingsPolicy(); }}>重新读取</Button></Alert> : policyForm ? <PoliciesPage policyForm={policyForm} setPolicyForm={updater => { setPolicyDirty(true); setPolicyForm(updater); }} policySaving={policySaving} onSave={() => void handleSavePolicy()}/> : <DataSkeleton rows={5}/> : null}
+        {settingsPanel === "imageBed" ? <ImageBedPage refreshSignal={imageBedRefreshSignal} onBusyChange={setSettingsStorageBusy}/> : null}
+      </Modal>
+      {actionConfirmation.dialog}
 
       <AdminDrawerForm
         opened={drawer.type !== null}
@@ -3383,7 +3362,7 @@ export function App() {
         onClose={() => setTeamUsageDetailTarget(null)}
       />
 
-      <PanelSyncQueueDrawer
+      <SyncTasksModal
         opened={leaseRevocationQueue.opened}
         leaseRevocationJobs={snapshot.leaseRevocationJobs}
         nodeCommandQueue={snapshot.nodeCommandQueue}
@@ -3434,51 +3413,7 @@ export function App() {
         onSave={() => void saveNodeAccessEditor()}
       />
 
-      <Modal opened={adminSecurityOpened} onClose={closeAdminSecurityModal} title="账号安全" centered size="md">
-        <Stack gap="md">
-          <TextInput
-            label="管理员账号"
-            value={adminSecurityForm.email}
-            placeholder="请输入新的后台登录账号"
-            autoComplete="username"
-            onChange={(event) => setAdminSecurityForm((current) => ({ ...current, email: event.currentTarget.value }))}
-          />
-          <PasswordInput
-            label="当前密码"
-            value={adminSecurityForm.currentPassword}
-            placeholder="用于确认本次修改"
-            autoComplete="current-password"
-            onChange={(event) => setAdminSecurityForm((current) => ({ ...current, currentPassword: event.currentTarget.value }))}
-          />
-          <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
-            <PasswordInput
-              label="新密码"
-              value={adminSecurityForm.newPassword}
-              placeholder="不修改可留空"
-              autoComplete="new-password"
-              onChange={(event) => setAdminSecurityForm((current) => ({ ...current, newPassword: event.currentTarget.value }))}
-            />
-            <PasswordInput
-              label="确认新密码"
-              value={adminSecurityForm.confirmPassword}
-              placeholder="再次输入新密码"
-              autoComplete="new-password"
-              onChange={(event) => setAdminSecurityForm((current) => ({ ...current, confirmPassword: event.currentTarget.value }))}
-            />
-          </SimpleGrid>
-          <Alert color="blue" variant="light">
-            保存后会刷新后台登录态，其他已登录会话需要重新登录。
-          </Alert>
-          <Group justify="flex-end">
-            <Button variant="default" onClick={closeAdminSecurityModal} disabled={adminSecuritySaving}>
-              取消
-            </Button>
-            <Button onClick={() => void saveAdminSecurity()} loading={adminSecuritySaving}>
-              保存修改
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
+      <AccountSecurityModal key={String(adminSecurityOpened)} opened={adminSecurityOpened} saving={adminSecuritySaving} form={adminSecurityForm} onChange={setAdminSecurityForm} onClose={closeAdminSecurityModal} onSave={() => void saveAdminSecurity()}/>
     </>
   );
 }

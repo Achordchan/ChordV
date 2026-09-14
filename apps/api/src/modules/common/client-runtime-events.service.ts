@@ -121,6 +121,17 @@ export class ClientRuntimeEventsService implements OnModuleInit, OnModuleDestroy
     }
   }
 
+  /** Durable callers clear their outbox only after PostgreSQL accepted every
+   * broadcast. Duplicate local delivery on retry is intentional and idempotent. */
+  async publishToUsersReliable(userIds: Iterable<string>, event: ClientRuntimeEventDto) {
+    for (const userId of new Set(userIds)) {
+      const message = this.toReplayableMessageEvent(event, this.nextEventId());
+      this.recordReplayEvent(userId, message);
+      this.dispatchMessageToUser(userId, message);
+      await this.prisma.$executeRaw`select pg_notify(${RUNTIME_EVENTS_CHANNEL}, ${JSON.stringify({ originInstanceId: this.instanceId, userId, eventId: message.id ?? "", event })})`;
+    }
+  }
+
   private dispatchToUser(userId: string, event: ClientRuntimeEventDto, eventId: string) {
     const message = this.toReplayableMessageEvent(event, eventId);
     this.recordReplayEvent(userId, message);
@@ -196,6 +207,7 @@ export class ClientRuntimeEventsService implements OnModuleInit, OnModuleDestroy
       { type: "announcement_updated", occurredAt },
       { type: "policy_updated", occurredAt },
       { type: "version_updated", occurredAt },
+      { type: "runtime_component_updated", occurredAt },
       { type: "ticket_updated", occurredAt }
     ];
   }

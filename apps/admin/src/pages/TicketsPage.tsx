@@ -1,3 +1,4 @@
+import { DataSkeleton } from "../features/shared/DataSkeleton";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
@@ -6,7 +7,6 @@ import {
   Card,
   FileButton,
   Group,
-  Loader,
   Modal,
   Paper,
   Select,
@@ -444,10 +444,8 @@ export function TicketsPage(props: TicketsPageProps) {
             </Alert>
           ) : null}
 
-          {loading ? (
-            <Group justify="center" py="xl">
-              <Loader size="sm" />
-            </Group>
+          {loading && tickets.length === 0 ? (
+            <DataSkeleton rows={5}/>
           ) : (
             <div className="admin-tickets-workspace">
               <Card withBorder radius="xl" p="lg" className="admin-tickets-list-card">
@@ -553,10 +551,8 @@ export function TicketsPage(props: TicketsPageProps) {
                     </Alert>
                   ) : null}
 
-                  {detailLoading ? (
-                    <Group justify="center" py="xl">
-                      <Loader size="sm" />
-                    </Group>
+                  {detailLoading && selectedTicket?.id !== selectedTicketId ? (
+                    <DataSkeleton variant="page" rows={4}/>
                   ) : !selectedTicket ? (
                     <Text c="dimmed">请选择左侧工单查看详情。</Text>
                   ) : (
@@ -747,10 +743,7 @@ function TicketAttachmentThumbnail(props: { url: string; fileName: string }) {
           ) : null}
           {imageState === "loading" ? (
             <div className="admin-ticket-attachment-image-state">
-              <Loader size="xs" />
-              <Text size="xs" c="dimmed">
-                加载中
-              </Text>
+              <DataSkeleton variant="image"/>
             </div>
           ) : null}
           {imageState === "failed" ? (
@@ -797,10 +790,7 @@ function TicketAttachmentPreviewContent(props: { attachment: TicketAttachmentPre
         ) : null}
         {imageState === "loading" ? (
           <div className="admin-ticket-attachment-preview-state">
-            <Loader size="sm" />
-            <Text size="sm" c="dimmed">
-              正在加载预览
-            </Text>
+            <DataSkeleton variant="image"/>
           </div>
         ) : null}
         {imageState === "failed" ? (

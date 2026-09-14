@@ -1,0 +1,19 @@
+.storage { --mantine-color-dimmed: #596454; min-width: 0; padding-bottom: 26px; }
+.storage :global(.mantine-Input-input) { border-radius: 5px; border-color: #99a68f; background: #fff; min-height: 44px; font-size: 15px; }
+.storage :global(.mantine-InputWrapper-label) { color: #30472f; margin-bottom: 7px; font-size: 14px; }
+.storage :global(.mantine-Button-root) { border-radius: 5px; }
+.tabs :global(.mantine-Tabs-tab) { min-height: 44px; padding-inline: 20px; font-size: 15px; color: #52604c; }
+.tabs :global(.mantine-Tabs-tab[data-active]) { color: #214d33; font-weight: 600; border-bottom-width: 3px; }
+.advanced { border-top: 1px solid #dde4d5; padding-top: 18px; }
+.advanced summary { cursor: pointer; color: #52604c; font-size: 14px; }
+.storage :focus-visible { outline: 2px solid #245137; outline-offset: 3px; }
+.security { --mantine-color-dimmed: #596454; }
+.security :global(.mantine-Input-input) { border-color: #9ba992; min-height: 44px; }
+.security :global(.mantine-InputWrapper-label) { font-size: 14px; }
+.security :global(.mantine-InputWrapper-description) { color: #596454; font-size: 13px; line-height: 1.6; }
+.passwordToggle { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.passwordToggle strong { font-size: 14px; color: #334b36; font-weight: 550; }
+.passwordToggle p { margin: 6px 0 0; color: #596454; font-size: 13px; }
+.verifyIdentity { border-top: 1px solid #dfe5d7; padding-top: 22px; }
+.sessionNote { margin-top: 22px; font-size: 13px; line-height: 1.7; color: #596454; }
+.security :focus-visible { outline: 2px solid #245137; outline-offset: 3px; }

@@ -87,6 +87,12 @@ export class ClientEventsPublisher {
     });
   }
 
+  async publishRuntimeComponentsUpdated(platform: PlatformTarget | null) {
+    await this.clientRuntimeEventsService.publishToUsersReliable(await this.listActiveUserIds(), {
+      type: "runtime_component_updated", platform, occurredAt: new Date().toISOString()
+    });
+  }
+
   async publishSubscriptionUpdated(target: {
     subscriptionId?: string | null;
     userId?: string | null;

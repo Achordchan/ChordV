@@ -54,7 +54,9 @@ async function serviceRegression() {
   const reportTx = {
     $queryRaw: async () => [],
     nodeCommandJob: { findFirst: async () => ({ id: "c1", commandType: "ENSURE_INBOUND", payload: spec, targetRevision: 2n, dedupeKey: "key" }), update: async () => ({}) },
-    node: { updateMany: async ({ data }: { data: Record<string, unknown> }) => {
+    node: { updateMany: async ({ data, where }: { data: Record<string, unknown>; where: Record<string, unknown> }) => {
+      // This fixture represents an existing node without activation opt-in.
+      if (where.onboardingSpec) return { count: 0 };
       wrote = true;
       assert.equal(data.serverHost, spec.serverHost);
       assert.equal(data.inboundAppliedRevision, 2n);

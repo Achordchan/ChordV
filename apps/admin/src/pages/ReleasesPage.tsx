@@ -1,7 +1,7 @@
+import { DataSkeleton } from "../features/shared/DataSkeleton";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Accordion, Alert, Badge, Button, Card, Group, SegmentedControl, Stack, Text, Title } from "@mantine/core";
+import { Alert } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { IconPlus, IconRefresh } from "@tabler/icons-react";
 import type {
   AdminReleaseArtifactRecordDto,
   AdminReleaseArtifactType,
@@ -26,19 +26,18 @@ import {
 import { ArtifactEditorModal } from "../features/releases/ArtifactEditorModal";
 import { buildExternalArtifactPayload, validateExternalArtifactMetadata } from "../features/releases/artifactPayloads";
 import { ReleaseEditorModal } from "../features/releases/ReleaseEditorModal";
-import { ReleaseRecordCard } from "../features/releases/ReleaseRecordCard";
+import { ReleaseOverview } from "../features/releases/ReleaseOverview";
+import { useActionConfirmation } from "../features/modals/useActionConfirmation";
 import {
   emptyArtifactEditorForm,
   emptyReleaseEditorForm,
   buildCreateReleasePayload,
   buildUpdateReleasePayload,
-  releasePlatformOptions,
   toArtifactEditorForm,
   toReleaseEditorForm,
   type ArtifactEditorFormState,
   type ReleaseEditorFormState
 } from "../features/releases/types";
-import { SectionCard } from "../features/shared/SectionCard";
 import { buildUncertainMutationMessage, isPotentiallyCompletedMutationFailure, readError } from "../utils/admin-filters";
 
 type PlatformFilter = AdminReleasePlatform | "all";
@@ -53,7 +52,6 @@ type ReleasesPageProps = {
   refreshSignal?: number;
 };
 
-const platformFilterOptions = [{ value: "all", label: "全部平台" }, ...releasePlatformOptions];
 
 const RELEASE_VERSION_PATTERN =
   /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
@@ -71,6 +69,7 @@ function showReleaseRequestFailure(reason: unknown, fallback: string) {
 }
 
 export function ReleasesPage(props: ReleasesPageProps) {
+  const confirmation = useActionConfirmation(true);
   const [searchValue, setSearchValue] = useState("");
   const [platformFilter, setPlatformFilter] = useState<PlatformFilter>("all");
   const [releases, setReleases] = useState<AdminReleaseRecordDto[]>([]);
@@ -115,18 +114,6 @@ export function ReleasesPage(props: ReleasesPageProps) {
         })
         .sort(compareReleaseRecord),
     [platformFilter, releases, searchValue]
-  );
-
-  const groupedReleases = useMemo(
-    () =>
-      releasePlatformOptions
-        .map((option) => ({
-          platform: option.value,
-          label: option.label,
-          records: visibleReleases.filter((item) => item.platform === option.value)
-        }))
-        .filter((group) => group.records.length > 0),
-    [visibleReleases]
   );
 
   async function loadUploadLimits() {
@@ -348,7 +335,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
       return;
     }
 
-    if (!window.confirm(`确认发布 ${record.version} 吗？客户端会开始收到这个版本更新。`)) {
+    if (!await confirmation.confirm({title:"发布版本",message:`确认发布 ${record.version}？服务端将检查安装包，成功后客户端可收到更新。`,confirmLabel:"确认发布"})) {
       return;
     }
 
@@ -356,7 +343,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
   }
 
   async function withdrawRelease(record: AdminReleaseRecordDto) {
-    if (!window.confirm(`确认将 ${record.version} 撤回为草稿吗？客户端将不再收到这个版本。`)) {
+    if (!await confirmation.confirm({title:"撤回发布",message:`将 ${record.version} 撤回草稿后，不再作为该版本的更新入口，已安装客户端不受影响。`,confirmLabel:"撤回发布",danger:true})) {
       return;
     }
 
@@ -393,7 +380,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
     if (savingRef.current) {
       return;
     }
-    const confirmed = window.confirm(`确认删除 ${record.version} 这条发布记录吗？已上传的安装包也会一起删除。`);
+    const confirmed = await confirmation.confirm({title:"删除发布",message:`删除 ${record.version}，已上传的安装包也将删除。`,confirmLabel:"删除发布",danger:true});
     if (!confirmed) {
       return;
     }
@@ -596,7 +583,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
     if (savingRef.current) {
       return;
     }
-    if (!window.confirm("确定删除这个安装包吗？")) return;
+    if (!await confirmation.confirm({title:"删除安装包",message:"确定删除这个安装包？",confirmLabel:"删除安装包",danger:true})) return;
     if (!beginSaving(actionKey)) {
       return;
     }
@@ -646,128 +633,18 @@ export function ReleasesPage(props: ReleasesPageProps) {
 
   return (
     <>
-      <SectionCard
-        title="发布中心"
-        searchValue={searchValue}
-        onSearchChange={setSearchValue}
-        searchPlaceholder="搜索版本、标题或更新内容"
-        actions={
-          <>
-            <Button leftSection={<IconPlus size={16} />} onClick={openCreateRelease} disabled={saving !== null}>
-              新建发布
-            </Button>
-            <Button
-              variant="light"
-              leftSection={<IconRefresh size={16} />}
-              onClick={() => void loadReleases()}
-              loading={loading}
-            >
-              刷新
-            </Button>
-          </>
-        }
-      >
-        <Stack gap="lg">
-          <Group justify="space-between" wrap="wrap">
-            <SegmentedControl
-              value={platformFilter}
-              onChange={(value) => setPlatformFilter(value as PlatformFilter)}
-              data={platformFilterOptions.map((item) => ({ value: item.value, label: item.label }))}
-            />
-            <Badge variant="light">{visibleReleases.length} 条记录</Badge>
-          </Group>
-
-          {error ? (
-            <Alert color="red" variant="light">
-              {error}
-            </Alert>
-          ) : null}
-
-          {loading ? (
-            <Text c="dimmed">正在加载发布记录…</Text>
-          ) : groupedReleases.length === 0 ? (
-            <Alert color="gray" variant="light">
-              当前筛选下还没有可见发布记录，可以先新建一条草稿，再继续补充安装包。
-            </Alert>
-          ) : (
-            <Stack gap="lg">
-              {groupedReleases.map((group) => {
-                const latest = group.records[0];
-                const history = group.records.slice(1);
-
-                    return (
-                      <Card key={group.platform} withBorder radius="xl" p="lg">
-                        <Stack gap="md">
-                          <Group justify="space-between" align="flex-start" wrap="wrap">
-                            <Stack gap={4}>
-                              <Title order={5}>{group.label}</Title>
-                              <Text size="sm" c="dimmed">
-                                最新记录默认展开，过往版本统一折叠，避免页面无限变长。
-                              </Text>
-                            </Stack>
-                            <Badge variant="light">{group.records.length} 条记录</Badge>
-                          </Group>
-
-                          <ReleaseRecordCard
-                            record={latest}
-                            busyAction={getReleaseBusyAction(latest.id)}
-                            globalBusy={saving !== null}
-                            onEditRelease={openEditRelease}
-                            onCreateArtifact={openCreateArtifact}
-                            onPublish={(record) => void publishRelease(record)}
-                            onWithdraw={(record) => void withdrawRelease(record)}
-                            onDeleteRelease={(record) => void deleteRelease(record)}
-                            onCopyDownloadUrl={(url) => void copyDownloadUrl(url)}
-                            onEditArtifact={openEditArtifact}
-                            onRemoveArtifact={(releaseId, artifactId) => void removeArtifact(releaseId, artifactId)}
-                          />
-
-                          {history.length > 0 ? (
-                            <Accordion variant="contained" radius="lg">
-                              <Accordion.Item value={`${group.platform}-history`}>
-                                <Accordion.Control>
-                                  <Group justify="space-between" wrap="wrap">
-                                    <Text fw={600}>过往版本</Text>
-                                    <Badge variant="light">{history.length} 条</Badge>
-                                  </Group>
-                                </Accordion.Control>
-                                <Accordion.Panel>
-                                  <Stack gap="md">
-                                    {history.map((record) => (
-                                      <ReleaseRecordCard
-                                        key={record.id}
-                                        record={record}
-                                        busyAction={getReleaseBusyAction(record.id)}
-                                        globalBusy={saving !== null}
-                                        onEditRelease={openEditRelease}
-                                        onCreateArtifact={openCreateArtifact}
-                                        onPublish={(item) => void publishRelease(item)}
-                                        onWithdraw={(item) => void withdrawRelease(item)}
-                                        onDeleteRelease={(item) => void deleteRelease(item)}
-                                        onCopyDownloadUrl={(url) => void copyDownloadUrl(url)}
-                                        onEditArtifact={openEditArtifact}
-                                        onRemoveArtifact={(releaseId, artifactId) => void removeArtifact(releaseId, artifactId)}
-                                      />
-                                    ))}
-                                  </Stack>
-                                </Accordion.Panel>
-                              </Accordion.Item>
-                            </Accordion>
-                          ) : null}
-                        </Stack>
-                      </Card>
-                    );
-              })}
-            </Stack>
-          )}
-        </Stack>
-      </SectionCard>
+      {confirmation.dialog}
+      {!releaseEditorOpened ? <>
+        {error ? <Alert color="red">{error}</Alert> : null}
+        {loading && releases.length === 0 ? <DataSkeleton variant="page" rows={4}/> : <ReleaseOverview records={visibleReleases} allRecords={releases} search={searchValue} onSearch={setSearchValue} platform={platformFilter} onPlatform={setPlatformFilter} busy={saving !== null} onCreate={openCreateRelease} onEdit={openEditRelease} onPublish={record=>void publishRelease(record)} onWithdraw={record=>void withdrawRelease(record)} onDelete={record=>void deleteRelease(record)} onAdd={record=>openCreateArtifact(record.id,record.platform,"external")} onEditArtifact={openEditArtifact} onDeleteArtifact={(id,artifactId)=>void removeArtifact(id,artifactId)} onCopy={url=>void copyDownloadUrl(url)}/>}
+      </> : null}
 
       <ReleaseEditorModal
+        key={`${releaseEditorOpened}:${releaseEditorId ?? "new"}`}
         opened={releaseEditorOpened}
         editing={Boolean(releaseEditorId)}
         saving={saving === "release-editor"}
-        savingMessage={buildReleaseEditorSavingMessage(releaseSaveStep, Boolean(releaseEditorId), releaseForm)}
+        savingMessage={saving === "release-editor" ? buildReleaseEditorSavingMessage(releaseSaveStep, Boolean(releaseEditorId), releaseForm) : null}
         title={releaseEditorId ? "编辑发布记录" : "新建发布记录"}
         submitLabel={releaseEditorId ? "保存发布记录" : "创建发布"}
         form={releaseForm}

@@ -16,7 +16,6 @@ import {
   shouldCheckGeoUpdate,
   writeStoredGeoLastCheckAt,
   writeStoredGeoPlanRevision,
-  GEO_CHECK_INTERVAL_MS,
   type RuntimeComponentLocalInfo
 } from "../lib/geoUpdate";
 import {
@@ -328,6 +327,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
         return true;
       }
       if (runtimeAssetsTaskRef.current) {
+        const existingTask = runtimeAssetsTaskRef.current;
         if (ensureOptions.interactive || ensureOptions.blockConnection) {
           setRuntimeAssets((current) => ({
             ...current,
@@ -337,7 +337,19 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
             setRuntimeAssetsDialogOpened(true);
           }
         }
-        return runtimeAssetsTaskRef.current;
+        if (ensureOptions.source === "update_check" && ensureOptions.forceCheck && !ensureOptions.inspectOnly) {
+          // An activation can arrive during an older plan check. Wait, then
+          // read the desired state again instead of treating that old task as
+          // acknowledgement of the newly activated version.
+          let waiting: Promise<boolean> | null = existingTask;
+          while (waiting) {
+            await waiting;
+            if (runtimeAssetsTaskRef.current === waiting) runtimeAssetsTaskRef.current = null;
+            waiting = runtimeAssetsTaskRef.current;
+          }
+        } else {
+          return existingTask;
+        }
       }
 
       // 本地已就绪时，版本巡检默认静默；只有缺件/下载/连接阻塞才展示横幅
@@ -522,7 +534,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
             summary.geo.message = "本地缺少 GEO 数据";
           }
 
-          // 启动空闲巡检只确认本地是否就位；远端版本留给手动检测更新 / 半天周期任务。
+          // 启动只确认本地就位；组件事件、重连和手动操作强制读取当前分发版本。
           const shouldRefreshRemote =
             ensureOptions.forceCheck ||
             ensureOptions.source === "retry" ||
@@ -997,7 +1009,6 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
             });
           } else if (
             summary.failed.length > 0 &&
-            ensureOptions.interactive &&
             ensureOptions.source === "update_check"
           ) {
             options.notify?.({
@@ -1034,7 +1045,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
       try {
         return await task;
       } finally {
-        runtimeAssetsTaskRef.current = null;
+        if (runtimeAssetsTaskRef.current === task) runtimeAssetsTaskRef.current = null;
       }
     },
     [
@@ -1047,27 +1058,6 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
   );
 
   const getLastRuntimeAssetsCheckSummary = useCallback(() => lastSummaryRef.current, []);
-
-
-  useEffect(() => {
-    if (options.platformTarget === "android" || options.platformTarget === "web") {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      if (!shouldCheckGeoUpdate(readStoredGeoLastCheckAt())) {
-        return;
-      }
-      void ensureRuntimeAssetsReady({
-        source: "update_check",
-        interactive: false,
-        blockConnection: false,
-        forceCheck: false
-      });
-    }, GEO_CHECK_INTERVAL_MS);
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, [ensureRuntimeAssetsReady, options.platformTarget]);
 
 
   const handleCancelRuntimeAssets = useCallback(() => {

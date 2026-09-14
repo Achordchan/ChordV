@@ -1,0 +1,48 @@
+.content { border-radius: 10px; border: 1px solid #e2e6dc; background: #fcfcf8; color: #26372c; box-shadow: 0 18px 65px #18362020; }
+.header { background: #fcfcf8; padding: 24px 26px 20px; border-bottom: 1px solid #e8eadf; }
+.title { font-size: 23px; font-weight: 650; letter-spacing: -.6px; }
+.body { padding: 24px 26px 0; }
+.form { min-width: 0; }
+.fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.fields:disabled { opacity: .7; }
+.form :global(.mantine-Input-input) { border-color: #dce2d6; border-radius: 5px; background: #fff; font-size: 14px; }
+.form :global(.mantine-Input-input:focus) { border-color: #55785a; }
+.form :global(.mantine-InputWrapper-label) { color: #445643; font-size: 13px; font-weight: 550; margin-bottom: 5px; }
+.form :global(.mantine-InputWrapper-description) { font-size: 12px; color: #8c9487; }
+.context { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding-bottom: 20px; border-bottom: 1px solid #e8eadf; margin-bottom: 24px; }
+.context > div:last-child { text-align: right; flex-shrink: 0; }
+.context small { font-size: 11px; color: #8c9588; display: block; margin-bottom: 3px; }
+.context strong { display: block; font-size: 17px; color: #244e35; }
+.sectionTitle { font-size: 14px; font-weight: 600; color: #334c37; margin: 0 0 13px; }
+.presets { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.presets button { background: white; border: 1px solid #dce2d6; border-radius: 5px; padding: 12px 6px; font: inherit; font-size: 14px; color: #62745e; cursor: pointer; }
+.presets button[aria-pressed=true] { background: #e8eee0; border-color: #9eb095; color: #1c4d37; font-weight: 600; }
+.presets button:focus-visible { outline: 2px solid #1c4d37; outline-offset: 2px; }
+.presets button:disabled { cursor: not-allowed; }
+.preview { background: #f0f4e9; border-radius: 6px; padding: 18px; }
+.dateChange { display: flex; gap: 14px; align-items: center; justify-content: space-between; }
+.dateChange small { display: block; color: #8a9681; font-size: 11px; margin-bottom: 6px; }
+.dateChange strong { font-weight: 550; font-size: 14px; color: #254d34; }
+.dateChange svg { color: #94a389; flex-shrink: 0; }
+.hint { color: #8a9483; font-size: 12px; line-height: 1.6; margin: 11px 0 0; }
+.previewFacts { display: flex; justify-content: space-between; gap: 15px; margin: 16px 0 0; border-top: 1px solid #dce4d3; padding-top: 15px; }
+.previewFacts dt { font-size: 11px; color: #8a9681; margin-bottom: 5px; }
+.previewFacts dd { margin: 0; font-size: 14px; font-weight: 500; color: #345d3f; }
+.switchRow { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 13px 0; border-bottom: 1px solid #e8ecdf; }
+.switchRow strong { font-size: 14px; font-weight: 500; color: #42593e; }
+.switchRow p { font-size: 12px; color: #939b8d; margin: 4px 0 0; }
+.footer { display: flex; justify-content: flex-end; gap: 10px; position: sticky; bottom: 0; background: #fcfcf8; padding: 20px 0; border-top: 1px solid #e3e8d9; margin-top: 24px; z-index: 1; }
+.footer button { border-radius: 5px; font-weight: 500; }
+@media(max-width: 600px) { .header { padding: 20px; } .body { padding: 20px 20px 0; } .title { font-size: 21px; } .context { flex-wrap: wrap; } .dateChange { flex-wrap: wrap; } .dateChange > div { flex: 1; min-width: 125px; } .previewFacts { flex-wrap: wrap; } .presets { grid-template-columns: repeat(2, 1fr); } }
+.memberDetail > section + section { border-top: 1px solid #e4e9dc; padding-top: 20px; }
+.memberDetail :global(.mantine-Button-root) { border-radius: 5px; font-size: 13px; font-weight: 500; }
+.memberDetail .preview { border-top: 0; }
+.nodeOptions { max-height: 340px; overflow-y: auto; margin-top: 10px; }
+.nodeOption { display: flex; align-items: center; gap: 13px; padding: 18px 6px; border-bottom: 1px solid #e7ebdf; cursor: pointer; }
+.nodeOption > svg { color: #72866a; flex-shrink: 0; }
+.nodeOption > span { color: #435b3d; font-size: 14px; overflow-wrap: anywhere; }
+.nodeOption > :global(.country-flag) { flex: 0 0 auto; }
+.nodeOption:hover { background: #f2f5ed; }
+.nodeIdentity { display: flex; align-items: center; justify-content: flex-start; gap: 12px; padding-bottom: 20px; border-bottom: 1px solid #e8eadf; margin-bottom: 24px; text-align: left; }
+.nodeIdentity > :global(.country-flag) { flex: 0 0 auto; }
+.nodeIdentity > div { min-width: 0; overflow-wrap: anywhere; }

@@ -1,0 +1,15 @@
+.flow { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 26px; }
+.flow span { padding: 0 0 12px; border-bottom: 2px solid #e4e8de; font-size: 13px; color: #9aa391; }
+.flow span[data-active=true] { color: #245137; border-color: #245137; font-weight: 600; }
+.content { padding-bottom: 26px; }
+.content :global(.mantine-Input-input) { border-radius: 5px; border-color: #dce2d6; background: #fff; }
+.content :global(.mantine-InputWrapper-label) { font-size: 13px; color: #485a40; margin-bottom: 6px; }
+.content :global(.mantine-Button-root) { border-radius: 5px; }
+.optional summary { cursor: pointer; font-size: 13px; color: #7b8872; }
+.optional[open] summary { margin-bottom: 16px; }
+.optional summary:focus-visible { outline: 2px solid #245137; outline-offset: 4px; }
+.footer { margin-top: 8px; padding-top: 20px; border-top: 1px solid #e5e9de; }
+.waiting { display: flex; align-items: flex-start; gap: 14px; padding: 6px 0 8px; }
+.waiting > :first-child { flex-shrink: 0; margin-top: 2px; }
+.commandSection { min-width: 0; }
+.command { max-height: 180px; padding: 16px; background: #f0f3ec; color: #38513d; border: 1px solid #e1e7da; border-radius: 5px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.7; user-select: text; }

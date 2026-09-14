@@ -6,7 +6,9 @@ import updateLimits from "@chordv/shared/update-limits";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { buildExternalArtifactPayload } from "../src/features/releases/artifactPayloads";
-import { NewReleaseArtifactFields } from "../src/features/releases/ReleaseEditorModal";
+import { register } from "node:module";
+register(new URL("./css-module-loader.mjs", import.meta.url));
+const { NewReleaseArtifactFields } = await import("../src/features/releases/ReleaseEditorModal");
 import { buildCreateReleasePayload, buildUpdateReleasePayload, emptyReleaseEditorForm } from "../src/features/releases/types";
 
 const { MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES } = updateLimits;
@@ -303,7 +305,7 @@ function testCreateReleaseIsBlockedWhileAnotherMutationIsSaving() {
   );
   assert.match(
     releasesPageSource,
-    /<Button leftSection=\{<IconPlus size=\{16\} \/>\} onClick=\{openCreateRelease\} disabled=\{saving !== null\}>/,
+    /busy=\{saving !== null\}[\s\S]*?onCreate=\{openCreateRelease\}/,
     "new release button should be disabled during publish, delete, upload, and artifact mutations"
   );
 }

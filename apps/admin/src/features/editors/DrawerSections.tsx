@@ -3,7 +3,6 @@ import type {
   AdminSnapshotDto,
   AnnouncementDisplayMode,
   AnnouncementLevel,
-  PlanScope,
   SubscriptionState,
   TeamMemberRole,
   TeamStatus,
@@ -20,11 +19,9 @@ import {
   displayModeOptions,
   subscriptionStateOptions,
   type AnnouncementFormState,
-  type PlanFormState,
   type SubscriptionAdjustFormState,
   type SubscriptionChangePlanFormState,
   type SubscriptionCreateFormState,
-  type SubscriptionRenewFormState,
   type TeamFormState,
   type TeamMemberFormState,
   type TeamSubscriptionFormState,
@@ -93,54 +90,7 @@ export function UserEditorSection(props: {
   );
 }
 
-export function PlanEditorSection(props: {
-  planForm: PlanFormState;
-  setPlanForm: Dispatch<SetStateAction<PlanFormState>>;
-}) {
-  return (
-    <>
-      <TextInput
-        label="套餐名称"
-        value={props.planForm.name}
-        onChange={(event) => props.setPlanForm((current) => ({ ...current, name: event.currentTarget.value }))}
-      />
-      <Select
-        label="套餐类型"
-        data={[
-          { value: "personal", label: "个人套餐" },
-          { value: "team", label: "Team 套餐" }
-        ]}
-        value={props.planForm.scope}
-        onChange={(value) => props.setPlanForm((current) => ({ ...current, scope: (value || "personal") as PlanScope }))}
-      />
-      <NumberInput
-        label="总流量 (GB)"
-        min={0}
-        value={props.planForm.totalTrafficGb}
-        onChange={(value) => props.setPlanForm((current) => ({ ...current, totalTrafficGb: Number(value) || 0 }))}
-      />
-      <NumberInput
-        label="最大并发会话"
-        min={1}
-        allowDecimal={false}
-        value={props.planForm.maxConcurrentSessions}
-        onChange={(value) => props.setPlanForm((current) => ({ ...current, maxConcurrentSessions: Number(value) || 1 }))}
-      />
-      <Group grow>
-        <Switch
-          checked={props.planForm.renewable}
-          onChange={(event) => props.setPlanForm((current) => ({ ...current, renewable: event.currentTarget.checked }))}
-          label="允许续费"
-        />
-        <Switch
-          checked={props.planForm.isActive}
-          onChange={(event) => props.setPlanForm((current) => ({ ...current, isActive: event.currentTarget.checked }))}
-          label="启用"
-        />
-      </Group>
-    </>
-  );
-}
+export { PlanEditorSection } from "./PlanEditor";
 
 export function SubscriptionCreateEditorSection(props: {
   snapshot: AdminSnapshotDto;
@@ -226,37 +176,7 @@ export function SubscriptionAdjustEditorSection(props: {
   );
 }
 
-export function SubscriptionRenewEditorSection(props: {
-  subscriptionRenewForm: SubscriptionRenewFormState;
-  setSubscriptionRenewForm: Dispatch<SetStateAction<SubscriptionRenewFormState>>;
-}) {
-  return (
-    <>
-      <ExpireAtController
-        label="新的到期时间"
-        value={props.subscriptionRenewForm.expireAt}
-        baseValue={props.subscriptionRenewForm.baseExpireAt}
-        onChange={(value) => props.setSubscriptionRenewForm((current) => ({ ...current, expireAt: value }))}
-      />
-      <NumberInput
-        label="续后总流量 (留空保持原值)"
-        value={props.subscriptionRenewForm.totalTrafficGb}
-        min={0}
-        onChange={(value) =>
-          props.setSubscriptionRenewForm((current) => ({
-            ...current,
-            totalTrafficGb: value === "" || value === null ? "" : Number(value)
-          }))
-        }
-      />
-      <Switch
-        checked={props.subscriptionRenewForm.resetTraffic}
-        onChange={(event) => props.setSubscriptionRenewForm((current) => ({ ...current, resetTraffic: event.currentTarget.checked }))}
-        label="续期时重置已用流量"
-      />
-    </>
-  );
-}
+export { SubscriptionRenewEditorSection } from "./SubscriptionRenewEditor";
 
 export function SubscriptionChangePlanEditorSection(props: {
   snapshot: AdminSnapshotDto;
@@ -447,7 +367,7 @@ export function AnnouncementEditorSection(props: {
       <Switch
         checked={props.announcementForm.isActive}
         onChange={(event) => props.setAnnouncementForm((current) => ({ ...current, isActive: event.currentTarget.checked }))}
-        label="立即上线"
+        label="启用公告（按发布时间展示）"
       />
     </>
   );

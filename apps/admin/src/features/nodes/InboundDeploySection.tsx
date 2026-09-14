@@ -1,3 +1,4 @@
+import { DataSkeleton } from "../shared/DataSkeleton";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Checkbox, Group, Loader, Modal, NumberInput, Paper, SimpleGrid, Stack, Text, TextInput } from "@mantine/core";
 import { IconKey, IconRocket } from "@tabler/icons-react";
@@ -180,12 +181,7 @@ export function InboundDeploySection(props: SectionProps) {
       )}
 
       {deployed && specLoad.status === "loading" ? (
-        <Alert color="blue" variant="light">
-          <Group gap="sm" wrap="nowrap">
-            <Loader size="xs" />
-            <Text size="sm">正在读取当前部署规格，重新下发将在读取完成后开放。</Text>
-          </Group>
-        </Alert>
+        <DataSkeleton rows={2}/>
       ) : null}
       {deployed && specLoad.status === "error" ? (
         <Alert color="red" variant="light" title="读取当前部署规格失败">
@@ -203,6 +199,7 @@ export function InboundDeploySection(props: SectionProps) {
             <Text size="sm">
               已下发部署命令{deployment.queuedRevision ? `（revision ${deployment.queuedRevision}）` : ""}，正在等待 Agent 执行…
             </Text>
+            <Button size="compact-xs" variant="default" onClick={deployment.refresh}>重新读取状态</Button>
           </Group>
         </Alert>
       ) : null}

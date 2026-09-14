@@ -1,11 +1,11 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { notifications } from "@mantine/notifications";
 import type { AdminNodeRecordDto } from "@chordv/shared";
+import { subscribeAdminRuntimeEvents } from "../../api/client";
 import { deployNodeInbound, fetchAdminNodes, fetchNodeCommandOutcome } from "../../api/nodes";
 
 type Stage = "idle" | "queued" | "done" | "failed";
-const POLL_INTERVAL_MS = 3_000;
-const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+const OBSERVATION_TIMEOUT_MS = 5 * 60 * 1000;
 
 function errorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
@@ -21,7 +21,7 @@ function errorMessage(error: unknown): string {
  *
  * Same session discipline as useAgentNodeOnboarding: the section lives in the
  * node drawer, one component instance across node switches, so the epoch
- * invalidates on unmount AND on node change — a late response or a late poll
+ * invalidates on unmount AND on node change — a late request or event response
  * from an old session can never mutate state, notify, or unlock a newer
  * request's busy flag.
  */
@@ -30,48 +30,62 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
   const [error, setError] = useState<string | null>(null);
   const [deploying, setDeploying] = useState(false);
   const [queuedRevision, setQueuedRevision] = useState<string | null>(null);
-  const session = useRef(0), pollEpoch = useRef(0);
+  const session = useRef(0), watchEpoch = useRef(0);
   const active = useRef(false), requestBusy = useRef(false);
   const timer = useRef<number | null>(null);
+  const pollTimer = useRef<number | null>(null);
+  const retryTimer = useRef<number | null>(null);
+  const unsubscribe = useRef<(() => void) | null>(null);
+  const refreshOutcome = useRef<(() => void) | null>(null);
   const changed = useRef(onNodeChanged);
   changed.current = onNodeChanged;
   const current = useCallback((epoch: number) => active.current && session.current === epoch, []);
-  const stopPolling = useCallback(() => {
-    pollEpoch.current++;
+  const stopWatching = useCallback(() => {
+    watchEpoch.current++;
+    unsubscribe.current?.(); unsubscribe.current = null;
+    refreshOutcome.current = null;
     if (timer.current !== null) window.clearTimeout(timer.current);
     timer.current = null;
+    if (pollTimer.current !== null) window.clearTimeout(pollTimer.current);
+    pollTimer.current = null;
+    if (retryTimer.current !== null) window.clearTimeout(retryTimer.current);
+    retryTimer.current = null;
   }, []);
   const invalidate = useCallback(() => {
     session.current++;
     active.current = false;
     requestBusy.current = false;
-    stopPolling();
-  }, [stopPolling]);
+    stopWatching();
+  }, [stopWatching]);
 
-  // Completion does not publish an admin event; poll the bounded status check
-  // like registration does: normal 3s, failures back off to 30s, exit on
-  // close/node switch/terminal outcome/5m. The QUEUED COMMAND's own outcome
-  // decides success — a higher node-level applied revision alone does not:
-  // this deployment can fail while a later administrator's succeeds, pushing
-  // the revision past this command's target (worst for key rotation: the
-  // rotation never happened but the revision moved).
-  const pollOutcome = useCallback((nodeId: string, commandId: string, targetRevision: string, epoch: number) => {
-    stopPolling();
-    const poll = pollEpoch.current;
-    const deadline = Date.now() + POLL_TIMEOUT_MS;
-    let interval = POLL_INTERVAL_MS;
-    const valid = () => current(epoch) && pollEpoch.current === poll;
+  // Read the exact command outcome after relevant SSE events, including the
+  // stream-opening resync. A later node revision alone never proves success.
+  const watchOutcome = useCallback((nodeId: string, commandId: string, targetRevision: string, epoch: number) => {
+    stopWatching();
+    const watch = watchEpoch.current;
+    let busy = false, dirty = false, failureAttempt = 0, pollAttempt = 0;
+    const valid = () => current(epoch) && watchEpoch.current === watch;
     const fail = (message: string) => {
-      stopPolling(); setStage("failed"); setError(message);
+      stopWatching(); setStage("failed"); setError(message);
     };
     const succeed = (record: { id: string; name?: string } | undefined) => {
-      stopPolling();
+      stopWatching();
       setStage("done"); setError(null);
       if (record) changed.current(record as AdminNodeRecordDto);
       notifications.show({ color: "teal", title: "入站操作完成", message: `节点「${record?.name ?? nodeId}」的入站命令已完成，连接参数已更新；请按所选模式进行验收。` });
     };
     const tick = async () => {
       if (!valid()) return;
+      if (pollTimer.current !== null) {
+        window.clearTimeout(pollTimer.current);
+        pollTimer.current = null;
+      }
+      if (retryTimer.current !== null) {
+        window.clearTimeout(retryTimer.current);
+        retryTimer.current = null;
+      }
+      if (busy) { dirty = true; return; }
+      busy = true;
       try {
         const outcome = await fetchNodeCommandOutcome(nodeId, commandId);
         if (!valid()) return;
@@ -117,31 +131,42 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
           fail(`本次下发已被更新的部署取代（revision ${record.inboundAppliedRevision ?? "0"} 越过本命令的 ${targetRevision}），未生效；请重新打开表单基于当前参数操作。`);
           return;
         }
-        // The WHOLE tick succeeded (outcome + node list): only now may a
-        // failing next round back off from the normal interval — resetting
-        // after the outcome alone made a failing node-list endpoint retry at
-        // 3s→6s→3s→6s forever instead of backing off to 30s.
-        interval = POLL_INTERVAL_MS;
-      } catch {
-        if (!valid()) return;
-        interval = Math.min(interval * 2, 30_000);
+        setError(null);
+        failureAttempt = 0;
+        pollAttempt += 1;
+        const delay = Math.min(1000 * 2 ** Math.min(pollAttempt, 4), 10_000);
+        pollTimer.current = window.setTimeout(() => void tick(), delay);
+      } catch (reason) {
+        if (valid()) {
+          setError(errorMessage(reason));
+          failureAttempt += 1;
+          const delay = Math.min(1000 * 2 ** Math.min(failureAttempt - 1, 4), 10_000);
+          retryTimer.current = window.setTimeout(() => void tick(), delay);
+        }
+      } finally {
+        busy = false;
+        if (dirty && valid()) { dirty = false; void tick(); }
       }
-      if (!valid()) return;
-      if (Date.now() >= deadline) {
-        fail("等待超时：5 分钟内未确认部署完成。命令仍在队列中，Agent 恢复后会继续执行；可稍后刷新查看结果。");
-        return;
-      }
-      timer.current = window.setTimeout(() => void tick(), Math.min(interval, deadline - Date.now()));
     };
-    timer.current = window.setTimeout(() => void tick(), POLL_INTERVAL_MS);
-  }, [current, stopPolling]);
+    refreshOutcome.current = () => { void tick(); };
+    unsubscribe.current = subscribeAdminRuntimeEvents(event => {
+      if (event.type === "sync_queue_updated" || (event.type === "node_access_updated" && (!event.nodeId || event.nodeId === nodeId))) void tick();
+    });
+    // A bounded backoff poll remains necessary until completion-event delivery
+    // is guaranteed. The deadline limits the observation window; expiry does
+    // not cancel the server task.
+    timer.current = window.setTimeout(() => {
+      if (valid()) fail("5 分钟内未确认入站操作结果。后台任务不会因此取消，请刷新节点状态后继续处理。");
+    }, OBSERVATION_TIMEOUT_MS);
+    void tick();
+  }, [current, stopWatching]);
 
   useLayoutEffect(() => {
     invalidate();
     active.current = nodeId !== null;
     setStage("idle"); setError(null); setDeploying(false); setQueuedRevision(null);
     return invalidate;
-    // Node object refreshes (same id) must not invalidate an in-flight poll.
+    // Node object refreshes (same id) must not invalidate an in-flight observation.
   }, [nodeId, invalidate]);
 
   const deploy = useCallback(async (node: AdminNodeRecordDto, payload: Record<string, unknown>, expectedAppliedRevision: string) => {
@@ -151,16 +176,16 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
     try {
       const command = await deployNodeInbound(node.id, payload, expectedAppliedRevision);
       // Queuing may commit after the drawer closed or switched nodes: refresh
-      // nothing, poll nothing, notify nothing in the new session.
+      // nothing, observe nothing, notify nothing in the new session.
       if (!current(epoch)) return false;
       setQueuedRevision(command.targetRevision);
-      pollOutcome(node.id, command.commandId, command.targetRevision, epoch);
+      watchOutcome(node.id, command.commandId, command.targetRevision, epoch);
       return true;
     } catch (error) {
       if (!current(epoch)) return false;
       setStage("failed"); setError(errorMessage(error));
       // A rejected enqueue often means the node moved underneath a STALE
-      // browser (another admin deployed; no admin event ever told us). Fetch
+      // browser (another admin deployed; the local snapshot missed the change). Fetch
       // the fresh record so the drawer re-renders on current truth — the open
       // form's revision gate then blocks until the operator reviews it.
       fetchAdminNodes()
@@ -174,7 +199,7 @@ export function useInboundDeployment(nodeId: string | null, onNodeChanged: (node
     } finally {
       if (current(epoch)) { requestBusy.current = false; setDeploying(false); }
     }
-  }, [current, pollOutcome]);
+  }, [current, watchOutcome]);
 
-  return { stage, error, deploying, queuedRevision, deploy };
+  return { stage, error, deploying, queuedRevision, deploy, refresh: () => refreshOutcome.current?.() };
 }

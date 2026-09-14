@@ -17,7 +17,7 @@ export function trimRuntimeMirrorPrefix(value: string) {
 
 export function resolveRuntimeComponentCandidate(component: RuntimeComponentDownloadItem, customPrefix: string) {
   const normalizedPrefix = customPrefix.trim();
-  if (normalizedPrefix) {
+  if (normalizedPrefix && component.allowClientMirror !== false) {
     const originCandidate = component.candidates.find((candidate) => candidate.source === "origin") ?? component.candidates[0];
     if (originCandidate?.url) {
       return {

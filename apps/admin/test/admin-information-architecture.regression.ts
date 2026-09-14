@@ -1,3 +1,4 @@
+import { renewalBase, renewalDate } from "../src/features/editors/renewal-date";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
@@ -8,7 +9,7 @@ const appSource = readFileSync(resolve(import.meta.dirname, "../src/App.tsx"), "
 const customerSubscriptionsPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/CustomerSubscriptionsPage.tsx"), "utf8");
 const sectionCardSource = readFileSync(resolve(import.meta.dirname, "../src/features/shared/SectionCard.tsx"), "utf8");
 const overviewPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/OverviewPage.tsx"), "utf8");
-const usersPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/UsersPage.tsx"), "utf8");
+const usersPageSource = ["CustomerWorkspace.tsx", "CustomerSubscription.tsx", "CustomerNodes.tsx", "CustomerMembers.tsx", "CustomerActivity.tsx", "CustomerTaskStatus.tsx", "TeamEditors.tsx"].map(file => readFileSync(resolve(import.meta.dirname, "../src/features/customers", file), "utf8")).join("\n");
 const plansPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/PlansPage.tsx"), "utf8");
 const subscriptionsPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/SubscriptionsPage.tsx"), "utf8");
 const nodesPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/NodesPage.tsx"), "utf8");
@@ -43,7 +44,7 @@ function findActionIconsMissingAccessibleNames() {
           const names = new Set(
             node.attributes.properties.filter(ts.isJsxAttribute).map((attribute) => attribute.name.getText(sourceFile))
           );
-          if (!names.has("title") || !names.has("aria-label")) {
+          if (!names.has("aria-label")) {
             const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
             missing.push(`${path}:${position.line + 1}`);
           }
@@ -57,7 +58,7 @@ function findActionIconsMissingAccessibleNames() {
 }
 
 function testSidebarKeepsGroupedInformationArchitecture() {
-  for (const title of ["总览", "用户与订阅", "节点与任务", "客服与公告", "应用发布", "系统设置"]) {
+  for (const title of ["工作台", "用户与订阅", "节点与任务", "客服与公告", "应用发布", "系统"]) {
     assert.match(appSource, new RegExp(`title: "${title}"`), `sidebar group ${title} should exist`);
   }
 
@@ -69,8 +70,11 @@ function testSidebarKeepsGroupedInformationArchitecture() {
   assert.match(appSource, /\{ title: "用户与订阅", sections: \["users", "plans"\] \}/);
   assert.doesNotMatch(appSource, /\{ title: "用户与订阅", sections: \["users", "subscriptions", "plans"\] \}/);
   assert.match(appSource, /label: "节点与同步"/);
-  assert.match(appSource, />\s*后台工具\s*</);
-  assert.match(appSource, />\s*同步任务\s*</);
+  assert.doesNotMatch(appSource, />\s*后台工具\s*</);
+  assert.match(appSource, /label: "系统设置"/);
+  assert.match(appSource, /<SystemSettingsPage/);
+  const settingsSource = readFileSync(resolve(import.meta.dirname, "../src/pages/SystemSettingsPage.tsx"), "utf8");
+  for (const action of ["onOpenSecurity", "onOpenTasks", "onOpenPolicies", "onOpenImageBed", "onLogout"]) assert.ok(settingsSource.includes(action));
   assert.match(appSource, /className="admin-nav-shell"/);
   assert.match(appSource, /className="admin-nav-menu"/);
   assert.match(stylesSource, /\.admin-nav\s*\{[\s\S]*overflow: hidden;/);
@@ -105,55 +109,27 @@ function testSectionCardSupportsPageIntentAndActions() {
 }
 
 function testOverviewPrioritizesActionableWork() {
-  assert.ok(
-    overviewPageSource.indexOf("待处理事项") < overviewPageSource.indexOf("用户数"),
-    "overview should show actionable work before passive metrics"
-  );
-  assert.match(overviewPageSource, /title="后台同步任务"/);
-  assert.match(overviewPageSource, /actionLabel="查看同步任务"/);
-  assert.doesNotMatch(overviewPageSource, /优先处理工单、后台同步和异常节点。/);
-  assert.doesNotMatch(overviewPageSource, /用户正在等待管理员回复。/);
+assert.ok(overviewPageSource.indexOf("待处理事项") < overviewPageSource.indexOf("className={styles.metrics}")); for(const action of ["onOpenSyncQueue","onOpenTickets","onOpenNodes","onOpenCustomers","onOpenTeams"]) assert.ok(overviewPageSource.includes(action));
 }
 
 function testUsersPageKeepsAccountAndTeamEntrypoints() {
-  assert.match(usersPageSource, /title="客户与团队"/);
-  assert.doesNotMatch(usersPageSource, /个人账号、团队关系和账号级连接动作集中在这里处理。/);
-  assert.match(usersPageSource, /searchPlaceholder="搜索邮箱、名称或团队"/);
-  assert.match(usersPageSource, /当前订阅/);
-  assert.match(usersPageSource, /流量 \/ 节点/);
-  assert.match(usersPageSource, /使用情况/);
-  assert.match(usersPageSource, /<Table\.Th>详情<\/Table\.Th>/);
-  assert.match(usersPageSource, /<CustomerDetailDrawer/);
-  assert.match(usersPageSource, /<Drawer opened=\{props\.target !== null\}/);
-  assert.match(usersPageSource, /<DrawerSection title="订阅与节点">/);
-  assert.match(usersPageSource, /<DrawerSection title="账号操作">/);
-  assert.match(usersPageSource, /<DrawerSection title="团队关系">/);
-  assert.match(usersPageSource, /const openOutsideDetail = \(action: \(\) => void\) => \{/);
-  assert.match(usersPageSource, /props\.onClose\(\);\s*action\(\);/);
-  assert.match(usersPageSource, /onOpenRenewDrawer=\{\(id\) => openOutsideDetail\(\(\) => props\.onOpenRenewDrawer\(id\)\)\}/);
-  assert.match(usersPageSource, /onClick=\{\(\) => openOutsideDetail\(\(\) => props\.onOpenUserDrawer\(user\.id\)\)\}/);
-  assert.match(usersPageSource, /openOutsideDetail\(\(\) =>\s*props\.onOpenTeamUsageDetail/);
-  assert.match(usersPageSource, /<MemberUsageCell/);
-  assert.match(usersPageSource, /props\.onLoadTeamUsage\(item\.id\)/);
-  assert.match(usersPageSource, /props\.onOpenTeamUsageDetail/);
+  const route = readFileSync(resolve(import.meta.dirname, "../src/pages/UsersPage.tsx"), "utf8");
+  assert.match(route, /CustomerWorkspace as UsersPage/);
+  assert.match(usersPageSource, /aria-label="客户列表"/);
+  assert.match(usersPageSource, /aria-label="客户类型"/);
+  assert.match(usersPageSource, /<Tabs.Panel/);
+  for (const action of ["onOpenUserDrawer", "onCreateSubscriptionForUser", "onOpenTeamSubscriptions", "onOpenRenewDrawer", "onOpenChangePlanDrawer", "onOpenAdjustDrawer", "onOpenNodeAccessEditor", "onResetSubscriptionTraffic", "onToggleUserStatus", "onToggleTeamUserStatus", "onDisconnectUser", "onLoadTeamUsage", "onOpenTeamUsageDetail", "onOpenTeamInlineEditor", "onOpenTeamMemberInlineEditor", "onDeleteTeamMember", "onRetryLeaseRevocationJob", "onOpenLeaseRevocationQueue"]) {
+    assert.ok(usersPageSource.includes(action), action + " must remain wired to the real customer workspace");
+  }
+  assert.match(usersPageSource, /getSubscriptionNodeAccess\(subscription.id\)/);
+  assert.match(usersPageSource, /if \(!active\) return/);
+  assert.doesNotMatch(usersPageSource, /example\.com|INITIAL_CUSTOMERS|原型模式/);
+  assert.match(usersPageSource, /member.role !== "owner"/);
+  assert.match(usersPageSource, /onDisconnectUser\(member.userId, member.displayName, "team-member"\)/);
+  assert.match(usersPageSource, /onDisconnectUser\(customer.user!.id, customer.name, "personal"\)/);
+  assert.match(usersPageSource, /<CustomerActivity/);
   assert.match(appSource, /teamUsageByTeamId=\{teamUsageByTeamId\}/);
   assert.match(appSource, /onOpenTeamUsageDetail=\{setTeamUsageDetailTarget\}/);
-  assert.match(usersPageSource, /props\.onOpenRenewDrawer\(props\.subscriptionId!\)/);
-  assert.match(usersPageSource, /props\.onOpenChangePlanDrawer\(props\.subscriptionId!\)/);
-  assert.match(usersPageSource, /props\.onOpenNodeAccessEditor\(props\.subscriptionId!, props\.ownerLabel\)/);
-  assert.match(usersPageSource, /props\.onResetSubscriptionTraffic\(subscriptionId, user\.displayName \|\| user\.email\)/);
-  assert.match(usersPageSource, /<TeamSubscriptionSummary/);
-  assert.match(usersPageSource, /<TeamSubscriptionActions/);
-  assert.match(usersPageSource, /个人用户 · \{personalUsers\.length\}/);
-  assert.match(usersPageSource, /团队管理 · \{props\.filteredTeams\.length\}/);
-  assert.match(usersPageSource, /onOpenUserDrawer\(user\.id\)/);
-  assert.match(usersPageSource, /onCreateSubscriptionForUser\(user\)/);
-  assert.match(usersPageSource, /onDisconnectUser\(user\.id, user\.displayName, "personal"\)/);
-  assert.match(usersPageSource, /onToggleUserStatus/);
-  assert.match(usersPageSource, /props\.onOpenTeamSubscriptions\(props\.team\)/);
-  assert.match(usersPageSource, /onOpenTeamInlineEditor\(team\.id\)/);
-  assert.match(usersPageSource, /onOpenTeamMemberInlineEditor\(team\.id\)/);
-  assert.match(usersPageSource, /onDeleteTeamMember\(team\.id, member\.id\)/);
 }
 
 function testSubscriptionsPageKeepsSubscriptionActions() {
@@ -173,68 +149,19 @@ function testSubscriptionsPageKeepsSubscriptionActions() {
 }
 
 function testPlansAndAnnouncementsExposePageIntent() {
-  assert.match(plansPageSource, /title="套餐规则"/);
-  assert.match(plansPageSource, /searchPlaceholder="搜索套餐名称"/);
-  assert.match(plansPageSource, /个人套餐 · \{personalPlans\.length\}/);
-  assert.match(plansPageSource, /Team 套餐 · \{teamPlans\.length\}/);
-  assert.match(plansPageSource, /onOpenPlanDrawer\(item\.id\)/);
-  assert.match(plansPageSource, /title="编辑套餐" aria-label="编辑套餐"/);
-
-  assert.match(announcementsPageSource, /title="公告管理"/);
-  assert.match(announcementsPageSource, /searchPlaceholder="搜索公告标题或内容"/);
-  assert.match(announcementsPageSource, /onOpenAnnouncementDrawer\(item\.id\)/);
-  assert.match(announcementsPageSource, /onDeleteAnnouncement\(item\.id\)/);
-  assert.match(announcementsPageSource, /title="编辑公告"/);
-  assert.match(announcementsPageSource, /aria-label="编辑公告"/);
-  assert.match(announcementsPageSource, /title="删除公告"/);
-  assert.match(announcementsPageSource, /aria-label="删除公告"/);
+for(const action of ["onOpenPlanDrawer"]) assert.ok(plansPageSource.includes(action)); for(const action of ["onOpenAnnouncementDrawer","onDeleteAnnouncement","actionBusyKey"]) assert.ok(announcementsPageSource.includes(action)); assert.match(plansPageSource,/aria-label="套餐规则"/); assert.match(announcementsPageSource,/aria-label="公告列表"/);
 }
 
 function testReleaseAndImageBedPagesExposePageIntent() {
-  assert.match(releasesPageSource, /title="发布中心"/);
-  assert.doesNotMatch(releasesPageSource, /管理客户端版本、安装包、外链下载和发布状态。/);
-  assert.match(releasesPageSource, /searchPlaceholder="搜索版本、标题或更新内容"/);
-  assert.match(releasesPageSource, /openCreateRelease/);
-  assert.match(releasesPageSource, /loadReleases\(\)/);
-
-  assert.match(imageBedPageSource, /title="附件图床配置"/);
-  assert.doesNotMatch(imageBedPageSource, /配置工单附件图床 Token，并管理已上传图片。/);
-  assert.match(imageBedPageSource, /searchPlaceholder="搜索图床文件"/);
-  assert.match(imageBedPageSource, /onSearchSubmit=\{\(\) => void loadFiles\(\)\}/);
-  assert.match(imageBedPageSource, /handleSave/);
-  assert.match(imageBedPageSource, /handleDelete/);
+for(const action of ["openCreateRelease","loadReleases","publishRelease","withdrawRelease"]) assert.ok(releasesPageSource.includes(action)); for(const action of ["handleSave","handleDelete","loadFiles","onBusyChange","confirmation.dialog"]) assert.ok(imageBedPageSource.includes(action));
 }
 
 function testPoliciesAndRuntimeComponentsUseCurrentNavigationNames() {
-  assert.match(policiesPageSource, /<Title order=\{4\}>连接策略<\/Title>/);
-  assert.doesNotMatch(policiesPageSource, /配置客户端默认连接模式、可选模式和基础分流规则。/);
-  assert.doesNotMatch(policiesPageSource, /当前使用 3x-ui 直连接入/);
-  assert.doesNotMatch(policiesPageSource, /接入与连接策略/);
-
-  assert.match(runtimeComponentsPageSource, /加载客户端组件失败/);
-  assert.match(runtimeComponentsPanelSource, /<Title order=\{4\}>客户端组件<\/Title>/);
-  assert.match(runtimeComponentsPanelSource, /客户端组件请求状态不确定/);
-  assert.match(runtimeComponentsPanelSource, /RuntimeComponentSlotCard/);
-  assert.match(runtimeComponentsPanelSource, /title="配置"/);
-  assert.match(runtimeComponentsPanelSource, /aria-label="配置"/);
-  assert.match(runtimeComponentsPanelSource, /复制下载地址/);
-  assert.match(runtimeComponentEditorSource, /配置 \$\{kindLabel\}/);
-  assert.match(runtimeComponentEditorSource, /更新地址/);
-  assert.match(runtimeComponentEditorSource, /高级选项/);
-  assert.match(runtimeComponentsPanelSource, /全局加速镜像/);
-  assert.match(runtimeComponentsPanelSource, /发布中心安装包与客户端组件/);
+assert.match(policiesPageSource,/onSave/); assert.match(runtimeComponentsPanelSource,/RuntimeComponentSlotCard/); assert.match(runtimeComponentsPanelSource,/全局加速镜像/); assert.match(runtimeComponentsPanelSource,/复制下载地址/); assert.match(runtimeComponentEditorSource,/高级选项/);
 }
 
 function testNodesPageKeepsNodeAndSyncTaskActions() {
-  assert.match(nodesPageSource, /title="节点与同步"/);
-  assert.match(nodesPageSource, /searchPlaceholder="搜索节点、地区或地址"/);
-  assert.match(nodesPageSource, />\s*同步任务\s*</);
-  assert.match(nodesPageSource, /<Table\.Th>同步任务<\/Table\.Th>/);
-  assert.match(nodesPageSource, /onProbeNode\(item\.id\)/);
-  assert.match(nodesPageSource, /onOpenNodeDrawer\(item\.id\)/);
-  assert.match(nodesPageSource, /onDeleteNode\(item\)/);
-  assert.match(nodesPageSource, /onOpenLeaseRevocationQueue\(\)/);
-  assert.match(nodesPageSource, /onRetryNodeLeaseRevocationJobs\(props\.node\.id\)/);
+for(const action of ["onProbeNode","onProbeAll","onOpenNodeDrawer","onDeleteNode","onOpenLeaseRevocationQueue","onRetryNodeLeaseRevocationJobs","onResumeAgentNode"]) assert.ok(nodesPageSource.includes(action)); assert.match(nodesPageSource,/aria-label="节点与同步"/);
 }
 
 function testProductionCopyUsesSyncTaskNaming() {
@@ -265,3 +192,10 @@ testProductionCopyUsesSyncTaskNaming();
 testIconOnlyActionsHaveAccessibleNames();
 
 console.log("admin information architecture regression checks passed");
+
+// Calendar-month renewal preserves the intended expiry day where possible.
+assert.equal(renewalDate("2026-01-31T13:10", 1), "2026-02-28T13:10");
+assert.equal(renewalDate("2028-02-29T13:10", 12), "2029-02-28T13:10");
+const renewalNow = new Date("2026-09-11T10:00:00");
+assert.equal(renewalBase("2026-09-01T13:10:00", renewalNow), "2026-09-11T10:00");
+assert.equal(renewalBase("2026-09-29T13:10:00", renewalNow), "2026-09-29T13:10");

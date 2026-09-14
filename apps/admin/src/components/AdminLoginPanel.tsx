@@ -1,4 +1,6 @@
-import { Alert, Button, Paper, PasswordInput, Stack, Text, TextInput, Title } from "@mantine/core";
+import { Alert, Button, PasswordInput, TextInput } from "@mantine/core";
+import { IconArrowRight } from "@tabler/icons-react";
+import styles from "./AdminLoginPanel.module.css";
 
 type AdminLoginPanelProps = {
   account: string;
@@ -12,70 +14,68 @@ type AdminLoginPanelProps = {
 
 export function AdminLoginPanel(props: AdminLoginPanelProps) {
   return (
-    <div className="admin-auth-root">
-      <div className="admin-auth-shell">
-        <Paper className="admin-auth-intro" radius={32} p={36}>
-          <Stack gap={18}>
-            <Text className="admin-auth-tag">ChordV 运营后台</Text>
-            <Title order={1} className="admin-auth-title">
-              安全登录
-            </Title>
-            <Text className="admin-auth-subtitle">登录后管理用户、套餐、订阅与节点状态，所有操作都将写入审计轨迹。</Text>
-            <Paper className="admin-auth-note" radius={20} p="lg">
-              <Stack gap={8}>
-                <Text className="admin-auth-note-title">本次接入内容</Text>
-                <Text className="admin-auth-note-line">- 统一管理员鉴权</Text>
-                <Text className="admin-auth-note-line">- 会话过期自动续签</Text>
-                <Text className="admin-auth-note-line">- 节点计费异常可追踪</Text>
-              </Stack>
-            </Paper>
-          </Stack>
-        </Paper>
-
-        <Paper className="admin-auth-form-card" radius={32} p={36}>
+    <div className={styles.root}>
+      <header className={styles.header}>
+        <span className={styles.wordmark}>ChordV<span className={styles.brandDot}>.</span></span>
+        <span className={styles.workspaceLabel}>运营后台</span>
+      </header>
+      <main className={styles.main}>
+        <section className={styles.panel} aria-labelledby="admin-login-title">
+          <div className={styles.intro}>
+            <span className={styles.eyebrow}>管理员登录</span>
+            <h1 id="admin-login-title">欢迎回来。</h1>
+            <p>登录，继续你的工作。</p>
+          </div>
           <form
-            autoComplete="off"
+            className={styles.form}
+            aria-busy={props.loading}
             onSubmit={(event) => {
               event.preventDefault();
-              props.onSubmit();
+              if (!props.loading) props.onSubmit();
             }}
           >
-            <Stack gap="md">
-              <Text className="admin-auth-form-tag">管理员登录</Text>
-              <Title order={2} className="admin-auth-form-title">
-                欢迎回来
-              </Title>
-              <Text className="admin-auth-form-desc">请输入管理员账号与密码。</Text>
-
+            <fieldset className={styles.fields} disabled={props.loading}>
               <TextInput
-                label="管理员账号"
+                label="账号"
+                name="username"
                 value={props.account}
-                placeholder="请输入管理员账号"
+                placeholder="输入管理员账号"
                 onChange={(event) => props.onAccountChange(event.currentTarget.value)}
-                radius="xl"
-                size="md"
                 autoComplete="username"
+                autoCapitalize="none"
+                spellCheck={false}
                 autoFocus
+                required
+                aria-describedby={props.error ? "admin-login-error" : undefined}
+                classNames={{ input: styles.input, label: styles.label }}
               />
               <PasswordInput
                 label="密码"
+                name="password"
                 value={props.password}
-                placeholder="请输入密码"
+                placeholder="输入密码"
                 onChange={(event) => props.onPasswordChange(event.currentTarget.value)}
-                radius="xl"
-                size="md"
                 autoComplete="current-password"
+                required
+                aria-describedby={props.error ? "admin-login-error" : undefined}
+                classNames={{ input: styles.input, innerInput: styles.passwordInput, label: styles.label }}
               />
-
-              {props.error ? <Alert color="red">{props.error}</Alert> : null}
-
-              <Button type="submit" radius="xl" size="md" loading={props.loading}>
-                登录后台
-              </Button>
-            </Stack>
+            </fieldset>
+            {props.error ? <Alert id="admin-login-error" role="alert" color="red" className={styles.error}>{props.error}</Alert> : null}
+            <Button
+              type="submit"
+              fullWidth
+              className={styles.submit}
+              loading={props.loading}
+              rightSection={props.loading ? undefined : <IconArrowRight size={19} stroke={1.7} />}
+            >
+              {props.loading ? "正在登录" : "登录后台"}
+            </Button>
+            <span className={styles.liveStatus} role="status">{props.loading ? "正在验证账号，请稍候。" : ""}</span>
           </form>
-        </Paper>
-      </div>
+        </section>
+      </main>
+      <footer className={styles.footer}><span>ChordV</span><span>运营管理，从这里开始</span></footer>
     </div>
   );
 }
