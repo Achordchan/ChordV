@@ -636,10 +636,11 @@ export function App() {
         if (sections.has(currentSection)) tasks.push(Promise.resolve(refreshCurrentSectionSilently()));
         if (settingsPanelRef.current === "imageBed" && sections.has("imageBed")) setImageBedRefreshSignal(value => value + 1);
         if (settingsPanelRef.current === "policies" && sections.has("policies")) tasks.push(loadSectionData("policies", {force:true,silent:true}));
-        if (sections.has("system") && leaseRevocationQueueRef.current.opened && !["nodes", "users", "subscriptions", "system"].includes(currentSection)) {
+        if (sections.has("system")) {
           tasks.push(refreshLeaseRevocationJobsAfterPending());
-        } else if (sections.has("system") && leaseRevocationQueueRef.current.opened) {
-          refreshNodeCommandQueueDetail(leaseRevocationQueueRef.current.filter);
+          if (leaseRevocationQueueRef.current.opened) {
+            refreshNodeCommandQueueDetail(leaseRevocationQueueRef.current.filter);
+          }
         }
         await Promise.allSettled(tasks);
       }
