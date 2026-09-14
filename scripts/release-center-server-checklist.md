@@ -27,7 +27,7 @@ pnpm prepare:release-storage /www/wwwroot/chordv/releases
 服务器上 API 至少要补这 3 个变量：
 
 ```bash
-CHORDV_PUBLIC_BASE_URL=https://v.baymaxgroup.com
+CHORDV_PUBLIC_BASE_URL=https://v.achord.cn
 CHORDV_RELEASE_STORAGE_ROOT=/www/wwwroot/chordv/releases
 CHORDV_RELEASE_MAX_UPLOAD_BYTES=1073741824
 ```

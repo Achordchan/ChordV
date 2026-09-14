@@ -14414,6 +14414,7 @@ function testCorsAllowsProductionAndConfiguredOrigins() {
     delete process.env.CHORDV_ALLOW_LOCAL_DEV_ORIGINS;
 
     assert.equal(isAllowedCorsOrigin("https://v.baymaxgroup.com"), true);
+    assert.equal(isAllowedCorsOrigin("https://v.achord.cn"), true);
     assert.equal(isAllowedCorsOrigin("https://admin.example.com"), true);
     assert.equal(isAllowedCorsOrigin("https://panel.example.com"), true);
     assert.equal(isAllowedCorsOrigin("https://ops.example.com"), true);
@@ -17754,7 +17755,6 @@ async function main() {
 }
 
 void main();
-
 
 
 
