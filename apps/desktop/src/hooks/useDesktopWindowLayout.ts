@@ -1,27 +1,36 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useReducer, useState } from "react";
 import { cancelDesktopWindowResize, resizeDesktopWindow } from "../lib/desktopWindowLayout";
-import { resolveWindowPresentation } from "../lib/windowPresentation";
+import { initialWindowLayoutState, reduceWindowLayout, resolveWindowPresentation } from "../lib/windowPresentation";
 
-export function useDesktopWindowLayout(signedIn: boolean, booting: boolean, onError: (message: string) => void) {
-  const [settled, setSettled] = useState<boolean | null>(null);
+export function useDesktopWindowLayout(signedIn: boolean, booting: boolean) {
+  const [layout, dispatch] = useReducer(reduceWindowLayout, initialWindowLayoutState);
+  const [retryRevision, setRetryRevision] = useState(0);
   const prepareStartupLayout = useCallback(async (restored: boolean) => {
     await resizeDesktopWindow(restored, false);
-    setSettled(restored);
+    dispatch({ type: "success", signedIn: restored });
   }, []);
+  const retryWindowLayout = useCallback(() => setRetryRevision((value) => value + 1), []);
 
   useEffect(() => {
-    // Startup already sizes the window before releasing the loading surface.
-    if (booting || settled === signedIn) return;
+    if (booting) return;
+    if (layout.settled === signedIn) {
+      dispatch({ type: "success", signedIn });
+      return;
+    }
     let active = true;
+    dispatch({ type: "start" });
     const frame = window.requestAnimationFrame(() => {
       if (!active) return;
       void resizeDesktopWindow(signedIn, true).then(() => {
-        if (active) setSettled(signedIn);
+        if (active) dispatch({ type: "success", signedIn });
       }).catch(() => {
-        if (active) onError("窗口尺寸调整失败，请重新打开客户端。");
+        if (active) dispatch({ type: "failure" });
       });
     });
     return () => { active = false; window.cancelAnimationFrame(frame); cancelDesktopWindowResize(); };
-  }, [signedIn, booting, settled, onError]);
-  return { ...resolveWindowPresentation(signedIn, booting, settled), prepareStartupLayout };
+  }, [signedIn, booting, layout.settled, retryRevision]);
+  return {
+    ...resolveWindowPresentation(signedIn, booting, layout.settled), prepareStartupLayout,
+    windowLayoutError: layout.error, windowResizeBusy: layout.busy, retryWindowLayout
+  };
 }

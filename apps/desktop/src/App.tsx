@@ -115,7 +115,7 @@ export function App() {
   const [runtime, setRuntime] = useState<GeneratedRuntimeConfigDto | null>(null);
   const [booting, setBooting] = useState(true);
   const startupInspectionKeyRef = useRef<string | null>(null);
-  const { mainLayoutReady, windowTransitioning, prepareStartupLayout } = useDesktopWindowLayout(Boolean(session && bootstrap), booting, showErrorToast);
+  const { mainLayoutReady, windowTransitioning, prepareStartupLayout, windowLayoutError, windowResizeBusy, retryWindowLayout } = useDesktopWindowLayout(Boolean(session && bootstrap), booting);
   const [authBusy, setAuthBusy] = useState(false);
   const [logoutBusy, setLogoutBusy] = useState(false);
   const [logDrawerOpened, setLogDrawerOpened] = useState(false);
@@ -1719,6 +1719,9 @@ export function App() {
           rememberPassword={rememberPassword}
           loading={authBusy || windowTransitioning || Boolean(session && bootstrap)}
           error={null}
+          windowLayoutError={windowLayoutError}
+          windowResizeBusy={windowResizeBusy}
+          onRetryWindowLayout={retryWindowLayout}
           emergencyRuntimeActive={emergencyRuntimeActive}
           emergencyRuntimeBusy={actionBusy === "disconnect"}
           emergencyRuntimeMessage={

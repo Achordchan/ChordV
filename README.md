@@ -83,6 +83,8 @@ bash ./start-app.sh
 
 本地预览使用独立应用标识和 `.data/local-app/target/` 缓存，不清理正式发布产物。每个工作目录同时只允许一个脚本会话，避免 Windows 正在运行的程序被重新构建。强制结束终端后若残留 `.data/local-app/session.lock`，确认没有预览进程再删除该空目录。
 
+脚本会将 `VITE_API_BASE_URL` 同步到原生请求使用的 `CHORDV_API_BASE_URL`；显式设置的 `CHORDV_API_BASE_URL` 优先保留。
+
 客户端默认使用代码中的站点地址；联调 `start.sh` 启动的本机 API 时显式执行：
 
 ```bash

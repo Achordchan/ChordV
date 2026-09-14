@@ -11,6 +11,9 @@ type LoginScreenProps = {
   rememberPassword: boolean;
   loading: boolean;
   error: string | null;
+  windowLayoutError?: string | null;
+  windowResizeBusy?: boolean;
+  onRetryWindowLayout?: () => void;
   emergencyRuntimeActive: boolean;
   emergencyRuntimeBusy: boolean;
   emergencyRuntimeMessage: string | null;
@@ -54,6 +57,12 @@ export function LoginScreen(props: LoginScreenProps) {
             if (!props.loading) props.onSubmit();
           }}>
             <h2 className="auth-screen__panel-title">账号登录</h2>
+            {props.windowLayoutError && (
+              <div className="auth-screen__error" role="alert">
+                <Text size="sm">{props.windowLayoutError}</Text>
+                <Button type="button" size="xs" variant="light" mt={8} loading={props.windowResizeBusy} onClick={props.onRetryWindowLayout}>重试窗口调整</Button>
+              </div>
+            )}
             <div className="auth-screen__form">
               <label className="auth-screen__field">
                 <span className="auth-screen__field-label">邮箱</span>

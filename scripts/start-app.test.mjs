@@ -43,7 +43,7 @@ if (args[0] === '-p' && args[1] === 'process.platform') {
   fs.mkdirSync(dir, {recursive:true});
   fs.writeFileSync(path.join(dir, config.mainBinaryName + ${JSON.stringify(platform === 'windows' ? '.exe' : '')}),
     '#!' + ${JSON.stringify(process.execPath)} + '\\n' +
-    'require("node:fs").appendFileSync(process.env.TEST_LOG, "launched\\\\n"); if (process.env.TEST_HOLD_APP) { console.log("PREVIEW_TEST_READY"); setInterval(() => {}, 1000); }', {mode:0o755});
+    'require("node:fs").appendFileSync(process.env.TEST_LOG, "launched\\\\n"); if (process.env.TEST_NATIVE_ENV_LOG) require("node:fs").writeFileSync(process.env.TEST_NATIVE_ENV_LOG, JSON.stringify({ api: process.env.CHORDV_API_BASE_URL })); if (process.env.TEST_HOLD_APP) { console.log("PREVIEW_TEST_READY"); setInterval(() => {}, 1000); }', {mode:0o755});
 } else {
   const r = require('node:child_process').spawnSync(${JSON.stringify(process.execPath)}, args, {stdio:'inherit'});
   process.exit(r.status ?? 1);
@@ -133,3 +133,18 @@ test('interrupt stops owned preview process group and releases session lock', as
     assert.throws(() => process.kill(-child.pid, 0), /ESRCH/);
   } finally { f.dispose(); }
 });
+
+for (const platform of ['macos', 'windows']) {
+  test(`${platform}: API override reaches native process without replacing an explicit override`, () => {
+    const f = fixture(platform);
+    try {
+      const envLog = path.join(f.root, 'native-env.json');
+      let r = f.run([], { VITE_API_BASE_URL: 'http://127.0.0.1:3000', CHORDV_API_BASE_URL: undefined, TEST_NATIVE_ENV_LOG: envLog });
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(JSON.parse(fs.readFileSync(envLog, 'utf8')).api, 'http://127.0.0.1:3000');
+      r = f.run([], { VITE_API_BASE_URL: 'http://127.0.0.1:3000', CHORDV_API_BASE_URL: 'http://127.0.0.1:4000', TEST_NATIVE_ENV_LOG: envLog });
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(JSON.parse(fs.readFileSync(envLog, 'utf8')).api, 'http://127.0.0.1:4000');
+    } finally { f.dispose(); }
+  });
+}

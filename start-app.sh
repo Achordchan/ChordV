@@ -95,6 +95,11 @@ trap 'stop_app 130' INT
 trap 'stop_app 143' TERM HUP
 export CARGO_TARGET_DIR="$preview_root/target"
 export VITE_APP_VERSION="$version"
+# Native requests use a separate variable; a frontend-only override must not
+# silently leave the running preview connected to production.
+if [ "${CHORDV_API_BASE_URL+x}" != x ] && [ -n "${VITE_API_BASE_URL:-}" ]; then
+  export CHORDV_API_BASE_URL="$VITE_API_BASE_URL"
+fi
 
 # Frontend compilation reuses the existing package script. The native build
 # override skips only its duplicate beforeBuildCommand and release packaging.
