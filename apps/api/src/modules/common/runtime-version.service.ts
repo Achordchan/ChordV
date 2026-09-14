@@ -28,6 +28,7 @@ export class RuntimeVersionService {
     });
   }
   async createSlot(input: {kind: "xray" | "geoip" | "geosite"; platform: "windows" | "macos" | "android" | "ios"; architecture: "x64" | "arm64"; sourceUrl: string}) {
+    if (input.kind === "xray" && input.platform === "ios") throw new BadRequestException("iOS 不支持 Xray 组件获取");
     const platform = input.kind === "xray" ? input.platform : "macos";
     const architecture = input.kind === "xray" ? input.architecture : "arm64";
     const existing = await this.prisma.runtimeComponent.findFirst({where: input.kind === "xray" ? {kind:input.kind,platform,architecture} : {kind:input.kind}});
@@ -51,6 +52,7 @@ export class RuntimeVersionService {
   async acquire(input: RuntimeSourceInput) {
     const component = await this.prisma.runtimeComponent.findUnique({ where: { id: input.componentId } });
     if (!component) throw new NotFoundException("组件不存在");
+    if (component.kind === "xray" && component.platform === "ios") throw new BadRequestException("iOS 不支持 Xray 组件获取");
     let url: URL; try { url = new URL(input.sourceUrl.trim()); } catch { throw new BadRequestException("请填写有效来源地址"); }
     if (url.protocol !== "https:" || url.username || url.password) throw new BadRequestException("组件来源必须是无凭据的 HTTPS 地址");
     const latest = parseGithubLatestDownloadUrl(url.href);
@@ -96,7 +98,8 @@ export class RuntimeVersionService {
       const policy = await tx.runtimeComponentDelivery.findUnique({where:{componentId:version.componentId}});
       const component = await tx.runtimeComponent.findUnique({where:{id:version.componentId}});
       if(automatic && (!policy?.autoLatest || policy.sourceUrl !== version.sourceUrl || component?.kind === "xray")) return;
-      await tx.runtimeComponent.update({ where: { id: version.componentId }, data: { enabled: true } });
+      // Automatic delivery updates files, not the administrator's enable switch.
+      if (!automatic) await tx.runtimeComponent.update({ where: { id: version.componentId }, data: { enabled: true } });
       await tx.runtimeComponentDelivery.update({ where: { componentId: version.componentId }, data: { activeVersionId: id, notifyPending: true } });
       await tx.runtimeComponentVersion.update({ where: { id }, data: { publishedAt: new Date() } });
     });

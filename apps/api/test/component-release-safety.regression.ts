@@ -22,6 +22,7 @@ async function main() {
     $transaction: async (run: any) => run(tx)
   };
   const service = new RuntimeVersionService(prisma as never, {publish(){}} as never);
+  await assert.rejects(service.createSlot({kind:"xray",platform:"ios",architecture:"arm64",sourceUrl}),/iOS/);
   await service.scheduleLatest();
   assert.equal(created,0,"管理员关闭开关后不能使用调度旧快照入队");
   enabled=true;locked=false;
@@ -60,6 +61,17 @@ async function main() {
     const cleanup=new RuntimeVersionService({runtimeComponentDelivery:{findMany:async()=>[]},runtimeComponentVersion:{findUnique:async()=>null}} as never,{publish(){}} as never);
     await cleanup.pruneVersions();
     await assert.rejects(fs.access(old));await fs.access(recent);
+    const versionId="00000000-0000-0000-0000-000000000003";
+    await fs.writeFile(runtimeVersionPath(versionId),"validated-file");
+    let componentEnabled=false;
+    const activation=new RuntimeVersionService({$transaction:async(fn:any)=>fn({
+      $queryRaw:async()=>[],
+      runtimeComponentVersion:{findUnique:async()=>({id:versionId,componentId:"one",status:"ready",sourceUrl}),update:async()=>({})},
+      runtimeComponentDelivery:{findUnique:async()=>({autoLatest:true,sourceUrl}),update:async()=>({})},
+      runtimeComponent:{findUnique:async()=>({kind:"geoip",enabled:componentEnabled}),update:async()=>{componentEnabled=true;}}
+    })} as never,{publish(){}} as never);
+    await activation.activate(versionId,true);assert.equal(componentEnabled,false,"自动更新不重启已停用组件");
+    await activation.activate(versionId,false);assert.equal(componentEnabled,true,"管理员显式启用仍能开启组件");
   } finally {
     if(previous===undefined)delete process.env.CHORDV_RELEASE_STORAGE_ROOT;else process.env.CHORDV_RELEASE_STORAGE_ROOT=previous;
     await fs.rm(root,{recursive:true,force:true});
