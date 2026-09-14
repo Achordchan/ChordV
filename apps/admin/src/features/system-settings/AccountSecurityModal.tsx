@@ -31,7 +31,7 @@ export function AccountSecurityModal(props: Props) {
         <section className={styles.verifyIdentity}><PasswordInput label="当前密码" description="确认身份后保存修改" required autoComplete="current-password" value={props.form.currentPassword} onChange={event=>{const currentPassword=event.currentTarget.value;props.onChange(current=>({...current,currentPassword}));}}/></section>
       </Stack></fieldset>
       <Text className={styles.sessionNote}>保存后将更新当前登录会话，其他会话需要重新登录。</Text>
-      <footer className={dialog.footer}><Button type="button" variant="default" onClick={props.onClose} disabled={props.saving}>取消</Button><Button type="submit" color="teal.9" loading={props.saving} disabled={mismatch}>保存修改</Button></footer>
+      <footer className={dialog.footer}><Button type="button" variant="default" onClick={props.onClose} disabled={props.saving}>取消</Button><Button type="submit" color="teal.9" loading={props.saving} disabled={mismatch || (changePassword && (props.form.newPassword.length < 8 || !props.form.confirmPassword))}>保存修改</Button></footer>
     </form>
   </Modal>;
 }
