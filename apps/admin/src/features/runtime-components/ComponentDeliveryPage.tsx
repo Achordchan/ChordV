@@ -15,7 +15,7 @@ import { request } from "../../api/base";
 const names = { xray: "Xray", geoip: "GeoIP", geosite: "GeoSite" };
 const platformNames: Record<string,string> = {macos:"macOS",windows:"Windows",android:"Android",ios:"iOS"};
 const statusNames: Record<string,string> = { queued:"等待获取",downloading:"获取中",verifying:"校验中",ready:"已就绪",failed:"获取失败",unchanged:"已是当前版本" };
-export function ComponentDeliveryPage() {
+export function ComponentDeliveryPage({ refreshSignal }: { refreshSignal?: number }) {
   const [rows,setRows]=useState<ComponentDelivery[]>([]), [loading,setLoading]=useState(true),[error,setError]=useState("");
   const [busy,setBusy]=useState(false),[target,setTarget]=useState<ComponentDelivery|null>(null),[creating,setCreating]=useState(false);
   const [source,setSource]=useState(""),[version,setVersion]=useState(""),[auto,setAuto]=useState(false);
@@ -40,6 +40,7 @@ export function ComponentDeliveryPage() {
     finally {pending.current=false;if(alive.current){setLoading(false);if(dirty.current){dirty.current=false;void load();}}}
   };
   useEffect(()=>{alive.current=true;void load();const stop=subscribeAdminRuntimeEvents(e=>{if(e.type==="runtime_component_updated"||e.type==="node_access_updated"&&!e.nodeId)void load();});return()=>{alive.current=false;epoch.current++;stop();};},[]);
+  useEffect(()=>{if (refreshSignal !== undefined) void load();},[refreshSignal]);
   const open=(row:ComponentDelivery)=>{setTarget(row);setCreating(false);setSource(row.sourceUrl);setVersion(row.active?.versionLabel||"");setAuto(row.autoLatest);setKind(row.kind);setFormError("");setTags([]);setTagsLoading(false);tagsEpoch.current++;};
   const run=async(action:()=>Promise<unknown>)=>{if(saving.current)return;saving.current=true;setBusy(true);try{await action();await load();}catch(e){setError(readError(e,"操作失败"));}finally{saving.current=false;if(alive.current)setBusy(false);}};
   const submit=async()=>{

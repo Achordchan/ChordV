@@ -150,6 +150,7 @@ import { OverviewPage } from "./pages/OverviewPage";
 import { PlansPage } from "./pages/PlansPage";
 import { PoliciesPage } from "./pages/PoliciesPage";
 import { UnifiedReleaseCenter } from "./features/releases/UnifiedReleaseCenter";
+import { RuntimeComponentsPage } from "./pages/RuntimeComponentsPage";
 import { SubscriptionsPage } from "./pages/SubscriptionsPage";
 import { TicketsPage } from "./pages/TicketsPage";
 import { UsersPage } from "./pages/UsersPage";
@@ -3185,7 +3186,7 @@ export function App() {
 
             {section === "releases" ? <UnifiedReleaseCenter refreshSignal={releaseRefreshSignal} /> : null}
 
-            {section === "runtimeComponents" ? <UnifiedReleaseCenter initialTab="components" refreshSignal={runtimeComponentRefreshSignal} /> : null}
+            {section === "runtimeComponents" ? <RuntimeComponentsPage refreshSignal={runtimeComponentRefreshSignal} /> : null}
 
 
             {section === "system" ? <SystemSettingsPage
