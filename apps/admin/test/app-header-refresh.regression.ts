@@ -172,16 +172,8 @@ function testSignalBackedSectionsUseLocalRefreshSignals() {
     /if \(currentSection === "tickets"\) {\s*setTicketRefreshSignal\(\(current\) => current \+ 1\);\s*return;\s*}/,
     "ticket header refresh should only notify the ticket page"
   );
-  assert.match(
-    handleHeaderRefreshBody,
-    /if \(currentSection === "runtimeComponents"\) {\s*setRuntimeComponentRefreshSignal\(\(current\) => current \+ 1\);\s*return;\s*}/,
-    "runtime component header refresh should only notify the runtime component page"
-  );
-  assert.match(
-    handleHeaderRefreshBody,
-    /if \(currentSection === "imageBed"\) {\s*setImageBedRefreshSignal\(\(current\) => current \+ 1\);\s*return;\s*}/,
-    "image bed header refresh should only notify the image bed page"
-  );
+  assert.doesNotMatch(handleHeaderRefreshBody, /=== "runtimeComponents"/, "旧独立页面分支应被移除");
+  assert.doesNotMatch(handleHeaderRefreshBody, /=== "imageBed"/, "旧独立页面分支应被移除");
 }
 
 function testSnapshotBackedSectionsUseSectionLoader() {
@@ -313,16 +305,8 @@ function testSignalBackedSectionsRefreshSilentlyThroughSignals() {
     /if \(sectionRef\.current === "tickets"\) {[\s\S]*?setTicketRefreshSignal\(\(current\) => current \+ 1\);[\s\S]*?return;\s*}/,
     "tickets should refresh through its local signal"
   );
-  assert.match(
-    refreshBody,
-    /if \(sectionRef\.current === "imageBed"\) {[\s\S]*?setImageBedRefreshSignal\(\(current\) => current \+ 1\);[\s\S]*?return;\s*}/,
-    "image bed should refresh through its local signal"
-  );
-  assert.match(
-    refreshBody,
-    /if \(sectionRef\.current === "runtimeComponents"\) {[\s\S]*?setRuntimeComponentRefreshSignal\(\(current\) => current \+ 1\);[\s\S]*?return;\s*}/,
-    "runtime components should refresh through its local signal"
-  );
+  assert.doesNotMatch(refreshBody, /=== "imageBed"/, "旧独立页面分支应被移除");
+  assert.doesNotMatch(refreshBody, /=== "runtimeComponents"/, "旧独立页面分支应被移除");
 }
 
 function testSessionExpiredClearsBusyRefs() {
@@ -522,3 +506,5 @@ async function testManualRefreshReadsLatestDrawerTarget() {
   }
 }
 void testManualRefreshReadsLatestDrawerTarget().catch(error => { console.error(error); process.exitCode = 1; });
+
+assert.match(source, /settingsPanelRef.current === "imageBed"/);

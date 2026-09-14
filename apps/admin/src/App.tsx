@@ -150,7 +150,6 @@ import { OverviewPage } from "./pages/OverviewPage";
 import { PlansPage } from "./pages/PlansPage";
 import { PoliciesPage } from "./pages/PoliciesPage";
 import { UnifiedReleaseCenter } from "./features/releases/UnifiedReleaseCenter";
-import { RuntimeComponentsPage } from "./pages/RuntimeComponentsPage";
 import { SubscriptionsPage } from "./pages/SubscriptionsPage";
 import { TicketsPage } from "./pages/TicketsPage";
 import { UsersPage } from "./pages/UsersPage";
@@ -219,10 +218,7 @@ type SectionKey =
   | "tickets"
   | "nodes"
   | "announcements"
-  | "policies"
   | "releases"
-  | "runtimeComponents"
-  | "imageBed"
   | "system";
 type EditorState = {
   type: DrawerType;
@@ -298,26 +294,14 @@ const sectionMeta: Record<SectionKey, { label: string; icon: ReactNode }> = {
     label: "公告管理",
     icon: <IconSpeakerphone size={18} />
   },
-  policies: {
-    label: "连接策略",
-    icon: <IconRoute size={18} />
-  },
   releases: {
     label: "发布中心",
     icon: <IconCloudDownload size={18} />
-  },
-  runtimeComponents: {
-    label: "客户端组件",
-    icon: <IconCpu size={18} />
   },
   system: {
     label: "系统设置",
     icon: <IconShieldLock size={18} />
   },
-  imageBed: {
-    label: "附件图床配置",
-    icon: <IconPhoto size={18} />
-  }
 };
 
 const sectionGroups: Array<{ title: string; sections: SectionKey[] }> = [
@@ -377,7 +361,6 @@ export function App() {
   const sectionRef = useRef<SectionKey>("overview");
   const [releaseRefreshSignal, setReleaseRefreshSignal] = useState(0);
   const [ticketRefreshSignal, setTicketRefreshSignal] = useState(0);
-  const [runtimeComponentRefreshSignal, setRuntimeComponentRefreshSignal] = useState(0);
   const [settingsPanel, setSettingsPanel] = useState<"policies" | "imageBed" | null>(null);
   const settingsPanelRef = useRef(settingsPanel); settingsPanelRef.current = settingsPanel;
   const [settingsStorageBusy, setSettingsStorageBusy] = useState(false);
@@ -408,13 +391,12 @@ export function App() {
   const [planScopeTab, setPlanScopeTab] = useState<PlanScope>("personal");
   const [subscriptionTab, setSubscriptionTab] = useState<"personal" | "team">("personal");
   const [authBootstrapped, setAuthBootstrapped] = useState(() => hasAdminSession());
-  const [search, setSearch] = useState<Record<Exclude<SectionKey, "overview" | "tickets" | "policies" | "releases" | "runtimeComponents" | "system">, string>>({
+  const [search, setSearch] = useState<Record<Exclude<SectionKey, "overview" | "tickets" | "releases" | "system">, string>>({
     users: "",
     plans: "",
     subscriptions: "",
     nodes: "",
     announcements: "",
-    imageBed: ""
   });
   const [deleteNodeTarget, setDeleteNodeTarget] = useState<AdminNodeRecordDto | null>(null);
   const [deleteNodeSubmitting, setDeleteNodeSubmitting] = useState(false);
@@ -1004,14 +986,6 @@ export function App() {
       setTicketRefreshSignal((current) => current + 1);
       return;
     }
-    if (sectionRef.current === "imageBed") {
-      setImageBedRefreshSignal((current) => current + 1);
-      return;
-    }
-    if (sectionRef.current === "runtimeComponents") {
-      setRuntimeComponentRefreshSignal((current) => current + 1);
-      return;
-    }
     const dataSection = sectionRef.current === "users" ? "subscriptions" : sectionRef.current;
     return loadSectionData(dataSection, { force: true, silent: true }).catch(() => {
       // Silent background refreshes are opportunistic; explicit actions report refresh failures separately.
@@ -1296,10 +1270,6 @@ export function App() {
         const announcements = await fetchAdminAnnouncements();
         if (!canApplySectionResult(requestSeq, mutationSeqAtStart)) return;
         applyListPatch("announcements", announcements);
-      } else if (targetSection === "policies") {
-        const policy = await fetchAdminPolicy();
-        if (!canApplySectionResult(requestSeq, mutationSeqAtStart)) return;
-        mergeSnapshot({ policy });
       }
       markSectionLoaded(targetSection);
     } catch (reason) {
@@ -1387,14 +1357,6 @@ export function App() {
     }
     if (currentSection === "tickets") {
       setTicketRefreshSignal((current) => current + 1);
-      return;
-    }
-    if (currentSection === "runtimeComponents") {
-      setRuntimeComponentRefreshSignal((current) => current + 1);
-      return;
-    }
-    if (currentSection === "imageBed") {
-      setImageBedRefreshSignal((current) => current + 1);
       return;
     }
     await loadSectionData(currentSection === "users" ? "subscriptions" : currentSection, { force: true });
@@ -3213,7 +3175,6 @@ export function App() {
 
             {section === "releases" ? <UnifiedReleaseCenter refreshSignal={releaseRefreshSignal} sessionActive={authenticated} /> : null}
 
-            {section === "runtimeComponents" ? <RuntimeComponentsPage refreshSignal={runtimeComponentRefreshSignal} /> : null}
 
 
             {section === "system" ? <SystemSettingsPage
