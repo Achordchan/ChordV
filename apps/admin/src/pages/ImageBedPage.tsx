@@ -374,6 +374,7 @@ export function ImageBedPage(props: ImageBedPageProps) {
 
   return (
     <div className={styles.storage}>
+      {confirmation.dialog}
       <Stack gap="lg">
         {error ? (
           <Alert color="red" variant="light">
