@@ -1,5 +1,8 @@
 import { BadRequestException } from "@nestjs/common";
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { agentReleaseRoot } from "../agent/agent-go-release";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { fetchPublicHttpUrl } from "./remote-url.utils";
@@ -15,7 +18,8 @@ export function runtimeVersionUrl(id: string) {
   return `${(process.env.CHORDV_PUBLIC_BASE_URL || "").replace(/\/+$/, "")}/api/downloads/runtime-versions/${id}`;
 }
 export async function prepareRuntimeVersion(sourceUrl: string, requestedVersion: string | null, id: string,
-  progress: (bytes: bigint, status: "downloading" | "verifying") => Promise<void>) {
+  progress: (bytes: bigint, status: "downloading" | "verifying") => Promise<void>,
+  target: { kind: string; platform: string; architecture: string }) {
   const latest = await resolveGithubLatestReleaseAsset(sourceUrl);
   if (!latest && !requestedVersion) throw new BadRequestException("固定来源必须填写版本号");
   const url = latest?.originUrl ?? sourceUrl;
@@ -43,7 +47,14 @@ export async function prepareRuntimeVersion(sourceUrl: string, requestedVersion:
     if (!bytes || (declared > 0 && bytes !== BigInt(declared)) || (latest?.fileSizeBytes && bytes !== latest.fileSizeBytes)) throw new BadRequestException("组件文件大小不匹配");
     const fileHash = hash.digest("hex");
     if (latest?.sha256 && latest.sha256 !== fileHash) throw new BadRequestException("组件文件校验值不匹配");
-    await file.sync(); await file.close(); await fs.rename(tempPath, finalPath);
+    await file.sync(); await file.close();
+    const arch = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "amd64" : null;
+    if (process.platform !== "linux" || !arch) throw new BadRequestException("组件内容校验需要 Linux 后台运行环境");
+    // The bundled verifier only parses bytes; it never executes downloaded binaries.
+    await promisify(execFile)(path.join(agentReleaseRoot(), "agent-go-dist", `chordv-agent-linux-${arch}`),
+      ["--validate-component", tempPath, "--component-kind", target.kind, "--component-platform", target.platform, "--component-arch", target.architecture],
+      { timeout: 60_000, maxBuffer: 64 * 1024 });
+    await fs.rename(tempPath, finalPath);
     return { versionLabel, resolvedUrl: url, fileHash, fileSizeBytes: bytes, storedFilePath: finalPath,
       fileName: latest?.fileName ?? decodeURIComponent(new URL(url).pathname.split("/").pop() || "component.bin") };
   } catch (error) {

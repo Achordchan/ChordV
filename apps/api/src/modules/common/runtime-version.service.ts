@@ -76,10 +76,12 @@ export class RuntimeVersionService {
   }
   async activate(id: string, automatic = false) {
     await this.prisma.$transaction(async tx => {
+      const candidate = await tx.runtimeComponentVersion.findUnique({ where: { id } });
+      if (!candidate) throw new BadRequestException("文件尚未准备好");
+      await tx.$queryRaw`SELECT id FROM "RuntimeComponent" WHERE id = ${candidate.componentId} FOR UPDATE`;
       const version = await tx.runtimeComponentVersion.findUnique({ where: { id } });
       if (!version || version.status !== "ready") throw new BadRequestException("文件尚未准备好");
       await fs.access(runtimeVersionPath(id));
-      await tx.$queryRaw`SELECT id FROM "RuntimeComponent" WHERE id = ${version.componentId} FOR UPDATE`;
       const policy = await tx.runtimeComponentDelivery.findUnique({where:{componentId:version.componentId}});
       const component = await tx.runtimeComponent.findUnique({where:{id:version.componentId}});
       if(automatic && (!policy?.autoLatest || policy.sourceUrl !== version.sourceUrl || component?.kind === "xray")) return;
@@ -120,9 +122,11 @@ export class RuntimeVersionService {
       if (!claim.count) return;
       this.publish();
       try {
+        const component = await this.prisma.runtimeComponent.findUnique({ where: { id: job.componentId } });
+        if (!component) throw new NotFoundException("组件不存在");
         const result = await prepareRuntimeVersion(job.sourceUrl, job.requestedVersion, job.id, async (bytesReceived, status) => {
           await this.prisma.runtimeComponentVersion.update({ where: { id: job.id }, data: { bytesReceived, status } }); this.publish();
-        });
+        }, component);
         const policy = await this.prisma.runtimeComponentDelivery.findUnique({ where: { componentId: job.componentId } });
         const activeVersion = policy?.activeVersionId ? await this.prisma.runtimeComponentVersion.findUnique({ where: { id: policy.activeVersionId } }) : null;
         if (job.autoActivate && activeVersion?.fileHash === result.fileHash) {
@@ -144,7 +148,19 @@ export class RuntimeVersionService {
   async scheduleLatest() {
     const due = await this.prisma.runtimeComponentDelivery.findMany({ where: { autoLatest: true, nextCheckAt: { lte: new Date() } }, take: 20 });
     for (const policy of due) {
-      try { await this.acquire({ componentId: policy.componentId, sourceUrl: policy.sourceUrl, autoLatest: true }); }
+      try {
+        await this.prisma.$transaction(async tx => {
+          await tx.$queryRaw`SELECT id FROM "RuntimeComponent" WHERE id = ${policy.componentId} FOR UPDATE`;
+          const current = await tx.runtimeComponentDelivery.findUnique({ where: { componentId: policy.componentId } });
+          const component = await tx.runtimeComponent.findUnique({ where: { id: policy.componentId } });
+          if (!current?.autoLatest || current.nextCheckAt > new Date() || !component || component.kind === "xray") return;
+          if (!parseGithubLatestDownloadUrl(current.sourceUrl)) return;
+          const pending = await tx.runtimeComponentVersion.findFirst({ where: { componentId: component.id, status: { in: ["queued", "downloading", "verifying"] } } });
+          if (pending) return;
+          await tx.runtimeComponentDelivery.update({ where: { componentId: component.id }, data: { nextCheckAt: new Date(Date.now() + EVERY_SIX_HOURS) } });
+          await tx.runtimeComponentVersion.create({ data: { id: randomUUID(), componentId: component.id, sourceUrl: current.sourceUrl, autoActivate: true } });
+        });
+      }
       catch (error) { this.logger.warn(error instanceof Error ? error.message : "规则获取排队失败"); }
     }
   }
@@ -158,7 +174,7 @@ export class RuntimeVersionService {
       if (!version || version.status !== "ready" || !version.storedFilePath) continue;
       result.push({ ...row, source: "uploaded", originUrl: runtimeVersionUrl(version.id), fileName: version.fileName || row.fileName,
         // Existing storage validator resolves absolute paths under the releases root/runtime-components.
-        storedFilePath: version.storedFilePath, fileSizeBytes: version.fileSizeBytes, fileHash: version.fileHash,
+        storedFilePath: version.storedFilePath, fileSizeBytes: version.fileSizeBytes, fileHash: version.fileHash, expectedHash: version.fileHash,
         runtimeVersionLabel: version.versionLabel ?? undefined, defaultMirrorPrefix: null, allowClientMirror: false, updatedAt: version.publishedAt ?? version.updatedAt });
     }
     return result;
@@ -167,5 +183,33 @@ export class RuntimeVersionService {
     const version = await this.prisma.runtimeComponentVersion.findUnique({ where: { id } });
     if (!version?.publishedAt || version.status !== "ready") throw new NotFoundException("文件不可下载");
     return { absolutePath: runtimeVersionPath(id), fileName: version.fileName || "component.bin" };
+  }
+
+  // Keep active data, the newest 20 historical versions, and a 30-day window
+  // for offline-client downloads and operator rollback. Running jobs are never pruned.
+  @Cron("0 30 3 * * *")
+  @DrainableJob()
+  async pruneVersions() {
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60_000);
+    const policies = await this.prisma.runtimeComponentDelivery.findMany({ select: { componentId: true } });
+    for (const policy of policies) {
+      try {
+        await this.prisma.$transaction(async tx => {
+          await tx.$queryRaw`SELECT id FROM "RuntimeComponent" WHERE id = ${policy.componentId} FOR UPDATE`;
+          const current = await tx.runtimeComponentDelivery.findUnique({ where: { componentId: policy.componentId } });
+          const expired = await tx.runtimeComponentVersion.findMany({
+            where: { componentId: policy.componentId, status: { in: ["ready", "failed", "unchanged"] },
+              createdAt: { lt: cutoff }, OR: [{ publishedAt: null }, { publishedAt: { lt: cutoff } }],
+              ...(current?.activeVersionId ? { id: { not: current.activeVersionId } } : {}) },
+            orderBy: { createdAt: "desc" }, skip: 20, take: 200
+          });
+          for (const version of expired) {
+            await fs.rm(runtimeVersionPath(version.id), { force: true });
+            await fs.rm(`${runtimeVersionPath(version.id)}.part`, { force: true });
+            await tx.runtimeComponentVersion.delete({ where: { id: version.id } });
+          }
+        }, { timeout: 30_000 });
+      } catch (error) { this.logger.warn(`组件历史清理失败：${String(error)}`); }
+    }
   }
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/Achordchan/ChordV/apps/agent/internal/agentcfg"
 	"github.com/Achordchan/ChordV/apps/agent/internal/apiclient"
 	"github.com/Achordchan/ChordV/apps/agent/internal/commands"
+	"github.com/Achordchan/ChordV/apps/agent/internal/componentcheck"
 	"github.com/Achordchan/ChordV/apps/agent/internal/credentials"
 	"github.com/Achordchan/ChordV/apps/agent/internal/durable"
 	"github.com/Achordchan/ChordV/apps/agent/internal/onboarding"
@@ -32,6 +33,10 @@ import (
 )
 
 func main() {
+	componentFile := flag.String("validate-component", "", "只读校验组件文件后退出")
+	componentKind := flag.String("component-kind", "", "组件类型")
+	componentPlatform := flag.String("component-platform", "", "组件目标平台")
+	componentArch := flag.String("component-arch", "", "组件目标架构")
 	health := flag.Bool("health", false, "只读健康检查，输出 JSON 后退出（以服务用户执行）")
 	showVersion := flag.Bool("version", false, "打印版本号后退出")
 	buildInfo := flag.Bool("build-info", false, "输出构建版本与源码提交")
@@ -40,6 +45,12 @@ func main() {
 	panelPID := flag.Int("panel-pid", 0, "运行中的 x-ui.service 主进程")
 	specPath := flag.String("spec-file", "", "服务端确认的公共入站参数文件")
 	flag.Parse()
+	if *componentFile != "" {
+		if err := componentcheck.Validate(*componentFile, *componentKind, *componentPlatform, *componentArch); err != nil {
+			fail(err)
+		}
+		return
+	}
 	if *buildInfo {
 		_ = json.NewEncoder(os.Stdout).Encode(map[string]string{"version": version.Version, "commit": version.Commit})
 		return
