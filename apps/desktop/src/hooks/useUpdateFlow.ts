@@ -738,14 +738,14 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       return false;
     }
     try {
-      // 清空更新状态，避免重启后短暂显示旧的“有更新”提示
-      dispatchUpdateCheck({ type: "reset" });
       if (effectiveUpdate && isFullReplaceUpdate(effectiveUpdate, updatePlatform)) {
         await applyDesktopFullUpdate();
       } else {
         await openDesktopInstaller(updateDownload.localPath);
         await quitForUpdate();
       }
+      // Keep the confirmed policy and downloaded package retryable until native handoff succeeds.
+      dispatchUpdateCheck({ type: "reset" });
       return true;
     } catch (reason) {
       const message = reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "启动安装失败";
