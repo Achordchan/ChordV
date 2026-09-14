@@ -23,7 +23,7 @@ export class RuntimeVersionService {
     return this.prisma.$transaction(async tx => {
       await tx.$queryRaw`SELECT id FROM "RuntimeComponent" WHERE id = ${componentId} FOR UPDATE`;
       const policy = await tx.runtimeComponentDelivery.findUnique({ where: { componentId } });
-      if (policy?.activeVersionId && !enabledOnly) throw new BadRequestException("该组件正在分发固定版本，请在运行组件页获取并启用新版本；上传与镜像页仅可调整启用状态。");
+      if (policy && !enabledOnly) throw new BadRequestException("该组件已配置固定版本获取，请在运行组件页管理；上传与镜像页仅可调整启用状态。");
       return action(tx);
     });
   }
@@ -62,6 +62,8 @@ export class RuntimeVersionService {
     if (tag && decodeURIComponent(tag) !== version) throw new BadRequestException("所选版本与 GitHub 下载地址中的标签不一致");
     const job = await this.prisma.$transaction(async tx => {
       await tx.$queryRaw`SELECT id FROM "RuntimeComponent" WHERE id = ${component.id} FOR UPDATE`;
+      const current = await tx.runtimeComponent.findUnique({ where: { id: component.id } });
+      if (!current || current.kind !== component.kind || current.platform !== component.platform || current.architecture !== component.architecture) throw new BadRequestException("组件目标已变更，请刷新后重试");
       const pending = await tx.runtimeComponentVersion.findFirst({ where: { componentId: component.id, status: { in: ["queued", "downloading", "verifying"] } } });
       if (pending) throw new BadRequestException("已有获取任务，请等待完成");
       await tx.runtimeComponentDelivery.upsert({ where: { componentId: component.id },
@@ -72,13 +74,13 @@ export class RuntimeVersionService {
     this.publish(); return { id: job.id };
   }
   async setAutoLatest(componentId: string, enabled: boolean) {
-    const component = await this.prisma.runtimeComponent.findUnique({ where: { id: componentId } });
-    const policy = await this.prisma.runtimeComponentDelivery.findUnique({ where: { componentId } });
-    if (!component || !policy) throw new BadRequestException("请先配置获取来源");
-    if (component.kind === "xray") throw new BadRequestException("Xray 只支持固定版本");
-    if (enabled && !parseGithubLatestDownloadUrl(policy.sourceUrl)) throw new BadRequestException("请先设置 GitHub latest/download 来源");
     await this.prisma.$transaction(async tx => {
       await tx.$queryRaw`SELECT id FROM "RuntimeComponent" WHERE id = ${componentId} FOR UPDATE`;
+      const component = await tx.runtimeComponent.findUnique({ where: { id: componentId } });
+      const policy = await tx.runtimeComponentDelivery.findUnique({ where: { componentId } });
+      if (!component || !policy) throw new BadRequestException("请先配置获取来源");
+      if (component.kind === "xray") throw new BadRequestException("Xray 只支持固定版本");
+      if (enabled && !parseGithubLatestDownloadUrl(policy.sourceUrl)) throw new BadRequestException("请先设置 GitHub latest/download 来源");
       await tx.runtimeComponentDelivery.update({ where: { componentId }, data: { autoLatest: enabled, nextCheckAt: new Date() } });
     });
     this.publish(); return { ok: true };

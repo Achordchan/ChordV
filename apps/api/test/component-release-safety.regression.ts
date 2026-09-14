@@ -36,13 +36,20 @@ async function main() {
   assert.equal(result[0].expectedHash,"new-hash","旧组件 expectedHash 不得污染启用版本");
   assert.equal(result[0].archiveEntryName,"xray.exe");
   const guarded = new RuntimeVersionService({$transaction:async (fn:any)=>fn({
-    $queryRaw:async()=>[],runtimeComponentDelivery:{findUnique:async()=>({activeVersionId:"active"})}
+    $queryRaw:async()=>[],runtimeComponentDelivery:{findUnique:async()=>({activeVersionId:null})}
   })} as never,{publish(){}} as never);
   let edited=false;
   await assert.rejects(guarded.withLegacyEdit("one",async()=>{edited=true;}),/固定版本/);
   assert.equal(edited,false);
   await guarded.withLegacyEdit("one",async()=>{edited=true;},true);
   assert.equal(edited,true,"启用状态调整仍可保存");
+  let lockedSource=false;
+  const autoGuard=new RuntimeVersionService({$transaction:async(fn:any)=>fn({
+    $queryRaw:async()=>{lockedSource=true;},
+    runtimeComponent:{findUnique:async()=>({kind:"geoip"})},
+    runtimeComponentDelivery:{findUnique:async()=>{assert.equal(lockedSource,true);return {sourceUrl:"https://example.com/fixed.dat"};}, update:async()=>{throw new Error("unexpected write");}}
+  })} as never,{publish(){}} as never);
+  await assert.rejects(autoGuard.setAutoLatest("one",true),/latest/);
   const root=await fs.mkdtemp(path.join(tmpdir(),"chordv-orphan-test-"));
   const previous=process.env.CHORDV_RELEASE_STORAGE_ROOT;
   process.env.CHORDV_RELEASE_STORAGE_ROOT=root;
