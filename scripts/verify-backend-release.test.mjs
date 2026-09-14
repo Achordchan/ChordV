@@ -4,14 +4,14 @@ import { readFileSync } from 'node:fs';
 import { verifyBackendRelease } from './verify-backend-release.mjs';
 
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
-test('API and Go start together; Go tests/vet/build stay ordered', async () => {
+test('API and Go start together; API suites are delegated to a parallel runner', async () => {
   const api = deferred(), go = deferred(), calls = [];
   const pending = verifyBackendRelease({ summaryFile: '', log() {}, run: async (command, args) => {
     calls.push([command, args]);
-    if (command === 'pnpm') await api.promise;
+    if (command === process.execPath) await api.promise;
     if (command === 'go' && args[0] === 'test') await go.promise;
   } });
-  assert.deepEqual(calls.map(([cmd, args]) => [cmd, args[0]]), [['pnpm', 'test:api'], ['go', 'test']]);
+  assert.deepEqual(calls.map(([cmd, args]) => [cmd, args[0]]), [[process.execPath, 'scripts/verify-api-release.mjs'], ['go', 'test']]);
   go.resolve(); await new Promise(resolve => setImmediate(resolve));
   assert.equal(calls[2][1][0], 'vet'); assert.equal(calls[3][1][0], 'scripts/build-go-agent.mjs');
   api.resolve(); assert.ok((await pending).every(item => item.passed));
@@ -20,7 +20,7 @@ for (const failed of ['api', 'go']) test(`${failed} failure blocks release and o
   const other = deferred(), calls = [];
   const pending = verifyBackendRelease({ summaryFile: '', log() {}, run: async (command, args) => {
     calls.push([command, args[0]]);
-    if ((command === 'pnpm') === (failed === 'api')) throw new Error('expected verification failure');
+    if ((command === process.execPath) === (failed === 'api')) throw new Error('expected verification failure');
     await other.promise;
   } });
   const rejected = assert.rejects(pending, /do not package or publish/);
