@@ -35,7 +35,7 @@ export class AgentRegisterService {
         data: {
           id: randomUUID(),
           name: input.name.trim(),
-          onboardingSpec: spec as unknown as Prisma.InputJsonValue,
+          onboardingSpec: { ...spec, activateOnFirstValidation: true } as unknown as Prisma.InputJsonValue,
           countryCode: input.countryCode?.trim() || null,
           region: input.region?.trim() || "未指定",
           provider: input.provider?.trim() || "未指定",
@@ -294,7 +294,10 @@ export class AgentRegisterService {
             where: { id: node.id },
             data: {
               registrationStatus: "agent_ready",
-              ...(spec ? { agentConfigRevision: { increment: 1n }, onboardingSpec: spec as unknown as Prisma.InputJsonValue } : {}),
+              ...(spec ? { agentConfigRevision: { increment: 1n }, onboardingSpec: {
+                ...spec,
+                activateOnFirstValidation: (node.onboardingSpec as Record<string, unknown> | null)?.activateOnFirstValidation === true
+              } as unknown as Prisma.InputJsonValue } : {}),
               agentLastSeenAt: new Date()
             }
           });

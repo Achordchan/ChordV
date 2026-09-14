@@ -81,12 +81,19 @@ async function main() {
     const ready = await registration.getOnboarding(created.node.id);
     assert.equal(ready.command?.status, 'completed');
     assert.equal(ready.node.inboundAppliedRevision, ready.command?.targetRevision);
-    assert.equal(ready.node.isActive, false);
+    assert.equal(ready.node.isActive, true, 'first verified onboarding activates new nodes');
     assert.equal(ready.node.serverPort, 443);
     assert.ok(eventLog.length >= 3, 'registration and completion must publish admin status events');
     await registration.register(input);
     assert.equal(await prisma.nodeCommandJob.count({ where: { nodeId: created.node.id } }), 1);
-    console.log('PostgreSQL onboarding passed: sanitized creation, atomic registration/command, rollback, concurrent replay, report validation, SSE publication, manual activation');
+    await prisma.node.update({ where: { id: created.node.id }, data: { isActive: false } });
+    const revalidation = await service.queueCommand(created.node.id, {
+      type: 'ENSURE_INBOUND', payload: spec,
+      expectedInboundAppliedRevision: ready.node.inboundAppliedRevision
+    });
+    await service.completeCommand(agent, revalidation.commandId, { status: 'completed', result: { inbound: report } });
+    assert.equal((await registration.getOnboarding(created.node.id)).node.isActive, false, 'revalidation preserves deliberate deactivation');
+    console.log('PostgreSQL onboarding passed: atomic registration, report validation, first activation and revalidation state preservation');
   } finally {
     await prisma.node.deleteMany({ where: { id: { in: ids } } });
     await prisma.$disconnect();

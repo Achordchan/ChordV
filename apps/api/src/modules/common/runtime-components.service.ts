@@ -1,3 +1,5 @@
+import { Optional } from "@nestjs/common";
+import { RuntimeVersionService } from "./runtime-version.service";
 import { workLifecycle } from "../../work-lifecycle";
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import type {
@@ -59,7 +61,8 @@ export class RuntimeComponentsService {
     private readonly prisma: PrismaService,
     private readonly authSessionService: AuthSessionService,
     private readonly downloadMirrorService: DownloadMirrorService,
-    private readonly adminRuntimeEventsService?: AdminRuntimeEventsService
+    private readonly adminRuntimeEventsService?: AdminRuntimeEventsService,
+    @Optional() private readonly runtimeVersions?: RuntimeVersionService
   ) {}
 
   async listAdminRuntimeComponents(): Promise<AdminRuntimeComponentRecordDto[]> {
@@ -207,6 +210,10 @@ export class RuntimeComponentsService {
     }
   }
 
+  private withManagedSourceGuard<T>(componentId: string, action: (tx: import("@prisma/client").Prisma.TransactionClient) => Promise<T>, enabledOnly = false) {
+    return this.runtimeVersions ? this.runtimeVersions.withLegacyEdit(componentId, action, enabledOnly) : action(this.prisma);
+  }
+
   async updateAdminRuntimeComponent(
     componentId: string,
     input: UpdateRuntimeComponentInputDto
@@ -247,7 +254,7 @@ export class RuntimeComponentsService {
       remoteValidationInvalidated && current.storedFilePath ? current.storedFilePath : null;
 
     const updated = await this.withRuntimeComponentIdentityConflictGuard(() =>
-      this.prisma.runtimeComponent.update({
+      this.withManagedSourceGuard(componentId, tx => tx.runtimeComponent.update({
         where: { id: componentId },
         data: {
           ...(input.source !== undefined ? { source: input.source } : {}),
@@ -281,7 +288,7 @@ export class RuntimeComponentsService {
               }
             : {})
         }
-      })
+      }), Object.keys(input).every(key => key === "enabled"))
     );
     this.startSharedRulesetDuplicatesCleanup(updated.kind as RuntimeComponentKind, updated.id);
     this.startRuntimeComponentStoredFileCleanupBestEffort(staleUploadedFilePath, "stale runtime component upload");
@@ -307,7 +314,7 @@ export class RuntimeComponentsService {
       prepared = preparedFile;
       const updated = await this.withRuntimeComponentIdentityConflictGuard(
         () =>
-          this.prisma.runtimeComponent.update({
+          this.withManagedSourceGuard(componentId, tx => tx.runtimeComponent.update({
             where: { id: componentId },
             data: {
               platform: normalizedInput.platform,
@@ -325,7 +332,7 @@ export class RuntimeComponentsService {
               expectedHash: null,
               enabled: input.enabled ?? current.enabled
             }
-          }),
+          })),
         "内核组件替换失败，请刷新后重试；已尝试清理本次上传文件。"
       );
       this.startRuntimeComponentStoredFileCleanupBestEffort(
@@ -471,7 +478,8 @@ export class RuntimeComponentsService {
       throwLocalReadAsServiceUnavailable(error, "Runtime component plan is temporarily unavailable.");
     }
     const sharedRulesetRows = dedupeSharedRulesets(sharedRuleRowsRaw);
-    const rows = await filterClientUsableRuntimeComponents([...runtimeRows, ...sharedRulesetRows]);
+    const candidates = [...runtimeRows, ...sharedRulesetRows];
+    const rows = await filterClientUsableRuntimeComponents(this.runtimeVersions ? await this.runtimeVersions.clientRows(candidates) : candidates);
     const globalMirror = await this.downloadMirrorService.getEffectiveConfig();
     const components = await Promise.all(
       rows.map(async (row) => {
@@ -517,7 +525,7 @@ export class RuntimeComponentsService {
             archiveEntryName: row.archiveEntryName
           }),
           expectedHash,
-          versionLabel: latestAsset?.versionLabel ?? null,
+          versionLabel: (row as typeof row & { runtimeVersionLabel?: string }).runtimeVersionLabel ?? latestAsset?.versionLabel ?? null,
           updatedAt: latestAsset?.revision
             ?? (row.updatedAt instanceof Date ? row.updatedAt.toISOString() : new Date(0).toISOString()),
           allowClientMirror,

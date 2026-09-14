@@ -1,4 +1,6 @@
-import { Alert, Button, Checkbox, FileInput, Group, Modal, SegmentedControl, Select, Stack, Text, TextInput, Textarea } from "@mantine/core";
+import { useEffect, useRef, useState } from "react";
+import styles from "./ReleaseWorkspace.module.css";
+import { Button, Checkbox, FileInput, Group, SegmentedControl, Select, Stack, Text, TextInput, Textarea } from "@mantine/core";
 import { ExternalArtifactMetadataFields } from "./ExternalArtifactMetadataFields";
 import type { ReleaseEditorFormState } from "./types";
 import { releasePlatformOptions } from "./types";
@@ -18,133 +20,36 @@ type ReleaseEditorModalProps = {
   onSubmit: () => void;
 };
 
-export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
-  const close = () => {
-    if (!props.saving) {
-      props.onClose();
-    }
-  };
-  const savingMessage =
-    props.savingMessage ??
-    (!props.saving
-      ? null
-      : !props.editing && props.form.artifactSource === "uploaded" && props.form.selectedFile
-        ? "正在创建发布记录并上传安装包，大文件上传期间请等待当前请求返回。"
-        : props.editing
-          ? "正在保存发布记录，请等待当前请求返回。"
-          : "正在创建发布记录，请等待当前请求返回。");
-
-  return (
-    <Modal
-      opened={props.opened}
-      onClose={close}
-      title={props.title}
-      centered
-      size="lg"
-      closeOnClickOutside={!props.saving}
-      closeOnEscape={!props.saving}
-    >
-      <Stack gap="md">
-        {savingMessage ? (
-          <Alert color="yellow" variant="light">
-            {savingMessage}
-          </Alert>
-        ) : null}
-
-        <Select
-          label="平台"
-          data={releasePlatformOptions as unknown as { value: string; label: string }[]}
-          value={props.form.platform}
-          onChange={(value) =>
-            value &&
-            props.onChange({
-              ...props.form,
-              platform: value as ReleaseEditorFormState["platform"],
-              selectedFile: null,
-              fileName: "",
-              externalDeliveryMode: value === "windows" ? "windows_full_replace_zip" : "external_download"
-            })
-          }
-          disabled={props.editing || props.saving}
-        />
-
-        <TextInput
-          label="版本号"
-          placeholder="例如 1.1.6"
-          value={props.form.version}
-          onChange={(event) => props.onChange({ ...props.form, version: event.currentTarget.value })}
-          disabled={props.editing || props.saving}
-        />
-
-        <TextInput
-          label="发布标题"
-          placeholder="例如 ChordV 1.1.6 · Windows"
-          value={props.form.title}
-          onChange={(event) => props.onChange({ ...props.form, title: event.currentTarget.value })}
-          disabled={props.saving}
-        />
-
-        {!props.editing ? (
-          <NewReleaseArtifactFields
-            form={props.form}
-            saving={props.saving}
-            onChange={props.onChange}
-          />
-        ) : (
-          <Alert color={props.artifactEditingDisabled ? "yellow" : "blue"} variant="light">
-            <Stack gap="xs">
-              <Text size="sm">
-                已有发布记录的安装包入口仍然保留：可以继续添加外链，也可以上传文件。
-              </Text>
-              <Group gap="xs">
-                <Button
-                  size="xs"
-                  variant="default"
-                  disabled={props.saving || props.artifactEditingDisabled || !props.onManageArtifact}
-                  onClick={() => props.onManageArtifact?.("external")}
-                >
-                  添加外链
-                </Button>
-                <Button
-                  size="xs"
-                  variant="light"
-                  disabled={props.saving || props.artifactEditingDisabled || !props.onManageArtifact}
-                  onClick={() => props.onManageArtifact?.("uploaded")}
-                >
-                  上传文件
-                </Button>
-              </Group>
-              {props.artifactEditingDisabled ? (
-                <Text size="xs" c="dimmed">
-                  已发布版本需要先撤回到草稿，才能新增、替换或删除安装包。
-                </Text>
-              ) : null}
-            </Stack>
-          </Alert>
-        )}
-
-        <Textarea
-          label="更新日志"
-          minRows={6}
-          placeholder={"每行一条更新说明\n例如：修复 Windows 托盘断开异常"}
-          value={props.form.changelog}
-          onChange={(event) => props.onChange({ ...props.form, changelog: event.currentTarget.value })}
-          disabled={props.saving}
-        />
-
-        <Group justify="flex-end">
-          <Button variant="default" onClick={close} disabled={props.saving}>
-            取消
-          </Button>
-          <Button onClick={props.onSubmit} loading={props.saving}>
-            {props.submitLabel}
-          </Button>
-        </Group>
+export function ReleaseEditorModal(p: ReleaseEditorModalProps) {
+  const [step,setStep]=useState(0);
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => { if (p.opened) heading.current?.focus(); }, [step, p.opened]);
+  if (!p.opened) return null;
+  const platform=releasePlatformOptions.find(x=>x.value===p.form.platform)?.label;
+  const steps=p.editing?["版本信息","确认保存"]:["版本信息","安装包","确认保存"];
+  const final=step===steps.length-1;
+  return <section className={styles.editor}>
+    <button className={styles.back} disabled={p.saving} onClick={p.onClose}>返回发布中心</button>
+    <h2>{p.editing?"编辑":"准备"} {platform} {p.form.version||"新版本"}</h2>
+    <div className={styles.steps} aria-label="发布准备步骤">{steps.map((title,index)=><span key={title} aria-current={step===index ? "step" : undefined} data-active={step===index} data-done={step>index}>{String(index+1).padStart(2,"0")} {title}</span>)}</div>
+    <div className={styles.editorGrid}><div className={styles.form}>
+      {p.savingMessage?<Text role="status" size="sm" c="teal.9" mb="lg">{p.savingMessage}</Text>:null}
+      <h3 ref={heading} tabIndex={-1} className={styles.stepHeading}>{step===0 ? "版本信息" : final ? "确认版本信息" : "设置下载来源"}</h3>
+      <Stack gap="lg">
+      {step===0?<>
+        <Select label="平台" data={releasePlatformOptions.map(x=>({...x}))} value={p.form.platform} disabled={p.editing||p.saving} onChange={value=>value&&p.onChange({...p.form,platform:value as ReleaseEditorFormState["platform"],selectedFile:null,fileName:"",externalDeliveryMode:value==="windows"?"windows_full_replace_zip":"external_download"})}/>
+        <Group grow><TextInput label="版本号" placeholder="例如 1.2.0" value={p.form.version} disabled={p.editing||p.saving} onChange={e=>p.onChange({...p.form,version:e.currentTarget.value})}/><TextInput label="发布标题" value={p.form.title} disabled={p.saving} onChange={e=>p.onChange({...p.form,title:e.currentTarget.value})}/></Group>
+        <Textarea label="更新说明" description="每行一条，展示给客户端用户" autosize minRows={5} value={p.form.changelog} disabled={p.saving} onChange={e=>p.onChange({...p.form,changelog:e.currentTarget.value})}/>
+        {p.editing?<Text size="sm" c="dimmed">安装包在版本详情中单独管理；已发布版本需先撤回再调整安装包。</Text>:null}
+      </>:!final?<><NewReleaseArtifactFields form={p.form} saving={p.saving} onChange={p.onChange}/></>:<>
+        <dl className={styles.facts}><div><dt>平台与版本</dt><dd>{platform} {p.form.version}</dd></div><div><dt>标题</dt><dd>{p.form.title||"使用默认标题"}</dd></div>{!p.editing?<div><dt>安装包来源</dt><dd>{p.form.artifactSource==="external"?(p.form.downloadUrl||"暂不添加安装包"):(p.form.selectedFile?.name||"暂不添加安装包")}</dd></div>:null}</dl>
+        <Text size="sm" c="dimmed">{p.editing?"保存本次修改。":"保存后生成草稿；从发布列表确认发布，服务端会检查安装包可用性。"}</Text>
+      </>}
       </Stack>
-    </Modal>
-  );
+      <footer className={styles.editorFooter}><Button variant="default" disabled={p.saving} onClick={()=>step?setStep(step-1):p.onClose()}>{step?"上一步":"取消"}</Button>{final?<Button color="teal.9" loading={p.saving} onClick={p.onSubmit}>{p.editing?"保存修改":"保存草稿"}</Button>:<Button color="teal.9" disabled={p.saving||!p.form.version.trim()} onClick={()=>setStep(step+1)}>继续</Button>}</footer>
+    </div><aside className={styles.summary}><h3>发布摘要</h3><dl className={styles.facts}><div><dt>平台</dt><dd>{platform}</dd></div><div><dt>版本</dt><dd>{p.form.version||"待填写"}</dd></div><div><dt>状态</dt><dd>{p.editing?(p.form.status==="published"?"已发布":"草稿"):"尚未保存"}</dd></div><div><dt>分发方式</dt><dd>{p.form.artifactSource==="external"?"外部链接":"上传文件"}</dd></div></dl><details><summary>更新说明</summary><p>{p.form.changelog||"尚未填写"}</p></details></aside></div>
+  </section>;
 }
-
 type NewReleaseArtifactFieldsProps = {
   form: ReleaseEditorFormState;
   saving: boolean;
@@ -155,6 +60,8 @@ export function NewReleaseArtifactFields(props: NewReleaseArtifactFieldsProps) {
   return (
     <>
       <SegmentedControl
+        classNames={{root: styles.sourcePicker, label: styles.sourceLabel, indicator: styles.sourceIndicator}}
+        aria-label="安装包来源"
         value={props.form.artifactSource}
         onChange={(value) =>
           props.onChange({
@@ -173,7 +80,8 @@ export function NewReleaseArtifactFields(props: NewReleaseArtifactFieldsProps) {
         <>
           <TextInput
             label="外链下载地址"
-            placeholder="https://example.com/ChordV_1.1.6_x64-full.zip"
+            description="客户端直接从此地址下载安装包。"
+            placeholder="https://…"
             value={props.form.downloadUrl}
             onChange={(event) => props.onChange({ ...props.form, downloadUrl: event.currentTarget.value })}
             disabled={props.saving}
@@ -218,11 +126,11 @@ export function NewReleaseArtifactFields(props: NewReleaseArtifactFieldsProps) {
         />
       )}
 
-      <Alert color="blue" variant="light">
+      <Text size="sm" c="dimmed">
         {props.form.artifactSource === "external"
-          ? "外链会直接下发给客户端，不经过本地服务器中转下载；也可以先留空创建草稿，稍后再补。"
+          ? "暂时没有安装包？可留空保存草稿，稍后补充。"
           : "上传文件会保存到本地服务器；也可以先不选文件创建草稿，稍后再上传。"}
-      </Alert>
+      </Text>
     </>
   );
 }

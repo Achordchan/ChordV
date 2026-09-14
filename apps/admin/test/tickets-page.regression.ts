@@ -42,7 +42,7 @@ function testTicketAttachmentsOpenInPreviewModal() {
 function testTicketAttachmentImagesExposeLoadingFailureAndRecoveryStates() {
   assert.match(source, /type TicketAttachmentImageState = "loading" \| "loaded" \| "failed";/);
   assert.match(source, /缩略图加载失败/);
-  assert.match(source, /正在加载预览/);
+  assert.match(source, /<DataSkeleton variant="image"/);
   assert.match(source, /预览加载失败/);
   assert.match(source, />\s*重试\s*</);
   assert.match(source, />\s*打开原图\s*</);

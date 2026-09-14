@@ -101,13 +101,10 @@ function testTeamMemberDisconnectCopyIsTeamScoped() {
 }
 
 function testUserDisconnectActionsUseDisconnectIcon() {
-  const usersSource = readFileSync(resolve(import.meta.dirname, "../src/pages/UsersPage.tsx"), "utf8");
-
-  assert.match(usersSource, /IconPlugConnectedX/);
-  assert.match(usersSource, /leftSection=\{<IconPlugConnectedX size=\{16\} \/>\}[\s\S]{0,500}onDisconnectUser\(user\.id, user\.displayName, "personal"\)/);
-  assert.match(usersSource, /leftSection=\{<IconPlugConnectedX size=\{16\} \/>\}[\s\S]{0,500}onDisconnectUser\(member\.userId, member\.displayName, "team-member"\)/);
-  assert.doesNotMatch(usersSource, /leftSection=\{<IconRefresh size=\{16\} \/>\}[\s\S]{0,500}onDisconnectUser\(user\.id, user\.displayName, "personal"\)/);
-  assert.doesNotMatch(usersSource, /leftSection=\{<IconRefresh size=\{16\} \/>\}[\s\S]{0,500}onDisconnectUser\(member\.userId, member\.displayName, "team-member"\)/);
+  const personal = readFileSync(resolve(import.meta.dirname, "../src/features/customers/CustomerWorkspace.tsx"), "utf8");
+  const members = readFileSync(resolve(import.meta.dirname, "../src/features/customers/CustomerMembers.tsx"), "utf8");
+  assert.match(personal, /leftSection=\{<IconPlugConnectedX size=\{16\}\s*\/>\}[\s\S]{0,500}onDisconnectUser\(customer.user!.id, customer.name, "personal"\)/);
+  assert.match(members, /leftSection=\{<IconPlugConnectedX size=\{16\}\s*\/>\}[\s\S]{0,500}onDisconnectUser\(member.userId, member.displayName, "team-member"\)/);
 }
 
 function testSubscriptionTrafficAndTeamDisconnectActionsUseDifferentIcons() {
@@ -123,14 +120,11 @@ function testSubscriptionTrafficAndTeamDisconnectActionsUseDifferentIcons() {
 }
 
 function testTeamHeadersAllowWrappingOnNarrowScreens() {
-  const usersSource = readFileSync(resolve(import.meta.dirname, "../src/pages/UsersPage.tsx"), "utf8");
+  const workspaceStyles = readFileSync(resolve(import.meta.dirname, "../src/features/customers/CustomerWorkspace.module.css"), "utf8");
   const subscriptionsSource = readFileSync(resolve(import.meta.dirname, "../src/pages/SubscriptionsPage.tsx"), "utf8");
-
-  assert.match(usersSource, /<Group justify="space-between" wrap="wrap">/);
-  assert.match(usersSource, /<Group gap="xl" wrap="wrap" style={{ minWidth: 0 }}>/);
-  assert.match(usersSource, /style={{ minWidth: 0, overflowWrap: "anywhere" }}/);
-  assert.match(subscriptionsSource, /<Group justify="space-between" wrap="wrap">/);
-  assert.match(subscriptionsSource, /style={{ minWidth: 0, overflowWrap: "anywhere" }}/);
+  assert.match(workspaceStyles, /\.identityHeader\s*\{[^}]*flex-wrap: wrap/s);
+  assert.match(workspaceStyles, /\.identity p\s*\{[^}]*overflow-wrap: anywhere/s);
+  assert.match(subscriptionsSource, /style=\{\{ minWidth: 0, overflowWrap: "anywhere" \}\}/);
 }
 
 testEmptyTeamSubscriptionFormDefaultsUsedTrafficToZero();

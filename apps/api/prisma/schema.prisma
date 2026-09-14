@@ -941,6 +941,8 @@ model RuntimeComponent {
   createdAt           DateTime                    @default(now())
   updatedAt           DateTime                    @updatedAt
   failureReports      RuntimeComponentFailureReport[]
+  delivery            RuntimeComponentDelivery?
+  versions            RuntimeComponentVersion[]
 
   @@unique([platform, architecture, kind])
   @@index([platform, architecture, enabled])
@@ -962,4 +964,41 @@ model RuntimeComponentFailureReport {
 
   @@index([platform, architecture, createdAt])
   @@index([componentId, createdAt])
+}
+
+// Source policy is separate from immutable files and the currently served version.
+model RuntimeComponentDelivery {
+  componentId       String @id
+  component         RuntimeComponent @relation(fields: [componentId], references: [id], onDelete: Cascade)
+  sourceUrl         String
+  selectedVersion   String?
+  autoLatest        Boolean @default(false)
+  activeVersionId   String?
+  notifyPending     Boolean @default(false)
+  nextCheckAt       DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model RuntimeComponentVersion {
+  id                String @id
+  componentId       String
+  component         RuntimeComponent @relation(fields: [componentId], references: [id], onDelete: Cascade)
+  sourceUrl         String
+  requestedVersion  String?
+  versionLabel      String?
+  resolvedUrl       String?
+  status            String @default("queued")
+  fileName          String?
+  storedFilePath    String?
+  fileSizeBytes     BigInt?
+  fileHash          String?
+  bytesReceived     BigInt @default(0)
+  lastError         String?
+  autoActivate      Boolean @default(false)
+  publishedAt       DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([componentId, createdAt])
+  @@index([status, updatedAt])
 }

@@ -1,6 +1,7 @@
 import { Stack, Text } from "@mantine/core";
+import type { ReactNode } from "react";
 
-export function MiniMetric(props: { label: string; value: string }) {
+export function MiniMetric(props: { label: string; value: ReactNode }) {
   return (
     <Stack gap={0}>
       <Text size="sm" c="dimmed">

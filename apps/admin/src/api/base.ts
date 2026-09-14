@@ -1,6 +1,6 @@
 const RAW_API_BASE = import.meta.env.VITE_API_BASE_URL;
 export const API_BASE =
-  typeof RAW_API_BASE === "string" && RAW_API_BASE.trim().length > 0
+  !import.meta.env.DEV && typeof RAW_API_BASE === "string" && RAW_API_BASE.trim().length > 0
     ? RAW_API_BASE.trim().replace(/\/+$/, "")
     : window.location.origin;
 export const ADMIN_ACCESS_TOKEN_KEY = "chordv_admin_access_token";

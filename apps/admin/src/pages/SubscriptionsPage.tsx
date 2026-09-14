@@ -1,3 +1,4 @@
+import { DataSkeleton } from "../features/shared/DataSkeleton";
 import type { Dispatch, SetStateAction } from "react";
 import { Accordion, ActionIcon, Alert, Badge, Button, Card, Group, NumberInput, Paper, Select, SimpleGrid, Stack, Table, Tabs, Text } from "@mantine/core";
 import type {
@@ -484,7 +485,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                                                 usageLoaded
                                                   ? `${formatTrafficGb(usageByUserId.get(member.userId)?.usedTrafficGb ?? 0)} GB`
                                                   : usageLoading
-                                                    ? "加载中"
+                                                    ? <DataSkeleton variant="line"/>
                                                     : "未加载"
                                               }
                                             />
@@ -550,8 +551,8 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                                 展开 Team 后会按需加载成员流量，避免后台列表被历史账单拖慢。
                               </Alert>
                             ) : null}
-                            {usageLoading ? (
-                              <Text size="sm" c="dimmed">正在加载成员流量...</Text>
+                            {usageLoading && !usageLoaded ? (
+                              <DataSkeleton rows={3}/>
                             ) : null}
                             {usageSummary.length > 0 ? (
                               <Stack gap="sm">

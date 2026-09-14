@@ -16,6 +16,7 @@ import { DevDataService } from "./dev-data.service";
 import { ImageBedService } from "./image-bed.service";
 import { DownloadMirrorService } from "./download-mirror.service";
 import { ReleaseCenterService } from "./release-center.service";
+import { RuntimeVersionService } from "./runtime-version.service";
 import { RuntimeComponentsService } from "./runtime-components.service";
 import { RuntimeSessionService } from "./runtime-session.service";
 import { MeteringIncidentService } from "./metering-incident.service";
@@ -30,6 +31,7 @@ import { MeteringRetentionService } from "./metering-retention.service";
     AdminSubscriptionService,
     AnnouncementPolicyService,
     RuntimeComponentsService,
+    RuntimeVersionService,
     ClientAccessService,
     ClientEventsPublisher,
     ClientRoutingRuleService,
@@ -53,6 +55,7 @@ import { MeteringRetentionService } from "./metering-retention.service";
     AdminSubscriptionService,
     AnnouncementPolicyService,
     RuntimeComponentsService,
+    RuntimeVersionService,
     ClientAccessService,
     ClientEventsPublisher,
     ClientRoutingRuleService,

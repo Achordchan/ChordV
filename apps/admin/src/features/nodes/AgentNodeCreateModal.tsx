@@ -9,14 +9,14 @@ import {
   Loader,
   Modal,
   Stack,
-  Stepper,
   Text,
   TextInput,
   Textarea,
-  Tooltip
 } from "@mantine/core";
 import type { AdminNodeRecordDto } from "@chordv/shared";
 import { useAgentNodeOnboarding } from "./useAgentNodeOnboarding";
+import dialogStyles from "../editors/EditorDialog.module.css";
+import styles from "./NodeOnboarding.module.css";
 import { PanelInboundForm } from "./PanelInboundForm";
 
 export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNode = null }: {
@@ -51,44 +51,38 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
     <Modal
       opened={opened}
       onClose={handleClose}
-      title={initialNode ? "继续接入节点" : "添加节点（Agent 接入）"}
+      title={initialNode ? "继续接入节点" : "添加节点"}
+      classNames={{content: dialogStyles.content, header: dialogStyles.header, title: dialogStyles.title, body: dialogStyles.body}}
       centered
       size="lg"
       closeOnClickOutside={stage === "form" || stage === "ready" || stage === "failed" || stage === "legacy"}
     >
-      <Stepper active={["configure", "validating", "ready"].includes(stage) || (stage === "failed" && hasValidation) ? (stage === "ready" ? 2 : 1) : 0}
-        size="sm" mb="lg" allowNextStepsSelect={false}>
-        <Stepper.Step label="接入服务器" description="基础信息、安装与检测" />
-        <Stepper.Step label="添加节点" description="配置并校验入站" />
-      </Stepper>
+      <div className={styles.flow} aria-label="接入进度"><span data-active={!["configure", "validating", "ready"].includes(stage) && !(stage === "failed" && hasValidation)}>01 接入服务器</span><span data-active={["configure", "validating", "ready"].includes(stage) || (stage === "failed" && hasValidation)}>02 配置入站</span></div>
+      <div className={styles.content}>
       {stage === "form" ? (
-        <Stack gap="sm">
-          <Alert color="blue" variant="light" p="xs">
-            <Text size="xs">
-              先填写服务器基础信息并生成安装命令。Agent 安装和环境检测完成后，再配置节点入站。
-            </Text>
-          </Alert>
-          <TextInput label="名称" required value={name} onChange={(event) => setName(event.currentTarget.value)} />
+        <Stack gap="lg">
+          <div><Text fw={600}>填写服务器信息</Text><Text size="sm" c="dimmed" mt={6}>生成安装命令后，在服务器执行；环境就绪后进入入站配置。</Text></div>
+          <TextInput label="节点名称" placeholder="如：香港 02" required value={name} onChange={(event) => setName(event.currentTarget.value)} />
           <Group grow>
             <TextInput label="地区" placeholder="如：香港" value={region} onChange={(event) => setRegion(event.currentTarget.value)} />
             <TextInput label="供应商" placeholder="可选" value={provider} onChange={(event) => setProvider(event.currentTarget.value)} />
           </Group>
-          <TextInput
+          <details className={styles.optional}><summary>可选信息</summary><TextInput
             label="标签"
             placeholder="逗号分隔，可选"
             value={tags}
             onChange={(event) => setTags(event.currentTarget.value)}
-          />
+          /></details>
           {error ? (
             <Alert color="red" variant="light" p="xs">
               <Text size="xs">{error}</Text>
             </Alert>
           ) : null}
-          <Group justify="flex-end">
+          <Group className={styles.footer} justify="flex-end">
             <Button variant="default" onClick={handleClose}>
               取消
             </Button>
-            <Button loading={creating} disabled={!name.trim()} onClick={() => void create()}>
+            <Button color="teal.9" loading={creating} disabled={!name.trim()} onClick={() => void create()}>
               生成安装命令
             </Button>
           </Group>
@@ -106,44 +100,15 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
       ) : null}
 
       {stage === "awaiting" && result ? (
-        <Stack gap="sm">
-          <Alert color="blue" variant="light">
-            <Group gap="xs">
-              <Loader size="xs" />
-              <Text size="sm">等待服务器「{node?.name}」安装并完成环境检测。在目标 VPS 上以 root 执行命令后，此处将自动更新。</Text>
-            </Group>
-          </Alert>
-          <Text size="xs" fw={700}>
-            在目标 VPS 上执行以下命令（有效期至 {new Date(result.registerTokenExpiresAt).toLocaleString()}）：
-          </Text>
-          <Group gap="xs" wrap="nowrap" align="flex-start">
-            <Code block style={{ flex: 1, minWidth: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-              {installCommand}
-            </Code>
-            <CopyButton value={installCommand} timeout={2000}>
-              {({ copied, copy }) => (
-                <Button color={copied ? "teal" : "blue"} size="compact-xs" onClick={copy}>
-                  {copied ? "已复制" : "复制"}
-                </Button>
-              )}
-            </CopyButton>
-          </Group>
-          <Group justify="space-between">
-            <Button
-              variant="subtle"
-              size="xs"
-              color="blue"
-              loading={regenerating}
-              onClick={() => void regenerate()}
-            >
-              令牌过期/丢失？重新生成安装命令
-            </Button>
-            <Tooltip label="中止等待并关闭（节点保留，安装命令可重新生成）">
-              <Button variant="subtle" color="gray" size="xs" onClick={handleClose}>
-                稍后再说，关闭窗口
-              </Button>
-            </Tooltip>
-          </Group>
+        <Stack gap="lg">
+          <div className={styles.waiting}><Loader size={20} color="teal.8"/><div><Text fw={600}>等待服务器接入</Text><Text size="sm" c="dimmed" mt={5}>在「{node?.name}」上执行安装命令，完成后自动进入下一步。</Text></div></div>
+          <section className={styles.commandSection}>
+            <Group justify="space-between" mb="sm"><Text size="sm" fw={550}>安装命令</Text><CopyButton value={installCommand} timeout={2000}>{({copied, copy}) => <Button color="teal.9" variant="light" size="xs" onClick={copy}>{copied ? "已复制" : "复制命令"}</Button>}</CopyButton></Group>
+            <Code className={styles.command} block>{installCommand}</Code>
+            <Text size="xs" c="dimmed" mt="sm">使用 root 执行 · 有效期至 {new Date(result.registerTokenExpiresAt).toLocaleString()}</Text>
+          </section>
+          <details className={styles.optional}><summary>安装遇到问题？</summary><Text size="sm" c="dimmed" mb="sm">先检查服务器安装输出。重新生成命令会使旧命令失效。</Text><Button variant="subtle" color="teal.9" size="xs" loading={regenerating} onClick={() => void regenerate()}>重新生成命令</Button></details>
+          <Group className={styles.footer} justify="space-between"><Text size="xs" c="dimmed">关闭窗口后可在节点列表继续接入</Text><Button variant="default" onClick={handleClose}>稍后继续</Button></Group>
         </Stack>
       ) : null}
 
@@ -184,7 +149,7 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
           <Alert color="teal" variant="light">
             <Group gap="xs">
               <Badge color="teal" variant="light" size="sm">校验完成</Badge>
-              <Text size="sm">节点「{node.name}」已注册，实际入站参数核对通过。完成客户端连接和计量验收后，再手工激活。</Text>
+              <Text size="sm">节点「{node.name}」入站校验通过。{node.isActive ? "已启用，可供客户端连接。" : "当前为停用状态，可在节点编辑中启用。"}</Text>
             </Group>
           </Alert>
           <Group justify="flex-end">
@@ -224,6 +189,7 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
           </Group>
         </Stack>
       ) : null}
+      </div>
     </Modal>
   );
 }

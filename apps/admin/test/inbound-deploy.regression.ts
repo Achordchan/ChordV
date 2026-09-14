@@ -44,20 +44,21 @@ const node = { id: "node-1", name: "node" };
 const command = { commandId: "command-1", type: "ENSURE_INBOUND", targetRevision: "12", payload: {}, createdAt: "2026-01-01T00:00:00.000Z" };
 function fixture() {
   const session = { current: 1 }, active = { current: true }, requestBusy = { current: false };
-  const pollEpoch = { current: 0 }, timer = { current: null as number | null };
+  const watchEpoch = { current: 0 }, timer = { current: null as number | null };
   const mutations: Array<[string, unknown]> = [], notified: unknown[] = [], polls: unknown[] = [], changedNodes: unknown[] = [];
   const scope: Record<string, unknown> = {
-    session, active, requestBusy, pollEpoch, timer,
+    session, active, requestBusy, watchEpoch, timer, pollTimer: {current: null}, retryTimer: {current: null}, unsubscribe: { current: null }, refreshOutcome: { current: null },
+    subscribeAdminRuntimeEvents: () => () => undefined,
     current: (epoch: number) => active.current && session.current === epoch,
     changed: { current: (value: unknown) => changedNodes.push(value) },
-    stopPolling: () => undefined, pollOutcome: (...args: unknown[]) => polls.push(args),
+    stopWatching: () => undefined, watchOutcome: (...args: unknown[]) => polls.push(args),
     notifications: { show: (value: unknown) => notified.push(value) }, errorMessage: (error: Error) => error.message,
     fetchAdminNodes: async () => { throw new Error("no nodes"); }
   };
   for (const key of ["setStage", "setError", "setDeploying", "setQueuedRevision"]) {
     scope[key] = (value: unknown) => mutations.push([key, value]);
   }
-  return { scope, session, active, requestBusy, pollEpoch, mutations, notified, polls, changedNodes };
+  return { scope, session, active, requestBusy, watchEpoch, mutations, notified, polls, changedNodes };
 }
 
 // A queue response that lands after the drawer closed or switched nodes must
@@ -121,14 +122,13 @@ function outcomeFixture(outcome: unknown | Array<unknown>, records: Array<Record
   const answers = Array.isArray(outcome) ? [...outcome] : [outcome];
   f.scope.fetchNodeCommandOutcome = async () => answers.length > 1 ? answers.shift() : answers[0];
   f.scope.fetchAdminNodes = async () => records;
-  f.scope.POLL_INTERVAL_MS = 3_000;
-  f.scope.POLL_TIMEOUT_MS = 300_000;
+  f.scope.OBSERVATION_TIMEOUT_MS = 300_000;
   f.scope.Date = Date; f.scope.BigInt = BigInt;
   let handles = 0;
   f.scope.window = {
     setTimeout: (fn: () => void) => {
       handles += 1;
-      if (handles === 1 || !runFirstScheduleOnly) { fn(); return handles; }
+      // Only the observation deadline is scheduled; do not fire it here.
       return handles;
     },
     clearTimeout: () => undefined
@@ -137,7 +137,7 @@ function outcomeFixture(outcome: unknown | Array<unknown>, records: Array<Record
 }
 {
   const f = outcomeFixture({ status: "completed", lastError: null }, [{ id: "node-1", inboundAppliedRevision: "12", name: "node" }]);
-  callback("pollOutcome", f.scope)("node-1", "command-1", "12", 1);
+  callback("watchOutcome", f.scope)("node-1", "command-1", "12", 1);
   await flush();
   assert.equal(f.changedNodes.length, 1, "完成必须刷新父级记录");
   assert.ok(f.mutations.some(([name, value]) => name === "setStage" && value === "done"));
@@ -147,7 +147,7 @@ function outcomeFixture(outcome: unknown | Array<unknown>, records: Array<Record
   // A FAILED command reports failure with the agent's reason — even if a
   // later deployment already pushed the applied revision past the target.
   const f = outcomeFixture({ status: "failed", lastError: "入站部署后未能确认生效" }, [{ id: "node-1", inboundAppliedRevision: "13", name: "node" }]);
-  callback("pollOutcome", f.scope)("node-1", "command-1", "12", 1);
+  callback("watchOutcome", f.scope)("node-1", "command-1", "12", 1);
   await flush();
   assert.equal(f.mutations.some(([name, value]) => name === "setStage" && value === "done"), false, "失败的命令不得报成功");
   assert.ok(f.mutations.some(([name, value]) => name === "setStage" && value === "failed"), "失败必须落到 failed");
@@ -158,7 +158,7 @@ function outcomeFixture(outcome: unknown | Array<unknown>, records: Array<Record
   // target: superseded, not successful — the requested change (e.g. a key
   // rotation) never took effect.
   const f = outcomeFixture({ status: "pending", lastError: null }, [{ id: "node-1", inboundAppliedRevision: "13", name: "node" }]);
-  callback("pollOutcome", f.scope)("node-1", "command-1", "12", 1);
+  callback("watchOutcome", f.scope)("node-1", "command-1", "12", 1);
   await flush();
   assert.equal(f.mutations.some(([name, value]) => name === "setStage" && value === "done"), false, "被取代不得报成功");
   assert.ok(f.mutations.some(([name, value]) => name === "setError" && String(value).includes("已被更新的部署取代")), "必须说明被取代且未生效");
@@ -172,44 +172,28 @@ function outcomeFixture(outcome: unknown | Array<unknown>, records: Array<Record
     [{ status: "pending", lastError: null }, { status: "completed", lastError: null }],
     [{ id: "node-1", inboundAppliedRevision: "13", name: "node" }]
   );
-  callback("pollOutcome", f.scope)("node-1", "command-1", "12", 1);
+  callback("watchOutcome", f.scope)("node-1", "command-1", "12", 1);
   await flush();
   assert.ok(f.mutations.some(([name, value]) => name === "setStage" && value === "done"), "重读发现已完成必须报成功");
   assert.equal(f.mutations.some(([name, value]) => name === "setError" && String(value).includes("已被更新的部署取代")), false, "不得误报未生效");
   assert.equal(f.notified.length, 1);
 }
 {
-  // Backoff covers the WHOLE tick: a persistently failing node-list endpoint
-  // must double from the previous interval (3s→6s→12s→24s→30s cap), not reset
-  // to 3s after each successful outcome read.
-  const f = fixture();
-  f.scope.fetchNodeCommandOutcome = async () => ({ status: "pending", lastError: null });
-  f.scope.fetchAdminNodes = async () => { throw new Error("list down"); };
-  f.scope.POLL_INTERVAL_MS = 3_000;
-  f.scope.POLL_TIMEOUT_MS = 300_000;
-  f.scope.Date = Date; f.scope.BigInt = BigInt;
-  const delays: number[] = [];
-  let runs = 0;
-  f.scope.window = {
-    setTimeout: (fn: () => void, delay: number) => {
-      runs += 1;
-      if (runs <= 5) { delays.push(delay); fn(); }
-      return runs;
-    },
-    clearTimeout: () => undefined
-  };
-  callback("pollOutcome", f.scope)("node-1", "command-1", "12", 1);
-  await flush();
-  assert.deepEqual(
-    delays,
-    [3_000, 6_000, 12_000, 24_000, 30_000],
-    `节点列表持续失败必须整体退避到 30s：${JSON.stringify(delays)}`
-  );
+  const f = outcomeFixture({ status: "pending" }, [{ id: "node-1", inboundAppliedRevision: "0" }]);
+  let reads = 0, listener!: (event: unknown) => void;
+  f.scope.fetchNodeCommandOutcome = async () => { reads++; return { status: "pending" }; };
+  f.scope.subscribeAdminRuntimeEvents = (callback: (event: unknown) => void) => { listener = callback; return () => undefined; };
+  callback("watchOutcome", f.scope)("node-1", "command-1", "12", 1);
+  await flush(); assert.equal(reads, 1, "read once on observation start");
+  listener({ type: "keepalive" }); listener({ type: "node_access_updated", nodeId: "other" });
+  await flush(); assert.equal(reads, 1, "unrelated events must not query");
+  listener({ type: "node_access_updated", nodeId: "node-1" });
+  await flush(); assert.equal(reads, 2, "matching event refreshes outcome");
 }
 {
   // Pending with the revision still at/below the target: keep waiting.
   const f = outcomeFixture({ status: "pending", lastError: null }, [{ id: "node-1", inboundAppliedRevision: "12", name: "node" }]);
-  callback("pollOutcome", f.scope)("node-1", "command-1", "12", 1);
+  callback("watchOutcome", f.scope)("node-1", "command-1", "12", 1);
   await flush();
   assert.equal(f.mutations.some(([name, value]) => name === "setStage" && value === "done"), false);
   assert.equal(f.mutations.some(([name, value]) => name === "setStage" && value === "failed"), false);
@@ -218,7 +202,7 @@ function outcomeFixture(outcome: unknown | Array<unknown>, records: Array<Record
 {
   // The job row gone (history cleanup): fail fast rather than guess.
   const f = outcomeFixture(null, []);
-  callback("pollOutcome", f.scope)("node-1", "command-1", "12", 1);
+  callback("watchOutcome", f.scope)("node-1", "command-1", "12", 1);
   await flush();
   assert.ok(f.mutations.some(([name, value]) => name === "setStage" && value === "failed"), "命令记录缺失必须显式失败");
 }

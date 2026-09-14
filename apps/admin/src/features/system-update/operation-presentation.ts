@@ -1,4 +1,5 @@
-import type { SystemUpdateOperationDto, SystemUpdateOperationPhase } from "@chordv/shared";
+import type { SystemUpdateOperationDto } from "@chordv/shared";
+import type { UpdateConnection } from "./operation-observer";
 
 export function statusColor(status: SystemUpdateOperationDto["status"]): string {
   switch (status) {
@@ -34,62 +35,45 @@ export function kindLabel(kind: SystemUpdateOperationDto["kind"]): string {
   return kind === "update" ? "更新" : kind === "rollback" ? "回滚" : "重启";
 }
 
-// Ordered lifecycle stages of a running operation, matching the backend phase union.
-// Which steps APPLY depends on the operation kind: a rollback/restart never downloads
-// or extracts, and snapshot/migrate only run for an update that carries migrations
-// (migrationApplied is only known after the fact, so those steps show for any update
-// while running and collapse away on a skipped path — the phase union has no
-// "skipped" report, so they simply never activate).
-export const PHASE_STEPS: Array<{ phase: SystemUpdateOperationPhase; label: string }> = [
-  { phase: "checking", label: "检查" },
-  { phase: "downloading", label: "下载" },
-  { phase: "extracting", label: "解压" },
-  { phase: "draining", label: "切换" },
-  { phase: "snapshotting", label: "快照" },
-  { phase: "migrating", label: "迁移" },
-  { phase: "health-gating", label: "健康检查" },
-  { phase: "stabilizing", label: "稳定观察" }
-];
+// The app cannot stream supervisor progress while it is stopped or awaiting
+// approval. Keep those internal phases in the server audit, but present one
+// recovery stage rather than a sequence the browser cannot observe live.
+const STEPS = [
+  { id: "downloading", label: "下载更新包" },
+  { id: "extracting", label: "解压更新包" },
+  { id: "switching", label: "服务切换与恢复" },
+  { id: "result", label: "确认结果" }
+] as const;
+const SWITCH_PHASES = new Set(["draining", "snapshotting", "migrating", "health-gating", "stabilizing", "rollback-health-gating", "rollback-stabilizing"]);
 
-// Steps that can ever run per operation kind. A step that cannot run is rendered as
-// crossed-out/dimmed rather than completed, so a rollback does not claim a download
-// it never performed.
-export const APPLICABLE_STEPS: Record<SystemUpdateOperationDto["kind"], ReadonlySet<SystemUpdateOperationPhase>> = {
-  update: new Set(PHASE_STEPS.map((step) => step.phase)),
-  rollback: new Set(["checking", "draining", "health-gating", "stabilizing"]),
-  restart: new Set(["draining", "health-gating", "stabilizing"])
-};
-
-// Supervisor-owned stages: whether they RUN is decided after the app exits (only an
-// update carrying migrations snapshots/migrates), so they are only check-marked when
-// actually OBSERVED by a poll — passing them silently is a skip, not a completion.
-// App-side stages always run in order for the kinds that include them.
-export const OBSERVED_ONLY_STEPS: ReadonlySet<SystemUpdateOperationPhase> = new Set(["snapshotting", "migrating"]);
-
-export function phaseDescription(phase: SystemUpdateOperationPhase): string {
-  switch (phase) {
-    case "checking":
-      return "正在确认最新版本与清单签名…";
-    case "downloading":
-      return "正在下载更新包…";
-    case "extracting":
-      return "正在校验并解压更新包…";
-    case "draining":
-      return "正在排空请求并切换版本，服务将短暂重启…";
-    case "snapshotting":
-      return "正在对数据库做迁移前快照…";
-    case "migrating":
-      return "正在执行数据库迁移…";
-    case "health-gating":
-      return "新版本已启动，正在通过健康检查…";
-    case "stabilizing":
-      return "新版本运行正常，正在稳定观察…";
-    case "rollback-health-gating":
-      return "新版本未通过验证，回滚目标已启动，正在通过健康检查…";
-    case "rollback-stabilizing":
-      return "回滚目标运行正常，正在稳定观察，随后将恢复服务…";
-    default:
-      return phase;
-  }
+export function operationProgress(operation: SystemUpdateOperationDto | null, kind: SystemUpdateOperationDto["kind"], connection: UpdateConnection) {
+  const phase = operation?.phase;
+  const switching = Boolean(phase && SWITCH_PHASES.has(phase));
+  const stage = switching ? "switching" : phase;
+  const steps = kind === "update" ? STEPS : STEPS.filter(step => step.id === "switching" || step.id === "result");
+  const index = steps.findIndex(step => step.id === stage);
+  const live = connection === "live";
+  const paused = connection === "paused";
+  const recovering = !live;
+  const title = paused ? "状态观察已暂停"
+    : switching ? "服务切换中，等待恢复"
+    : recovering ? "等待后台恢复连接"
+    : phase === "downloading" ? "正在下载更新包"
+    : phase === "extracting" ? "正在解压更新包"
+    : "正在准备" + kindLabel(kind);
+  const description = paused ? "仅暂停状态查询，后台任务不会因此停止。"
+    : switching ? "切换期间无法实时显示内部步骤，结果确认后将自动刷新。"
+    : recovering ? "当前进度暂不可确认，等待恢复连接后读取实际结果。"
+    : "服务切换后会短暂断开，结果确认后将自动刷新。";
+  const lastConfirmed = recovering && phase
+    ? (steps.find(step => step.id === stage)?.label ?? (phase === "checking" ? "检查更新" : null)) : null;
+  return {
+    title, description, lastConfirmed, recovering,
+    showDownloadProgress: live && phase === "downloading",
+    steps: steps.map((step, position) => ({ ...step,
+      state: position < index ? "completed" as const
+        : position !== index ? "waiting" as const
+        : recovering ? "unconfirmed" as const : "active" as const
+    }))
+  };
 }
-

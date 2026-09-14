@@ -3070,11 +3070,22 @@ async fn download_runtime_component(
                 ensure_executable(&temp_target_path)?;
             }
 
-            if target_path.exists() {
-                let _ = fs::remove_file(&target_path);
+            // Preserve the working file if the final replacement fails.
+            let previous_path = target_path.with_extension("previous");
+            let had_previous = target_path.exists();
+            if had_previous {
+                if previous_path.exists() {
+                    fs::remove_file(&previous_path).map_err(|error| runtime_component_error("write_failed", format!("清理组件备份失败：{error}")))?;
+                }
+                fs::rename(&target_path, &previous_path).map_err(|error| runtime_component_error("write_failed", format!("备份组件失败：{error}")))?;
             }
-            fs::rename(&temp_target_path, &target_path)
-                .map_err(|error| runtime_component_error("write_failed", format!("保存 {} 失败：{error}", runtime_component_display_name(component))))?;
+            if let Err(error) = fs::rename(&temp_target_path, &target_path) {
+                if had_previous {
+                    fs::rename(&previous_path, &target_path).map_err(|restore_error| runtime_component_error("write_failed", format!("保存失败：{error}；恢复旧组件失败：{restore_error}")))?;
+                }
+                return Err(runtime_component_error("write_failed", format!("保存 {} 失败：{error}", runtime_component_display_name(component))));
+            }
+            if had_previous { let _ = fs::remove_file(&previous_path); }
             let _ = fs::remove_file(&archive_path);
 
             let local_path = target_path.to_string_lossy().into_owned();
@@ -3301,6 +3312,12 @@ fn connect_runtime(
 ) -> Result<CommandResult, String> {
     {
         let mut state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
+        // Same lock order as starting an asset download: runtime, then download.
+        // A tray connection must not launch files being replaced by an update.
+        let downloads: State<'_, Mutex<RuntimeComponentDownloadState>> = app.state();
+        if downloads.lock().map_err(|_| "组件更新状态异常".to_string())?.active {
+            return Err("组件正在更新，请完成后再连接。".into());
+        }
         let had_runtime = state.active_session_id.is_some() || state.active_pid.is_some();
         stop_runtime_process(&app, &mut state);
 
@@ -4228,6 +4245,11 @@ fn emit_runtime_component_failed(
 }
 
 fn set_runtime_component_download_active(app: &AppHandle, active: bool) -> Result<(), String> {
+    let runtime: State<'_, Mutex<RuntimeState>> = app.state();
+    let runtime = runtime.lock().map_err(|_| "运行时状态异常".to_string())?;
+    if active && (runtime.active_pid.is_some() || runtime.active_session_id.is_some() || runtime.child.is_some()) {
+        return Err("当前连接正在使用组件，请断开后更新。".into());
+    }
     let state: State<'_, Mutex<RuntimeComponentDownloadState>> = app.state();
     let mut state = state
         .lock()

@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, type Prisma } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
 import { randomBytes } from "node:crypto";
 import {
@@ -298,62 +298,37 @@ async function main() {
   });
 
   for (const node of mockNodes) {
+    // Development nodes follow the current Prisma model. Keep create/update
+    // on one typed shape so retired panel fields cannot drift between them.
+    const nodeData = {
+      name: node.name,
+      countryCode: node.countryCode,
+      region: node.region,
+      provider: node.provider,
+      tags: node.tags,
+      recommended: node.recommended,
+      latencyMs: node.latencyMs,
+      protocol: node.protocol,
+      security: node.security,
+      serverHost: `${(node.countryCode ?? node.region).toLowerCase().replaceAll(" ", "-")}.edge.chordv.app`,
+      serverPort: 443,
+      uuid: "d5076fbe-b935-4dc6-8f59-a056d05db6f3",
+      flow: "xtls-rprx-vision",
+      realityPublicKey: "5C3G02RWVBX3e2tHAh9d69Vk4g8JwG2Zx2N0TTTPD2M",
+      shortId: "6ba85179",
+      serverName: "cdn.cloudflare.com",
+      fingerprint: "chrome",
+      spiderX: "/",
+      subscriptionUrl: null,
+      probeStatus: "unknown",
+      probeLatencyMs: null,
+      probeCheckedAt: null,
+      probeError: null
+    } satisfies Omit<Prisma.NodeCreateInput, "id">;
     await prisma.node.upsert({
       where: { id: node.id },
-      update: {
-        name: node.name,
-        countryCode: node.countryCode,
-        region: node.region,
-        provider: node.provider,
-        tags: node.tags,
-        recommended: node.recommended,
-        latencyMs: node.latencyMs,
-        protocol: node.protocol,
-        security: node.security,
-        serverHost: `${(node.countryCode ?? node.region).toLowerCase().replaceAll(" ", "-")}.edge.chordv.app`,
-        serverPort: 443,
-        uuid: "d5076fbe-b935-4dc6-8f59-a056d05db6f3",
-        flow: "xtls-rprx-vision",
-        realityPublicKey: "5C3G02RWVBX3e2tHAh9d69Vk4g8JwG2Zx2N0TTTPD2M",
-        shortId: "6ba85179",
-        serverName: "cdn.cloudflare.com",
-        fingerprint: "chrome",
-        spiderX: "/",
-        subscriptionUrl: null,
-        probeStatus: "unknown",
-        probeLatencyMs: null,
-        probeCheckedAt: null,
-        probeError: null,
-        panelApiBasePath: "/",
-        panelEnabled: false,
-        panelStatus: "offline"
-      },
-      create: {
-        id: node.id,
-        name: node.name,
-        countryCode: node.countryCode,
-        region: node.region,
-        provider: node.provider,
-        tags: node.tags,
-        recommended: node.recommended,
-        latencyMs: node.latencyMs,
-        protocol: node.protocol,
-        security: node.security,
-        serverHost: `${(node.countryCode ?? node.region).toLowerCase().replaceAll(" ", "-")}.edge.chordv.app`,
-        serverPort: 443,
-        uuid: "d5076fbe-b935-4dc6-8f59-a056d05db6f3",
-        flow: "xtls-rprx-vision",
-        realityPublicKey: "5C3G02RWVBX3e2tHAh9d69Vk4g8JwG2Zx2N0TTTPD2M",
-        shortId: "6ba85179",
-        serverName: "cdn.cloudflare.com",
-        fingerprint: "chrome",
-        spiderX: "/",
-        subscriptionUrl: null,
-        probeStatus: "unknown",
-        panelApiBasePath: "/",
-        panelEnabled: false,
-        panelStatus: "offline"
-      }
+      update: nodeData,
+      create: { id: node.id, ...nodeData }
     });
   }
 

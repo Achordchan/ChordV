@@ -1,4 +1,9 @@
-import { Badge, Button, Checkbox, Divider, Group, Modal, MultiSelect, Paper, SimpleGrid, Stack, Table, Text } from "@mantine/core";
+import { DataSkeleton } from "../shared/DataSkeleton";
+import { useState, useEffect } from "react";
+import { IconSearch } from "@tabler/icons-react";
+import usageStyles from "./MemberUsage.module.css";
+import editorStyles from "../editors/EditorDialog.module.css";
+import { Button, Checkbox, Group, Modal, TextInput, Stack, Table, Text } from "@mantine/core";
 import type { AdminNodeRecordDto, AdminTeamUsageRecordDto } from "@chordv/shared";
 import { resolveCountryCode } from "@chordv/shared";
 import { CountryFlag } from "../../components/CountryFlag";
@@ -17,21 +22,10 @@ export function DeleteNodeModal(props: {
   };
 
   return (
-    <Modal opened={props.target !== null} onClose={close} title="删除节点" centered>
-      <Stack>
-        <Text>
-          订阅已用流量会保留，不会因删除节点而清零。面板在线时先停用节点并后台清理远端客户端；面板失联或异常时本地清理后直接删除节点记录，并停止无限重试。
-        </Text>
-        <Text fw={600}>{props.target?.name}</Text>
-        <Group justify="flex-end">
-          <Button variant="default" onClick={close} disabled={props.submitting}>
-            取消
-          </Button>
-          <Button color="red" onClick={props.onConfirm} loading={props.submitting}>
-            确认删除
-          </Button>
-        </Group>
-      </Stack>
+    <Modal opened={props.target !== null} onClose={close} title="删除节点" centered size={480} closeOnClickOutside={!props.submitting} closeOnEscape={!props.submitting} withCloseButton={!props.submitting} classNames={{content: editorStyles.content, header: editorStyles.header, title: editorStyles.title, body: editorStyles.body}}>
+      <div className={editorStyles.nodeIdentity}><CountryFlag code={props.target?.countryCode}/><div><Text fw={600}>{props.target?.name}</Text><Text size="xs" c="dimmed" mt={4}>{props.target?.serverHost}:{props.target?.serverPort}</Text></div></div>
+      <Stack gap="sm"><Text size="sm">删除后，该节点将无法继续使用。订阅已用流量记录会保留。</Text><details><summary style={{fontSize:13, color:"#74816b", cursor:"pointer"}}>远端清理说明</summary><Text size="sm" c="dimmed" mt="sm">面板在线时先停用节点并清理远端客户端；面板失联时仍会删除本地记录，远端残留需要自行检查。</Text></details></Stack>
+      <footer className={editorStyles.footer}><Button variant="default" onClick={close} disabled={props.submitting}>取消</Button><Button color="red.8" onClick={props.onConfirm} loading={props.submitting}>删除节点</Button></footer>
     </Modal>
   );
 }
@@ -76,76 +70,34 @@ export function TeamUsageDetailModal(props: {
     | null;
   onClose: () => void;
 }) {
-  return (
-    <Modal opened={props.opened} onClose={props.onClose} title="成员流量明细" centered size="xl">
-      <Stack>
-        <Text fw={600}>{props.target?.userDisplayName}</Text>
-        <Text size="sm" c="dimmed">
-          {props.target ? `${props.target.teamName} · ${props.target.userEmail}` : ""}
-        </Text>
-        {props.target ? (
-          <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="sm">
-            <Paper withBorder radius="lg" p="sm">
-              <Text size="sm" c="dimmed">累计用量</Text>
-              <Text fw={700}>{formatTrafficGb(props.target.entry.memberTotalUsedTrafficGb ?? props.target.entry.usedTrafficGb)} GB</Text>
-            </Paper>
-            <Paper withBorder radius="lg" p="sm">
-              <Text size="sm" c="dimmed">节点数量</Text>
-              <Text fw={700}>{props.target.entry.nodeBreakdown?.length ?? 0} 个</Text>
-            </Paper>
-            <Paper withBorder radius="lg" p="sm">
-              <Text size="sm" c="dimmed">最近使用</Text>
-              <Text fw={700}>{formatDateTime(props.target.entry.recordedAt)}</Text>
-            </Paper>
-          </SimpleGrid>
-        ) : null}
-        <Divider />
-        {props.target?.entry.nodeBreakdown?.length ? (
-          <Table highlightOnHover verticalSpacing="sm">
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>节点</Table.Th>
-                <Table.Th>地区</Table.Th>
-                <Table.Th>累计流量</Table.Th>
-                <Table.Th>记录数</Table.Th>
-                <Table.Th>最近同步</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {props.target.entry.nodeBreakdown.map((entry) => (
-                <Table.Tr key={entry.nodeId}>
-                  <Table.Td>
-                    <Group gap="xs" wrap="nowrap">
-                      <Text fw={600}>{entry.nodeName}</Text>
-                    </Group>
-                  </Table.Td>
-                  <Table.Td>
-                    <Group gap={6} wrap="nowrap">
-                      <CountryFlag code={resolveCountryCode({ region: entry.nodeRegion })} size="sm" />
-                      <Badge variant="light">{entry.nodeRegion}</Badge>
-                    </Group>
-                  </Table.Td>
-                  <Table.Td>{formatTrafficGb(entry.usedTrafficGb)} GB</Table.Td>
-                  <Table.Td>{entry.recordCount} 条</Table.Td>
-                  <Table.Td>{formatDateTime(entry.lastRecordedAt)}</Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        ) : (
-          <Text size="sm" c="dimmed">
-            暂无明细
-          </Text>
-        )}
-      </Stack>
-    </Modal>
-  );
+  const target = props.target;
+  const breakdown = target?.entry.nodeBreakdown ?? [];
+  return <Modal opened={props.opened} onClose={props.onClose} title="成员流量明细" centered size={740}
+    classNames={{content:editorStyles.content,header:editorStyles.header,title:editorStyles.title,body:editorStyles.body}}>
+    {target ? <div className={usageStyles.body}>
+      <header className={usageStyles.identity}><strong>{target.userDisplayName}</strong><p>{target.teamName} · {target.userEmail}</p></header>
+      <dl className={usageStyles.summary}>
+        <div className={usageStyles.total}><dt>累计用量</dt><dd>{formatTrafficGb(target.entry.memberTotalUsedTrafficGb ?? target.entry.usedTrafficGb)} <span>GB</span></dd></div>
+        <div><dt>使用节点</dt><dd>{breakdown.length} 个</dd></div>
+        <div><dt>最近使用</dt><dd>{formatDateTime(target.entry.recordedAt)}</dd></div>
+      </dl>
+      <h3 className={usageStyles.sectionTitle}>节点用量</h3>
+      {breakdown.length ? <Table.ScrollContainer minWidth={560}><Table className={usageStyles.table}>
+        <Table.Thead><Table.Tr><Table.Th>节点</Table.Th><Table.Th>累计流量</Table.Th><Table.Th>最近同步</Table.Th></Table.Tr></Table.Thead>
+        <Table.Tbody>{breakdown.map(entry=><Table.Tr key={entry.nodeId}>
+          <Table.Td><div className={usageStyles.node}><CountryFlag code={resolveCountryCode({region:entry.nodeRegion})}/><div><Text size="sm" fw={550}>{entry.nodeName}</Text><Text size="xs" c="dimmed">{entry.nodeRegion}</Text></div></div></Table.Td>
+          <Table.Td><Text size="sm" fw={550}>{formatTrafficGb(entry.usedTrafficGb)} GB</Text><Text size="xs" c="dimmed" mt={4}>{entry.recordCount} 条记录</Text></Table.Td>
+          <Table.Td><Text size="sm" c="dimmed">{formatDateTime(entry.lastRecordedAt)}</Text></Table.Td>
+        </Table.Tr>)}</Table.Tbody>
+      </Table></Table.ScrollContainer> : <Text className={usageStyles.empty}>暂无节点用量明细</Text>}
+    </div> : <Text c="dimmed" py="lg">暂无成员用量数据</Text>}
+  </Modal>;
 }
 
 export function NodeAccessEditorModal(props: {
   opened: boolean;
   ownerLabel: string | null;
-  nodeOptions: Array<{ value: string; label: string }>;
+  nodeOptions: Array<{ value: string; label: string; countryCode?: string | null }>;
   selection: string[];
   loading: boolean;
   saving: boolean;
@@ -155,51 +107,28 @@ export function NodeAccessEditorModal(props: {
   onClose: () => void;
   onSave: () => void;
 }) {
+  const [search, setSearch] = useState("");
+  useEffect(() => { setSearch(""); }, [props.opened, props.ownerLabel]);
   const busy = props.loading || props.saving;
-  const close = () => {
-    if (!busy) {
-      props.onClose();
-    }
-  };
-
-  return (
-    <Modal opened={props.opened} onClose={close} title="节点授权" centered size="lg">
-      <Stack>
-        <Text size="sm" c="dimmed">
-          {props.ownerLabel ?? "当前订阅"}
-        </Text>
-        <MultiSelect
-          label="可用节点"
-          placeholder={props.loading ? "正在加载节点..." : "选择当前订阅可用的节点"}
-          searchable
-          nothingFoundMessage="没有匹配节点"
-          data={props.nodeOptions}
-          value={props.selection}
-          onChange={props.onSelectionChange}
-          disabled={busy}
-        />
-        <Group justify="space-between">
-          <Text size="sm" c={props.selection.length > 0 ? "dimmed" : "orange.7"}>
-            {props.selection.length > 0 ? `已分配 ${props.selection.length} 个节点` : "当前订阅未分配节点"}
-          </Text>
-          <Group gap="xs">
-            <Button variant="default" size="xs" onClick={props.onSelectAll} disabled={busy}>
-              全选
-            </Button>
-            <Button variant="default" size="xs" onClick={props.onClear} disabled={busy}>
-              清空
-            </Button>
-          </Group>
-        </Group>
-        <Group justify="flex-end">
-          <Button variant="default" onClick={close} disabled={busy}>
-            取消
-          </Button>
-          <Button onClick={props.onSave} loading={props.saving} disabled={busy}>
-            保存
-          </Button>
-        </Group>
-      </Stack>
-    </Modal>
-  );
+  const close = () => { if (!busy) props.onClose(); };
+  const options = props.nodeOptions.filter(item => item.label.toLowerCase().includes(search.trim().toLowerCase()));
+  return <Modal opened={props.opened} onClose={close} title="节点授权" centered size={600} closeOnClickOutside={!busy} closeOnEscape={!busy} withCloseButton={!busy}
+    overlayProps={{ backgroundOpacity: .35, blur: 2 }} classNames={{ content: editorStyles.content, header: editorStyles.header, title: editorStyles.title, body: editorStyles.body }}>
+    <div className={editorStyles.form}>
+      <div className={editorStyles.context}><Text fw={600}>{props.ownerLabel ?? "当前订阅"}</Text><Text size="xs" c="dimmed">已选择 {props.selection.length} 个节点</Text></div>
+      <TextInput aria-label="搜索可授权节点" placeholder="搜索节点名称、地区" leftSection={<IconSearch size={17}/>} value={search} disabled={busy} onChange={event => setSearch(event.currentTarget.value)}/>
+      <Group justify="space-between" mt="md"><Text size="xs" c="dimmed">可用节点 · {props.nodeOptions.length}</Text><Group gap="xs"><Button size="compact-xs" variant="subtle" color="#1c4d37" onClick={props.onSelectAll} disabled={busy}>全选全部</Button><Button size="compact-xs" variant="subtle" color="gray" onClick={props.onClear} disabled={busy}>清空选择</Button></Group></Group>
+      <div className={editorStyles.nodeOptions}>
+        {props.loading ? <DataSkeleton rows={4}/>
+          : options.map(item => <label key={item.value} className={editorStyles.nodeOption}>
+            <Checkbox color="#1c4d37" aria-label={item.label} checked={props.selection.includes(item.value)} disabled={busy || (!props.selection.includes(item.value) && props.selection.length >= 100)}
+              onChange={event => props.onSelectionChange(event.currentTarget.checked ? [...props.selection, item.value] : props.selection.filter(id => id !== item.value))}/>
+            <CountryFlag code={item.countryCode} size="md"/><span>{item.label}</span>
+          </label>)}
+        {!props.loading && !options.length && <Text size="sm" c="dimmed" ta="center" py="xl">{search ? "没有匹配的节点" : "暂无可授权节点"}</Text>}
+      </div>
+      {!props.loading && !props.selection.length && <Text size="xs" c="orange.7" mt="md">保存空选择将移除此订阅的所有节点授权。</Text>}
+      <footer className={editorStyles.footer}><Button variant="default" onClick={close} disabled={busy}>取消</Button><Button color="#1c4d37" onClick={props.onSave} loading={props.saving} disabled={busy}>保存授权</Button></footer>
+    </div>
+  </Modal>;
 }

@@ -1,0 +1,5 @@
+.notification { background: #fcfcf8; border: 1px solid #e1e6d9; border-radius: 8px; padding: 18px 20px; box-shadow: 0 8px 28px #21382314; align-items: flex-start; }
+.notification::before { width: 3px; inset-inline-start: 0; top: 18px; bottom: 18px; border-radius: 3px; }
+.notification :global(.mantine-Notification-title) { font-size: 14px; font-weight: 600; color: #30432f; margin-bottom: 7px; }
+.notification :global(.mantine-Notification-description) { font-size: 13px; line-height: 1.7; color: #626e5d; white-space: pre-wrap; overflow-wrap: anywhere; max-height: min(45dvh, 380px); overflow-y: auto; user-select: text; }
+.notification :global(.mantine-Notification-closeButton) { color: #87927f; margin-top: 0; }

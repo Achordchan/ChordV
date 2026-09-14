@@ -1,0 +1,16 @@
+.body { --mantine-color-dimmed: #5d6957; padding-bottom: 26px; color: #263d2d; }
+.identity strong { display: block; font-size: 18px; font-weight: 600; overflow-wrap: anywhere; }
+.identity p { font-size: 14px; color: #5d6957; line-height: 1.6; margin: 7px 0 0; overflow-wrap: anywhere; }
+.summary { display: grid; grid-template-columns: 1.25fr .8fr 1fr; gap: 24px; align-items: end; padding: 24px 0; margin: 8px 0 24px; border-bottom: 1px solid #dfe5d7; }
+.summary dt { font-size: 13px; color: #5d6957; margin-bottom: 10px; }
+.summary dd { margin: 0; font-size: 15px; color: #304a35; font-variant-numeric: tabular-nums; }
+.total dd { font-size: 32px; font-weight: 600; line-height: 1.15; letter-spacing: -.7px; }
+.total dd span { font-size: 15px; font-weight: 400; letter-spacing: 0; color: #5d6957; }
+.sectionTitle { margin: 0 0 10px; font-size: 14px; font-weight: 600; }
+.table :global(th) { font-size: 13px; color: #5d6957; font-weight: 500; padding: 12px 10px; background: #f2f5ed; border-color: #dfe5d7; }
+.table :global(td) { padding: 17px 10px; border-color: #e6eadf; }
+.node { display: flex; align-items: center; gap: 12px; }
+.node > :global(.country-flag) { flex-shrink: 0; }
+.node > div { min-width: 0; overflow-wrap: anywhere; }
+.empty { color: #5d6957; font-size: 14px; text-align: center; padding: 26px 0; }
+@media(max-width: 600px) { .summary { grid-template-columns: 1fr 1fr; gap: 22px 16px; }.total { grid-column: 1 / -1; } }

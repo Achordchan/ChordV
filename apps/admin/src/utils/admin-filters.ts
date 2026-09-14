@@ -7,7 +7,11 @@ export function readError(reason: unknown, fallback: string) {
   const requestId = readRequestId(reason.message);
   const backendMessage = readBackendErrorMessage(reason.message);
   if (backendMessage) {
-    return appendRequestId(normalizeAdminErrorMessage(backendMessage, fallback), requestId);
+    // Structured API messages are the actionable explanation, including every
+    // validation item. Only normalize generic HTTP status text, not its details.
+    const detail = stripHttpStatusPrefix(backendMessage);
+    const generic = /^(Bad Request|Unauthorized|Forbidden|Not Found|Conflict|Service Unavailable|Bad Gateway|Gateway Timeout|Internal Server Error)$/i.test(detail.trim());
+    return appendRequestId(generic ? normalizeAdminErrorMessage(backendMessage, fallback) : detail, requestId);
   }
   if (reason.name === "AbortError" || reason.message === "signal is aborted without reason" || /请求超时/i.test(reason.message)) {
     return appendRequestId("请求超时，后台未在限定时间内返回，请刷新或稍后重试。", requestId);
@@ -36,7 +40,7 @@ function appendRequestId(message: string, requestId?: string | null) {
   if (!trimmed || message.includes(trimmed)) {
     return message;
   }
-  return `${message} Request ID: ${trimmed}`;
+  return `${message}\n请求编号：${trimmed}`;
 }
 
 function readRequestId(message: string) {
@@ -97,7 +101,7 @@ export function normalizeAdminErrorMessage(message: string, fallback: string) {
   }
   if (/HTTP\s*400|Bad Request|Validation failed|should not be empty|must be|is required|invalid/i.test(message)) {
     const badRequestDetail = stripHttpStatusPrefix(message);
-    if (shouldPreserveBadRequestDetail(badRequestDetail)) {
+    if (shouldPreserveBadRequestDetail(badRequestDetail) || !/^(Bad Request|Validation failed|HTTP\s*400)$/i.test(badRequestDetail.trim())) {
       return badRequestDetail;
     }
     return "提交内容不完整或格式不正确，请检查后重试。";

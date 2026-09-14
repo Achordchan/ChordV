@@ -1337,6 +1337,7 @@ function normalizeRuntimeComponentsPlan(
       id: item.id,
       revision: item.updatedAt ?? null,
       versionLabel: item.versionLabel ?? null,
+      allowClientMirror: item.allowClientMirror,
       component: item.kind,
       fileName: item.fileName,
       fileSizeBytes: readNumber(item.fileSizeBytes),
@@ -1345,7 +1346,7 @@ function normalizeRuntimeComponentsPlan(
       checksumSha256: normalizeSha256Hex(item.expectedHash),
       candidates: item.candidates.map((candidate) => ({
         label: candidate.label,
-        url: candidate.url,
+        url: resolvePublicUrl(candidate.url) ?? candidate.url,
         source:
           candidate.label === "client_mirror"
             ? "client_override"
@@ -1353,7 +1354,7 @@ function normalizeRuntimeComponentsPlan(
               ? "server_mirror"
               : "origin"
       })),
-      selectedUrl: item.resolvedUrl,
+      selectedUrl: resolvePublicUrl(item.resolvedUrl),
       displayName: runtimeComponentDisplayName(item.kind, environment?.platform ?? raw.platform)
     }))
   };

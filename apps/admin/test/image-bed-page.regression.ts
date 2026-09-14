@@ -8,8 +8,8 @@ const apiClientSource = readFileSync(resolve(import.meta.dirname, "../src/api/cl
 function testInitialConfigLoadRefreshesFileListWhenTokenExists() {
   assert.match(
     source,
-    /void loadConfig\(\{ loadFilesAfter: true \}\);/,
-    "image bed page should load files after initial config load when a token exists"
+    /void loadConfig\(\{ loadFilesAfter: false \}\);/,
+    "配置页初次加载只读配置，文件按页签加载"
   );
 }
 

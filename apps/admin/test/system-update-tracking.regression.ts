@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { observeSystemOperation, parseOperationEvents } from '../src/features/system-update/operation-observer';
+import { operationProgress } from '../src/features/system-update/operation-presentation';
 import { waitForUpdatedPage, saveCompletion, readCompletion, clearCompletion, completionWarning } from '../src/features/system-update/page-refresh';
 import type { SystemUpdateOperationDto } from '@chordv/shared';
 
@@ -37,9 +38,49 @@ function streamResponse(signal: AbortSignal) {
   assert.deepEqual(seen, ['running']);
   stream.disconnect(); await flush(); assert.equal(connections.at(-1), 'reconnecting');
   await time.advance(); assert.equal(openings, 2);
+  assert.equal(connections.at(-1), 'reconnecting', 'HTTP headers alone must not revive stale progress');
   stream.send(operation('succeeded')); await flush();
   assert.deepEqual(seen, ['running', 'succeeded']); assert.equal(time.size(), 0);
   stop();
+}
+{
+  const extracting = operation('running', 'extracting');
+  const disconnected = operationProgress(extracting, 'update', 'reconnecting');
+  assert.equal(disconnected.title, '等待后台恢复连接');
+  assert.equal(disconnected.lastConfirmed, '解压更新包');
+  assert.equal(disconnected.steps.find(step => step.id === 'extracting')?.state, 'unconfirmed');
+  assert.equal(disconnected.steps.find(step => step.id === 'switching')?.state, 'waiting', 'disconnect must not prove extraction completed');
+  assert.equal(operationProgress(operation('running', 'downloading'), 'update', 'reconnecting').showDownloadProgress, false);
+  assert.equal(operationProgress(extracting, 'update', 'connecting').steps.find(step => step.id === 'extracting')?.state, 'unconfirmed');
+  for (const phase of ['draining', 'snapshotting', 'migrating', 'health-gating', 'stabilizing', 'rollback-health-gating', 'rollback-stabilizing']) {
+    const view = operationProgress(operation('running', phase), 'update', 'live');
+    assert.equal(view.title, '服务切换中，等待恢复');
+    assert.deepEqual(view.steps.map(step => step.id), ['downloading', 'extracting', 'switching', 'result']);
+    assert.equal(view.steps.find(step => step.id === 'switching')?.state, 'active');
+    assert.equal(view.steps.find(step => step.id === 'result')?.state, 'waiting', 'healthy or stabilizing is not final success');
+  }
+  for (const kind of ['rollback', 'restart'] as const) {
+    const view = operationProgress(operation('running', 'draining'), kind, 'paused');
+    assert.equal(view.title, '状态观察已暂停');
+    assert.deepEqual(view.steps.map(step => step.id), ['switching', 'result']);
+    assert.equal(view.steps[0].state, 'unconfirmed');
+  }
+}
+{
+  const time = clock(), seen: string[] = [], connections: string[] = [];
+  let openings = 0, recovered!: ReturnType<typeof streamResponse>;
+  const stop = observeSystemOperation('op', { timers: time.timers,
+    stream: async signal => {
+      if (++openings === 1) return new Response('Service awaiting supervisor approval', { status: 503 });
+      recovered = streamResponse(signal); return recovered.response;
+    },
+    snapshot: async () => assert.fail('promotion 503 must not switch to legacy polling'),
+    onOperation: op => seen.push(op.status), onConnection: state => connections.push(state) });
+  await time.advance(); assert.equal(connections.at(-1), 'reconnecting');
+  await time.advance(); assert.equal(connections.at(-1), 'reconnecting');
+  assert.deepEqual(seen, []);
+  recovered.send(operation('rolled_back')); await flush();
+  assert.deepEqual(seen, ['rolled_back']); assert.equal(time.size(), 0); stop();
 }
 {
   const time = clock(), seen: string[] = []; let calls = 0;

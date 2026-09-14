@@ -84,6 +84,7 @@ import { useAuthBootstrap } from "./hooks/useAuthBootstrap";
 import { createIdleServerProbeState, type ServerProbeState, useClientEvents } from "./hooks/useClientEvents";
 import { useNodeProbe } from "./hooks/useNodeProbe";
 import { useRuntimeActions } from "./hooks/useRuntimeActions";
+import { useComponentVersionSync } from "./hooks/useComponentVersionSync";
 import { useRuntimeAssets } from "./hooks/useRuntimeAssets";
 import { useRuntimeStatus } from "./hooks/useRuntimeStatus";
 import { useSupportTickets } from "./hooks/useSupportTickets";
@@ -315,6 +316,11 @@ export function App() {
     onUnauthorized: recoverSessionAfterUnauthorized,
     readError
   });
+  const componentVersionSync = useComponentVersionSync({
+    accessToken: session?.accessToken ?? null, status: desktopStatus, assetsBusy: runtimeAssetsBusy,
+    applicationUpdateBusy: ["preparing", "downloading"].includes(updateDownload.phase),
+    ensure: ensureRuntimeAssetsReady, onStatus: setDesktopStatus, notify: notifications.show
+  });
   runtimeComponentsCheckRef.current = async (input) => {
     const forceCheck = input.source === "manual" || input.source === "refresh";
     await ensureRuntimeAssetsReady({
@@ -512,9 +518,13 @@ export function App() {
   useClientEvents({
     session,
     setServerProbe,
-    handleRuntimeEvent,
+    handleRuntimeEvent: (event, accessToken) => {
+      if (event.type === "runtime_component_updated") { componentVersionSync.requestSync(event); return Promise.resolve(); }
+      return handleRuntimeEvent(event, accessToken);
+    },
     syncConnectedState: syncForegroundState,
     runUpdateCheckOnOpen: async () => {
+      componentVersionSync.requestSync();
       await runUpdateCheck({
         bootstrapVersion: bootstrap?.version ?? null,
         source: "refresh",
@@ -1869,6 +1879,7 @@ export function App() {
               onLogout={() => void handleLogout()}
             />
             {forceUpdateBanner}
+            {componentVersionSync.deferred ? <Text size="sm" c="dimmed" role="status">组件版本待同步，将在断开连接后自动检查并更新。</Text> : null}
           </Stack>
 
           <div className="desktop-content">

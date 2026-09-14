@@ -92,7 +92,7 @@ const saveTeamInlineEditorBody = extractFunctionBody("saveTeamInlineEditor");
 const saveTeamSubscriptionInlineEditorBody = extractFunctionBody("saveTeamSubscriptionInlineEditor");
 const saveTeamMemberInlineEditorBody = extractFunctionBody("saveTeamMemberInlineEditor");
 const handleSessionExpiredStateBody = extractBlockAfter("function handleSessionExpiredState()");
-const adminRuntimeEventsBody = extractBlockAfter("return subscribeAdminRuntimeEvents((event) =>");
+const adminRuntimeEventsBody = source;
 
 function testHeaderRefreshDoesNotAlwaysLoadFullSnapshotFirst() {
   assert.doesNotMatch(
@@ -172,22 +172,14 @@ function testSignalBackedSectionsUseLocalRefreshSignals() {
     /if \(currentSection === "tickets"\) {\s*setTicketRefreshSignal\(\(current\) => current \+ 1\);\s*return;\s*}/,
     "ticket header refresh should only notify the ticket page"
   );
-  assert.match(
-    handleHeaderRefreshBody,
-    /if \(currentSection === "runtimeComponents"\) {\s*setRuntimeComponentRefreshSignal\(\(current\) => current \+ 1\);\s*return;\s*}/,
-    "runtime component header refresh should only notify the runtime component page"
-  );
-  assert.match(
-    handleHeaderRefreshBody,
-    /if \(currentSection === "imageBed"\) {\s*setImageBedRefreshSignal\(\(current\) => current \+ 1\);\s*return;\s*}/,
-    "image bed header refresh should only notify the image bed page"
-  );
+  assert.doesNotMatch(handleHeaderRefreshBody, /=== "runtimeComponents"/, "旧独立页面分支应被移除");
+  assert.doesNotMatch(handleHeaderRefreshBody, /=== "imageBed"/, "旧独立页面分支应被移除");
 }
 
 function testSnapshotBackedSectionsUseSectionLoader() {
   assert.match(
     handleHeaderRefreshBody,
-    /await loadSectionData\(currentSection, \{ force: true \}\);/,
+    /await loadSectionData\(currentSection === "users" \? "subscriptions" : currentSection, \{ force: true \}\);/,
     "snapshot-backed sections should refresh through the section loader instead of loadFullSnapshot"
   );
 }
@@ -220,7 +212,7 @@ function testQueueLoadsDoNotBlockMainSectionData() {
   assert.doesNotMatch(usersBranch, /fetchAdminLeaseRevocationJobs/);
   assert.match(
     usersBranch,
-    /void loadSecondarySectionData\(targetSection, requestSeq, mutationSeqAtStart, options\)/,
+    /await loadSecondarySectionData\(targetSection, requestSeq, mutationSeqAtStart, options\)/,
     "users section should load lease revocation jobs after the main list"
   );
 
@@ -237,7 +229,7 @@ function testQueueLoadsDoNotBlockMainSectionData() {
   assert.doesNotMatch(subscriptionsBranch, /fetchAdminLeaseRevocationJobs/);
   assert.match(
     subscriptionsBranch,
-    /void loadSecondarySectionData\(targetSection, requestSeq, mutationSeqAtStart, options\)/,
+    /await loadSecondarySectionData\(targetSection, requestSeq, mutationSeqAtStart, options\)/,
     "subscriptions section should load lease revocation jobs after the main list"
   );
 
@@ -247,7 +239,7 @@ function testQueueLoadsDoNotBlockMainSectionData() {
   assert.doesNotMatch(nodesBranch, /fetchAdminPanelSyncJobs|fetchAdminLeaseRevocationJobs/);
   assert.match(
     nodesBranch,
-    /void loadSecondarySectionData\(targetSection, requestSeq, mutationSeqAtStart, options\)/,
+    /await loadSecondarySectionData\(targetSection, requestSeq, mutationSeqAtStart, options\)/,
     "nodes section should load queue data after the main node list"
   );
 
@@ -299,46 +291,11 @@ function testPendingQueueRefreshKeepsNodeRefreshOnQueueFailure() {
 }
 
 function testGenericAdminRuntimeEventsRefreshCurrentSection() {
-  assert.match(
-    adminRuntimeEventsBody,
-    /if \(event\.type === "keepalive"\) {\s*return;\s*}/,
-    "admin SSE keepalive events must not trigger data reloads"
-  );
-  assert.match(
-    adminRuntimeEventsBody,
-    /if \(event\.type === "sync_queue_updated"\) {[\s\S]*?return;\s*}/,
-    "sync queue events should use the dedicated queue refresh path"
-  );
-  assert.match(
-    adminRuntimeEventsBody,
-    /if \(document\.visibilityState === "hidden"\) {\s*return;\s*}/,
-    "hidden admin pages should not refresh visible data immediately"
-  );
-  assert.match(
-    adminRuntimeEventsBody,
-    /if \(sectionRef\.current === "tickets"\) {[\s\S]*?shouldRefreshTicketsForAdminEvent\(event\)[\s\S]*?return;\s*}/,
-    "ticket pages should keep the ticket-specific SSE refresh gate"
-  );
-  assert.match(
-    adminRuntimeEventsBody,
-    /if \(event\.type === "runtime_component_updated" && sectionRef\.current === "runtimeComponents"\) {[\s\S]*?setRuntimeComponentRefreshSignal\(\(current\) => current \+ 1\);[\s\S]*?return;\s*}/,
-    "runtime component background validation events should refresh the runtime component page without waiting for focus"
-  );
-  assert.match(
-    adminRuntimeEventsBody,
-    /if \(event\.type === "release_center_updated" && sectionRef\.current === "releases"\) {[\s\S]*?setReleaseRefreshSignal\(\(current\) => current \+ 1\);[\s\S]*?return;\s*}/,
-    "release center admin events should refresh the release page without waiting for focus"
-  );
-  assert.match(
-    adminRuntimeEventsBody,
-    /if \(event\.type === "image_bed_updated" && sectionRef\.current === "imageBed"\) {[\s\S]*?setImageBedRefreshSignal\(\(current\) => current \+ 1\);[\s\S]*?return;\s*}/,
-    "image bed admin events should refresh the image bed page without waiting for focus"
-  );
-  assert.match(
-    adminRuntimeEventsBody,
-    /void refreshDashboard\(\{ silent: true \}\);[\s\S]*?void refreshCurrentSectionSilently\(\);/,
-    "announcement, policy, subscription, and other generic admin SSE events must refresh the current section"
-  );
+  assert.match(adminRuntimeEventsBody, /createAdminRefreshBatch/);
+  assert.match(adminRuntimeEventsBody, /batch.add\(adminEventSections\(event\)\)/);
+  assert.match(adminRuntimeEventsBody, /sections.has\(currentSection\)/);
+  assert.doesNotMatch(adminRuntimeEventsBody, /addEventListener\("focus"/);
+  assert.match(adminRuntimeEventsBody, /visibilitychange", batch.resume/);
 }
 
 function testSignalBackedSectionsRefreshSilentlyThroughSignals() {
@@ -348,16 +305,8 @@ function testSignalBackedSectionsRefreshSilentlyThroughSignals() {
     /if \(sectionRef\.current === "tickets"\) {[\s\S]*?setTicketRefreshSignal\(\(current\) => current \+ 1\);[\s\S]*?return;\s*}/,
     "tickets should refresh through its local signal"
   );
-  assert.match(
-    refreshBody,
-    /if \(sectionRef\.current === "imageBed"\) {[\s\S]*?setImageBedRefreshSignal\(\(current\) => current \+ 1\);[\s\S]*?return;\s*}/,
-    "image bed should refresh through its local signal"
-  );
-  assert.match(
-    refreshBody,
-    /if \(sectionRef\.current === "runtimeComponents"\) {[\s\S]*?setRuntimeComponentRefreshSignal\(\(current\) => current \+ 1\);[\s\S]*?return;\s*}/,
-    "runtime components should refresh through its local signal"
-  );
+  assert.doesNotMatch(refreshBody, /=== "imageBed"/, "旧独立页面分支应被移除");
+  assert.doesNotMatch(refreshBody, /=== "runtimeComponents"/, "旧独立页面分支应被移除");
 }
 
 function testSessionExpiredClearsBusyRefs() {
@@ -534,7 +483,7 @@ console.log("admin app header refresh regression checks passed");
 
 assert.match(
   handleHeaderRefreshBody,
-  /await loadSectionData\(currentSection, \{ force: true \}\);\s*if \(leaseRevocationQueueRef\.current\.opened\) \{\s*refreshNodeCommandQueueDetail\(leaseRevocationQueueRef\.current\.filter\)/,
+  /await loadSectionData\(currentSection === "users" \? "subscriptions" : currentSection, \{ force: true \}\);\s*if \(leaseRevocationQueueRef\.current\.opened\) \{\s*refreshNodeCommandQueueDetail\(leaseRevocationQueueRef\.current\.filter\)/,
   "手动刷新完成后必须读取当前抽屉目标并刷新命令明细"
 );
 
@@ -557,3 +506,5 @@ async function testManualRefreshReadsLatestDrawerTarget() {
   }
 }
 void testManualRefreshReadsLatestDrawerTarget().catch(error => { console.error(error); process.exitCode = 1; });
+
+assert.match(source, /settingsPanelRef.current === "imageBed"/);

@@ -40,6 +40,7 @@ const copyTargets = [
   "apps/admin/package.json",
   "apps/admin/tsconfig.json",
   "apps/admin/vite.config.ts",
+  "apps/admin/dev-proxy.ts",
   "apps/admin/index.html",
   "apps/admin/src",
   "deploy/backend/Dockerfile.api",

@@ -30,11 +30,10 @@ ChordV 是一套面向团队订阅、节点接入、客户端分发与流量计�
 
 ### 环境要求
 
-- Node.js 20.19.x（Windows Git Bash 下会自动使用 NVM 中已安装的兼容版本）
+- Node.js（本地使用 PATH 中的当前版本，不再锁定 20.19.x；发布基线见 `.nvmrc`）
 - pnpm 9.15.3
-- PostgreSQL（未配置时由 `start.sh` 在项目目录自动准备）
-- Rust 与 Tauri 构建依赖
-- macOS 打包需 Xcode Command Line Tools
+- PostgreSQL（可使用现有数据库；Windows Git Bash 支持项目内自动准备）
+- 仅在单独开发桌面客户端时才需要 Rust、Tauri；macOS 桌面打包另需 Xcode Command Line Tools
 
 ### 初始化
 
@@ -46,27 +45,29 @@ pnpm setup:mac
 
 如果你当前使用的是远端数据库和现成后台，不要执行这个命令。只需要把根目录 `.env` 里的 `DATABASE_URL` 指向远端 PostgreSQL，然后直接启动桌面端即可。
 
-### 启动完整本地测试环境
+### 启动本地后台开发环境
 
 ```bash
-./start.sh
+bash ./start.sh
 ```
 
-脚本会自动选择 NVM 中已安装的 Node.js 20.19.x，不修改系统全局 Node。首次运行时会安装缺失的 pnpm 依赖；未配置 `DATABASE_URL` 时，会把官方 PostgreSQL 16 解压到 `.data/local-runtime/`，初始化本地数据库、执行迁移并仅在首次写入开发数据，然后以前台方式启动：
+默认只启动运营后台页面和本机 API，浏览器统一访问 **http://127.0.0.1:5174**。页面请求通过同地址的 `/api` 转发到内部 API（默认 3000），不再依赖跨端口请求或默认线上地址。页面和 API 均就绪后，脚本才打印“后台服务已就绪”。启动不包含 Tauri、Rust 构建、Xray 下载或节点 Agent。
 
-- API 服务：`http://localhost:3000`
-- 运营后台：`http://127.0.0.1:5174`
-- Tauri 桌面客户端（开发页面端口：`http://localhost:5173`）
+脚本使用当前 PATH 中的 Node.js；缺少 Corepack 时通过 npm 在 `.data/local-runtime/tooling/` 准备固定版本，不全局安装。已有依赖直接复用，Prisma Client 仅在缺失、模型或版本变化时生成，共享模块在启动前准备一次。本地托管数据库仍执行必要的迁移检查，开发数据仅在首次初始化或凭据重新生成时写入。
 
-使用自定义 API 端口：
+自定义后台页面端口：
 
 ```bash
-./start.sh 3100
+bash ./start.sh 5180
 ```
 
-本地 Direct/Shadow 联调默认关闭。只有在 `.env` 显式设置 `CHORDV_LOCAL_AGENT_ENABLED=true`，并提供 `CHORDV_AGENT_ID`、`CHORDV_NODE_ID`、`CHORDV_AGENT_TOKEN`、`CHORDV_LOCAL_XRAY_BINARY`、`CHORDV_LOCAL_XRAY_CONFIG` 时，`start.sh` 才会额外以前台方式启动隔离 Xray 与 Node Agent；`XRAY_API_ADDRESS` 必须绑定 `127.0.0.1` 或 `localhost`。按 `Ctrl+C` 会随其余本地服务一并退出，不需要额外关闭脚本。
+位置参数优先于 `CHORDV_ADMIN_PORT`，表示浏览器访问端口；内部 API 端口可通过 `CHORDV_API_PORT` 单独设置，不能与页面端口相同。旧版位置参数表示 API 端口的行为已调整。
 
-位置参数优先于 `.env` 中的 `CHORDV_API_PORT`。首次准备 PostgreSQL 需要下载约 311 MiB；后续会直接复用项目本地运行时和数据。API 就绪后，脚本会准备 Xray 运行组件并打开 Tauri 客户端；运营后台可用于添加节点和维护本地测试数据。日志显示在当前终端，按 `Ctrl+C` 会同时停止运营后台、桌面客户端、API 和本次启动的项目本地 PostgreSQL，因此不需要关闭脚本。显式配置外部 `DATABASE_URL` 时，脚本只检查连接，不会迁移、Seed 或替换外部数据库。
+未配置 `DATABASE_URL` 时默认使用本机 `127.0.0.1:54329` 的开发数据库；Windows Git Bash 可自动下载并启动项目内 PostgreSQL，其他系统需已有可用 PostgreSQL。显式配置外部数据库时，不执行迁移、Seed 或替换数据库。按 Ctrl+C 会停止本次后台进程，以及本次启动的项目内 PostgreSQL；不关闭其他项目的进程。
+
+`pnpm dev:local` 使用同一个启动入口。需要联调节点 Agent 时使用 `pnpm dev:local:agent`（等价于 `bash ./start.sh --with-agent`），在根目录 `.env` 配置身份与 Xray 路径；脚本先加载配置、准备依赖及数据库，再让后台与 Agent 继承同一个 API 地址。默认后台启动不会读取旧 Agent 开关来增加额外进程。
+
+单独启动后台页面对接远程 API 时，可显式设置 `CHORDV_DEV_API_TARGET`，兼容原来的 `VITE_API_BASE_URL` 环境变量；前端仍通过 Vite 的同源 `/api` 代理。`start.sh` 会明确指定本机 API，不受远程地址影响。
 
 ### 启动桌面客户端
 
@@ -86,7 +87,8 @@ PATH=/opt/homebrew/bin:/usr/local/bin:$PATH VITE_API_BASE_URL=https://v.baymaxgr
 
 | 变量 | 说明 |
 | --- | --- |
-| `CHORDV_API_PORT` | API 服务端口，默认 `3000` |
+| `CHORDV_API_PORT` | 内部 API 服务端口，默认 `3000` |
+| `CHORDV_ADMIN_PORT` | 后台页面访问端口，默认 `5174` |
 | `CHORDV_API_BASE_URL` | 前端和客户端访问 API 的基础地址 |
 | `CHORDV_RUNTIME_COMPONENT_API_BASE_URL` | 本地 API 未配置 Xray 组件时使用的组件服务，默认 `https://v.baymaxgroup.com` |
 | `CHORDV_PUBLIC_BASE_URL` | 对外公开域名，用于生成下载地址 |

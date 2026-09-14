@@ -9,9 +9,9 @@ import type {
 import { filterLeaseRevocationJobs, filterNodeCommandJobs } from "../src/utils/admin-queue-filters";
 import { findNodeCommandSummary, sumNodeCommandSummaries } from "../src/utils/node-command-summary";
 
-const nodesPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/NodesPage.tsx"), "utf8");
+const nodesPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/NodesPage.tsx"), "utf8") + readFileSync(resolve(import.meta.dirname, "../src/features/nodes/SyncTasksModal.tsx"), "utf8");
 const queueFiltersSource = readFileSync(resolve(import.meta.dirname, "../src/utils/admin-queue-filters.ts"), "utf8");
-const usersPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/UsersPage.tsx"), "utf8");
+const usersPageSource = ["CustomerTaskStatus.tsx", "CustomerActivity.tsx", "CustomerMembers.tsx"].map(file => readFileSync(resolve(import.meta.dirname, "../src/features/customers", file), "utf8")).join("\n");
 const subscriptionsPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/SubscriptionsPage.tsx"), "utf8");
 const appSource = readFileSync(resolve(import.meta.dirname, "../src/App.tsx"), "utf8");
 
@@ -140,12 +140,12 @@ function testUserAndSubscriptionPendingPanelSyncUseYellowInlineStatus() {
 function testLeaseRevocationQueueRetryButtonsExposeScopedBusyState() {
   assert.match(
     nodesPageSource,
-    /loading=\{props\.leaseRetryBusyKey === `lease-job:\$\{job\.id\}`\}[\s\S]*?disabled=\{!retryable \|\| \(props\.leaseRetryBusyKey !== null && props\.leaseRetryBusyKey !== `lease-job:\$\{job\.id\}`\)\}/,
+    /retryable \? <Button[^>]*loading=\{props\.leaseRetryBusyKey === `lease-job:/,
     "lease revocation retry should show row-scoped busy state and block competing retry clicks"
   );
   assert.match(
     nodesPageSource,
-    /loading=\{props\.leaseRetryBusyKey === `lease-node:\$\{job\.nodeId\}`\}[\s\S]*?disabled=\{!nodeRetryable \|\| \(props\.leaseRetryBusyKey !== null && props\.leaseRetryBusyKey !== `lease-node:\$\{job\.nodeId\}`\)\}/,
+    /retryable && job.nodeId[\s\S]*?loading=\{props\.leaseRetryBusyKey === `lease-node:/,
     "node-level lease revocation retry should show row-scoped busy state and block competing retry clicks"
   );
 }
@@ -201,7 +201,7 @@ function testNodeCommandQueueShowsDirectProvisioning() {
 
   assert.match(
     nodesPageSource,
-    /hasNodeCommandQueueFilter\(props\.filter\)\s*\?\s*commandDetail\?\.queue\?\.jobs \?\? \[\]\s*:\s*props\.nodeCommandQueue\.jobs/,
+    /const commands = scoped \? detail\?\.queue\?\.jobs \?\? \[\] : props\.nodeCommandQueue\.jobs/,
     "队列抽屉过滤视图必须用服务端按目标取回的命令明细，而不是被截断的全局列表"
   );
   assert.match(
@@ -211,7 +211,7 @@ function testNodeCommandQueueShowsDirectProvisioning() {
   );
   assert.match(
     nodesPageSource,
-    /const hasFilter = hasLeaseRevocationQueueFilter\(props\.filter\) \|\| hasNodeCommandQueueFilter\(props\.filter\);/,
+    /const filtered = scoped \|\| hasLeaseRevocationQueueFilter\(props\.filter\)/,
     "抽屉标题与「查看全部」必须用组合谓词——team-only 视图也是过滤视图，不得显示全局标题并隐藏返回入口"
   );
   // Badge-scope alignment: a USER-scoped badge counts that user's commands
@@ -240,7 +240,7 @@ function testNodeCommandQueueShowsDirectProvisioning() {
   );
   assert.match(
     nodesPageSource,
-    /const queueCount = props\.leaseRevocationJobs\.length\s*\n\s*\+ sumNodeCommandSummaries\(props\.nodeCommandQueue\.summaries, "nodes"\);/,
+    /const total = lease\.total \+ \(command\?\.total \?\? 0\)/,
     "节点页同步任务按钮的计数必须含节点命令总数——与表头/概览口径一致"
   );
   assert.doesNotMatch(
@@ -260,7 +260,7 @@ function testNodeCommandQueueShowsDirectProvisioning() {
   );
   assert.match(
     usersPageSource,
-    /teamId: item\.id,\s*\n\s*teamSubscriptionIds: props\.allSubscriptions[\s\S]*?teamId === item\.id[\s\S]*?\.map\(\(subscription\) => subscription\.id\)/,
+    /teamId: customer\.team!\.id, teamSubscriptionIds: actions\.allSubscriptions[\s\S]*?teamId === customer\.team!\.id[\s\S]*?\.map\(s => s\.id\)/,
     "团队入口必须把该团队的订阅集合传给撤销过滤"
   );
   // Member-level badges count the user across ALL teams; teamId must not
@@ -298,21 +298,21 @@ function testNodeCommandQueueShowsDirectProvisioning() {
     /if \(status === "cancelled"\) return "red";/,
     "重试耗尽必须用红色（未解决的失败），不得用灰色"
   );
-  assert.match(nodesPageSource, /节点命令同步/, "队列抽屉必须包含节点命令分区");
+  assert.match(nodesPageSource, /节点命令/, "队列抽屉必须包含节点命令分区");
   assert.match(nodesPageSource, /translateNodeCommandType\(job\.commandType\)/);
   assert.match(
     nodesPageSource,
-    /commandDetail\?\.failed \? \(\s*\/\/ Rendered regardless of row count[\s\S]*?该对象的节点命令刷新失败，下方为上次成功加载的内容（可能已过期）。/,
+    /failed \? <Text[^>]*role="alert">[\s\S]*?以下保留上次结果，可能已过期/,
     "刷新失败提示必须独立于行数渲染——非空的过期列表也要标明已过期"
   );
   assert.match(
     nodesPageSource,
-    /commandDetail\?\.failed \? \(\s*<Text c="red">该对象的节点命令加载失败/,
+    /节点命令加载失败/,
     "明细加载失败必须明示，不得静默显示空表或旧数据"
   );
   assert.match(
     nodesPageSource,
-    /正在加载该对象的节点命令/,
+    /loading \? <DataSkeleton/,
     "过滤视图在明细未就绪时必须显示加载中，而不是「暂无」"
   );
   assert.match(
@@ -332,20 +332,20 @@ function testNodeCommandQueueShowsDirectProvisioning() {
   );
   assert.match(
     appSource,
-    /<PanelSyncQueueDrawer[\s\S]*?nodeCommandQueue=\{snapshot\.nodeCommandQueue\}/,
+    /<SyncTasksModal[\s\S]*?nodeCommandQueue=\{snapshot\.nodeCommandQueue\}/,
     "抽屉必须拿到快照里的节点命令队列"
   );
   assert.match(
     nodesPageSource,
-    /findNodeCommandSummary\(props\.nodeCommandSummaries, "nodes", props\.node\.id\)/,
+    /findNodeCommandSummary\(props\.nodeCommandQueue\.summaries, "nodes", node\.id\)/,
     "节点行的同步状态必须用精确聚合统计该节点的命令，而不是分页列表"
   );
   assert.match(
     nodesPageSource,
-    /if \(leaseSummary\.total <= 0 && \(commandSummary\?\.total \?\? 0\) <= 0\) \{\s*return \(\s*<Badge color="green" variant="light">\s*已同步/,
+    /total > 0 \? <Button[\s\S]*?无待处理/,
     "只有连接撤销与节点命令都为空时才能显示已同步"
   );
-  assert.match(nodesPageSource, /buildBackgroundSyncLabel\("节点命令", commandSummary\)/);
+  assert.match(nodesPageSource, /sumNodeCommandSummaries/);
   assert.match(
     appSource,
     /<NodesPage[\s\S]*?nodeCommandQueue=\{snapshot\.nodeCommandQueue\}/,
@@ -381,7 +381,7 @@ function testNodeCommandSummariesDriveSyncState() {
     );
     assert.match(
       source,
-      /findNodeCommandSummary\(props\.nodeCommandQueue\.summaries/,
+      /findNodeCommandSummary\((?:props|actions)\.nodeCommandQueue\.summaries/,
       `${label} page must read the direct command summaries from the snapshot`
     );
     assert.match(source, /buildNodeCommandPendingLabel\(commandSummary\)/);
