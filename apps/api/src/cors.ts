@@ -1,3 +1,4 @@
+import { siteAddressContext } from "./modules/common/site-address.context";
 // Keep the legacy origin during the migration window; generated links use the
 // new canonical origin via CHORDV_PUBLIC_BASE_URL.
 const DEFAULT_CORS_ORIGINS = ["https://v.achord.cn", "https://v.baymaxgroup.com"];
@@ -41,11 +42,14 @@ function allowLocalDevOrigins() {
 }
 
 function allowedCorsOrigins() {
+  const configured = siteAddressContext.getStore();
   const values = [
-    ...DEFAULT_CORS_ORIGINS,
+    configured?.primaryOrigin,
+    ...(configured?.legacyOrigins ?? []),
+    ...(configured?.updatedAt ? [] : DEFAULT_CORS_ORIGINS),
     process.env.CHORDV_CORS_ORIGINS,
     process.env.CHORDV_API_BASE_URL,
-    process.env.CHORDV_PUBLIC_BASE_URL,
+    configured?.updatedAt ? undefined : process.env.CHORDV_PUBLIC_BASE_URL,
     process.env.CHORDV_ADMIN_BASE_URL
   ];
   return new Set(

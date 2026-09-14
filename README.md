@@ -297,3 +297,10 @@ openssl pkey -in manifest_ed25519.pem -pubout -outform DER | base64 -w0 # 公钥
 线上库若原先由 `prisma db push` 维护（无迁移历史），首次用容器部署时它既不匹配最终 schema 也不匹配 init 快照，严格基线助手会拒绝自动执行。需先做一次**受控基线**（见 `.env.example` 中 `CHORDV_PRISMA_FORCE_BASELINE` / `CHORDV_SKIP_MIGRATION_BASELINE_CHECK` 与 `scripts/prisma-migrate-with-baseline.mjs` 说明），确认基线正确后再切流量；此后 `release-backend.yml` 产出的迁移即可正常增量应用。
 
 > 桌面客户端发布（`release-desktop.yml`）不受影响，维持原流程。宝塔 pm2 流水线（`deploy-baota.yml` / `scripts/deploy-baota.sh`）已停用自动触发，仅保留手动 `workflow_dispatch` 作为迁移期兜底，确认容器部署稳定后可整体删除。
+### 站点地址与旧组件迁移
+
+“系统设置 → 站点地址与下载镜像”可保存客户端主地址和迁移期间保留的旧地址。配置存储在数据库；未保存时沿用 `CHORDV_PUBLIC_BASE_URL`，保存后覆盖该环境默认值。本站安装包、运行组件下载链接及新 Agent 安装脚本在后续请求中使用保存的主地址，外部下载链接不改写。
+
+新版客户端可通过 `GET /api/client/site-address` 发现地址配置。旧安装包不会自动更改连接地址，迁移期间仍需保留旧域名的 DNS、证书和代理；保存站点配置不会操作这些部署设施。
+
+全局下载镜像移至系统设置。运行组件页可直接启停组件；仍有启用中的旧来源组件时，发布中心显示“旧组件迁移”。全部启用组件都有就绪的固定版本后，旧入口自动退出。状态读取失败时保留兼容入口，不误判迁移已完成；旧下载 API 和存储文件继续保留。

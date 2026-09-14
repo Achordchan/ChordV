@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { AgentRegisterService } from "./agent-register.service";
+import { publicSiteOrigin } from "../common/site-address.context";
 import { agentReleaseRoot, loadGoRelease, type GoRelease } from "./agent-go-release";
 import { normalizePanelInbound, type PanelInboundSpec } from "./panel-inbound";
 
@@ -27,7 +28,7 @@ export class AgentInstallController {
       const token = await this.registerService.resolveTokenNode(body.token);
       if (!token) throw new Error("安装令牌不存在，请重新生成命令");
       if (!token.spec && !token.environmentOnly) this.registerService.requireOnboardingSpec();
-      const configured = process.env.CHORDV_PUBLIC_BASE_URL?.trim();
+      const configured = publicSiteOrigin();
       const origin = normalizeOrigin(configured || (host ? (proto?.split(",")[0]?.trim() || "http") + "://" + host : ""));
       response.status(200).end(renderInstallScript({ token: body.token, apiBase: origin,
         nodeId: token.nodeId, usable: token.usable, spec: token.spec, release: loadGoRelease() }));

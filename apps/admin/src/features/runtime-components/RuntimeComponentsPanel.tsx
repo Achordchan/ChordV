@@ -9,9 +9,7 @@ import {
   Group,
   Menu,
   Stack,
-  Switch,
   Text,
-  Textarea,
   Title
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
@@ -39,7 +37,6 @@ import {
   fetchAdminDownloadMirrorConfig,
   fetchAdminRuntimeComponentFailures,
   replaceAdminRuntimeComponentUpload,
-  updateAdminDownloadMirrorConfig,
   uploadAdminRuntimeComponent,
   updateAdminRuntimeComponent,
   verifyAdminRuntimeComponent
@@ -128,11 +125,6 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
   const [failuresRefreshing, setFailuresRefreshing] = useState(false);
   const [form, setForm] = useState<RuntimeComponentEditorFormState>(emptyRuntimeComponentEditorForm());
   const [mirrorConfig, setMirrorConfig] = useState<AdminDownloadMirrorConfigDto | null>(null);
-  const [mirrorPrefixDraft, setMirrorPrefixDraft] = useState("");
-  const [allowClientMirrorDraft, setAllowClientMirrorDraft] = useState(true);
-  const [useMirrorForSystemUpdateDraft, setUseMirrorForSystemUpdateDraft] = useState(true);
-  const [mirrorSaving, setMirrorSaving] = useState(false);
-  const [mirrorLoading, setMirrorLoading] = useState(false);
   const savingRef = useRef(false);
   const verifyingRef = useRef<string | null>(null);
   const failureRefreshSeqRef = useRef(0);
@@ -364,49 +356,14 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
 
   async function loadMirrorConfig() {
     try {
-      setMirrorLoading(true);
       const config = await fetchAdminDownloadMirrorConfig();
       setMirrorConfig(config);
-      setMirrorPrefixDraft(config.defaultMirrorPrefix ?? "");
-      setAllowClientMirrorDraft(config.allowClientMirror);
-      setUseMirrorForSystemUpdateDraft(config.useMirrorForSystemUpdate);
     } catch (reason) {
       notifications.show({
         color: "red",
         title: "客户端组件",
         message: readError(reason, "加载加速镜像配置失败")
       });
-    } finally {
-      setMirrorLoading(false);
-    }
-  }
-
-  async function saveMirrorConfig() {
-    if (mirrorSaving) return;
-    try {
-      setMirrorSaving(true);
-      const config = await updateAdminDownloadMirrorConfig({
-        defaultMirrorPrefix: mirrorPrefixDraft.trim() || null,
-        allowClientMirror: allowClientMirrorDraft,
-        useMirrorForSystemUpdate: useMirrorForSystemUpdateDraft
-      });
-      setMirrorConfig(config);
-      setMirrorPrefixDraft(config.defaultMirrorPrefix ?? "");
-      setAllowClientMirrorDraft(config.allowClientMirror);
-      setUseMirrorForSystemUpdateDraft(config.useMirrorForSystemUpdate);
-      notifications.show({
-        color: "green",
-        title: "客户端组件",
-        message: "全局加速镜像已保存"
-      });
-    } catch (reason) {
-      notifications.show({
-        color: "red",
-        title: "客户端组件",
-        message: readError(reason, "保存加速镜像配置失败")
-      });
-    } finally {
-      setMirrorSaving(false);
     }
   }
 
@@ -428,50 +385,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         onSubmit={() => void saveComponent()}
       />
 
-      <Card withBorder radius="xl" p="lg">
-        <Stack gap="md">
-          <Group justify="space-between" align="flex-start" wrap="wrap">
-            <Stack gap={4}>
-              <Title order={4}>全局加速镜像</Title>
-              <Text size="sm" c="dimmed">
-                发布中心安装包与客户端组件共用。每行一个前缀，优先走加速，失败再回源地址。
-              </Text>
-            </Stack>
-            <Button onClick={() => void saveMirrorConfig()} loading={mirrorSaving} disabled={mirrorLoading}>
-              保存镜像
-            </Button>
-          </Group>
-          <Textarea
-            label="加速前缀"
-            description="支持 https://mirror.example/ 或带 {url} 的模板。可填多行。"
-            autosize
-            minRows={3}
-            placeholder={"https://ghfast.top/\nhttps://gh-proxy.com/"}
-            value={mirrorPrefixDraft}
-            onChange={(event) => setMirrorPrefixDraft(event.currentTarget.value)}
-            disabled={mirrorLoading || mirrorSaving}
-          />
-          <Switch
-            label="允许客户端自定义镜像"
-            description="关闭后客户端只能使用后台全局镜像和源地址。"
-            checked={allowClientMirrorDraft}
-            onChange={(event) => setAllowClientMirrorDraft(event.currentTarget.checked)}
-            disabled={mirrorLoading || mirrorSaving}
-          />
-          <Switch
-            label="后台自更新也走镜像"
-            description="关闭后，后台下载自身更新包时直连源地址，不再经过镜像；客户端组件不受影响，仍按上方配置走镜像。服务器已能直连源站时关闭可少一跳。"
-            checked={useMirrorForSystemUpdateDraft}
-            onChange={(event) => setUseMirrorForSystemUpdateDraft(event.currentTarget.checked)}
-            disabled={mirrorLoading || mirrorSaving}
-          />
-          {mirrorConfig?.updatedAt ? (
-            <Text size="xs" c="dimmed">
-              最近保存 {formatDateTime(mirrorConfig.updatedAt)}
-            </Text>
-          ) : null}
-        </Stack>
-      </Card>
+      <Text size="sm" c="dimmed">全局下载镜像已迁移至系统设置 → 站点地址与下载镜像。</Text>
 
       <Card withBorder radius="xl" p="lg">
         <Stack gap="md">
@@ -505,7 +419,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
                 validations={validations}
                 saving={saving}
                 verifyingId={verifyingId}
-                mirrorPrefixCount={countMirrorPrefixes(mirrorPrefixDraft)}
+                mirrorPrefixCount={countMirrorPrefixes(mirrorConfig?.defaultMirrorPrefix ?? "")}
                 onAdd={() => openCreate(slot.key)}
                 onEdit={openEdit}
                 onVerify={(record) => void verifyComponent(record)}
@@ -794,4 +708,3 @@ function formatBytes(value?: string | null) {
   }
   return `${current.toFixed(current >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }
-

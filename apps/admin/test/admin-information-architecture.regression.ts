@@ -157,7 +157,7 @@ for(const action of ["openCreateRelease","loadReleases","publishRelease","withdr
 }
 
 function testPoliciesAndRuntimeComponentsUseCurrentNavigationNames() {
-assert.match(policiesPageSource,/onSave/); assert.match(runtimeComponentsPanelSource,/RuntimeComponentSlotCard/); assert.match(runtimeComponentsPanelSource,/全局加速镜像/); assert.match(runtimeComponentsPanelSource,/复制下载地址/); assert.match(runtimeComponentEditorSource,/高级选项/);
+assert.match(policiesPageSource,/onSave/); assert.match(runtimeComponentsPanelSource,/RuntimeComponentSlotCard/); assert.match(runtimeComponentsPanelSource,/全局下载镜像已迁移至系统设置/); assert.match(runtimeComponentsPanelSource,/复制下载地址/); assert.match(runtimeComponentEditorSource,/高级选项/);
 }
 
 function testNodesPageKeepsNodeAndSyncTaskActions() {
