@@ -26,3 +26,12 @@ layout = reduceWindowLayout(layout, { type: "success", signedIn: true });
 assert.equal(layout.error, null);
 assert.equal(resolveWindowPresentation(true, false, layout.settled).mainLayoutReady, true);
 console.log("window resize retry regression checks passed");
+
+// Returning to the previous auth state cannot treat an in-flight resize as settled.
+let switching = reduceWindowLayout(initialWindowLayoutState, { type: "success", signedIn: false });
+switching = reduceWindowLayout(switching, { type: "start" });
+assert.equal(switching.settled, null);
+assert.deepEqual(resolveWindowPresentation(false, false, switching.settled), { mainLayoutReady: false, windowTransitioning: true });
+switching = reduceWindowLayout(switching, { type: "success", signedIn: false });
+assert.deepEqual(resolveWindowPresentation(false, false, switching.settled), { mainLayoutReady: false, windowTransitioning: false });
+console.log("superseded window transition regression checks passed");

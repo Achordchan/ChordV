@@ -11,7 +11,7 @@ export const initialWindowLayoutState: WindowLayoutState = { settled: null, busy
 export type WindowLayoutEvent = { type: "start" } | { type: "success"; signedIn: boolean } | { type: "failure" };
 
 export function reduceWindowLayout(state: WindowLayoutState, event: WindowLayoutEvent): WindowLayoutState {
-  if (event.type === "start") return { ...state, busy: true, error: null };
+  if (event.type === "start") return { settled: null, busy: true, error: null };
   if (event.type === "success") {
     if (state.settled === event.signedIn && !state.busy && !state.error) return state;
     return { settled: event.signedIn, busy: false, error: null };
