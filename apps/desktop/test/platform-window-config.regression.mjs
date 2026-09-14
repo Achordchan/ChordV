@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+const read = name => JSON.parse(readFileSync(new URL(`../src-tauri/${name}`,import.meta.url),'utf8'));
+const base = read('tauri.conf.json').app.windows[0];
+const linux = read('tauri.linux.conf.json').app.windows[0];
+assert.deepEqual([base.width,base.height],[660,440]);
+assert.deepEqual([linux.width,linux.height,linux.minWidth,linux.minHeight],[980,700,980,700]);
+assert.equal(linux.resizable,base.resizable);
+assert.equal(linux.visible,base.visible);
+console.log('platform window configuration regression checks passed');

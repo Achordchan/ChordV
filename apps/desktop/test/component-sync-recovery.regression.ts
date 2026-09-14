@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import { isSuccessfulComponentSync } from '../src/lib/runtimeAssetsState.ts';
+const ready = { checked: true, failed: [], xray: { current: true, available: false }, geo: { current: true, available: false } };
+assert.equal(isSuccessfulComponentSync(true, ready), true);
+assert.equal(isSuccessfulComponentSync(false, ready), false);
+assert.equal(isSuccessfulComponentSync(true, null), false);
+assert.equal(isSuccessfulComponentSync(true, {...ready, checked:false}), false);
+assert.equal(isSuccessfulComponentSync(true, {...ready, failed:['GEO']}), false);
+assert.equal(isSuccessfulComponentSync(true, {...ready, geo:{current:true,available:true}}), false);
+assert.equal(isSuccessfulComponentSync(true, {...ready, xray:{current:false,available:false}}), false);
+console.log('component sync recovery regression checks passed');

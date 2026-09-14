@@ -1,0 +1,17 @@
+{
+  "app": {
+    "windows": [
+      {
+        "title": "ChordV v1.1.8",
+        "width": 980,
+        "height": 700,
+        "minWidth": 980,
+        "minHeight": 700,
+        "resizable": false,
+        "center": true,
+        "visible": false,
+        "acceptFirstMouse": true
+      }
+    ]
+  }
+}

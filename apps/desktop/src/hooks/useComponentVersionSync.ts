@@ -1,3 +1,5 @@
+import { isSuccessfulComponentSync } from "../lib/runtimeAssetsState";
+import type { RuntimeAssetsCheckSummary } from "./useRuntimeAssets";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClientRuntimeEventDto } from "@chordv/shared";
 import { loadRuntimeStatus, type RuntimeStatus } from "../lib/runtime";
@@ -39,6 +41,9 @@ export function useComponentVersionSync(options: Options) {
     if (event?.platform && event.platform !== value.status.platformTarget) return;
     setRequested(count => count + 1);
   }, []);
+  const reportManualSyncResult = useCallback((token: string | null, success: boolean, summary: RuntimeAssetsCheckSummary | null) => {
+    if (alive.current && token === current.current.accessToken && isSuccessfulComponentSync(success, summary)) setSyncError(null);
+  }, []);
   const blocked = !options.enabled || runtimeInUse(options.status) || options.assetsBusy || options.applicationUpdateBusy;
   // Legacy upstream latest URLs have no ChordV event publisher. A 12-hour
   // check uses the same single-flight, idle-only path and ends with the session.
@@ -74,5 +79,5 @@ export function useComponentVersionSync(options: Options) {
       }
     })();
   }, [requested, blocked, options.accessToken, options.status.platformTarget, processing]);
-  return { requestSync, syncError, deferred: Boolean(options.accessToken) && requested > settled && runtimeInUse(options.status) };
+  return { requestSync, reportManualSyncResult, syncError, deferred: Boolean(options.accessToken) && requested > settled && runtimeInUse(options.status) };
 }

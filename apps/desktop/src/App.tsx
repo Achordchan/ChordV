@@ -327,7 +327,7 @@ export function App() {
   });
   runtimeComponentsCheckRef.current = async (input) => {
     const forceCheck = input.source === "manual" || input.source === "refresh";
-    await ensureRuntimeAssetsReady({
+    const success = await ensureRuntimeAssetsReady({
       source: "update_check",
       interactive: false,
       blockConnection: false,
@@ -335,7 +335,9 @@ export function App() {
       inspectOnly: input.inspectOnly,
       targets: input.targets
     });
-    return getLastRuntimeAssetsCheckSummary();
+    const summary = getLastRuntimeAssetsCheckSummary();
+    componentVersionSync.reportManualSyncResult(session?.accessToken ?? null, success, summary);
+    return summary;
   };
   const {
     probeBusy,
