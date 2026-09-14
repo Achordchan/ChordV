@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "发布版本，不带 v，例如 1.1.7"
+        description: "发布版本，不带 v，例如 1.1.8"
         required: true
-        default: "1.1.7"
+        default: "1.1.8"
         type: string
 
 concurrency:
@@ -59,7 +59,7 @@ jobs:
       run:
         shell: bash
     env:
-      CHORDV_PUBLIC_BASE_URL: https://v.baymaxgroup.com
+      CHORDV_PUBLIC_BASE_URL: https://v.achord.cn
     steps:
       - name: Checkout
         uses: actions/checkout@v4

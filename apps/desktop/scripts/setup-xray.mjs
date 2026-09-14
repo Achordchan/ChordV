@@ -130,7 +130,7 @@ function resolveApiBaseUrl() {
     process.env.CHORDV_API_BASE_URL?.trim() ||
     process.env.VITE_API_BASE_URL?.trim() ||
     process.env.CHORDV_PUBLIC_BASE_URL?.trim() ||
-    "https://v.baymaxgroup.com";
+    "https://v.achord.cn";
   return configured.replace(/\/+$/, "");
 }
 

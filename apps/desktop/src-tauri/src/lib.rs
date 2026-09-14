@@ -703,7 +703,7 @@ fn write_session_to_disk(app: &AppHandle, session: &AuthSessionDto) -> Result<()
 #[tauri::command]
 async fn api_request(request: ApiRequestInput) -> Result<ApiResponseOutput, String> {
     let base = std::env::var("CHORDV_API_BASE_URL")
-        .unwrap_or_else(|_| "https://v.baymaxgroup.com".to_string());
+        .unwrap_or_else(|_| "https://v.achord.cn".to_string());
     let base = base.trim_end_matches('/');
     let api_path = if request.path.starts_with("/api/") {
         request.path.clone()
@@ -1083,7 +1083,7 @@ fn emit_client_event_stream_error(
 }
 
 fn api_base_url() -> String {
-    std::env::var("CHORDV_API_BASE_URL").unwrap_or_else(|_| "https://v.baymaxgroup.com".to_string())
+    std::env::var("CHORDV_API_BASE_URL").unwrap_or_else(|_| "https://v.achord.cn".to_string())
 }
 
 fn api_client() -> Result<Client, String> {
@@ -1296,7 +1296,7 @@ fn api_proxy_bypass_hosts() -> Vec<String> {
     let mut hosts = vec!["localhost".to_string(), "127.0.0.1".to_string()];
 
     let base = std::env::var("CHORDV_API_BASE_URL")
-        .unwrap_or_else(|_| "https://v.baymaxgroup.com".to_string());
+        .unwrap_or_else(|_| "https://v.achord.cn".to_string());
     if let Ok(url) = Url::parse(base.trim()) {
         if let Some(host) = url.host_str() {
             let host = host.trim().to_string();

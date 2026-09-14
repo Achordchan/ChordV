@@ -121,7 +121,7 @@ export function resolveUpdateDownloadUrl(downloadUrl: string | null) {
   if (/^https?:\/\//i.test(downloadUrl)) {
     return downloadUrl;
   }
-  return new URL(downloadUrl, import.meta.env.VITE_API_BASE_URL ?? "https://v.baymaxgroup.com").toString();
+  return new URL(downloadUrl, import.meta.env.VITE_API_BASE_URL ?? "https://v.achord.cn").toString();
 }
 
 export function normalizeMirrorPrefix(mirrorPrefix?: string | null) {

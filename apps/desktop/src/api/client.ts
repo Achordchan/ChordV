@@ -183,7 +183,7 @@ async function request<T>(path: string, init?: RequestInit) {
 
 function readApiBaseUrl() {
   const env = (import.meta as ImportMeta & { env?: { VITE_API_BASE_URL?: string } }).env;
-  return env?.VITE_API_BASE_URL ?? "https://v.baymaxgroup.com";
+  return env?.VITE_API_BASE_URL ?? "https://v.achord.cn";
 }
 
 async function requestForm<T>(path: string, body: FormData, init?: Omit<RequestInit, "body">) {
