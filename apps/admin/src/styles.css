@@ -552,6 +552,18 @@ body {
   margin-bottom: 8px;
 }
 
+@media (max-width: 1080px) {
+  .admin-auth-shell { grid-template-columns: 1fr; max-width: 620px; }
+  .admin-auth-title, .admin-auth-form-title { font-size: 48px; }
+  .admin-auth-subtitle, .admin-auth-note-line { font-size: 17px; }
+}
+@media (max-width: 700px) {
+  .admin-auth-root { padding: 20px 12px; }
+  .admin-auth-shell { min-width: 0; display: block; }
+  .admin-auth-intro, .admin-auth-form-card { border-radius: 20px; padding: 24px !important; }
+  .admin-auth-title, .admin-auth-form-title { font-size: 38px; }
+}
+
 .admin-tickets-workspace {
   display: grid;
   grid-template-columns: minmax(320px, 390px) minmax(0, 1fr);
@@ -559,6 +571,9 @@ body {
   align-items: stretch;
   height: clamp(700px, calc(100vh - 176px), 1040px);
   min-height: 0;
+}
+@media (max-width: 1080px) {
+  .admin-tickets-workspace { grid-template-columns: 1fr; height: auto; }
 }
 
 .admin-tickets-list-card,
