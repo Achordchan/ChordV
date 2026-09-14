@@ -27,7 +27,7 @@ function nodeAttention(node: AdminNodeRecordDto) {
 export function OverviewPage(props: OverviewPageProps) {
   const { snapshot } = props;
   const now = Date.now();
-  const queueCount = snapshot.leaseRevocationJobs.filter(job=>job.status!=="completed").length + sumNodeCommandSummaries(snapshot.nodeCommandQueue.summaries,"nodes");
+  const queueCount = snapshot.leaseRevocationJobs.filter(job=>["pending","running","failed"].includes(job.status)).length + sumNodeCommandSummaries(snapshot.nodeCommandQueue.summaries,"nodes");
   const abnormalNodes = snapshot.nodes.filter(node=>nodeAttention(node)===0);
   const pendingNodes = snapshot.nodes.filter(node=>nodeAttention(node)===1);
   const nodeList = [...snapshot.nodes].sort((a,b)=>nodeAttention(a)-nodeAttention(b)||a.name.localeCompare(b.name)).slice(0,4);
@@ -43,7 +43,7 @@ export function OverviewPage(props: OverviewPageProps) {
     <div className={styles.topline}><Text className={styles.date}>{new Intl.DateTimeFormat("zh-CN",{year:"numeric",month:"long",day:"numeric",weekday:"long"}).format(now)}</Text><Button color="teal.9" rightSection={<IconArrowRight size={16}/>} onClick={props.onOpenNodes}>管理节点</Button></div>
     <div className={styles.tasks} aria-label="待处理事项">
       <button onClick={props.onOpenTickets}>待回复工单 <strong>{snapshot.dashboard.waitingAdminTickets ?? 0}</strong><IconChevronRight size={16}/></button>
-      <button onClick={props.onOpenSyncQueue}>同步任务 <strong>{queueCount}</strong><IconChevronRight size={16}/></button>
+      <button onClick={props.onOpenSyncQueue}>后台同步 <strong>{queueCount}</strong><IconChevronRight size={16}/></button>
       <button onClick={props.onOpenNodes}>异常节点 <strong>{abnormalNodes.length}</strong><IconChevronRight size={16}/></button>
       {pendingNodes.length>0?<span>{pendingNodes.length} 个节点状态待确认</span>:null}
     </div>
