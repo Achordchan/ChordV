@@ -340,7 +340,6 @@ body {
   position: relative;
   cursor: pointer;
   transition:
-    transform 140ms ease,
     border-color 140ms ease,
     box-shadow 140ms ease,
     background-color 140ms ease;
@@ -371,7 +370,6 @@ body {
 }
 
 .node-item:hover {
-  transform: translateY(-1px);
   border-color: rgba(8, 145, 178, 0.38);
 }
 
@@ -467,8 +465,7 @@ textarea,
   -webkit-user-select: text;
 }
 
-.ticket-center__modal-content,
-.announcement-center__modal-content {
+.ticket-center__modal-content {
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -482,8 +479,7 @@ textarea,
   max-height: calc(100dvh - 32px);
 }
 
-.ticket-center__modal-header,
-.announcement-center__modal-header {
+.ticket-center__modal-header {
   flex: 0 0 auto;
   padding: 12px 18px 0;
 }
@@ -505,82 +501,6 @@ textarea,
   flex: 1 1 auto;
   min-height: 0;
   height: 100%;
-}
-
-.announcement-center__modal-body {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
-  padding: 8px 18px 18px;
-}
-
-.announcement-center {
-  min-height: min(74vh, 700px);
-}
-
-.announcement-center__headline {
-  min-width: 0;
-}
-
-.announcement-center__list {
-  flex: 1 1 auto;
-  min-height: 0;
-  max-height: min(58vh, 560px);
-  overflow-y: auto;
-  padding-right: 6px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(100, 116, 139, 0.42) transparent;
-}
-
-.announcement-center__list::-webkit-scrollbar {
-  width: 6px;
-}
-
-.announcement-center__list::-webkit-scrollbar-thumb {
-  background: rgba(100, 116, 139, 0.38);
-  border-radius: 999px;
-}
-
-.announcement-center__list::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.announcement-center__card {
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.94);
-}
-
-.announcement-center__summary {
-  min-width: 0;
-}
-
-.announcement-center__summary-main {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.announcement-center__summary-actions {
-  flex: 0 0 auto;
-}
-
-.announcement-center__title {
-  min-width: 0;
-  word-break: break-word;
-}
-
-.announcement-center__card--empty {
-  min-height: 180px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.announcement-center__body {
-  margin-top: 6px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.6;
 }
 
 .ticket-center__topbar {
@@ -1412,15 +1332,15 @@ textarea,
     overflow: auto;
   }
 
-  .desktop-app:not(.desktop-app--mobile-login):not(.desktop-app--mobile),
-  .desktop-app--android:not(.desktop-app--mobile-login):not(.desktop-app--mobile) {
+  .desktop-app:not(.desktop-app--mobile-login):not(.desktop-app--mobile):not(.desktop-app--login),
+  .desktop-app--android:not(.desktop-app--mobile-login):not(.desktop-app--mobile):not(.desktop-app--login) {
     height: auto;
     min-height: 100%;
     overflow: visible;
     padding: 10px;
   }
 
-  .desktop-app.desktop-app--mobile-login {
+  .desktop-app.desktop-app--mobile-login:not(.desktop-app--login) {
     height: 100dvh;
     min-height: 100dvh;
     overflow: hidden;

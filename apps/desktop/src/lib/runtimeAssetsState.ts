@@ -177,3 +177,15 @@ export function extractRuntimeAssetsErrorCode(message: string): RuntimeDownloadF
 export function stripRuntimeAssetsErrorPrefix(message: string) {
   return message.replace(/^runtime_component_error:[a-z_]+:/i, "").trim();
 }
+
+/** Clear a previous background warning only after a retry confirms usable, current components. */
+export function isSuccessfulComponentSync(success: boolean, summary: {
+  checked: boolean;
+  failed: readonly string[];
+  xray: { current: boolean; available: boolean };
+  geo: { current: boolean; available: boolean };
+} | null): boolean {
+  return Boolean(success && summary?.checked && summary.failed.length === 0
+    && summary.xray.current && !summary.xray.available
+    && summary.geo.current && !summary.geo.available);
+}

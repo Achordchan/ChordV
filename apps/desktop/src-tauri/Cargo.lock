@@ -461,11 +461,13 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "chordv-desktop"
-version = "1.1.7"
+version = "1.1.8"
 dependencies = [
  "chrono",
  "hex",
  "native-tls",
+ "objc2-app-kit",
+ "objc2-foundation",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

@@ -1000,7 +1000,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
 
           if (
             summary.updated.length > 0 &&
-            (ensureOptions.interactive || ensureOptions.source === "update_check")
+            ensureOptions.interactive
           ) {
             options.notify?.({
               color: "green",
@@ -1009,6 +1009,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
             });
           } else if (
             summary.failed.length > 0 &&
+            ensureOptions.interactive &&
             ensureOptions.source === "update_check"
           ) {
             options.notify?.({

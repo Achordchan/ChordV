@@ -39,6 +39,7 @@ type SubscriptionPanelProps = {
   hasUnreadTickets: boolean;
   refreshing: boolean;
   updateBusy: boolean;
+  updateStatusDescription?: string;
   hasUpdate: boolean;
   forceUpdate?: boolean;
   serverProbe: SubscriptionServerProbe;
@@ -119,6 +120,7 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
                   leftSection={<IconRosetteDiscountCheck size={14} />}
                   onClick={props.onCheckUpdate}
                   disabled={props.updateBusy}
+                  title={props.updateStatusDescription}
                 >
                   {props.forceUpdate ? "必须更新" : props.hasUpdate ? "有新版本" : "检查更新"}
                 </Menu.Item>
@@ -357,6 +359,7 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
               leftSection={<IconRosetteDiscountCheck size={14} />}
               className="subscription-secondary-button subscription-toolbar-button"
               loading={props.updateBusy}
+              title={props.updateStatusDescription}
               onClick={props.onCheckUpdate}
             >
               {props.forceUpdate ? "必须更新" : props.hasUpdate ? "有新版本" : "检查更新"}

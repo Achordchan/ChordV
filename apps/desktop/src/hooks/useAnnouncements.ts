@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type { AnnouncementDto } from "@chordv/shared";
 import { isUnauthorizedApiError, markAnnouncementsRead } from "../api/client";
 import {
@@ -7,8 +7,7 @@ import {
   patchAnnouncementRecord,
   pickForcedAnnouncement,
   pickPassiveAnnouncements,
-  pickUnreadForcedAnnouncementIds,
-  pickUnreadPassiveAnnouncementIds
+  isPassiveAnnouncementUnread
 } from "../lib/announcementState";
 
 type AnnouncementPatchFn = (updater: (announcements: AnnouncementDto[]) => AnnouncementDto[]) => void;
@@ -34,6 +33,9 @@ function defaultReadError(message: string) {
 
 export function useAnnouncements(options: UseAnnouncementsOptions) {
   const [announcementReadRevision, setAnnouncementReadRevision] = useState(0);
+  const latest = useRef(options);
+  latest.current = options;
+  const seenRequests = useRef(new Map<string, Promise<boolean>>());
 
   const passiveAnnouncements = useMemo(
     () => pickPassiveAnnouncements(options.announcements),
@@ -59,53 +61,33 @@ export function useAnnouncements(options: UseAnnouncementsOptions) {
     [options]
   );
 
-  const markPassiveAnnouncementsSeen = useCallback(async () => {
-    if (!options.accessToken) {
-      return false;
-    }
-    const unreadIds = pickUnreadPassiveAnnouncementIds(passiveAnnouncements);
-    if (unreadIds.length === 0) {
-      return true;
-    }
-
-    try {
-      await markAnnouncementsRead(options.accessToken, {
-        announcementIds: unreadIds,
-        action: "seen"
-      });
-      patchAnnouncementReadState(unreadIds, "seen");
-      return true;
-    } catch (reason) {
-      if (isUnauthorizedApiError(reason)) {
-        await options.onUnauthorized?.();
-      }
-      return false;
-    }
-  }, [options, passiveAnnouncements, patchAnnouncementReadState]);
-
-  const acknowledgeUnreadForcedAnnouncements = useCallback(async () => {
-    if (!options.accessToken) {
-      return false;
-    }
-    const unreadIds = pickUnreadForcedAnnouncementIds(options.announcements);
-    if (unreadIds.length === 0) {
-      return true;
-    }
-
-    try {
-      await markAnnouncementsRead(options.accessToken, {
-        announcementIds: unreadIds,
-        action: "ack"
-      });
-      patchAnnouncementReadState(unreadIds, "ack");
-      return true;
-    } catch (reason) {
-      if (isUnauthorizedApiError(reason)) {
-        await options.onUnauthorized?.();
-      }
-      return false;
-    }
-  }, [options, patchAnnouncementReadState]);
+  const markAnnouncementSeen = useCallback((id: string): Promise<boolean> => {
+    const current = latest.current;
+    const token = current.accessToken;
+    const item = current.announcements.find((value) => value.id === id);
+    if (!token || !item) return Promise.resolve(false);
+    // Viewing a forced announcement never acknowledges it.
+    if (!isPassiveAnnouncementUnread(item)) return Promise.resolve(true);
+    const key = `${token}:${id}`;
+    const existing = seenRequests.current.get(key);
+    if (existing) return existing;
+    const task = (async () => {
+      try {
+        const result = await markAnnouncementsRead(token, { announcementIds: [id], action: "seen" });
+        if (!result.ok || (result.updatedIds && !result.updatedIds.includes(id)) || latest.current.accessToken !== token) return false;
+        const touchedAt = new Date().toISOString();
+        latest.current.patchAnnouncements((items) => items.map((value) => value.id === id
+          ? patchAnnouncementRecord(value, "seen", touchedAt) : value));
+        setAnnouncementReadRevision((value) => value + 1);
+        return true;
+      } catch (reason) {
+        if (latest.current.accessToken === token && isUnauthorizedApiError(reason)) await latest.current.onUnauthorized?.();
+        return false;
+      } finally { seenRequests.current.delete(key); }
+    })();
+    seenRequests.current.set(key, task);
+    return task;
+  }, []);
 
   const acknowledgeAnnouncement = useCallback(
     async (announcement = forcedAnnouncement) => {
@@ -114,10 +96,11 @@ export function useAnnouncements(options: UseAnnouncementsOptions) {
       }
 
       try {
-        await markAnnouncementsRead(options.accessToken, {
+        const result = await markAnnouncementsRead(options.accessToken, {
           announcementIds: [announcement.id],
           action: "ack"
         });
+        if (!result.ok || (result.updatedIds && !result.updatedIds.includes(announcement.id)) || latest.current.accessToken !== options.accessToken) return false;
         patchAnnouncementReadState([announcement.id], "ack");
         return true;
       } catch (reason) {
@@ -146,8 +129,7 @@ export function useAnnouncements(options: UseAnnouncementsOptions) {
     hasUnreadAnnouncements,
     isForcedAnnouncementPending,
     patchAnnouncementReadState,
-    markPassiveAnnouncementsSeen,
-    acknowledgeUnreadForcedAnnouncements,
+    markAnnouncementSeen,
     acknowledgeAnnouncement
   };
 }

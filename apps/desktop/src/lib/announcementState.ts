@@ -110,3 +110,11 @@ function pickLatestForcedAnnouncement(announcements: AnnouncementDto[]) {
     .filter((item) => item.displayMode !== "passive")
     .sort((left, right) => Date.parse(right.publishedAt) - Date.parse(left.publishedAt))[0] ?? null;
 }
+
+/** Sorting must not depend on read-state writes or mutate the shared bootstrap list. */
+export function sortAnnouncementsForReading(announcements: AnnouncementDto[]): AnnouncementDto[] {
+  const timestamp = (value: string) => Date.parse(value) || 0;
+  return [...announcements].sort((left, right) =>
+    timestamp(right.publishedAt) - timestamp(left.publishedAt) || left.id.localeCompare(right.id)
+  );
+}

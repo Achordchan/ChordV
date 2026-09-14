@@ -1,3 +1,4 @@
+import { shouldReportNodeAccessRevoked } from "./lib/startupReadiness";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { Alert, Button, Checkbox, LoadingOverlay, Modal, Progress, Stack, Text, TextInput, ThemeIcon, UnstyledButton } from "@mantine/core";
@@ -80,6 +81,8 @@ import {
   updateActionLabel
 } from "./lib/updateState";
 import { useAnnouncements } from "./hooks/useAnnouncements";
+import { flushSync } from "react-dom";
+import { useDesktopWindowLayout } from "./hooks/useDesktopWindowLayout";
 import { useAuthBootstrap } from "./hooks/useAuthBootstrap";
 import { createIdleServerProbeState, type ServerProbeState, useClientEvents } from "./hooks/useClientEvents";
 import { useNodeProbe } from "./hooks/useNodeProbe";
@@ -111,6 +114,8 @@ export function App() {
   const [mode, setMode] = useState<ConnectionMode>("rule");
   const [runtime, setRuntime] = useState<GeneratedRuntimeConfigDto | null>(null);
   const [booting, setBooting] = useState(true);
+  const startupInspectionKeyRef = useRef<string | null>(null);
+  const { mainLayoutReady, windowTransitioning, prepareStartupLayout, windowLayoutError, windowResizeBusy, retryWindowLayout } = useDesktopWindowLayout(Boolean(session && bootstrap), booting);
   const [authBusy, setAuthBusy] = useState(false);
   const [logoutBusy, setLogoutBusy] = useState(false);
   const [logDrawerOpened, setLogDrawerOpened] = useState(false);
@@ -180,8 +185,7 @@ export function App() {
     announcementReadRevision,
     forcedAnnouncement,
     hasUnreadAnnouncements,
-    markPassiveAnnouncementsSeen,
-    acknowledgeUnreadForcedAnnouncements,
+    markAnnouncementSeen,
     acknowledgeAnnouncement: syncAcknowledgeAnnouncement
   } = useAnnouncements({
     accessToken: session?.accessToken ?? null,
@@ -252,7 +256,7 @@ export function App() {
     showError: showErrorToast,
     onUnauthorized: recoverSessionAfterUnauthorized,
     isPromptBlocked: () =>
-      runtimeAssetsBusy || runtimeAssetsDialogOpened || announcementDrawerOpened || Boolean(forcedAnnouncement),
+      booting || windowTransitioning || runtimeAssetsBusy || runtimeAssetsDialogOpened || announcementDrawerOpened || Boolean(forcedAnnouncement),
     checkRuntimeComponents: async (input) => {
       const runner = runtimeComponentsCheckRef.current;
       if (!runner) {
@@ -264,6 +268,7 @@ export function App() {
   const {
     updatePlatform,
     updateCheckBusy,
+    updateCheckStatus,
     effectiveUpdate,
     forceUpdateRequired,
     updateDialogOpened,
@@ -280,10 +285,8 @@ export function App() {
     handleQuitForUpdate,
     updateCenter,
     closeUpdateCenter,
-    setUpdateCenterItemEnabled,
     handleUpdateCenterCheckOnly,
     handleUpdateCenterUpdateOne,
-    handleUpdateCenterUpdateSelected,
     consumeUpdateInstallReport
   } = updateFlow;
   const effectiveUpdateActionable = hasActionableUpdate(effectiveUpdate, appVersion);
@@ -317,13 +320,14 @@ export function App() {
     readError
   });
   const componentVersionSync = useComponentVersionSync({
+    enabled: !booting && mainLayoutReady && !windowTransitioning && !forceUpdateRequired && (updateCheckStatus === "ready" || updateCheckStatus === "failed"),
     accessToken: session?.accessToken ?? null, status: desktopStatus, assetsBusy: runtimeAssetsBusy,
     applicationUpdateBusy: ["preparing", "downloading"].includes(updateDownload.phase),
-    ensure: ensureRuntimeAssetsReady, onStatus: setDesktopStatus, notify: notifications.show
+    ensure: ensureRuntimeAssetsReady, onStatus: setDesktopStatus
   });
   runtimeComponentsCheckRef.current = async (input) => {
     const forceCheck = input.source === "manual" || input.source === "refresh";
-    await ensureRuntimeAssetsReady({
+    const success = await ensureRuntimeAssetsReady({
       source: "update_check",
       interactive: false,
       blockConnection: false,
@@ -331,7 +335,9 @@ export function App() {
       inspectOnly: input.inspectOnly,
       targets: input.targets
     });
-    return getLastRuntimeAssetsCheckSummary();
+    const summary = getLastRuntimeAssetsCheckSummary();
+    componentVersionSync.reportManualSyncResult(session?.accessToken ?? null, success, summary);
+    return summary;
   };
   const {
     probeBusy,
@@ -694,6 +700,7 @@ export function App() {
     if (session) {
       return;
     }
+    startupInspectionKeyRef.current = null;
     setServerProbe(createIdleServerProbeState());
     setTicketCenterOpened(false);
     setTicketCreateMode(false);
@@ -1398,7 +1405,7 @@ export function App() {
   ]);
 
   useEffect(() => {
-    if (actionBusy || desktopStatus.status !== "connected" || !bootstrap?.subscription) {
+    if (booting || !session || actionBusy || desktopStatus.status !== "connected" || !bootstrap?.subscription) {
       return;
     }
 
@@ -1414,17 +1421,20 @@ export function App() {
   }, [
     actionBusy,
     bootstrap?.subscription,
+    booting,
+    session,
     desktopStatus.status,
     fallbackNode?.id
   ]);
 
   useEffect(() => {
-    if (actionBusy || desktopStatus.status !== "connected" || !runtime) {
+    if (booting || !session || !bootstrap || actionBusy || desktopStatus.status !== "connected" || !runtime) {
       return;
     }
-    if (nodes.some((node) => node.id === runtime.node.id)) {
-      return;
-    }
+    if (!shouldReportNodeAccessRevoked({
+      booting, sessionReady: Boolean(session), bootstrapReady: Boolean(bootstrap),
+      activeNodeId: runtime.node.id, nodes
+    })) return;
 
     void handleForcedGuidance({
       code: "node_access_revoked",
@@ -1434,10 +1444,10 @@ export function App() {
       actionLabel: "切换节点后重连",
       recommendedNodeId: fallbackNode?.id ?? null
     });
-  }, [actionBusy, desktopStatus.status, fallbackNode?.id, nodes, runtime]);
+  }, [booting, session, bootstrap, actionBusy, desktopStatus.status, fallbackNode?.id, nodes, runtime]);
 
   useEffect(() => {
-    if (!runtime || desktopStatus.status !== "connected" || actionBusy) {
+    if (booting || !session || !bootstrap || !runtime || desktopStatus.status !== "connected" || actionBusy) {
       return;
     }
     const runtimeProbe = probeResults[runtime.node.id];
@@ -1453,9 +1463,10 @@ export function App() {
       actionLabel: "切换节点后重连",
       recommendedNodeId: fallbackNode?.id ?? null
     });
-  }, [actionBusy, desktopStatus.status, fallbackNode?.id, probeResults, runtime]);
+  }, [booting, session, bootstrap, actionBusy, desktopStatus.status, fallbackNode?.id, probeResults, runtime]);
 
   useEffect(() => {
+    if (booting || !session || !bootstrap) return;
     const guidance = deriveGuidanceFromRuntimeStatus(desktopStatus, fallbackNode?.id ?? null);
     if (!guidance || actionBusy || !shouldAutoHandleRuntimeGuidance(desktopStatus, runtime?.sessionId ?? null)) {
       lastRuntimeSignalKeyRef.current = null;
@@ -1469,13 +1480,13 @@ export function App() {
 
     lastRuntimeSignalKeyRef.current = key;
     void handleForcedGuidance(guidance);
-  }, [actionBusy, desktopStatus, fallbackNode?.id, runtime?.sessionId]);
+  }, [booting, session, bootstrap, actionBusy, desktopStatus, fallbackNode?.id, runtime?.sessionId]);
 
   useEffect(() => {
     if (!deferredUpdatePromptKeyRef.current) {
       return;
     }
-    if (updateDialogOpened || runtimeAssetsBusy || runtimeAssetsDialogOpened || forcedAnnouncement || announcementDrawerOpened) {
+    if (booting || windowTransitioning || updateDialogOpened || runtimeAssetsBusy || runtimeAssetsDialogOpened || forcedAnnouncement || announcementDrawerOpened) {
       return;
     }
     if (!effectiveUpdateActionable) {
@@ -1494,6 +1505,8 @@ export function App() {
     announcementDrawerOpened,
     effectiveUpdate,
     effectiveUpdateActionable,
+    booting,
+    windowTransitioning,
     forcedAnnouncement,
     runtimeAssetsBusy,
     runtimeAssetsDialogOpened,
@@ -1517,7 +1530,7 @@ export function App() {
   }, [booting, emergencyRuntimeActive, session]);
 
   useEffect(() => {
-    if (desktopStatus.status !== "error" || !desktopStatus.lastError || actionBusy === "disconnect") {
+    if (booting || windowTransitioning || desktopStatus.status !== "error" || !desktopStatus.lastError || actionBusy === "disconnect") {
       return;
     }
 
@@ -1536,7 +1549,7 @@ export function App() {
     }
 
     showErrorToast(desktopStatus.lastError);
-  }, [actionBusy, desktopStatus.lastError, desktopStatus.status]);
+  }, [booting, windowTransitioning, actionBusy, desktopStatus.lastError, desktopStatus.status]);
 
   useEffect(() => {
     if (booting || !session || !bootstrap) {
@@ -1545,8 +1558,10 @@ export function App() {
     if (desktopStatus.platformTarget === "android" || desktopStatus.platformTarget === "web") {
       return;
     }
-    // 首屏可交互后再做本地轻量巡检（无 bundle 哈希、无远端），用于尽快点亮连接按钮。
+    // One local inspection per login; render churn must not restart the same task.
+    if (startupInspectionKeyRef.current === session.accessToken) return;
     const timer = window.setTimeout(() => {
+      startupInspectionKeyRef.current = session.accessToken;
       void ensureRuntimeAssetsReady({
         source: "startup",
         interactive: false,
@@ -1580,13 +1595,11 @@ export function App() {
         await syncForegroundState(restoredSession.accessToken).catch(() => null);
       }
     } finally {
+      await prepareStartupLayout(Boolean(restoredAccessToken)).catch(() => null);
+      // Commit the correctly sized page before showing/focusing the native window.
+      flushSync(() => setBooting(false));
       await appReady().catch(() => null);
-      window.requestAnimationFrame(() => {
-        setBooting(false);
-        window.requestAnimationFrame(() => {
-          void focusDesktopWindow();
-        });
-      });
+      void focusDesktopWindow();
       window.setTimeout(() => {
         void consumeUpdateInstallReport();
       }, 200);
@@ -1619,8 +1632,6 @@ export function App() {
 
   function openAnnouncementDrawer() {
     setAnnouncementDrawerOpened(true);
-    void markPassiveAnnouncementsSeen();
-    void acknowledgeUnreadForcedAnnouncements();
   }
 
   async function acknowledgeAnnouncement() {
@@ -1645,8 +1656,11 @@ export function App() {
         : "";
   const loginMobileClassName =
     mobilePlatformClassName && (!session || !bootstrap) ? " desktop-app--mobile-login" : "";
-  const appClassName = `desktop-app${mobilePlatformClassName ? ` ${mobilePlatformClassName}` : ""}${loginMobileClassName}`;
+  const appClassName = `desktop-app${windowTransitioning ? " desktop-app--window-transition" : ""}${!mainLayoutReady ? " desktop-app--login" : ""}${mobilePlatformClassName ? ` ${mobilePlatformClassName}` : ""}${loginMobileClassName}`;
   const mobileHomeMode = Boolean(session && bootstrap && mobilePlatformClassName);
+  const updateStatusDescription = updateCheckStatus === "failed"
+    ? "暂时无法获取版本信息，点击检查更新重试。"
+    : componentVersionSync.syncError ?? (componentVersionSync.deferred ? "组件待同步，将在断开连接后自动更新。" : undefined);
   const forceUpdateBanner =
     forceUpdateRequired && effectiveUpdateActionable && effectiveUpdate && !updateDialogOpened ? (
       <Alert color={forceUpdateRequired ? "red" : "blue"}>
@@ -1677,14 +1691,14 @@ export function App() {
 
   return (
     <div className={appClassName}>
-      <LoadingOverlay visible={booting} zIndex={200} overlayProps={{ blur: 1 }} />
-      {bootstrap ? (
+      <LoadingOverlay visible={booting} zIndex={200} overlayProps={{ color: "#fff", backgroundOpacity: 1 }} />
+      {bootstrap && !windowTransitioning ? (
         <MeteringFloatingBanner
           status={bootstrap.subscription.meteringStatus}
           message={bootstrap.subscription.meteringMessage ?? null}
         />
       ) : null}
-      {runtimeAssets.phase !== "idle" && runtimeAssets.phase !== "ready" ? (
+      {!windowTransitioning && runtimeAssets.phase !== "idle" && runtimeAssets.phase !== "ready" ? (
         <div className="desktop-runtime-overlay">
           <div className="desktop-runtime-overlay__inner">
             <RuntimeAssetsBanner
@@ -1700,13 +1714,16 @@ export function App() {
         </div>
       ) : null}
 
-      {!session || !bootstrap ? (
+      {!mainLayoutReady || !session || !bootstrap ? (
         <LoginScreen
           email={credentials.email}
           password={credentials.password}
           rememberPassword={rememberPassword}
-          loading={authBusy}
+          loading={authBusy || windowTransitioning || Boolean(session && bootstrap)}
           error={null}
+          windowLayoutError={windowLayoutError}
+          windowResizeBusy={windowResizeBusy}
+          onRetryWindowLayout={retryWindowLayout}
           emergencyRuntimeActive={emergencyRuntimeActive}
           emergencyRuntimeBusy={actionBusy === "disconnect"}
           emergencyRuntimeMessage={
@@ -1793,6 +1810,7 @@ export function App() {
                   hasUnreadTickets={hasUnreadTickets}
                   refreshing={refreshing}
                   updateBusy={updateCheckBusy}
+              updateStatusDescription={updateStatusDescription}
                   hasUpdate={effectiveUpdateActionable}
                   forceUpdate={forceUpdateRequired && effectiveUpdateActionable}
                   serverProbe={subscriptionServerProbe}
@@ -1867,6 +1885,7 @@ export function App() {
               hasUnreadTickets={hasUnreadTickets}
               refreshing={refreshing}
               updateBusy={updateCheckBusy}
+              updateStatusDescription={updateStatusDescription}
               hasUpdate={effectiveUpdateActionable}
               forceUpdate={forceUpdateRequired && effectiveUpdateActionable}
               serverProbe={subscriptionServerProbe}
@@ -1879,7 +1898,6 @@ export function App() {
               onLogout={() => void handleLogout()}
             />
             {forceUpdateBanner}
-            {componentVersionSync.deferred ? <Text size="sm" c="dimmed" role="status">组件版本待同步，将在断开连接后自动检查并更新。</Text> : null}
           </Stack>
 
           <div className="desktop-content">
@@ -1933,6 +1951,8 @@ export function App() {
       <AnnouncementDrawer
         opened={announcementDrawerOpened}
         announcements={bootstrap?.announcements ?? []}
+        onSeen={markAnnouncementSeen}
+        onAcknowledge={syncAcknowledgeAnnouncement}
         onClose={() => setAnnouncementDrawerOpened(false)}
       />
       {session && bootstrap ? (
@@ -1985,7 +2005,7 @@ export function App() {
       />
 
       <Modal
-        opened={closeHintOpened}
+        opened={closeHintOpened && !windowTransitioning}
         onClose={() => setCloseHintOpened(false)}
         centered
         title="关闭窗口说明"
@@ -2029,7 +2049,7 @@ export function App() {
       </Modal>
 
       <Modal
-        opened={runtimeAssetsDialogOpened}
+        opened={runtimeAssetsDialogOpened && !windowTransitioning}
         onClose={() => setRuntimeAssetsDialogOpened(false)}
         centered
         title="必要内核组件未就绪"
@@ -2093,16 +2113,19 @@ export function App() {
 
             <UpdateCenterModal
         state={updateCenter}
+        appVersion={appVersion}
+        runtimeBusy={runtimeAssetsBusy}
+        runtimeInUse={Boolean(desktopStatus.activePid || desktopStatus.activeSessionId || desktopStatus.tunName) || ["connected", "connecting", "starting", "disconnecting"].includes(desktopStatus.status)}
+        syncDeferred={componentVersionSync.deferred}
+        syncError={componentVersionSync.syncError}
         busy={updateCheckBusy || runtimeAssetsBusy || updateCenter.checking || Boolean(updateCenter.updatingKey)}
         onClose={closeUpdateCenter}
-        onToggle={setUpdateCenterItemEnabled}
         onCheckOnly={() => void handleUpdateCenterCheckOnly()}
-        onUpdateSelected={() => void handleUpdateCenterUpdateSelected()}
         onUpdateOne={(key) => void handleUpdateCenterUpdateOne(key)}
       />
 
       <Modal
-        opened={updateDialogOpened && effectiveUpdate !== null}
+        opened={updateDialogOpened && effectiveUpdate !== null && !windowTransitioning}
         onClose={() => {
           if (!forceUpdateRequired) {
             setUpdateDialogOpened(false);
@@ -2204,7 +2227,7 @@ export function App() {
       </Modal>
 
       <Modal
-        opened={forcedAnnouncement !== null}
+        opened={forcedAnnouncement !== null && !windowTransitioning}
         onClose={() => {}}
         withCloseButton={false}
         closeOnEscape={false}

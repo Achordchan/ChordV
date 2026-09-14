@@ -71,6 +71,28 @@ bash ./start.sh 5180
 
 ### 启动桌面客户端
 
+本地原生预览（macOS 自动识别 Intel/Apple Silicon；Windows 在 Git Bash 中执行）：
+
+```bash
+bash ./start-app.sh
+```
+
+脚本只构建当前工作目录所在仓库的客户端：复用桌面前端构建，再编译本机 Tauri 调试程序并启动窗口，不生成安装包、不启动 Vite 服务、不调用后台 `start.sh`。可与后台同时运行；前台日志显示在终端，使用托盘菜单退出或按 `Ctrl+C` 结束。关闭窗口可能仅隐藏到托盘。
+
+首次使用需准备项目依赖、pnpm、Rust/Cargo；macOS 还需 Xcode Command Line Tools，Windows 还需 MSVC C++ Build Tools 和 WebView2。脚本不会自动安装这些依赖。`bash ./start-app.sh --check` 检查基础依赖，`--build-only` 只构建。
+
+本地预览使用独立应用标识和 `.data/local-app/target/` 缓存，不清理正式发布产物。每个工作目录同时只允许一个脚本会话，避免 Windows 正在运行的程序被重新构建。强制结束终端后若残留 `.data/local-app/session.lock`，确认没有预览进程再删除该空目录。
+
+脚本会将 `VITE_API_BASE_URL` 同步到原生请求使用的 `CHORDV_API_BASE_URL`；显式设置的 `CHORDV_API_BASE_URL` 优先保留。
+
+客户端默认使用代码中的站点地址；联调 `start.sh` 启动的本机 API 时显式执行：
+
+```bash
+VITE_API_BASE_URL=http://127.0.0.1:3000 bash ./start-app.sh
+```
+
+原有热重载开发方式：
+
 ```bash
 PATH=/opt/homebrew/bin:/usr/local/bin:$PATH VITE_API_BASE_URL=https://v.achord.cn pnpm dev:mac
 ```
