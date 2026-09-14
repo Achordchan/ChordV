@@ -54,7 +54,7 @@ async function resolveRuntimeComponentApiBaseUrl() {
   } catch {}
 
   const fallback =
-    process.env.CHORDV_RUNTIME_COMPONENT_API_BASE_URL?.trim() || "https://v.baymaxgroup.com";
+    process.env.CHORDV_RUNTIME_COMPONENT_API_BASE_URL?.trim() || "https://v.achord.cn";
   process.stdout.write(
     `\u672c\u5730 API \u672a\u914d\u7f6e\u5b8c\u6574\u8fd0\u884c\u7ec4\u4ef6\uff0c\u5c06\u4ece\u7ec4\u4ef6\u670d\u52a1\u51c6\u5907\uff1a${fallback}\n`
   );
