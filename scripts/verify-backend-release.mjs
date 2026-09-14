@@ -24,7 +24,7 @@ export async function verifyBackendRelease({ run = execute, log = console.log, s
     catch (error) { return { name, seconds: (performance.now() - start) / 1000, passed: false, error }; }
   };
   const results = await Promise.all([
-    timed('api', () => run('pnpm', ['test:api'], root)),
+    timed('api', () => run(process.execPath, ['scripts/verify-api-release.mjs'], root)),
     timed('go', async () => {
       await run('go', ['test', '-race', './...'], resolve(root, 'apps/agent'));
       await run('go', ['vet', './...'], resolve(root, 'apps/agent'));
