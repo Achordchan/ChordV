@@ -355,6 +355,7 @@ export function App() {
   const [sectionLoadErrors, setSectionLoadErrors] = useState<Partial<Record<SectionKey, string>>>({});
   const [loadedSections, setLoadedSections] = useState<Set<SectionKey>>(() => new Set());
   const [refreshingDashboard, setRefreshingDashboard] = useState(false);
+  const dashboardLoadingSeqRef = useRef(0);
   const [authenticated, setAuthenticated] = useState(() => hasAdminSession());
   const actionConfirmation = useActionConfirmation(authenticated);
   const [authSubmitting, setAuthSubmitting] = useState(false);
@@ -976,6 +977,7 @@ export function App() {
     const requestSeq = ++dashboardRefreshSeqRef.current;
     try {
       if (!options?.silent) setRefreshingDashboard(true);
+      if (!options?.silent) dashboardLoadingSeqRef.current = requestSeq;
       const dashboard = await fetchAdminDashboard();
       if (requestSeq !== dashboardRefreshSeqRef.current) {
         return;
@@ -987,7 +989,7 @@ export function App() {
       }
       throw reason;
     } finally {
-      if (!options?.silent) {
+      if (!options?.silent && dashboardLoadingSeqRef.current === requestSeq) {
         setRefreshingDashboard(false);
       }
     }
