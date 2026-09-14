@@ -1,4 +1,6 @@
-const DEFAULT_CORS_ORIGINS = ["https://v.baymaxgroup.com"];
+// Keep the legacy origin during the migration window; generated links use the
+// new canonical origin via CHORDV_PUBLIC_BASE_URL.
+const DEFAULT_CORS_ORIGINS = ["https://v.achord.cn", "https://v.baymaxgroup.com"];
 const DESKTOP_APP_ORIGINS = new Set([
   "tauri://localhost",
   "http://tauri.localhost",

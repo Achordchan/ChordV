@@ -72,13 +72,13 @@ bash ./start.sh 5180
 ### 启动桌面客户端
 
 ```bash
-PATH=/opt/homebrew/bin:/usr/local/bin:$PATH VITE_API_BASE_URL=https://v.baymaxgroup.com pnpm dev:mac
+PATH=/opt/homebrew/bin:/usr/local/bin:$PATH VITE_API_BASE_URL=https://v.achord.cn pnpm dev:mac
 ```
 
 仅启动桌面前端：
 
 ```bash
-PATH=/opt/homebrew/bin:/usr/local/bin:$PATH VITE_API_BASE_URL=https://v.baymaxgroup.com pnpm dev:desktop
+PATH=/opt/homebrew/bin:/usr/local/bin:$PATH VITE_API_BASE_URL=https://v.achord.cn pnpm dev:desktop
 ```
 
 如果 `tauri dev` 报 native binding / code signature 错误，先确认当前终端优先使用的是 Homebrew 的 Node，而不是 Codex.app 自带的 Node。
@@ -90,7 +90,7 @@ PATH=/opt/homebrew/bin:/usr/local/bin:$PATH VITE_API_BASE_URL=https://v.baymaxgr
 | `CHORDV_API_PORT` | 内部 API 服务端口，默认 `3000` |
 | `CHORDV_ADMIN_PORT` | 后台页面访问端口，默认 `5174` |
 | `CHORDV_API_BASE_URL` | 前端和客户端访问 API 的基础地址 |
-| `CHORDV_RUNTIME_COMPONENT_API_BASE_URL` | 本地 API 未配置 Xray 组件时使用的组件服务，默认 `https://v.baymaxgroup.com` |
+| `CHORDV_RUNTIME_COMPONENT_API_BASE_URL` | 本地 API 未配置 Xray 组件时使用的组件服务，默认 `https://v.achord.cn` |
 | `CHORDV_PUBLIC_BASE_URL` | 对外公开域名，用于生成下载地址 |
 | `DATABASE_URL` | PostgreSQL 连接串 |
 | `CHORDV_JWT_SECRET` | JWT 签名密钥，生产环境必须单独配置 |
@@ -187,7 +187,7 @@ pnpm --filter @chordv/desktop android:smoke
 推荐生产变量：
 
 ```bash
-CHORDV_PUBLIC_BASE_URL=https://v.baymaxgroup.com
+CHORDV_PUBLIC_BASE_URL=https://v.achord.cn
 CHORDV_RELEASE_STORAGE_ROOT=/data/releases
 CHORDV_RELEASE_MAX_UPLOAD_BYTES=1073741824
 ```
