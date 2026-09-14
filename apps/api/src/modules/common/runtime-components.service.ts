@@ -1,3 +1,4 @@
+import { publicSiteOrigin } from "./site-address.context";
 import { Optional } from "@nestjs/common";
 import { RuntimeVersionService } from "./runtime-version.service";
 import { workLifecycle } from "../../work-lifecycle";
@@ -490,7 +491,7 @@ export class RuntimeComponentsService {
         } catch (error) {
           this.logger.warn("GitHub latest component resolution failed for " + row.id + ": " + readErrorMessage(error));
         }
-        const originUrl = latestAsset?.originUrl ?? row.originUrl.trim();
+        const originUrl = row.source === "uploaded" && !("runtimeVersionLabel" in row) ? buildRuntimeComponentDownloadUrl(row.id) : latestAsset?.originUrl ?? row.originUrl.trim();
         const fileName = latestAsset?.fileName ?? row.fileName;
         const isRemoteHttp = row.source !== "uploaded" && isHttpUrl(originUrl);
         const defaultMirrorPrefix = isRemoteHttp ? globalMirror.defaultMirrorPrefix : null;
@@ -1042,7 +1043,7 @@ async function toAdminRuntimeComponentRecord(row: {
     architecture: row.architecture,
     kind: row.kind,
     source: row.source,
-    originUrl: row.originUrl,
+    originUrl: row.source === "uploaded" ? buildRuntimeComponentDownloadUrl(row.id) : row.originUrl,
     defaultMirrorPrefix: normalizeMirrorPrefixList(row.defaultMirrorPrefix),
     allowClientMirror: Boolean(row.allowClientMirror),
     fileName: row.fileName,
@@ -1420,7 +1421,7 @@ function resolveRuntimeComponentAbsolutePath(storedFilePath: string) {
 }
 
 function buildRuntimeComponentDownloadUrl(componentId: string) {
-  const publicBaseUrl = (process.env.CHORDV_PUBLIC_BASE_URL ?? "").trim().replace(/\/+$/, "");
+  const publicBaseUrl = publicSiteOrigin();
   const relativeUrl = `${RUNTIME_COMPONENT_DOWNLOAD_PREFIX}/${componentId}`;
   return publicBaseUrl ? `${publicBaseUrl}${relativeUrl}` : relativeUrl;
 }

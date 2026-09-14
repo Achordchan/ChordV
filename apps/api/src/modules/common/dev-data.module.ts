@@ -12,6 +12,7 @@ import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { ClientTicketService } from "./client-ticket.service";
 import { DevDataBootstrapService } from "./dev-data-bootstrap.service";
 import { Global, Module } from "@nestjs/common";
+import { SiteAddressService } from "./site-address.service";
 import { DevDataService } from "./dev-data.service";
 import { ImageBedService } from "./image-bed.service";
 import { DownloadMirrorService } from "./download-mirror.service";
@@ -25,6 +26,7 @@ import { MeteringRetentionService } from "./metering-retention.service";
 @Global()
 @Module({
   providers: [
+    SiteAddressService,
     DevDataService,
     AdminRuntimeEventsService,
     AdminNodeService,
@@ -49,6 +51,7 @@ import { MeteringRetentionService } from "./metering-retention.service";
     AdminAuthGuard
   ],
   exports: [
+    SiteAddressService,
     DevDataService,
     AdminRuntimeEventsService,
     AdminNodeService,

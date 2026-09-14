@@ -1,3 +1,4 @@
+import { publicSiteOrigin } from "./site-address.context";
 import { BadRequestException, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -624,7 +625,7 @@ export function resolveReleaseArtifactAbsolutePath(storedFilePath: string) {
 }
 
 export function buildReleaseArtifactDownloadUrl(artifactId: string) {
-  const publicBaseUrl = (process.env.CHORDV_PUBLIC_BASE_URL ?? "").trim().replace(/\/+$/, "");
+  const publicBaseUrl = publicSiteOrigin();
   const relativeUrl = `${RELEASE_ARTIFACT_DOWNLOAD_PREFIX}/${artifactId}`;
   return publicBaseUrl ? `${publicBaseUrl}${relativeUrl}` : relativeUrl;
 }
@@ -686,7 +687,7 @@ export function resolveReleaseArtifactForClient(
     allowClientMirror?: boolean;
   }
 ) {
-  const originUrl = artifact.downloadUrl;
+  const originUrl = artifact.source === "uploaded" ? buildReleaseArtifactDownloadUrl(artifact.id) : artifact.downloadUrl;
   // 上传产物走本站相对路径，不套加速镜像。
   if (artifact.source === "uploaded" || !isHttpReleaseUrl(originUrl)) {
     return {
@@ -1095,16 +1096,17 @@ export function assertFullUpdateDownloadUrlAllowed(rawUrl: string) {
 }
 
 export function toAdminReleaseArtifactRecord(row: ReleaseArtifactRowLike): AdminReleaseArtifactDto {
+  const downloadUrl = row.source === "uploaded" ? buildReleaseArtifactDownloadUrl(row.id) : row.downloadUrl;
   return {
     id: row.id,
     releaseId: row.releaseId,
     source: row.source as "uploaded" | "external",
     type: fromPrismaReleaseArtifactType(row.type),
     deliveryMode: row.deliveryMode as UpdateDeliveryMode,
-    downloadUrl: row.downloadUrl,
-    originDownloadUrl: row.originDownloadUrl ?? row.downloadUrl,
+    downloadUrl,
+    originDownloadUrl: row.source === "uploaded" ? downloadUrl : row.originDownloadUrl ?? row.downloadUrl,
     finalUrlPreview: buildReleaseArtifactDownloadUrlForClient(
-      row.originDownloadUrl ?? row.downloadUrl,
+      row.source === "uploaded" ? downloadUrl : row.originDownloadUrl ?? row.downloadUrl,
       null,
       null,
       false

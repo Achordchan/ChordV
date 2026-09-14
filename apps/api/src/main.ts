@@ -7,6 +7,9 @@ import { DrainCancelledError, workLifecycle, withShutdownDeadline } from "./work
 import { promotionAdmission } from "./promotion-admission";
 import { SystemUpdateService } from "./modules/common/system-update.service";
 import { resolveCorsOrigin } from "./cors";
+import { SiteAddressService } from "./modules/common/site-address.service";
+import { siteAddressContext } from "./modules/common/site-address.context";
+import type { Request, Response, NextFunction } from "express";
 import { resolveTrustProxy } from "./trust-proxy";
 import { forceHttpsMiddleware } from "./https-enforcement";
 import { LoggingExceptionFilter } from "./logging-exception.filter";
@@ -20,17 +23,22 @@ async function bootstrap() {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
-  const app = await NestFactory.create(AppModule, {
-    cors: {
+  const app = await NestFactory.create(AppModule);
+  // Include configuration reads in the same drain/admission boundary as routes.
+  app.use(promotionAdmission.middleware);
+  app.use(workLifecycle.middleware);
+  const sites = app.get(SiteAddressService);
+  app.use((req: Request, _res: Response, next: NextFunction) => {
+    if (req.path.startsWith("/api/health")) { next(); return; }
+    void sites.get().then(config => siteAddressContext.run(config, next)).catch(next);
+  });
+  app.enableCors({
       origin: resolveCorsOrigin,
       credentials: true,
       exposedHeaders: ["X-Request-Id"]
-    }
   });
 
   // Install BEFORE Nest registers body parsers, routes and multipart interceptors.
-  app.use(promotionAdmission.middleware);
-  app.use(workLifecycle.middleware);
   app.useGlobalInterceptors(workLifecycle);
   const shutdown = async () => {
     try {

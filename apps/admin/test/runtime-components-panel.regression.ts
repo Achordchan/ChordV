@@ -200,7 +200,8 @@ function testRemoteFailedValidationKeepsDeliverable() {
 
 function testRuntimeComponentsPanelUsesSlotCardsInsteadOfWideTable() {
   assert.match(runtimeComponentsPanelSource, /RuntimeComponentSlotCard/);
-  assert.match(runtimeComponentsPanelSource, /全局加速镜像/);
+  assert.match(runtimeComponentsPanelSource, /全局下载镜像已迁移至系统设置/);
+  assert.doesNotMatch(runtimeComponentsPanelSource, /async function saveMirrorConfig/);
   assert.match(runtimeComponentsPanelSource, /runtimeComponentSlots/);
   assert.match(runtimeComponentsPanelSource, /title="配置"/);
   assert.match(runtimeComponentsPanelSource, /复制下载地址/);
