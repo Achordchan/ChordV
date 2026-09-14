@@ -381,6 +381,12 @@ export function App() {
   const settingsPanelRef = useRef(settingsPanel); settingsPanelRef.current = settingsPanel;
   const [settingsStorageBusy, setSettingsStorageBusy] = useState(false);
   const [settingsPolicyLoading, setSettingsPolicyLoading] = useState(false);
+  const [settingsPolicyError, setSettingsPolicyError] = useState<string | null>(null);
+  const settingsPolicyRequest = useRef(0);
+  useEffect(() => {
+    if (authenticated && settingsPanel === "policies") void loadSettingsPolicy();
+    return () => { settingsPolicyRequest.current++; };
+  }, [settingsPanel, authenticated]);
   useEffect(() => { if (!authenticated) setSettingsPanel(null); }, [authenticated]);
   const [imageBedRefreshSignal, setImageBedRefreshSignal] = useState(0);
   const [mobileNavOpened, setMobileNavOpened] = useState(false);
@@ -465,6 +471,7 @@ export function App() {
   const [announcementForm, setAnnouncementForm] = useState<AnnouncementFormState>(emptyAnnouncementForm());
   const [policyForm, setPolicyForm] = useState<PolicyFormState | null>(null);
   const [policyDirty, setPolicyDirty] = useState(false);
+  const policyDirtyRef = useRef(policyDirty); policyDirtyRef.current = policyDirty;
   const [policySaving, setPolicySaving] = useState(false);
   const policySavingRef = useRef(false);
   const [nodeAccessEditor, setNodeAccessEditor] = useState<NodeAccessEditorState | null>(null);
@@ -635,7 +642,7 @@ export function App() {
         if (sections.has("overview")) tasks.push(refreshDashboard({ silent: true }));
         if (sections.has(currentSection)) tasks.push(Promise.resolve(refreshCurrentSectionSilently()));
         if (settingsPanelRef.current === "imageBed" && sections.has("imageBed")) setImageBedRefreshSignal(value => value + 1);
-        if (settingsPanelRef.current === "policies" && sections.has("policies")) tasks.push(loadSectionData("policies", {force:true,silent:true}));
+        if (settingsPanelRef.current === "policies" && sections.has("policies")) tasks.push(loadSettingsPolicy());
         if (sections.has("system")) {
           tasks.push(refreshLeaseRevocationJobsAfterPending());
           if (leaseRevocationQueueRef.current.opened) {
@@ -1108,6 +1115,23 @@ export function App() {
       loadedSectionsRef.current = next;
       return next;
     });
+  }
+
+  async function loadSettingsPolicy() {
+    if (policyDirtyRef.current || policySavingRef.current) return;
+    const request = ++settingsPolicyRequest.current;
+    setSettingsPolicyLoading(true);
+    setSettingsPolicyError(null);
+    try {
+      const policy = await fetchAdminPolicy();
+      if (request !== settingsPolicyRequest.current) return;
+      mergeSnapshot({ policy });
+      setPolicyForm(toPolicyForm(policy));
+    } catch (reason) {
+      if (request === settingsPolicyRequest.current) setSettingsPolicyError(readError(reason, "连接策略读取失败"));
+    } finally {
+      if (request === settingsPolicyRequest.current) setSettingsPolicyLoading(false);
+    }
   }
 
   async function loadSecondarySectionData(
@@ -3195,7 +3219,7 @@ export function App() {
               pendingTaskCount={backgroundSyncQueueCount}
               onOpenSecurity={openAdminSecurityModal}
               onOpenTasks={() => openLeaseRevocationQueue()}
-              onOpenPolicies={() => { setPolicyDirty(false); setSettingsPanel("policies"); setSettingsPolicyLoading(true); void loadSectionData("policies", { force: true }).finally(() => setSettingsPolicyLoading(false)); }}
+              onOpenPolicies={() => { setPolicyDirty(false); setSettingsPolicyLoading(true); setSettingsPanel("policies"); }}
               onOpenImageBed={() => setSettingsPanel("imageBed")}
               onLogout={() => void handleAdminLogout()}
             /> : null}
@@ -3205,7 +3229,7 @@ export function App() {
       </AppShell>
 
       <Modal opened={settingsPanel !== null} onClose={() => { if (!policySaving && !settingsStorageBusy) { setSettingsPanel(null); setPolicyDirty(false); } }} title={settingsPanel === "policies" ? "连接策略" : "附件与图床"} centered size={settingsPanel === "policies" ? 620 : 900} closeOnClickOutside={false} closeOnEscape={!policySaving && !settingsStorageBusy} withCloseButton={!policySaving && !settingsStorageBusy} classNames={{content: settingsDialogStyles.content, header: settingsDialogStyles.header, title: settingsDialogStyles.title, body: settingsDialogStyles.body}}>
-        {settingsPanel === "policies" ? settingsPolicyLoading ? <DataSkeleton rows={5}/> : sectionLoadErrors.policies ? <Alert color="red">{sectionLoadErrors.policies}<Button variant="subtle" onClick={() => { setSettingsPolicyLoading(true); void loadSectionData("policies", {force:true}).finally(() => setSettingsPolicyLoading(false)); }}>重新读取</Button></Alert> : policyForm ? <PoliciesPage policyForm={policyForm} setPolicyForm={updater => { setPolicyDirty(true); setPolicyForm(updater); }} policySaving={policySaving} onSave={() => void handleSavePolicy()}/> : <DataSkeleton rows={5}/> : null}
+        {settingsPanel === "policies" ? settingsPolicyLoading ? <DataSkeleton rows={5}/> : settingsPolicyError ? <Alert color="red">{settingsPolicyError}<Button variant="subtle" onClick={() => { void loadSettingsPolicy(); }}>重新读取</Button></Alert> : policyForm ? <PoliciesPage policyForm={policyForm} setPolicyForm={updater => { setPolicyDirty(true); setPolicyForm(updater); }} policySaving={policySaving} onSave={() => void handleSavePolicy()}/> : <DataSkeleton rows={5}/> : null}
         {settingsPanel === "imageBed" ? <ImageBedPage refreshSignal={imageBedRefreshSignal} onBusyChange={setSettingsStorageBusy}/> : null}
       </Modal>
       {actionConfirmation.dialog}

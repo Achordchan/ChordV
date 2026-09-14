@@ -11,11 +11,14 @@ import dialog from "../editors/EditorDialog.module.css";
 import styles from "./ComponentDelivery.module.css";
 import { ComponentError } from "./ComponentError";
 import { request } from "../../api/base";
+import { RuntimeComponentsPage } from "../../pages/RuntimeComponentsPage";
+import { isRuntimeVersionUnavailable } from "../../utils/runtime-version-capability";
 
 const names = { xray: "Xray", geoip: "GeoIP", geosite: "GeoSite" };
 const platformNames: Record<string,string> = {macos:"macOS",windows:"Windows",android:"Android",ios:"iOS"};
 const statusNames: Record<string,string> = { queued:"等待获取",downloading:"获取中",verifying:"校验中",ready:"已就绪",failed:"获取失败",unchanged:"已是当前版本" };
 export function ComponentDeliveryPage({ refreshSignal }: { refreshSignal?: number }) {
+  const [unavailable, setUnavailable] = useState(false);
   const [rows,setRows]=useState<ComponentDelivery[]>([]), [loading,setLoading]=useState(true),[error,setError]=useState("");
   const [busy,setBusy]=useState(false),[target,setTarget]=useState<ComponentDelivery|null>(null),[creating,setCreating]=useState(false);
   const [source,setSource]=useState(""),[version,setVersion]=useState(""),[auto,setAuto]=useState(false);
@@ -35,8 +38,8 @@ export function ComponentDeliveryPage({ refreshSignal }: { refreshSignal?: numbe
   const confirmation=useActionConfirmation(true);
   const load=async()=>{
     if(pending.current){dirty.current=true;return;} pending.current=true; const id=++epoch.current;
-    try {const result=await fetchComponentDeliveries();if(alive.current&&id===epoch.current){setRows(result);setError("");}}
-    catch(e){if(alive.current)setError(readError(e,"组件版本加载失败"));}
+    try {const result=await fetchComponentDeliveries();if(alive.current&&id===epoch.current){setRows(result);setUnavailable(false);setError("");}}
+    catch(e){if(alive.current){setUnavailable(isRuntimeVersionUnavailable(e));setError(readError(e,"组件版本加载失败"));}}
     finally {pending.current=false;if(alive.current){setLoading(false);if(dirty.current){dirty.current=false;void load();}}}
   };
   useEffect(()=>{alive.current=true;void load();const stop=subscribeAdminRuntimeEvents(e=>{if(e.type==="runtime_component_updated"||e.type==="node_access_updated"&&!e.nodeId)void load();});return()=>{alive.current=false;epoch.current++;stop();};},[]);
@@ -55,8 +58,9 @@ export function ComponentDeliveryPage({ refreshSignal }: { refreshSignal?: numbe
       setTarget(null);setCreating(false);await load();
     }catch(e){setFormError(readError(e,"获取任务创建失败"));}finally{saving.current=false;if(alive.current)setBusy(false);}
   };
+  if (unavailable) return <RuntimeComponentsPage refreshSignal={refreshSignal}/>;
   return <section className={styles.workspace}>{confirmation.dialog}
-    <Group justify="space-between" mb="xl"><div><Text size="lg" fw={600}>组件分发总览</Text><Text size="sm" c="dimmed" mt={6}>固定版本由本站分发；新文件准备失败时保留当前版本。</Text></div><Button color="teal.9" leftSection={<IconDownload size={16}/>} disabled={busy} onClick={()=>{setTarget(null);setCreating(true);setKind("xray");setTags([]);tagsEpoch.current++;setSource("");setVersion("");setAuto(false);setFormError("");}}>获取组件版本</Button></Group>
+    <Group justify="space-between" mb="xl"><div><Text size="lg" fw={600}>组件分发总览</Text><Text size="sm" c="dimmed" mt={6}>固定版本由本站分发；新文件准备失败时保留当前版本。</Text></div><Button color="teal.9" leftSection={<IconDownload size={16}/>} disabled={busy} onClick={()=>{setTarget(null);setCreating(true);setKind("xray");setTags([]);setTagsLoading(false);tagsEpoch.current++;setSource("");setVersion("");setAuto(false);setFormError("");}}>获取组件版本</Button></Group>
     {error?<ComponentError title="组件操作未完成" message={error} onRetry={()=>void load()}/>:null}
     {loading&&!rows.length?<DataSkeleton rows={4}/>:<div className={styles.table}><DataTable minWidth={1000}><Table.Thead><Table.Tr>{["组件与目标","当前启用","准备版本","更新策略","操作"].map(t=><Table.Th key={t}>{t}</Table.Th>)}</Table.Tr></Table.Thead><Table.Tbody>{xrayRows.length ? <Table.Tr className={styles.groupRow}><Table.Td><Text fw={650}>Xray</Text><Text size="sm" c="dimmed" mt={5}>{xrayRows.length} 个平台与架构</Text></Table.Td><Table.Td><Text size="sm">{activeVersions.length===1 ? activeVersions[0] : activeVersions.length ? "各平台版本不同" : "尚未启用固定版本"}</Text></Table.Td><Table.Td><Text size="sm">{pendingCount ? pendingCount+" 项获取中" : readyCount ? readyCount+" 项待启用" : "暂无待处理版本"}</Text>{failureCount ? <Text size="sm" c="red.8">{failureCount} 项获取失败</Text> : null}</Table.Td><Table.Td><Text size="sm">手动选择版本</Text></Table.Td><Table.Td><Button variant="default" color="teal.9" aria-expanded={xrayExpanded} onClick={()=>setXrayExpanded(value=>!value)}>{xrayExpanded?"收起平台":"管理平台"}</Button></Table.Td></Table.Tr> : null}{rows.filter(row=>row.kind!=="xray"||xrayExpanded).map(row=>{
       const latest=row.versions[0], working=latest&&["queued","downloading","verifying"].includes(latest.status), ready=latest?.status==="ready"&&latest.id!==row.active?.id;
