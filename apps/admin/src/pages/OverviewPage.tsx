@@ -28,7 +28,7 @@ export function OverviewPage(props: OverviewPageProps) {
   const { snapshot } = props;
   const now = Date.now();
   const queueCount = snapshot.leaseRevocationJobs.filter(job=>["pending","running","failed"].includes(job.status)).length + sumNodeCommandSummaries(snapshot.nodeCommandQueue.summaries,"nodes");
-  const abnormalNodes = snapshot.nodes.filter(node=>nodeAttention(node)===0);
+  const abnormalNodes = snapshot.nodes.filter(node=>node.isActive === false || nodeAttention(node)===0);
   const pendingNodes = snapshot.nodes.filter(node=>nodeAttention(node)===1);
   const nodeList = [...snapshot.nodes].sort((a,b)=>nodeAttention(a)-nodeAttention(b)||a.name.localeCompare(b.name)).slice(0,4);
   const subscriptions = snapshot.subscriptions.filter(item=>["active","paused"].includes(item.state)&&Date.parse(item.expireAt)>now)

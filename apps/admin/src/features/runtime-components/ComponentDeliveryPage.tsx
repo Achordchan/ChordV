@@ -17,7 +17,7 @@ import { isRuntimeVersionUnavailable } from "../../utils/runtime-version-capabil
 const names = { xray: "Xray", geoip: "GeoIP", geosite: "GeoSite" };
 const platformNames: Record<string,string> = {macos:"macOS",windows:"Windows",android:"Android",ios:"iOS"};
 const statusNames: Record<string,string> = { queued:"等待获取",downloading:"获取中",verifying:"校验中",ready:"已就绪",failed:"获取失败",unchanged:"已是当前版本" };
-export function ComponentDeliveryPage({ refreshSignal }: { refreshSignal?: number }) {
+export function ComponentDeliveryPage({ refreshSignal, sessionActive = true }: { refreshSignal?: number; sessionActive?: boolean }) {
   const [unavailable, setUnavailable] = useState(false);
   const [rows,setRows]=useState<ComponentDelivery[]>([]), [loading,setLoading]=useState(true),[error,setError]=useState("");
   const [busy,setBusy]=useState(false),[target,setTarget]=useState<ComponentDelivery|null>(null),[creating,setCreating]=useState(false);
@@ -35,7 +35,7 @@ export function ComponentDeliveryPage({ refreshSignal }: { refreshSignal?: numbe
   const tagsEpoch=useRef(0);
   const loadTags=async()=>{const id=++tagsEpoch.current;setFormError("");setErrorContext("tags");setTagsLoading(true);try{const values=await request<Array<{value:string;label:string}>>(`/admin/runtime-versions/github-tags?url=${encodeURIComponent(source)}`,{timeoutMs:55_000});if(alive.current&&id===tagsEpoch.current){setTags(values);if(!values.length)setFormError("该来源没有可选的稳定版本，请检查来源或填写准确的发布标签。");}}catch(e){if(alive.current&&id===tagsEpoch.current)setFormError(readError(e,"版本列表获取失败"));}finally{if(alive.current&&id===tagsEpoch.current)setTagsLoading(false);}};
   const alive=useRef(false), epoch=useRef(0), pending=useRef(false), dirty=useRef(false), saving=useRef(false);
-  const confirmation=useActionConfirmation(true);
+  const confirmation=useActionConfirmation(sessionActive);
   const load=async()=>{
     if(pending.current){dirty.current=true;return;} pending.current=true; const id=++epoch.current;
     try {const result=await fetchComponentDeliveries();if(alive.current&&id===epoch.current){setRows(result);setUnavailable(false);setError("");}}
@@ -44,14 +44,14 @@ export function ComponentDeliveryPage({ refreshSignal }: { refreshSignal?: numbe
   };
   useEffect(()=>{alive.current=true;void load();const stop=subscribeAdminRuntimeEvents(e=>{if(e.type==="runtime_component_updated"||e.type==="node_access_updated"&&!e.nodeId)void load();});return()=>{alive.current=false;epoch.current++;stop();};},[]);
   useEffect(()=>{if (refreshSignal !== undefined) void load();},[refreshSignal]);
-  const open=(row:ComponentDelivery)=>{setTarget(row);setCreating(false);setSource(row.sourceUrl);setVersion(row.active?.versionLabel||"");setAuto(row.autoLatest);setKind(row.kind);setFormError("");setTags([]);setTagsLoading(false);tagsEpoch.current++;};
+  const open=(row:ComponentDelivery)=>{setTarget(row);setCreating(false);setSource(row.sourceUrl);setVersion(row.active?.versionLabel||"");setAuto(row.autoLatest);setKind(row.kind);setArch(row.architecture);setFormError("");setTags([]);setTagsLoading(false);tagsEpoch.current++;};
   const run=async(action:()=>Promise<unknown>)=>{if(saving.current)return;saving.current=true;setBusy(true);try{await action();await load();}catch(e){setError(readError(e,"操作失败"));}finally{saving.current=false;if(alive.current)setBusy(false);}};
   const submit=async()=>{
     if(saving.current)return;setFormError("");setErrorContext("submit");saving.current=true;setBusy(true);
     try{
       let url=source.trim();
       // Version selection pins a GitHub asset without asking the user to edit the URL.
-      if(!auto&&version.trim()) url=url.replace(/\/releases\/(?:latest\/download|download\/[^/]+)\//,`/releases/download/${encodeURIComponent(version.trim())}/`);
+      if(!auto&&version.trim()) url=url.replace(/\/releases\/(?:latest\/download|download\/[^/]+)\//,`/releases/download/${version.trim()}/`);
       let componentId=target?.id;
       if(!componentId){const created=await request<{id:string}>("/admin/runtime-versions/slots",{method:"POST",body:JSON.stringify({kind,platform,architecture:arch,sourceUrl:url})});componentId=created.id;setTarget({id:created.id,kind,platform,architecture:arch,sourceUrl:url,autoLatest:false,enabled:false,managed:false,active:null,versions:[]});setCreating(false);}
       await acquireComponent({componentId,sourceUrl:url,version:version.trim()||undefined,autoLatest:kind!=="xray"&&auto});

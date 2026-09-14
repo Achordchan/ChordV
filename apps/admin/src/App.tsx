@@ -3209,7 +3209,7 @@ export function App() {
               />
             ) : null}
 
-            {section === "releases" ? <UnifiedReleaseCenter refreshSignal={releaseRefreshSignal} /> : null}
+            {section === "releases" ? <UnifiedReleaseCenter refreshSignal={releaseRefreshSignal} sessionActive={authenticated} /> : null}
 
             {section === "runtimeComponents" ? <RuntimeComponentsPage refreshSignal={runtimeComponentRefreshSignal} /> : null}
 
