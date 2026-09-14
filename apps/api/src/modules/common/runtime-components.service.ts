@@ -210,6 +210,10 @@ export class RuntimeComponentsService {
     }
   }
 
+  private withManagedSourceGuard<T>(componentId: string, action: (tx: import("@prisma/client").Prisma.TransactionClient) => Promise<T>, enabledOnly = false) {
+    return this.runtimeVersions ? this.runtimeVersions.withLegacyEdit(componentId, action, enabledOnly) : action(this.prisma);
+  }
+
   async updateAdminRuntimeComponent(
     componentId: string,
     input: UpdateRuntimeComponentInputDto
@@ -250,7 +254,7 @@ export class RuntimeComponentsService {
       remoteValidationInvalidated && current.storedFilePath ? current.storedFilePath : null;
 
     const updated = await this.withRuntimeComponentIdentityConflictGuard(() =>
-      this.prisma.runtimeComponent.update({
+      this.withManagedSourceGuard(componentId, tx => tx.runtimeComponent.update({
         where: { id: componentId },
         data: {
           ...(input.source !== undefined ? { source: input.source } : {}),
@@ -284,7 +288,7 @@ export class RuntimeComponentsService {
               }
             : {})
         }
-      })
+      }), Object.keys(input).every(key => key === "enabled"))
     );
     this.startSharedRulesetDuplicatesCleanup(updated.kind as RuntimeComponentKind, updated.id);
     this.startRuntimeComponentStoredFileCleanupBestEffort(staleUploadedFilePath, "stale runtime component upload");
@@ -310,7 +314,7 @@ export class RuntimeComponentsService {
       prepared = preparedFile;
       const updated = await this.withRuntimeComponentIdentityConflictGuard(
         () =>
-          this.prisma.runtimeComponent.update({
+          this.withManagedSourceGuard(componentId, tx => tx.runtimeComponent.update({
             where: { id: componentId },
             data: {
               platform: normalizedInput.platform,
@@ -328,7 +332,7 @@ export class RuntimeComponentsService {
               expectedHash: null,
               enabled: input.enabled ?? current.enabled
             }
-          }),
+          })),
         "内核组件替换失败，请刷新后重试；已尝试清理本次上传文件。"
       );
       this.startRuntimeComponentStoredFileCleanupBestEffort(

@@ -38,6 +38,13 @@ export function useComponentVersionSync(options: Options) {
     setRequested(count => count + 1);
   }, []);
   const blocked = runtimeInUse(options.status) || options.assetsBusy || options.applicationUpdateBusy;
+  // Legacy upstream latest URLs have no ChordV event publisher. A 12-hour
+  // check uses the same single-flight, idle-only path and ends with the session.
+  useEffect(() => {
+    if (!options.accessToken || !["macos", "windows"].includes(options.status.platformTarget)) return;
+    const timer = window.setInterval(() => requestSync(), 12 * 60 * 60_000);
+    return () => window.clearInterval(timer);
+  }, [options.accessToken, options.status.platformTarget, requestSync]);
   useEffect(() => {
     if (!options.accessToken || !["macos", "windows"].includes(options.status.platformTarget)
       || blocked || running.current || requested <= completed.current) return;

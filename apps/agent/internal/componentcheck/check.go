@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path"
 	"regexp"
 
 	"github.com/xtls/xray-core/app/router"
@@ -108,7 +107,7 @@ func validateArchive(file, platform, arch string) error {
 	}
 	var executable []byte
 	for _, entry := range archive.File {
-		if path.Base(entry.Name) != wanted {
+		if entry.Name != wanted {
 			continue
 		}
 		if executable != nil || !entry.Mode().IsRegular() || entry.UncompressedSize64 > maxBytes {

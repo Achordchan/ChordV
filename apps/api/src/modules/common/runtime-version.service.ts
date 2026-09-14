@@ -2,7 +2,8 @@ import { BadRequestException, Injectable, Logger, NotFoundException, Optional } 
 import { Cron } from "@nestjs/schedule";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
-import type { RuntimeComponent } from "@prisma/client";
+import type { Prisma, RuntimeComponent } from "@prisma/client";
+import * as path from "node:path";
 import { DrainableJob } from "../../work-lifecycle";
 import { ClientEventsPublisher } from "./client-events.publisher";
 import { PrismaService } from "./prisma.service";
@@ -18,6 +19,14 @@ export class RuntimeVersionService {
   private readonly logger = new Logger(RuntimeVersionService.name);
   constructor(private readonly prisma: PrismaService, private readonly events: AdminRuntimeEventsService, @Optional() private readonly clientEvents?: ClientEventsPublisher) {}
   private publish() { try { this.events.publish({ type: "runtime_component_updated", occurredAt: new Date().toISOString() }); } catch (error) { this.logger.warn("组件状态事件发送失败"); } }
+  async withLegacyEdit<T>(componentId: string, action: (tx: Prisma.TransactionClient) => Promise<T>, enabledOnly = false): Promise<T> {
+    return this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM "RuntimeComponent" WHERE id = ${componentId} FOR UPDATE`;
+      const policy = await tx.runtimeComponentDelivery.findUnique({ where: { componentId } });
+      if (policy?.activeVersionId && !enabledOnly) throw new BadRequestException("该组件正在分发固定版本，请在运行组件页获取并启用新版本；上传与镜像页仅可调整启用状态。");
+      return action(tx);
+    });
+  }
   async createSlot(input: {kind: "xray" | "geoip" | "geosite"; platform: "windows" | "macos" | "android" | "ios"; architecture: "x64" | "arm64"; sourceUrl: string}) {
     const platform = input.kind === "xray" ? input.platform : "macos";
     const architecture = input.kind === "xray" ? input.architecture : "arm64";
@@ -87,7 +96,7 @@ export class RuntimeVersionService {
       if(automatic && (!policy?.autoLatest || policy.sourceUrl !== version.sourceUrl || component?.kind === "xray")) return;
       await tx.runtimeComponent.update({ where: { id: version.componentId }, data: { enabled: true } });
       await tx.runtimeComponentDelivery.update({ where: { componentId: version.componentId }, data: { activeVersionId: id, notifyPending: true } });
-      await tx.runtimeComponentVersion.update({ where: { id }, data: { publishedAt: version.publishedAt ?? new Date() } });
+      await tx.runtimeComponentVersion.update({ where: { id }, data: { publishedAt: new Date() } });
     });
     this.publish();
     await this.flushNotifications();
@@ -175,6 +184,7 @@ export class RuntimeVersionService {
       result.push({ ...row, source: "uploaded", originUrl: runtimeVersionUrl(version.id), fileName: version.fileName || row.fileName,
         // Existing storage validator resolves absolute paths under the releases root/runtime-components.
         storedFilePath: version.storedFilePath, fileSizeBytes: version.fileSizeBytes, fileHash: version.fileHash, expectedHash: version.fileHash,
+        archiveEntryName: row.kind === "xray" ? (row.platform === "windows" ? "xray.exe" : "xray") : null,
         runtimeVersionLabel: version.versionLabel ?? undefined, defaultMirrorPrefix: null, allowClientMirror: false, updatedAt: version.publishedAt ?? version.updatedAt });
     }
     return result;
@@ -210,6 +220,20 @@ export class RuntimeVersionService {
           }
         }, { timeout: 30_000 });
       } catch (error) { this.logger.warn(`组件历史清理失败：${String(error)}`); }
+    }
+    // Cascading component deletion removes rows, not files. Only remove
+    // orphaned UUID assets older than a day, never paths supplied by a record.
+    const directory = path.dirname(runtimeVersionPath("00000000-0000-0000-0000-000000000000"));
+    const entries = await fs.readdir(directory, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return []; throw error;
+    });
+    for (const entry of entries) {
+      if (!entry.isFile() || !/^[a-f0-9-]{36}(?:\.part)?$/.test(entry.name)) continue;
+      const filename = path.join(directory, entry.name);
+      const stat = await fs.stat(filename).catch(() => null);
+      if (!stat || stat.mtimeMs > Date.now() - 24 * 60 * 60_000) continue;
+      const id = entry.name.replace(/\.part$/, "");
+      if (!await this.prisma.runtimeComponentVersion.findUnique({ where: { id } })) await fs.rm(filename, { force: true });
     }
   }
 }

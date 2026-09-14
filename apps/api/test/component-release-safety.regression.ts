@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { RuntimeVersionService } from "../src/modules/common/runtime-version.service";
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
+import { runtimeVersionPath } from "../src/modules/common/runtime-version-files";
 
 async function main() {
   let locked = false, enabled = false, created = 0;
@@ -28,8 +32,31 @@ async function main() {
     runtimeComponentDelivery:{findMany:async()=>[{componentId:"one",activeVersionId:"version"}]},
     runtimeComponentVersion:{findUnique:async()=>({id:"version",status:"ready",storedFilePath:"versions/version",fileHash:"new-hash",fileSizeBytes:1n,updatedAt:new Date()})}
   } as never, {publish(){}} as never);
-  const result = await rows.clientRows([{id:"one",expectedHash:"old-hash"}] as never);
+  const result = await rows.clientRows([{id:"one",kind:"xray",platform:"windows",expectedHash:"old-hash",archiveEntryName:"custom.exe"}] as never);
   assert.equal(result[0].expectedHash,"new-hash","旧组件 expectedHash 不得污染启用版本");
+  assert.equal(result[0].archiveEntryName,"xray.exe");
+  const guarded = new RuntimeVersionService({$transaction:async (fn:any)=>fn({
+    $queryRaw:async()=>[],runtimeComponentDelivery:{findUnique:async()=>({activeVersionId:"active"})}
+  })} as never,{publish(){}} as never);
+  let edited=false;
+  await assert.rejects(guarded.withLegacyEdit("one",async()=>{edited=true;}),/固定版本/);
+  assert.equal(edited,false);
+  await guarded.withLegacyEdit("one",async()=>{edited=true;},true);
+  assert.equal(edited,true,"启用状态调整仍可保存");
+  const root=await fs.mkdtemp(path.join(tmpdir(),"chordv-orphan-test-"));
+  const previous=process.env.CHORDV_RELEASE_STORAGE_ROOT;
+  process.env.CHORDV_RELEASE_STORAGE_ROOT=root;
+  try {
+    const old=runtimeVersionPath("00000000-0000-0000-0000-000000000001");
+    const recent=runtimeVersionPath("00000000-0000-0000-0000-000000000002")+".part";
+    await fs.mkdir(path.dirname(old),{recursive:true});await fs.writeFile(old,"orphan");await fs.writeFile(recent,"in-flight");await fs.utimes(old,0,0);
+    const cleanup=new RuntimeVersionService({runtimeComponentDelivery:{findMany:async()=>[]},runtimeComponentVersion:{findUnique:async()=>null}} as never,{publish(){}} as never);
+    await cleanup.pruneVersions();
+    await assert.rejects(fs.access(old));await fs.access(recent);
+  } finally {
+    if(previous===undefined)delete process.env.CHORDV_RELEASE_STORAGE_ROOT;else process.env.CHORDV_RELEASE_STORAGE_ROOT=previous;
+    await fs.rm(root,{recursive:true,force:true});
+  }
   console.log("component release safety regression passed");
 }
 void main().catch(error=>{console.error(error);process.exitCode=1;});
