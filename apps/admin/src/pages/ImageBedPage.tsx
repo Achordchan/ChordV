@@ -1,5 +1,7 @@
+import { useActionConfirmation } from "../features/modals/useActionConfirmation";
+import { DataSkeleton } from "../features/shared/DataSkeleton";
 import { useEffect, useRef, useState } from "react";
-import { Alert, Anchor, Badge, Button, Card, Group, Loader, PasswordInput, Stack, Table, Text, TextInput, Title } from "@mantine/core";
+import { Alert, Anchor, Badge, Button, Group, PasswordInput, Stack, Tabs, Table, Text, TextInput, Title } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import type { AdminImageBedConfigDto, AdminImageBedFileDto } from "@chordv/shared";
 import {
@@ -8,7 +10,8 @@ import {
   fetchAdminImageBedFiles,
   updateAdminImageBedConfig
 } from "../api/client";
-import { SectionCard } from "../features/shared/SectionCard";
+import styles from "../features/system-settings/SettingsDialogs.module.css";
+import formStyles from "../features/editors/EditorDialog.module.css";
 import { buildUncertainMutationMessage, isPotentiallyCompletedMutationFailure, readError } from "../utils/admin-filters";
 
 type ImageBedConfigForm = {
@@ -26,9 +29,12 @@ type LoadFilesOptions = {
 
 type ImageBedPageProps = {
   refreshSignal?: number;
+  onBusyChange?: (busy: boolean) => void;
 };
 
 export function ImageBedPage(props: ImageBedPageProps) {
+  const confirmation = useActionConfirmation(true);
+  const [tab, setTab] = useState<string | null>("config");
   const [config, setConfig] = useState<AdminImageBedConfigDto | null>(null);
   const [form, setForm] = useState<ImageBedConfigForm>({
     baseUrl: "https://image.achord.cn",
@@ -54,8 +60,11 @@ export function ImageBedPage(props: ImageBedPageProps) {
   const savingRef = useRef(false);
   const deletingPathRef = useRef<string | null>(null);
 
+  useEffect(() => { props.onBusyChange?.(saving || Boolean(deletingPath)); }, [saving, deletingPath, props.onBusyChange]);
+  useEffect(() => () => props.onBusyChange?.(false), [props.onBusyChange]);
+
   useEffect(() => {
-    void loadConfig({ loadFilesAfter: true });
+    void loadConfig({ loadFilesAfter: false });
   }, []);
 
   useEffect(() => {
@@ -68,6 +77,8 @@ export function ImageBedPage(props: ImageBedPageProps) {
       }
     });
   }, [props.refreshSignal]);
+
+  useEffect(() => { if (tab === "files" && config?.hasToken) void loadFiles(); }, [tab, config?.hasToken]);
 
   function updateForm(patch: Partial<ImageBedConfigForm>) {
     formDirtyRef.current = true;
@@ -227,7 +238,7 @@ export function ImageBedPage(props: ImageBedPageProps) {
     if (savingRef.current) {
       return;
     }
-    if (!window.confirm("确定清空图床 API Token？清空后工单附件上传会不可用。")) {
+    if (!await confirmation.confirm({title:"清空访问凭据",message:"清空后工单附件上传将不可用，直到配置新的 Token。",confirmLabel:"清空 Token",danger:true})) {
       return;
     }
     savingRef.current = true;
@@ -278,7 +289,7 @@ export function ImageBedPage(props: ImageBedPageProps) {
     if (deletingPathRef.current) {
       return;
     }
-    if (!window.confirm(`确定删除图床文件 ${file.name}？此操作不会自动删除工单消息记录。`)) {
+    if (!await confirmation.confirm({title:"删除附件",message:`确认删除 ${file.name}？关联工单中的附件链接可能失效，工单消息记录仍会保留。`,confirmLabel:"删除附件",danger:true})) {
       return;
     }
     deletingPathRef.current = file.name;
@@ -335,24 +346,15 @@ export function ImageBedPage(props: ImageBedPageProps) {
     }
   }
 
-  if (loadingConfig) {
+  if (loadingConfig && !config) {
     return (
-      <Group justify="center" py="xl" gap="sm">
-        <Loader size="sm" />
-        <Text c="dimmed">正在加载图床配置...</Text>
-      </Group>
+      <DataSkeleton variant="page" rows={5}/>
     );
   }
 
   if (!config && error) {
     return (
-      <SectionCard
-        title="附件图床配置"
-        searchValue={search}
-        onSearchChange={setSearch}
-        onSearchSubmit={() => void loadFiles()}
-        searchPlaceholder="搜索图床文件"
-      >
+      <div className={styles.storage}>{confirmation.dialog}
         <Alert color="red" variant="light">
           <Stack gap="sm">
             <Text>{error}</Text>
@@ -366,18 +368,12 @@ export function ImageBedPage(props: ImageBedPageProps) {
             </Group>
           </Stack>
         </Alert>
-      </SectionCard>
+      </div>
     );
   }
 
   return (
-    <SectionCard
-      title="附件图床配置"
-      searchValue={search}
-      onSearchChange={setSearch}
-      onSearchSubmit={() => void loadFiles()}
-      searchPlaceholder="搜索图床文件"
-    >
+    <div className={styles.storage}>
       <Stack gap="lg">
         {error ? (
           <Alert color="red" variant="light">
@@ -385,13 +381,14 @@ export function ImageBedPage(props: ImageBedPageProps) {
           </Alert>
         ) : null}
 
-        <Card withBorder radius="xl" p="lg">
+        <Tabs value={tab} onChange={setTab} color="teal.9" className={styles.tabs}><Tabs.List><Tabs.Tab value="config" disabled={Boolean(deletingPath)}>存储配置</Tabs.Tab><Tabs.Tab value="files" disabled={saving}>文件管理</Tabs.Tab></Tabs.List><Tabs.Panel value="config" pt="xl">
+          <fieldset className={formStyles.fields} disabled={saving}>
           <Stack gap="md">
             <Group justify="space-between" align="start">
               <div>
-                <Title order={4}>图床 API 配置</Title>
+                <Text fw={600}>访问凭据</Text>
                 <Text size="sm" c="dimmed">
-                  Token 只保存在后端，后台只显示脱敏状态，客户端不会拿到完整 Token。
+                  Token 仅保存在服务器，留空可保留现有凭据。
                 </Text>
               </div>
               <Badge color={config?.hasToken ? "green" : "red"} variant="light">
@@ -411,7 +408,7 @@ export function ImageBedPage(props: ImageBedPageProps) {
               onChange={(event) => updateForm({ apiToken: event.currentTarget.value })}
               placeholder={config?.hasToken ? "留空则不修改现有 Token" : "请输入图床 API Token"}
             />
-            <Group grow>
+            <details className={styles.advanced}><summary>上传选项</summary><Stack gap="md" mt="md">
               <TextInput
                 label="上传目录"
                 value={form.uploadFolder}
@@ -430,32 +427,32 @@ export function ImageBedPage(props: ImageBedPageProps) {
                 onChange={(event) => updateForm({ channelName: event.currentTarget.value })}
                 placeholder="留空使用图床默认渠道名"
               />
-            </Group>
+            </Stack></details>
             <Group justify="flex-end">
               <Button variant="default" color="red" onClick={() => void handleClearToken()} disabled={!config?.hasToken || saving}>
                 清空 Token
               </Button>
-              <Button onClick={() => void handleSave()} loading={saving}>
+              <Button color="teal.9" onClick={() => void handleSave()} loading={saving}>
                 保存配置
               </Button>
             </Group>
           </Stack>
-        </Card>
-
-        <Card withBorder radius="xl" p="lg">
+          </fieldset></Tabs.Panel>
+        <Tabs.Panel value="files" pt="xl">
           <Stack gap="md">
             <Group justify="space-between">
               <div>
                 <Title order={4}>图床文件</Title>
                 <Text size="sm" c="dimmed">
-                  使用图床列表 API 查询图片文件，可手动删除无效文件。
+                  查看及管理已上传的附件。
                 </Text>
               </div>
               <Button variant="default" onClick={() => void loadFiles()} loading={loadingFiles} disabled={!config?.hasToken}>
-                按当前搜索刷新
+                查询文件
               </Button>
             </Group>
 
+            <TextInput aria-label="搜索图床文件" placeholder="搜索文件名称" value={search} onChange={event=>setSearch(event.currentTarget.value)} onKeyDown={event=>{if(event.key==="Enter")void loadFiles();}}/>
             {!config?.hasToken ? (
               <Alert color="yellow" variant="light">
                 请先保存图床 API Token，再查询和删除文件。
@@ -522,9 +519,7 @@ export function ImageBedPage(props: ImageBedPageProps) {
                   {loadingFiles && files.length === 0 ? (
                     <Table.Tr>
                       <Table.Td colSpan={6}>
-                        <Text ta="center" c="dimmed" py="xl">
-                          正在加载图床文件列表...
-                        </Text>
+                        <DataSkeleton rows={4}/>
                       </Table.Td>
                     </Table.Tr>
                   ) : null}
@@ -541,9 +536,9 @@ export function ImageBedPage(props: ImageBedPageProps) {
               </Table>
             </Table.ScrollContainer>
           </Stack>
-        </Card>
+        </Tabs.Panel></Tabs>
       </Stack>
-    </SectionCard>
+    </div>
   );
 }
 

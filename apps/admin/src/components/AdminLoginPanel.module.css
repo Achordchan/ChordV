@@ -1,0 +1,42 @@
+.root {
+  --login-ink: #203b2e;
+  --login-muted: #5c6a60;
+  min-height: 100vh;
+  min-height: 100svh;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  background: #f8f7f2;
+  color: var(--login-ink);
+  padding: 32px clamp(24px, 5vw, 80px) 24px;
+}
+.header { display: flex; justify-content: space-between; align-items: center; gap: 24px; }
+.wordmark { font-family: Georgia, "Times New Roman", serif; font-weight: 600; letter-spacing: -1.8px; font-size: 36px; line-height: 1.1; }
+.brandDot { color: #79906a; }
+.workspaceLabel { font-size: 13px; color: var(--login-muted); letter-spacing: 1px; }
+.main { display: grid; place-items: center; padding: 72px 0 96px; }
+.panel { width: 100%; max-width: 400px; animation: login-arrive 560ms cubic-bezier(.2,.75,.25,1) both; }
+.intro { margin-bottom: 38px; }
+.eyebrow { display: block; font-size: 13px; font-weight: 550; letter-spacing: 1.5px; color: #53674e; margin-bottom: 16px; }
+.intro h1 { font-size: clamp(30px, 4vw, 38px); letter-spacing: -1.2px; line-height: 1.25; font-weight: 600; margin: 0 0 16px; }
+.intro p { color: var(--login-muted); font-size: 15px; line-height: 1.7; margin: 0; }
+.fields { border: 0; padding: 0; margin: 0; min-width: 0; display: grid; gap: 24px; }
+.label { font-size: 14px; font-weight: 550; color: #304737; margin-bottom: 10px; }
+.input { min-height: 52px; height: 52px; background: #fdfdfa; border: 1px solid #a3ae9c; border-radius: 6px; color: #20352a; font-size: 16px; box-shadow: none; transition: border-color 160ms ease, background-color 160ms ease; }
+.input::placeholder, .passwordInput::placeholder { color: #6d7968; opacity: 1; }
+.input:hover { border-color: #788a70; }
+.input:focus, .input:focus-within { border-color: #245a3e; outline: 2px solid #245a3e; outline-offset: 3px; background: #fff; }
+.passwordInput { height: 50px; font-size: 16px; }
+.input:disabled { background: #f0f1eb; color: #596454; opacity: 1; }
+.submit { height: 52px; margin-top: 30px; padding-inline: 20px; border-radius: 6px; background: #234d36; color: #fff; border: 1px solid #234d36; font-size: 15px; font-weight: 550; transition: background-color 160ms ease, transform 160ms ease; }
+.submit:hover:not(:disabled) { background: #163b27; transform: translateY(-1px); }
+.submit:active:not(:disabled) { transform: translateY(0); }
+.root button:focus-visible { outline: 3px solid #245a3e; outline-offset: 4px; }
+.error { margin-top: 22px; border-radius: 6px; background: #f9eeea; border: 1px solid #dfb5a9; color: #8a3027; white-space: pre-wrap; overflow-wrap: anywhere; }
+.footer { display: flex; justify-content: space-between; gap: 20px; border-top: 1px solid #d9ded1; padding-top: 18px; color: #606e5b; font-size: 12px; line-height: 1.5; }
+.footer > :first-child { font-family: Georgia, "Times New Roman", serif; font-size: 14px; }
+.liveStatus { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@keyframes login-arrive { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+@media(max-width: 600px) { .root { padding: 26px 24px 20px; } .wordmark { font-size: 31px; } .main { padding: 60px 0; } .intro { margin-bottom: 30px; } .footer { font-size: 11px; } }
+@media(max-height: 650px) { .main { padding-block: 32px; } }
+@media(prefers-reduced-motion: reduce) { .panel { animation: none; } .input,.submit { transition: none; } .submit:hover:not(:disabled) { transform: none; } }
+@media(forced-colors: active) { .submit { border: 1px solid ButtonText; } .input:focus,.input:focus-within { outline-color: Highlight; } }
