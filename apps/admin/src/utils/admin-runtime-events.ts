@@ -14,7 +14,7 @@ export function adminEventSections(event: AdminRuntimeEventDto): string[] {
     case "policy_updated": return ["policies"];
     case "version_updated": return ["releases"];
     case "release_center_updated": return ["releases"];
-    case "runtime_component_updated": return ["runtimeComponents"];
+    case "runtime_component_updated": return ["runtimeComponents", "releases"];
     case "image_bed_updated": return ["imageBed"];
     default: return [];
   }

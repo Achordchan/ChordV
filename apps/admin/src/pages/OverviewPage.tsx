@@ -1,211 +1,67 @@
-import type { ReactNode } from "react";
-import { Button, Card, Group, Paper, SimpleGrid, Stack, Text, ThemeIcon, Title } from "@mantine/core";
-import type { AdminNodeRecordDto, AdminSnapshotDto, AdminSubscriptionRecordDto } from "@chordv/shared";
-import { IconBell, IconListDetails, IconMapPin, IconMessageCircle, IconUser, IconUsers } from "@tabler/icons-react";
+import { Button, Table, Text } from "@mantine/core";
+import type { AdminNodeRecordDto, AdminSnapshotDto } from "@chordv/shared";
+import { IconArrowRight, IconChevronRight } from "@tabler/icons-react";
 import { CountryFlag } from "../components/CountryFlag";
-import { StatusBadge } from "../features/shared/StatusBadge";
-import { formatDateTime } from "../utils/admin-format";
-import { compactNodeStatus } from "../utils/node-status";
 import { sumNodeCommandSummaries } from "../utils/node-command-summary";
-import {
-  subscriptionStateColor,
-  translateAgentStatus,
-  translateProbeStatus,
-  translateSubscriptionState
-} from "../utils/admin-translate";
+import { translateAgentStatus, translateProbeStatus, translateSubscriptionState } from "../utils/admin-translate";
+import styles from "../features/dashboard/Dashboard.module.css";
 
 type OverviewPageProps = {
   snapshot: AdminSnapshotDto;
   onOpenSubscriptions: () => void;
+  onOpenCustomers: () => void;
+  onOpenTeams: () => void;
   onOpenNodes: () => void;
   onOpenTickets: () => void;
   onOpenSyncQueue: () => void;
 };
 
+function nodeAttention(node: AdminNodeRecordDto) {
+  if (node.isActive === false) return 3;
+  const agent = node.controlStatus ?? node.agent?.status;
+  if (["offline", "degraded"].includes(node.probeStatus) || ["offline", "degraded"].includes(agent ?? "")) return 0;
+  if (node.probeStatus !== "healthy" || !["online", "active"].includes(agent ?? "")) return 1;
+  return 2;
+}
+
 export function OverviewPage(props: OverviewPageProps) {
-  // Both queues are "background sync": lease revocations and the direct
-  // provisioning commands that replaced panel synchronization.
-  const backgroundSyncQueueCount =
-    props.snapshot.leaseRevocationJobs.length + sumNodeCommandSummaries(props.snapshot.nodeCommandQueue.summaries, "nodes");
-  const abnormalNodeCount = props.snapshot.nodes.filter((item) => {
-    if (item.isActive === false) {
-      return false;
-    }
-    return item.probeStatus !== "healthy" || !["online", "active"].includes(item.controlStatus ?? item.agent?.status ?? "unknown");
-  }).length;
-
-  return (
-    <>
-      <Card withBorder radius="xl" p="lg">
-        <Stack gap="md">
-          <Group justify="space-between">
-            <div>
-              <Title order={4}>待处理事项</Title>
-            </div>
-          </Group>
-          <SimpleGrid cols={{ base: 1, md: 3 }} spacing="sm">
-            <ActionCard
-              title="待回复工单"
-              count={props.snapshot.dashboard.waitingAdminTickets ?? 0}
-              actionLabel="进入工单中心"
-              tone="red"
-              onClick={props.onOpenTickets}
-            />
-            <ActionCard
-              title="后台同步任务"
-              count={backgroundSyncQueueCount}
-              actionLabel="查看同步任务"
-              tone="yellow"
-              onClick={props.onOpenSyncQueue}
-            />
-            <ActionCard
-              title="异常节点"
-              count={abnormalNodeCount}
-              actionLabel="查看节点"
-              tone="blue"
-              onClick={props.onOpenNodes}
-            />
-          </SimpleGrid>
-        </Stack>
-      </Card>
-
-      <SimpleGrid cols={{ base: 1, sm: 2, xl: 3 }} spacing="md">
-        <MetricCard label="用户数" value={props.snapshot.dashboard.users} icon={<IconUsers size={18} />} />
-        <MetricCard label="团队数" value={props.snapshot.dashboard.teams} icon={<IconUsers size={18} />} />
-        <MetricCard label="有效套餐" value={props.snapshot.dashboard.activePlans} icon={<IconListDetails size={18} />} />
-        <MetricCard label="有效订阅" value={props.snapshot.dashboard.activeSubscriptions} icon={<IconUser size={18} />} />
-        <MetricCard label="启用节点" value={props.snapshot.dashboard.activeNodes} icon={<IconMapPin size={18} />} />
-        <MetricCard label="在线公告" value={props.snapshot.dashboard.announcements} icon={<IconBell size={18} />} />
-        <MetricCard label="待处理工单" value={props.snapshot.dashboard.waitingAdminTickets ?? 0} icon={<IconMessageCircle size={18} />} />
-        <MetricCard label="处理中工单" value={props.snapshot.dashboard.openTickets ?? 0} icon={<IconMessageCircle size={18} />} />
-        <MetricCard label="已关闭工单" value={props.snapshot.dashboard.closedTickets ?? 0} icon={<IconMessageCircle size={18} />} />
-      </SimpleGrid>
-
-      <SimpleGrid cols={{ base: 1, xl: 2 }}>
-        <Card withBorder radius="xl" p="lg">
-          <Stack gap="md">
-            <Group justify="space-between">
-              <Title order={4}>当前订阅</Title>
-              <Button size="xs" variant="subtle" onClick={props.onOpenSubscriptions}>
-                查看全部
-              </Button>
-            </Group>
-            <CompactSubscriptionList items={props.snapshot.subscriptions.slice(0, 6)} />
-          </Stack>
-        </Card>
-        <Card withBorder radius="xl" p="lg">
-          <Stack gap="md">
-            <Group justify="space-between">
-              <Title order={4}>节点状态</Title>
-              <Button size="xs" variant="subtle" onClick={props.onOpenNodes}>
-                查看全部
-              </Button>
-            </Group>
-            <CompactNodeList items={props.snapshot.nodes.slice(0, 6)} />
-          </Stack>
-        </Card>
-      </SimpleGrid>
-    </>
-  );
-}
-
-function ActionCard(props: {
-  title: string;
-  count: number;
-  actionLabel: string;
-  tone: "red" | "yellow" | "blue";
-  onClick: () => void;
-}) {
-  const hasWork = props.count > 0;
-  return (
-    <Paper withBorder radius="lg" p="md">
-      <Stack gap="sm">
-        <Group justify="space-between" align="start">
-          <div>
-            <Text fw={700}>{props.title}</Text>
-          </div>
-          <ThemeIcon color={hasWork ? props.tone : "gray"} variant="light" radius="lg">
-            <Text fw={700} size="sm">
-              {props.count}
-            </Text>
-          </ThemeIcon>
-        </Group>
-        <Button size="xs" variant={hasWork ? "light" : "default"} color={props.tone} onClick={props.onClick}>
-          {props.actionLabel}
-        </Button>
-      </Stack>
-    </Paper>
-  );
-}
-
-function MetricCard(props: { label: string; value: number | string; icon: ReactNode }) {
-  return (
-    <Paper withBorder radius="xl" p="lg" className="metric-card">
-      <Group justify="space-between">
-        <div>
-          <Text size="sm" c="dimmed">
-            {props.label}
-          </Text>
-          <Title order={2} mt="sm">
-            {props.value}
-          </Title>
-        </div>
-        <ThemeIcon size={42} radius="lg" variant="light">
-          {props.icon}
-        </ThemeIcon>
-      </Group>
-    </Paper>
-  );
-}
-
-function CompactSubscriptionList({ items }: { items: AdminSubscriptionRecordDto[] }) {
-  return (
-    <Stack gap="sm">
-      {items.map((item) => (
-        <Paper key={item.id} withBorder radius="lg" p="md">
-          <Group justify="space-between" align="start">
-            <div>
-              <Text fw={600}>{item.userDisplayName}</Text>
-              <Text size="sm" c="dimmed">
-                {item.planName} · 到期 {formatDateTime(item.expireAt)}
-              </Text>
-            </div>
-            <StatusBadge color={subscriptionStateColor(item.state)} label={translateSubscriptionState(item.state)} />
-          </Group>
-        </Paper>
-      ))}
-    </Stack>
-  );
-}
-
-function CompactNodeList({ items }: { items: AdminNodeRecordDto[] }) {
-  return (
-    <Stack gap="sm">
-      {items.map((item) => {
-        const status = compactNodeStatus(item);
-
-        return (
-          <Paper key={item.id} withBorder radius="lg" p="md">
-            <Group justify="space-between" align="start" wrap="nowrap">
-              <div style={{ minWidth: 0 }}>
-                <Text fw={600} lineClamp={1}>
-                  {item.name}
-                </Text>
-                <Group gap={6} wrap="nowrap">
-                  <CountryFlag code={item.countryCode} size="sm" />
-                  <Text size="sm" c="dimmed" lineClamp={1} style={{ minWidth: 0, flex: 1 }}>
-                    {item.region} · {item.serverHost}:{item.serverPort}
-                  </Text>
-                </Group>
-                <Text size="xs" c="dimmed" lineClamp={1}>
-                  {`Agent ${translateAgentStatus(item.controlStatus ?? item.agent?.status)}`} · 探测：{translateProbeStatus(item.probeStatus)}
-                </Text>
-              </div>
-              <StatusBadge color={status.color} label={status.label} />
-            </Group>
-          </Paper>
-        );
-      })}
-    </Stack>
-  );
+  const { snapshot } = props;
+  const now = Date.now();
+  const queueCount = snapshot.leaseRevocationJobs.filter(job=>["pending","running","failed"].includes(job.status)).length + sumNodeCommandSummaries(snapshot.nodeCommandQueue.summaries,"nodes");
+  const abnormalNodes = snapshot.nodes.filter(node=>nodeAttention(node)===0);
+  const pendingNodes = snapshot.nodes.filter(node=>nodeAttention(node)===1);
+  const nodeList = [...snapshot.nodes].sort((a,b)=>nodeAttention(a)-nodeAttention(b)||a.name.localeCompare(b.name)).slice(0,4);
+  const subscriptions = snapshot.subscriptions.filter(item=>["active","paused"].includes(item.state)&&Date.parse(item.expireAt)>now)
+    .sort((a,b)=>Date.parse(a.expireAt)-Date.parse(b.expireAt)).slice(0,4);
+  const metrics = [
+    {label:"客户",value:snapshot.dashboard.users,open:props.onOpenCustomers},
+    {label:"团队",value:snapshot.dashboard.teams,open:props.onOpenTeams},
+    {label:"有效订阅",value:snapshot.dashboard.activeSubscriptions,open:props.onOpenSubscriptions},
+    {label:"启用节点",value:snapshot.dashboard.activeNodes,open:props.onOpenNodes}
+  ];
+  return <section className={styles.dashboard} aria-label="仪表台">
+    <div className={styles.topline}><Text className={styles.date}>{new Intl.DateTimeFormat("zh-CN",{year:"numeric",month:"long",day:"numeric",weekday:"long"}).format(now)}</Text><Button color="teal.9" rightSection={<IconArrowRight size={16}/>} onClick={props.onOpenNodes}>管理节点</Button></div>
+    <div className={styles.tasks} aria-label="待处理事项">
+      <button onClick={props.onOpenTickets}>待回复工单 <strong>{snapshot.dashboard.waitingAdminTickets ?? 0}</strong><IconChevronRight size={16}/></button>
+      <button onClick={props.onOpenSyncQueue}>后台同步 <strong>{queueCount}</strong><IconChevronRight size={16}/></button>
+      <button onClick={props.onOpenNodes}>异常节点 <strong>{abnormalNodes.length}</strong><IconChevronRight size={16}/></button>
+      {pendingNodes.length>0?<span>{pendingNodes.length} 个节点状态待确认</span>:null}
+    </div>
+    <div className={styles.metrics}>{metrics.map(metric=><button key={metric.label} onClick={metric.open}><span>{metric.label}</span><strong>{metric.value.toLocaleString("zh-CN")}</strong></button>)}</div>
+    <div className={styles.columns}>
+      <section className={styles.subscriptions}><div className={styles.sectionHeading}><h2>最近到期订阅</h2><button onClick={props.onOpenSubscriptions}>查看全部<IconChevronRight size={16}/></button></div>
+        <Table.ScrollContainer minWidth={520}><Table className={styles.table}>
+          <Table.Thead><Table.Tr><Table.Th>客户</Table.Th><Table.Th>套餐</Table.Th><Table.Th>到期日</Table.Th><Table.Th>状态</Table.Th></Table.Tr></Table.Thead>
+          <Table.Tbody>{subscriptions.map(item=>{
+            const soon = item.state === "active" && Date.parse(item.expireAt)-now <= 7*24*60*60*1000;
+            return <Table.Tr key={item.id}><Table.Td><Text size="sm" fw={550}>{item.ownerType === "team" ? item.teamName || "团队订阅" : item.userDisplayName || item.userEmail || "个人订阅"}</Text></Table.Td><Table.Td>{item.planName}</Table.Td><Table.Td>{new Intl.DateTimeFormat("zh-CN",{year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date(item.expireAt))}</Table.Td><Table.Td><Text size="sm" c={soon?"orange.9":item.state==="active"?"teal.9":"dimmed"}>{soon?"7 天内到期":translateSubscriptionState(item.state)}</Text></Table.Td></Table.Tr>;
+          })}{!subscriptions.length?<Table.Tr><Table.Td colSpan={4}><Text className={styles.empty}>暂无待到期的有效或暂停订阅</Text></Table.Td></Table.Tr>:null}</Table.Tbody>
+        </Table></Table.ScrollContainer>
+      </section>
+      <section className={styles.nodes}><div className={styles.sectionHeading}><h2>节点状态</h2><button onClick={props.onOpenNodes}>查看全部<IconChevronRight size={16}/></button></div><Text size="sm" c="dimmed" mb="md">优先显示异常及状态待确认的节点</Text>
+        {nodeList.map(node=><button key={node.id} className={styles.node} onClick={props.onOpenNodes}><CountryFlag code={node.countryCode}/><div><strong>{node.name}</strong><span>{node.isActive===false?"已停用":`Agent ${translateAgentStatus(node.controlStatus ?? node.agent?.status)}`}</span></div><span className={styles.probe} data-alert={["offline","degraded"].includes(node.probeStatus)}>{node.probeStatus==="healthy"&&node.probeLatencyMs!=null?`TCP ${node.probeLatencyMs} ms`:`TCP ${translateProbeStatus(node.probeStatus)}`}</span></button>)}
+        {!nodeList.length?<Text className={styles.empty}>尚未添加节点</Text>:null}
+      </section>
+    </div>
+  </section>;
 }

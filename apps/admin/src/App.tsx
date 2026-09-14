@@ -400,7 +400,7 @@ export function App() {
   const [planScopeTab, setPlanScopeTab] = useState<PlanScope>("personal");
   const [subscriptionTab, setSubscriptionTab] = useState<"personal" | "team">("personal");
   const [authBootstrapped, setAuthBootstrapped] = useState(() => hasAdminSession());
-  const [search, setSearch] = useState<Record<Exclude<SectionKey, "overview" | "tickets" | "policies" | "releases" | "runtimeComponents">, string>>({
+  const [search, setSearch] = useState<Record<Exclude<SectionKey, "overview" | "tickets" | "policies" | "releases" | "runtimeComponents" | "system">, string>>({
     users: "",
     plans: "",
     subscriptions: "",
@@ -2246,7 +2246,7 @@ export function App() {
     setEntityActionBusyKey(actionKey);
     const confirmed = await actionConfirmation.confirm({
       title: "删除公告",
-      message: `确认删除「${snapshot.announcements.find(item => item.id === announcementId)?.title ?? "这条公告"}」？删除后客户端将同步移除。`,
+      message: `确认删除「${snapshot?.announcements.find(item => item.id === announcementId)?.title ?? "这条公告"}」？删除后客户端将同步移除。`,
       confirmLabel: "删除公告",
       danger: true
     });
