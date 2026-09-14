@@ -580,7 +580,28 @@ export async function fetchAdminSupportTickets() {
   });
 }
 
+const adminEventSubscribers = new Set<(event: AdminRuntimeEventDto) => void>();
+let stopAdminEventTransport: (() => void) | null = null;
+
+/** All admin consumers share one transport. Opening a node dialog must not
+ * establish another stream and trigger another application-wide resync. */
 export function subscribeAdminRuntimeEvents(onEvent: (event: AdminRuntimeEventDto) => void) {
+  const listener = (event: AdminRuntimeEventDto) => onEvent(event);
+  adminEventSubscribers.add(listener);
+  if (!stopAdminEventTransport) {
+    stopAdminEventTransport = connectAdminRuntimeEvents(event => {
+      for (const subscriber of [...adminEventSubscribers]) {
+        try { subscriber(event); } catch (error) { console.error("Admin event subscriber failed", error); }
+      }
+    });
+  }
+  return () => {
+    adminEventSubscribers.delete(listener);
+    if (!adminEventSubscribers.size) { stopAdminEventTransport?.(); stopAdminEventTransport = null; }
+  };
+}
+
+function connectAdminRuntimeEvents(onEvent: (event: AdminRuntimeEventDto) => void) {
   let stopped = false;
   let reconnectTimer: ReturnType<typeof window.setTimeout> | null = null;
   let controller: AbortController | null = null;

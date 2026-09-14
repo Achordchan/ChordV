@@ -1,13 +1,31 @@
+.versionEntry { display: flex; align-items: center; gap: 9px; width: 100%; padding: 11px 7px; background: transparent; border: 0; border-radius: 5px; color: #7c8976; cursor: pointer; text-align: left; font: inherit; }
+.versionEntry:hover, .versionEntry[aria-expanded=true] { background: #e9eee2; color: #1c4d37; }
+.versionEntry:focus-visible { outline: 2px solid #1c4d37; outline-offset: 2px; }
+.versionEntry > svg { flex-shrink: 0; }
+.versionEntry[data-attention] { color: #1c4d37; }
+.entryLabel { flex: 1; font-size: 12px; }
+.entryVersion { font-size: 11px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; max-width: 90px; text-align: right; }
 .panel {
-  width: min(420px, calc(100vw - 24px));
+  width: min(340px, calc(100vw - 24px));
   max-width: calc(100vw - 24px);
-  padding: 20px;
+  padding: 22px;
+  background: #fcfcf8;
+  border: 1px solid #e0e5d8;
+  border-radius: 8px;
+  color: #2d4030;
+  box-shadow: 0 6px 22px #243b2810;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
 }
+.unavailable { padding-top: 14px; border-top: 1px solid #e8ebe1; }
+.panel :global(.mantine-Button-root) { border-radius: 5px; font-weight: 500; }
+.panel :global(.mantine-Alert-root) { border-radius: 5px; }
+.confirm, .confirmHeader { background: #fcfcf8; }
+.confirm { border-radius: 9px; }
+.confirmTitle { color: #294c34; font-weight: 600; }
 .progress {
-  padding: 14px;
-  border: 1px solid var(--mantine-color-gray-2);
-  border-radius: var(--mantine-radius-md);
-  background: var(--mantine-color-gray-0);
+  padding: 17px 0 0;
+  border-top: 1px solid #e4e8dc;
 }
 .grow {
   flex: 1;
@@ -26,7 +44,7 @@
 .stepLabel {
   flex: 1;
   min-width: 0;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .historyItem {
   padding: 8px 0;
@@ -36,6 +54,6 @@
   border-bottom: 0;
 }
 @media (max-width: 480px) {
-  .panel { padding: 16px; }
-  .progress { padding: 12px; }
+  .panel { padding: 19px; }
+  .progress { padding-top: 15px; }
 }

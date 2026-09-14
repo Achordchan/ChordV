@@ -29,7 +29,6 @@ export function useSystemUpdate(opened: boolean) {
   const [refreshRequired, setRefreshRequired] = useState(false);
   const [error, setError] = useState("");
   const [completion, setCompletion] = useState<UpdateCompletion | null>(readCompletion);
-  const [observedPhases, setObservedPhases] = useState<ReadonlySet<string>>(new Set());
   const mounted = useRef(true), mutation = useRef(false), finishingRef = useRef(false);
   const stopObserver = useRef<(() => void) | null>(null);
   const epoch = useRef(0), runtimeEpoch = useRef(0), checkEpoch = useRef(0);
@@ -125,7 +124,6 @@ export function useSystemUpdate(opened: boolean) {
       onOperation: operation => {
         if (!mounted.current || sequence !== epoch.current) return;
         setActiveOp(operation); setBusy(operation.kind);
-        setObservedPhases(previous => new Set([...previous, ...(operation.observedPhases ?? []), ...(operation.phase ? [operation.phase] : [])]));
         if (["succeeded", "failed", "rolled_back"].includes(operation.status)) void finishOperation(operation);
       }
     });
@@ -137,7 +135,7 @@ export function useSystemUpdate(opened: boolean) {
     if (!mounted.current || activeId.current || mutation.current) return;
     const running = history.find(item => item.status === "running" || item.status === "pending");
     if (running) {
-      clearCompletion(); setCompletion(null); setObservedPhases(new Set(running.observedPhases ?? []));
+      clearCompletion(); setCompletion(null);
       setActiveOp(running); setBusy(running.kind); watchOperation(running.operationId);
     }
   }, [watchOperation]);
@@ -157,7 +155,7 @@ export function useSystemUpdate(opened: boolean) {
 
   const beginOperation = useCallback(async (kind: BusyKind, version?: string) => {
     if (mutation.current || activeId.current) return;
-    clearCompletion(); mutation.current = true; setBusy(kind); setError(""); setCompletion(null); setActiveOp(null); setObservedPhases(new Set());
+    clearCompletion(); mutation.current = true; setBusy(kind); setError(""); setCompletion(null); setActiveOp(null);
     checkEpoch.current++; setCheck(null); setChecking(false);
     try {
       const result = kind === "update" ? await startSystemUpdate(version) : kind === "rollback" ? await startSystemRollback(version) : await startSystemRestart();
@@ -178,6 +176,6 @@ export function useSystemUpdate(opened: boolean) {
   const pause = () => { stop(); setConnection("paused"); };
   const canUpdate = Boolean(runtime?.enabled && !busy && !checking && check?.hasUpdate && check.release && !check.cached && !check.warning);
   return { runtime, check, checking, operations, versions, auxLoading, auxError, busy, connection, activeOp, finishing,
-    refreshRequired, completion, observedPhases, error, canUpdate, runCheck, loadAux, beginOperation, reconnect, pause,
+    refreshRequired, completion, error, canUpdate, runCheck, loadAux, beginOperation, reconnect, pause,
     reloadPage: () => window.location.reload(), dismissCompletion: () => { clearCompletion(); setCompletion(null); }, kindLabel };
 }

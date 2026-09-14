@@ -66,7 +66,8 @@ export function observeSystemOperation(operationId: string, options: {
           options.onError?.("当前登录状态无法读取更新任务，请重新登录。"); return;
         }
         if (!response.ok || !response.body) throw new Error(`更新状态 HTTP ${response.status}`);
-        options.onConnection("live");
+        // A 200 response only establishes transport. A matching operation
+        // snapshot must arrive before stale progress is treated as live again.
         const reader = response.body.getReader();
         const decoder = new TextDecoder(); let buffer = "";
         try {
