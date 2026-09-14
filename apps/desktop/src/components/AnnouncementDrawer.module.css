@@ -1,0 +1,27 @@
+.content, .emptyContent { display: flex; flex-direction: column; max-height: calc(100dvh - 32px); overflow: hidden; }
+.content { height: min(420px, calc(100dvh - 32px)); }
+.header { padding: 14px 18px 10px; flex-shrink: 0; }
+.title { font-size: 16px; font-weight: 600; }
+.body { display: flex; flex: 1; min-height: 0; padding: 0 18px 18px; overflow: hidden; }
+.layout { display: grid; grid-template-columns: 188px minmax(0, 1fr); width: 100%; min-height: 0; }
+.list { min-height: 0; overflow: auto; padding-right: 10px; border-right: 1px solid var(--mantine-color-default-border); scrollbar-width: thin; }
+.listItem { display: block; width: 100%; margin: 0 0 4px; padding: 12px 10px; text-align: left; color: inherit; font: inherit; border: 0; border-left: 3px solid transparent; border-radius: 5px; background: transparent; cursor: pointer; }
+.listItem:hover { background: var(--mantine-color-gray-0); }
+.listItem[data-selected] { border-left-color: var(--mantine-primary-color-filled); background: var(--mantine-color-cyan-0); }
+.listItem:focus-visible, .articleBody:focus-visible { outline: 2px solid var(--mantine-primary-color-filled); outline-offset: -2px; }
+.listTitle { display: block; font-size: 14px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.unread { display: inline-block; width: 6px; height: 6px; margin-left: 7px; vertical-align: middle; border-radius: 50%; background: var(--mantine-primary-color-filled); }
+.listMeta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; color: var(--mantine-color-dimmed); }
+.reader { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding-left: 18px; }
+.readerHeader { flex-shrink: 0; padding: 10px 0 12px; border-bottom: 1px solid var(--mantine-color-default-border); max-height: 45%; overflow: auto; }
+.readerTitle { font-size: 17px; font-weight: 600; line-height: 1.45; margin: 0; overflow-wrap: anywhere; }
+.articleBody { flex: 1; min-height: 0; overflow: auto; padding: 14px 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.8; scrollbar-width: thin; }
+.footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; flex-shrink: 0; padding-top: 10px; border-top: 1px solid var(--mantine-color-default-border); }
+.empty { width: 100%; padding: 36px 0; text-align: center; }
+@media (max-width: 520px) {
+  .layout { grid-template-columns: 1fr; grid-template-rows: minmax(72px, 120px) minmax(0, 1fr); }
+  .list { border-right: 0; border-bottom: 1px solid var(--mantine-color-default-border); padding-right: 0; }
+  .listItem { padding: 8px 10px; }
+  .reader { padding-left: 0; }
+  .readerTitle { font-size: 16px; }
+}

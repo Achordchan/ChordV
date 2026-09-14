@@ -23,8 +23,13 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2.4.0"
 tokio = { version = "1", features = ["macros", "sync", "time"] }
 url = "2"
-windows-sys = { version = "0.59", features = ["Win32_Networking_WinInet"] }
+windows-sys = { version = "0.59", features = ["Win32_Networking_WinInet", "Win32_UI_WindowsAndMessaging"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 native-tls = "0.2"
+
+# Use the AppKit bindings already present through Tauri for native resize animation.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSWindow", "NSScreen", "NSResponder"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSGeometry"] }

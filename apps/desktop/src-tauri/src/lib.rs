@@ -1,6 +1,7 @@
 mod android_mobile_plugin;
 mod android_runtime;
 mod routing_diagnostics;
+mod window_transition;
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -8023,6 +8024,7 @@ pub fn run() {
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
         .plugin(android_mobile_plugin::init())
+        .manage(window_transition::WindowTransitionState::default())
         .manage(Mutex::new(RuntimeState::default()))
         .manage(Mutex::new(ShellState {
             status: "idle".into(),
@@ -8083,6 +8085,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_ready,
+            window_transition::transition_main_window,
             api_request,
             start_client_event_stream,
             stop_client_event_stream,

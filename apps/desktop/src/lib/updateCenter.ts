@@ -14,7 +14,6 @@ export type UpdateCenterItemStatus =
 export type UpdateCenterItem = {
   key: UpdateCenterItemKey;
   label: string;
-  enabled: boolean;
   status: UpdateCenterItemStatus;
   localVersion: string | null;
   remoteVersion: string | null;
@@ -25,7 +24,7 @@ export type UpdateCenterItem = {
 export type UpdateCenterState = {
   opened: boolean;
   checking: boolean;
-  updatingKey: UpdateCenterItemKey | "all" | null;
+  updatingKey: UpdateCenterItemKey | null;
   items: UpdateCenterItem[];
   lastCheckedAt: number | null;
 };
@@ -35,7 +34,6 @@ export function createDefaultUpdateCenterItems(): UpdateCenterItem[] {
     {
       key: "app",
       label: "软件",
-      enabled: true,
       status: "idle",
       localVersion: null,
       remoteVersion: null,
@@ -45,7 +43,6 @@ export function createDefaultUpdateCenterItems(): UpdateCenterItem[] {
     {
       key: "xray",
       label: "Xray",
-      enabled: true,
       status: "idle",
       localVersion: null,
       remoteVersion: null,
@@ -55,7 +52,6 @@ export function createDefaultUpdateCenterItems(): UpdateCenterItem[] {
     {
       key: "geo",
       label: "GEO 数据",
-      enabled: true,
       status: "idle",
       localVersion: null,
       remoteVersion: null,
@@ -114,7 +110,6 @@ export function buildAppUpdateCenterItem(input: {
     return {
       key: "app",
       label: "软件",
-      enabled: true,
       status: "failed",
       localVersion: input.appVersion,
       remoteVersion: null,
@@ -126,7 +121,6 @@ export function buildAppUpdateCenterItem(input: {
     return {
       key: "app",
       label: "软件",
-      enabled: true,
       status: "available",
       localVersion: input.appVersion,
       remoteVersion: remote,
@@ -137,7 +131,6 @@ export function buildAppUpdateCenterItem(input: {
   return {
     key: "app",
     label: "软件",
-    enabled: true,
     status: "current",
     localVersion: input.appVersion,
     remoteVersion: remote,

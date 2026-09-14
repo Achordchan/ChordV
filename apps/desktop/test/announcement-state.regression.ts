@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import type { AnnouncementDto } from "@chordv/shared";
 import {
   hasUnreadAnnouncements,
+  isPassiveAnnouncementUnread,
+  isForcedAnnouncementPending,
+  patchAnnouncementRecord,
+  sortAnnouncementsForReading,
   pickForcedAnnouncement,
   pickUnreadForcedAnnouncementIds
 } from "../src/lib/announcementState";
@@ -50,7 +54,31 @@ function testAcknowledgedLatestDoesNotCascadeToHistoricalForcedAnnouncement() {
   assert.deepEqual(pickUnreadForcedAnnouncementIds([older, latest]), ["announcement_older"]);
 }
 
+function testReadingOnlyTouchesSelectedPassiveAnnouncement() {
+  const passive = createAnnouncement({ id: "passive", displayMode: "passive", publishedAt: "2026-09-14T08:00:00Z" });
+  const forced = createAnnouncement({ id: "forced", displayMode: "modal_countdown", countdownSeconds: 5, publishedAt: "2026-09-13T08:00:00Z" });
+  const untouched = createAnnouncement({ id: "unopened", displayMode: "passive", publishedAt: "2026-09-12T08:00:00Z" });
+  const next = [passive, forced, untouched].map(item => item.id === passive.id ? patchAnnouncementRecord(item, "seen", "2026-09-14T09:00:00Z") : item);
+  assert.equal(isPassiveAnnouncementUnread(next[0]), false);
+  assert.equal(isForcedAnnouncementPending(next[1]), true);
+  assert.equal(isPassiveAnnouncementUnread(next[1]), false, "forced items cannot enter automatic seen requests");
+  assert.equal(isPassiveAnnouncementUnread(next[2]), true);
+  assert.equal(isForcedAnnouncementPending(patchAnnouncementRecord(forced, "ack", "2026-09-14T09:00:00Z")), false);
+}
+
+function testReadingOrderDoesNotMutateBootstrap() {
+  const older = createAnnouncement({ id: "older", publishedAt: "2026-09-01T00:00:00Z" });
+  const newer = createAnnouncement({ id: "newer", publishedAt: "2026-09-14T00:00:00Z" });
+  const invalid = createAnnouncement({ id: "invalid", publishedAt: "invalid" });
+  const original = [older, invalid, newer];
+  assert.deepEqual(sortAnnouncementsForReading(original).map(item => item.id), ["newer", "older", "invalid"]);
+  assert.deepEqual(original.map(item => item.id), ["older", "invalid", "newer"]);
+  assert.deepEqual(sortAnnouncementsForReading([]), []);
+}
+
 function main() {
+  testReadingOnlyTouchesSelectedPassiveAnnouncement();
+  testReadingOrderDoesNotMutateBootstrap();
   testOnlyLatestForcedAnnouncementAutoPrompts();
   testAcknowledgedLatestDoesNotCascadeToHistoricalForcedAnnouncement();
   console.log("desktop announcement state regression checks passed");

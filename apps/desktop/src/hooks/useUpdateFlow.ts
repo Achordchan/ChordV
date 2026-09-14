@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { initialUpdateCheckState, reduceUpdateCheckState } from "../lib/updateCheckState";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { ClientVersionDto } from "@chordv/shared";
 import {
   checkClientUpdate,
@@ -182,7 +183,9 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     [options.platformTarget]
   );
   const [updateCheckBusy, setUpdateCheckBusy] = useState(false);
-  const [updateCheckResult, setUpdateCheckResult] = useState<ClientUpdateCheckResult | null>(null);
+  const [updateCheck, dispatchUpdateCheck] = useReducer(reduceUpdateCheckState, initialUpdateCheckState);
+  const updateCheckResult = updateCheck.result;
+  const updateCheckStatus = updateCheck.status;
   const [updateDialogOpened, setUpdateDialogOpened] = useState(false);
   const [updateCenter, setUpdateCenter] = useState<UpdateCenterState>(createIdleUpdateCenterState);
   const [updateDownload, setUpdateDownload] = useState<UpdateDownloadState>(createIdleUpdateDownloadState);
@@ -194,19 +197,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
   const updateCheckBusyRef = useRef(false);
   const pendingUpdateCheckRef = useRef<RunUpdateCheckOptions | null>(null);
 
-  const effectiveUpdate = useMemo(
-    () =>
-      updateCheckResult ??
-      createLegacyUpdateResult(
-        options.bootstrapVersion ?? null,
-        updatePlatform,
-        options.appVersion,
-        options.runtimeMirrorPrefix,
-        lastKnownUpdateArtifactRef.current,
-        options.updateChannel ?? "stable"
-      ),
-    [options.appVersion, options.bootstrapVersion, options.runtimeMirrorPrefix, options.updateChannel, updateCheckResult, updatePlatform]
-  );
+  const effectiveUpdate = updateCheckResult;
 
   const forceUpdateRequired = useMemo(
     () =>
@@ -435,16 +426,6 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
   }, [effectiveUpdate, options, updateDownload, updatePlatform]);
 
 
-  const patchUpdateCenterItems = useCallback((patchers: Partial<Record<UpdateCenterItemKey, Partial<UpdateCenterItem>>>) => {
-    setUpdateCenter((current) => ({
-      ...current,
-      items: current.items.map((item) => {
-        const patch = patchers[item.key];
-        return patch ? { ...item, ...patch } : item;
-      })
-    }));
-  }, []);
-
   const openUpdateCenter = useCallback(() => {
     setUpdateCenter((current) => ({
       ...current,
@@ -460,10 +441,6 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     }));
   }, []);
 
-  const setUpdateCenterItemEnabled = useCallback((key: UpdateCenterItemKey, enabled: boolean) => {
-    patchUpdateCenterItems({ [key]: { enabled } });
-  }, [patchUpdateCenterItems]);
-
   const runUpdateCheck = useCallback(
     async (runOptions: RunUpdateCheckOptions) => {
       if (updateCheckBusyRef.current) {
@@ -471,12 +448,13 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         return null;
       }
 
+      updateCheckBusyRef.current = true;
+      dispatchUpdateCheck({ type: "checking" });
       try {
         // 启动/登录等静默检查不占用「检测更新」按钮 loading，避免一进软件就转圈、影响连接
         const isInteractiveCheck =
           runOptions.source === "manual" || Boolean(runOptions.openUpdateCenter);
         if (isInteractiveCheck) {
-          updateCheckBusyRef.current = true;
           setUpdateCheckBusy(true);
           setUpdateCenter((current) => ({
             ...current,
@@ -484,12 +462,8 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
             checking: true,
             updatingKey: null,
             items: current.items.map((item) =>
-              item.enabled
-                ? {
-                    ...item,
-                    status: "checking",
-                    message: "正在检查…"
-                  }
+              item.key === "app" || ((runOptions.includeRuntimeComponents ?? runOptions.source === "manual") && (!runOptions.runtimeTargets || runOptions.runtimeTargets.includes(item.key)))
+                ? { ...item, status: "checking", message: "正在检查…" }
                 : item
             )
           }));
@@ -515,7 +489,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
                 options.updateChannel ?? "stable"
               ));
 
-        setUpdateCheckResult(result);
+        dispatchUpdateCheck({ type: "confirmed", result });
 
         // 如果服务端返回的最新版本就是当前版本，说明当前已是最新，不触发更新提示
         const effectiveHasUpdate = hasActionableUpdate(result, options.appVersion);
@@ -550,7 +524,6 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         const xrayItem: UpdateCenterItem = {
           key: "xray",
           label: "Xray",
-          enabled: true,
           status: runtimeSummary?.xray?.available
             ? "available"
             : runtimeSummary?.xray
@@ -568,7 +541,6 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         const geoItem: UpdateCenterItem = {
           key: "geo",
           label: "GEO 数据",
-          enabled: true,
           status: runtimeSummary?.geo?.available
             ? "available"
             : runtimeSummary?.geo
@@ -589,11 +561,12 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           (runOptions.source === "manual" && !runOptions.silent);
 
         setUpdateCenter((current) => {
-          const enabledMap = new Map(current.items.map((item) => [item.key, item.enabled]));
-          const nextItems = [appItem, xrayItem, geoItem].map((item) => ({
-            ...item,
-            enabled: enabledMap.has(item.key) ? Boolean(enabledMap.get(item.key)) : item.enabled
-          }));
+          // A client-only check must not erase the last known component results.
+          const nextItems = [appItem, xrayItem, geoItem].map((item) => {
+            if (item.key === "app" || (includeRuntime && (!runtimeTargets || runtimeTargets.includes(item.key)))) return item;
+            const previous = current.items.find((value) => value.key === item.key);
+            return previous ? { ...previous, status: previous.status === "checking" ? "idle" as const : previous.status } : item;
+          });
           return {
             ...current,
             opened: shouldOpenCenter ? true : current.opened,
@@ -640,17 +613,24 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         }
         return result;
       } catch (reason) {
+        dispatchUpdateCheck({ type: "failed" });
+        setUpdateCenter((current) => ({
+          ...current, checking: false, updatingKey: null,
+          items: current.items.map((item) => item.status === "checking" || item.status === "updating"
+            ? { ...item, status: "failed", canUpdate: false, message: "暂时无法获取版本信息，请稍后重试。" }
+            : item)
+        }));
         if (isUnauthorizedApiError(reason)) {
           await options.onUnauthorized?.();
           return null;
         }
-        if (!runOptions.silent || runOptions.source === "manual") {
+        if (!runOptions.openUpdateCenter && (!runOptions.silent || runOptions.source === "manual")) {
           options.showError?.(reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "检查更新失败");
         }
         return null;
       } finally {
+        updateCheckBusyRef.current = false;
         if (runOptions.source === "manual" || runOptions.openUpdateCenter) {
-          updateCheckBusyRef.current = false;
           setUpdateCheckBusy(false);
         }
         const pendingRun = pendingUpdateCheckRef.current;
@@ -741,52 +721,6 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     [options.accessToken, options.appVersion, options.bootstrapVersion, runUpdateCheck]
   );
 
-  const handleUpdateCenterUpdateSelected = useCallback(async () => {
-    const enabled = updateCenter.items.filter((item) => item.enabled);
-    if (!enabled.length) {
-      return null;
-    }
-    setUpdateCenter((current) => ({
-      ...current,
-      opened: true,
-      updatingKey: "all",
-      items: current.items.map((item) =>
-        item.enabled
-          ? {
-              ...item,
-              status: item.canUpdate || item.status === "available" || item.status === "idle" ? "updating" : item.status,
-              message: item.enabled ? "正在处理…" : item.message
-            }
-          : item
-      )
-    }));
-    try {
-      const runtimeTargets = enabled
-        .map((item) => item.key)
-        .filter((key): key is "xray" | "geo" => key === "xray" || key === "geo");
-      const includeApp = enabled.some((item) => item.key === "app");
-      const result = await runUpdateCheck({
-        accessToken: options.accessToken,
-        bootstrapVersion: options.bootstrapVersion ?? null,
-        source: "manual",
-        silent: true,
-        inspectOnly: false,
-        includeRuntimeComponents: runtimeTargets.length > 0,
-        runtimeTargets: runtimeTargets.length ? runtimeTargets : undefined,
-        openUpdateCenter: true
-      });
-      if (includeApp && hasActionableUpdate(result, options.appVersion)) {
-        setUpdateDialogOpened(true);
-      }
-      return result;
-    } finally {
-      setUpdateCenter((current) => ({
-        ...current,
-        updatingKey: null
-      }));
-    }
-  }, [options.accessToken, options.appVersion, options.bootstrapVersion, runUpdateCheck, updateCenter.items]);
-
   const runUpdateCheckAndFocus = useCallback(
     async (runOptions: RunUpdateCheckOptions) => {
       const result = await runUpdateCheck(runOptions);
@@ -805,7 +739,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     }
     try {
       // 清空更新状态，避免重启后短暂显示旧的“有更新”提示
-      setUpdateCheckResult(null);
+      dispatchUpdateCheck({ type: "reset" });
       if (effectiveUpdate && isFullReplaceUpdate(effectiveUpdate, updatePlatform)) {
         await applyDesktopFullUpdate();
       } else {
@@ -842,7 +776,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     updatePlatform,
     updateCheckBusy,
     updateCheckResult,
-    setUpdateCheckResult,
+    updateCheckStatus,
     effectiveUpdate,
     forceUpdateRequired,
     updateDialogOpened,
@@ -862,10 +796,8 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     updateCenter,
     openUpdateCenter,
     closeUpdateCenter,
-    setUpdateCenterItemEnabled,
     handleUpdateCenterCheckOnly,
     handleUpdateCenterUpdateOne,
-    handleUpdateCenterUpdateSelected,
     consumeUpdateInstallReport
   };
 }

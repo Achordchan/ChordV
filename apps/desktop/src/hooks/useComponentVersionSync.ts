@@ -8,13 +8,13 @@ function runtimeInUse(status: RuntimeStatus) {
 }
 
 type Options = {
+  enabled: boolean;
   accessToken: string | null;
   status: RuntimeStatus;
   assetsBusy: boolean;
   applicationUpdateBusy: boolean;
   ensure: (options: {source:"update_check";interactive:boolean;blockConnection:boolean;forceCheck:boolean;inspectOnly:boolean}) => Promise<boolean>;
   onStatus: (status: RuntimeStatus) => void;
-  notify: (notice: {color:"yellow";title:string;message:string}) => void;
 };
 
 /** Events invalidate a desired-state snapshot, not individual download jobs.
@@ -26,9 +26,11 @@ export function useComponentVersionSync(options: Options) {
   const sessionEpoch = useRef(0);
   const [requested, setRequested] = useState(0), [settled, setSettled] = useState(0);
   const [processing, setProcessing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
   useEffect(() => { alive.current = true; return () => { alive.current = false; sessionEpoch.current++; }; }, []);
   useEffect(() => {
     sessionEpoch.current++;
+    setSyncError(null);
     if (options.accessToken) setRequested(value => value + 1);
   }, [options.accessToken]);
   const requestSync = useCallback((event?: ClientRuntimeEventDto) => {
@@ -37,7 +39,7 @@ export function useComponentVersionSync(options: Options) {
     if (event?.platform && event.platform !== value.status.platformTarget) return;
     setRequested(count => count + 1);
   }, []);
-  const blocked = runtimeInUse(options.status) || options.assetsBusy || options.applicationUpdateBusy;
+  const blocked = !options.enabled || runtimeInUse(options.status) || options.assetsBusy || options.applicationUpdateBusy;
   // Legacy upstream latest URLs have no ChordV event publisher. A 12-hour
   // check uses the same single-flight, idle-only path and ends with the session.
   useEffect(() => {
@@ -49,7 +51,7 @@ export function useComponentVersionSync(options: Options) {
     if (!options.accessToken || !["macos", "windows"].includes(options.status.platformTarget)
       || blocked || running.current || requested <= completed.current) return;
     const epoch = sessionEpoch.current, target = requested;
-    running.current = true; setProcessing(true);
+    running.current = true; setProcessing(true); setSyncError(null);
     void (async () => {
       try {
         // Re-read native state: a tray action can run ahead of React's snapshot.
@@ -59,12 +61,12 @@ export function useComponentVersionSync(options: Options) {
         const success = await current.current.ensure({ source:"update_check", interactive:false, blockConnection:false, forceCheck:true, inspectOnly:false });
         if (alive.current && epoch === sessionEpoch.current) {
           completed.current = target; setSettled(target);
-          if (!success) current.current.notify({color:"yellow",title:"组件自动更新未完成",message:"请在更新中心查看失败原因并重试。"});
+          if (!success) setSyncError("组件暂未同步，可在更新中心查看原因并重试。");
         }
       } catch {
         if (alive.current && epoch === sessionEpoch.current) {
           completed.current = target; setSettled(target);
-          current.current.notify({color:"yellow",title:"组件自动更新未完成",message:"当前无法读取或更新组件，请在更新中心重试。"});
+          setSyncError("暂时无法检查组件，可在更新中心重试。");
         }
       } finally {
         running.current = false;
@@ -72,5 +74,5 @@ export function useComponentVersionSync(options: Options) {
       }
     })();
   }, [requested, blocked, options.accessToken, options.status.platformTarget, processing]);
-  return { requestSync, deferred: Boolean(options.accessToken) && requested > settled && runtimeInUse(options.status) };
+  return { requestSync, syncError, deferred: Boolean(options.accessToken) && requested > settled && runtimeInUse(options.status) };
 }

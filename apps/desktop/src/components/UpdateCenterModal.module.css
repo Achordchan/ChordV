@@ -1,0 +1,26 @@
+.title { font-size: 16px; font-weight: 600; }
+.header { padding: 14px 20px 8px; }
+.body { padding: 0 20px 16px; }
+.client { display: flex; align-items: center; gap: 12px; padding: 4px 0 12px; border-bottom: 1px solid var(--mantine-color-default-border); }
+.logo { width: 44px; height: 44px; object-fit: contain; flex-shrink: 0; }
+.clientInfo { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.clientName { font-size: 17px; font-weight: 600; }
+.components { padding-top: 12px; }
+.sectionTitle { font-size: 14px; font-weight: 600; }
+.rows { margin-top: 6px; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 40px; padding: 8px 0; }
+.row + .row { border-top: 1px solid var(--mantine-color-default-border); }
+.rowStatus { min-width: 0; }
+.detailsToggle { display: flex; align-items: center; gap: 6px; color: var(--mantine-color-dimmed); padding: 6px 0; border-radius: 4px; font-size: 13px; }
+.detailsToggle:focus-visible { outline: 2px solid var(--mantine-primary-color-filled); outline-offset: 2px; }
+.details { padding: 4px 0 8px; }
+.detailItem { padding: 8px 0; overflow-wrap: anywhere; }
+.detailItem + .detailItem { border-top: 1px solid var(--mantine-color-default-border); }
+.footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
+@media (max-width: 420px) {
+  .header { padding: 12px 16px 8px; }
+  .body { padding: 0 16px 14px; }
+  .client { flex-wrap: wrap; }
+  .rowStatus { flex-wrap: wrap; }
+  .footer > button { margin-left: auto; }
+}

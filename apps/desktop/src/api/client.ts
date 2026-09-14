@@ -419,7 +419,7 @@ export function markAnnouncementsRead(
     action: "seen" | "ack";
   }
 ) {
-  return request<{ ok: boolean }>("/client/announcements/read", {
+  return request<{ ok: boolean; updatedIds?: string[] }>("/client/announcements/read", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`
