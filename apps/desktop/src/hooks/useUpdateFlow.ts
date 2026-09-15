@@ -84,6 +84,7 @@ type RuntimeAssetsCheckSummary = {
 
 type UseUpdateFlowOptions = {
   appVersion: string;
+  runtimeMirrorPrefix?: string;
   platformTarget: RuntimeStatus["platformTarget"];
   accessToken?: string | null;
   bootstrapVersion?: ClientVersionDto | null;
@@ -451,7 +452,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           platform: updatePlatform,
           channel: options.updateChannel ?? "stable",
           artifactType: preferredArtifactType(updatePlatform),
-          clientMirrorPrefix: undefined,
+          clientMirrorPrefix: options.runtimeMirrorPrefix,
           accessToken: runOptions.accessToken ?? options.accessToken ?? undefined
         });
         const result =
@@ -462,7 +463,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
                 runOptions.bootstrapVersion ?? options.bootstrapVersion ?? null,
                 updatePlatform,
                 options.appVersion,
-                undefined,
+                options.runtimeMirrorPrefix,
                 lastKnownUpdateArtifactRef.current,
                 options.updateChannel ?? "stable"
               ));
@@ -622,6 +623,20 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     },
     [options, updatePlatform]
   );
+
+  const previousMirrorPrefix = useRef(options.runtimeMirrorPrefix);
+  useEffect(() => {
+    if (previousMirrorPrefix.current === options.runtimeMirrorPrefix) return;
+    previousMirrorPrefix.current = options.runtimeMirrorPrefix;
+    if (updateDownload.phase !== "failed") return;
+    // A failed installer may still hold a URL resolved through the removed mirror.
+    // Hide its retry action until fresh metadata has supplied the direct route.
+    dispatchUpdateCheck({type:"reset"});
+    setUpdateDownload(createIdleUpdateDownloadState());
+    setUpdateDialogOpened(false);
+    lastKnownUpdateArtifactRef.current = null;
+    void runUpdateCheck({source:"manual",inspectOnly:true,includeRuntimeComponents:false});
+  }, [options.runtimeMirrorPrefix, runUpdateCheck, updateDownload.phase]);
 
   const handleManualUpdateCheck = useCallback(async () => {
     return runUpdateCheck({

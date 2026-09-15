@@ -248,7 +248,17 @@ export function App() {
       }) => Promise<import("./hooks/useRuntimeAssets").RuntimeAssetsCheckSummary | null>)
     | null
   >(null);
+  // Only legacy mirror-eligible downloads consume this saved override.
+  const [runtimeMirrorPrefix, setRuntimeMirrorPrefix] = useState(() => {
+    try { return localStorage.getItem(RUNTIME_COMPONENT_MIRROR_PREFIX_KEY) ?? ""; } catch { return ""; }
+  });
+  const clearLegacyDownloadMirror = () => {
+    localStorage.removeItem(RUNTIME_COMPONENT_MIRROR_PREFIX_KEY);
+    setRuntimeMirrorPrefix("");
+    notifications.show({message:"旧下载镜像已清除，请重新下载。",color:"teal"});
+  };
   const updateFlow = useUpdateFlow({
+    runtimeMirrorPrefix,
     appVersion,
     platformTarget: desktopStatus.platformTarget,
     accessToken: session?.accessToken ?? null,
@@ -304,6 +314,7 @@ export function App() {
     handleCancelRuntimeAssets,
     handleRetryRuntimeAssets
   } = useRuntimeAssets({
+    runtimeMirrorPrefix,
     appVersion,
     platformTarget: desktopStatus.platformTarget,
     accessToken: session?.accessToken ?? null,
@@ -810,10 +821,6 @@ export function App() {
       delete window.__CHORDV_DESKTOP_SHELL__;
     };
   }, [desktopStatus.platformTarget]);
-
-  useEffect(() => {
-    localStorage.removeItem(RUNTIME_COMPONENT_MIRROR_PREFIX_KEY);
-  }, []);
 
   useEffect(() => {
     const preventContextMenu = (event: MouseEvent) => {
@@ -1693,8 +1700,8 @@ export function App() {
       {!windowTransitioning && ((runtimeAssets.phase !== "idle" && runtimeAssets.phase !== "ready") || (updateDownload.phase !== "idle" && !updateDialogOpened)) ? (
         <div className="desktop-runtime-overlay" data-metering-notice={bootstrap?.subscription.meteringStatus === "degraded" && Boolean(bootstrap.subscription.meteringMessage) || undefined}>
           <div className="desktop-runtime-overlay__inner">
-            <RuntimeAssetsBanner state={runtimeAssets} onRetry={handleRetryRuntimeAssets} onCancel={handleCancelRuntimeAssets}/>
-            {!updateDialogOpened ? <ClientUpdateProgressPanel state={updateDownload} version={effectiveUpdate?.latestVersion} onRetry={()=>void handleUpdateDownload()} onInstall={()=>void handleQuitForUpdate()}/> : null}
+            <RuntimeAssetsBanner onResetLegacyMirror={runtimeMirrorPrefix ? clearLegacyDownloadMirror : null} state={runtimeAssets} onRetry={handleRetryRuntimeAssets} onCancel={handleCancelRuntimeAssets}/>
+            {!updateDialogOpened ? <ClientUpdateProgressPanel onResetLegacyMirror={runtimeMirrorPrefix ? clearLegacyDownloadMirror : null} state={updateDownload} version={effectiveUpdate?.latestVersion} onRetry={()=>void handleUpdateDownload()} onInstall={()=>void handleQuitForUpdate()}/> : null}
           </div>
         </div>
       ) : null}
@@ -2079,7 +2086,7 @@ export function App() {
           <Text size="sm" c="dimmed">
             发布渠道：正式版，仓库地址（<a href="https://github.com/achordchan" target="_blank" rel="noopener noreferrer">github.com/achordchan</a>）
           </Text>
-          <ClientUpdateProgressPanel state={updateDownload} version={effectiveUpdate?.latestVersion} onRetry={()=>void handleUpdateDownload()} onInstall={()=>void handleQuitForUpdate()}/>
+          <ClientUpdateProgressPanel onResetLegacyMirror={runtimeMirrorPrefix ? clearLegacyDownloadMirror : null} state={updateDownload} version={effectiveUpdate?.latestVersion} onRetry={()=>void handleUpdateDownload()} onInstall={()=>void handleQuitForUpdate()}/>
           <Stack gap={6}>
             <Text fw={600}>更新内容</Text>
             {effectiveUpdate?.changelog.length ? (

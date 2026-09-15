@@ -119,3 +119,14 @@ git diff --check
 - `unified-download-panel.regression.ts`：增加旧本地镜像不再进入下载流程的回归检查。
 
 验证：Prisma generate、API/desktop 类型检查、隔离 PostgreSQL 全量迁移及真实文件集成测试、storage-routes / unified-download-panel / runtime-assets-state / update-center 定向回归均通过；没有新增样式或生产 Mock。上一轮 73 条完整回归通过，本轮按变更范围执行定向验证。
+
+## PR #53 旧外链兼容范围修正（最终行为）
+
+复核后区分后台全局镜像退役与旧外链客户端兼容，撤销上一节“启动清除历史缓存”的做法：保留已有本地镜像，仅由原有 allowClientMirror 策略决定是否应用，托管固定版本继续忽略覆盖。
+
+- `App.tsx`：读取历史配置，提供明确的清除操作；不恢复镜像编辑表单。
+- `useRuntimeAssets.ts`、`useUpdateFlow.ts`：旧外链继续接受获准的历史覆盖；清除后失败的更新包缓存失效并重新获取元数据，避免再次使用已解析的旧镜像 URL。
+- `DownloadProgressPanel.tsx`、`RuntimeAssetsBanner.tsx`、`ClientUpdateProgressPanel.tsx`：仅失败且存在历史镜像时，在展开的详情内提供“清除旧下载镜像”；正常下载不新增入口，使用已有局部样式和按钮。
+- `unified-download-panel.regression.ts`：覆盖兼容读取及条件清除入口。desktop check、unified-download-panel、runtime-assets-state（包含托管版本忽略镜像覆盖）、update-center 回归通过。
+
+此修正不恢复后台全局镜像设置，不新增生产 Mock；未执行浏览器视觉验收及 Windows 实机测试。

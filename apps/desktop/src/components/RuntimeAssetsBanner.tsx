@@ -2,11 +2,11 @@ import type { RuntimeAssetsUiState } from "../lib/runtimeComponents";
 import { downloadProgressPresentation } from "../lib/downloadProgressPresentation";
 import { DownloadProgressPanel } from "./DownloadProgressPanel";
 
-type Props = { state: RuntimeAssetsUiState; onRetry?: (()=>void)|null; onCancel?: (()=>void)|null };
-export function RuntimeAssetsBanner({state,onRetry,onCancel}: Props) {
+type Props = { onResetLegacyMirror?: (()=>void)|null; state: RuntimeAssetsUiState; onRetry?: (()=>void)|null; onCancel?: (()=>void)|null };
+export function RuntimeAssetsBanner({state,onRetry,onCancel,onResetLegacyMirror}: Props) {
   if (state.phase === "idle" || state.phase === "ready") return null;
   const view = downloadProgressPresentation(state);
-  return <DownloadProgressPanel label="组件下载进度" {...view}
+  return <DownloadProgressPanel label="组件下载进度" {...view} onResetLegacyMirror={onResetLegacyMirror}
     failed={state.phase === "failed" && !view.cancelled} completed={state.phase === "completed"}
     waiting={state.phase === "checking" || view.processing || (state.phase === "downloading" && view.percent === null)}
     onCancel={state.phase === "checking" || state.phase === "downloading" ? onCancel : null}
