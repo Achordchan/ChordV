@@ -10,8 +10,10 @@ const states={referenced:"使用中",orphan:"可清理",protected:"保留中",mi
 export function StorageManager({opened,onClose,onOpenAttachments}:{opened:boolean;onClose:()=>void;onOpenAttachments:()=>void}) {
   const [data,setData]=useState<StorageSnapshot|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(""),[progress,setProgress]=useState(""),[search,setSearch]=useState(""),[page,setPage]=useState(0),[cleanupPage,setCleanupPage]=useState(0);
   const abort=useRef<AbortController|null>(null),epoch=useRef(0),readSeq=useRef(0),busyRef=useRef(false);
+  const jobsRequest=useRef<object|null>(null);
+  const [jobsLoading,setJobsLoading]=useState(false);
   const confirmation=useActionConfirmation(opened);
-  useEffect(()=>{const current=++epoch.current, sequence=++readSeq.current;setBusy(false);busyRef.current=false;setError("");setProgress("");if(opened)void listStorage().then(value=>{if(current===epoch.current&&sequence===readSeq.current){setData(value);setPage(0);setCleanupPage(0);setSearch("");}}).catch(reason=>{if(current===epoch.current)setError(String(reason));});return()=>{epoch.current++;abort.current?.abort();};},[opened]);
+  useEffect(()=>{const current=++epoch.current, sequence=++readSeq.current;setBusy(false);busyRef.current=false;jobsRequest.current=null;setJobsLoading(false);setError("");setProgress("");if(opened)void listStorage().then(value=>{if(current===epoch.current&&sequence===readSeq.current){setData(value);setPage(0);setCleanupPage(0);setSearch("");}}).catch(reason=>{if(current===epoch.current)setError(String(reason));});return()=>{epoch.current++;abort.current?.abort();};},[opened]);
   const scan=async()=>{if(busyRef.current)return;busyRef.current=true;readSeq.current++;setBusy(true);setError("");const current=epoch.current;const controller=new AbortController();abort.current=controller;
     try{const snapshot=await scanStorage(controller.signal,setProgress);if(current===epoch.current){setData(snapshot);setPage(0);setCleanupPage(0);setSearch("");}}
     catch(reason){if(current===epoch.current&&!controller.signal.aborted)setError(reason instanceof Error?reason.message:"扫描失败");}finally{if(current===epoch.current){setBusy(false);busyRef.current=false;setProgress("");}if(abort.current===controller)abort.current=null;}};
@@ -38,7 +40,19 @@ export function StorageManager({opened,onClose,onOpenAttachments}:{opened:boolea
     await mutate("/admin/storage/cleanup",{ids});
   };
   const retry=(id:string)=>mutate(`/admin/storage/cleanup/${id}/retry`);
-  const moreJobs=async()=>{const current=epoch.current;try{const next=await listStorage(page,search,cleanupPage+1);if(current===epoch.current){setData(value=>value?{...value,cleanupTotal:next.cleanupTotal,cleanupJobs:[...new Map([...value.cleanupJobs,...next.cleanupJobs].map(job=>[job.id,job])).values()]}:next);setCleanupPage(cleanupPage+1);}}catch(reason){if(current===epoch.current)setError(String(reason));}};
+  const moreJobs=async()=>{
+    if(busyRef.current||jobsRequest.current)return;
+    const current=epoch.current,sequence=++readSeq.current,requestKey={};
+    const nextPage=cleanupPage+1;jobsRequest.current=requestKey;setJobsLoading(true);
+    try{
+      const next=await listStorage(page,search,nextPage);
+      if(current===epoch.current&&sequence===readSeq.current){
+        setData(value=>value?{...value,cleanupTotal:next.cleanupTotal,cleanupJobs:[...new Map([...value.cleanupJobs,...next.cleanupJobs].map(job=>[job.id,job])).values()]}:next);
+        setCleanupPage(nextPage);
+      }
+    }catch(reason){if(current===epoch.current&&sequence===readSeq.current)setError(String(reason));}
+    finally{if(jobsRequest.current===requestKey){jobsRequest.current=null;if(current===epoch.current)setJobsLoading(false);}}
+  };
   return <Modal opened={opened} onClose={()=>{abort.current?.abort();setBusy(false);busyRef.current=false;onClose();}} title="文件与存储" centered size={1100}><div className={styles.root}>{confirmation.dialog}
     <Group justify="space-between"><Text size="sm" c="dimmed">{data?.scannedAt?`上次扫描 ${new Date(data.scannedAt).toLocaleString("zh-CN")}`:"尚未扫描磁盘，请先扫描建立文件清单"}</Text><Group><Button variant="default" loading={busy} onClick={()=>void scan()}>扫描 / 刷新文件</Button>{busy?<Button variant="subtle" onClick={()=>abort.current?.abort()}>停止扫描</Button>:null}</Group></Group>
     {progress?<Text size="sm" mt="md" role="status">{progress}</Text>:null}{error?<Alert color="red" mt="md">{error}</Alert>:null}
@@ -47,7 +61,7 @@ export function StorageManager({opened,onClose,onOpenAttachments}:{opened:boolea
     <Group className={styles.toolbar}><TextInput aria-label="搜索文件或引用" placeholder="搜索文件、版本或组件" value={search} onChange={event=>setSearch(event.currentTarget.value)} onKeyDown={event=>{if(event.key==="Enter")void load();}}/><Button variant="default" onClick={()=>void load()} disabled={busy}>搜索</Button><Button variant="light" color="red" disabled={busy||!data.items.some(item=>item.canCleanup)} onClick={()=>void cleanup(data.items.filter(item=>item.canCleanup).map(item=>item.id))}>清理本页未引用文件</Button></Group>
     <DataTable minWidth={820}><Table.Thead><Table.Tr>{["文件","占用","引用与状态","操作"].map(label=><Table.Th key={label}>{label}</Table.Th>)}</Table.Tr></Table.Thead><Table.Tbody>{data.items.map(item=><Table.Tr key={item.id}><Table.Td className={styles.name}><Text size="sm">{item.name}</Text><Text size="xs" c="dimmed">{item.category}{item.links>1?` · ${item.links} 个硬链接`:""}</Text></Table.Td><Table.Td>{bytes(item.sizeBytes)}</Table.Td><Table.Td><Text size="sm" c={item.state==="missing"?"red":item.canCleanup?"orange":"dimmed"}>{states[item.state]}</Text>{item.references.map((ref,index)=><Text size="xs" key={index}>{ref}</Text>)}</Table.Td><Table.Td>{item.canCleanup?<Button size="compact-xs" variant="subtle" color="red" disabled={busy} onClick={()=>void cleanup([item.id])}>清理</Button>:<Text size="xs" c="dimmed">{item.state==="missing"?"请在所属版本重新获取":"由所属版本管理"}</Text>}</Table.Td></Table.Tr>)}</Table.Tbody></DataTable>
     <Group justify="flex-end" mt="md"><Button variant="default" disabled={page===0||busy} onClick={()=>void load(page-1)}>上一页</Button><Text size="sm">第 {page+1} 页</Text><Button variant="default" disabled={!data.hasMore||busy} onClick={()=>void load(page+1)}>下一页</Button></Group>
-    <details className={styles.jobs} open={data.cleanupJobs.some(job=>job.lastError)}><summary>待清理 / 失败任务（{data.cleanupTotal}）</summary>{data.cleanupJobs.map(job=><div key={job.id}><Text size="sm">{job.reason}</Text><Text size="xs" className={styles.name}>{job.path}</Text><Group justify="space-between"><Text size="xs" c={job.lastError?"red":"dimmed"}>{job.lastError||"等待后台清理"} · 已尝试 {job.attempts} 次</Text><Button size="compact-xs" variant="default" disabled={busy||job.blocked} onClick={()=>void retry(job.id)}>{job.blocked?"需人工核对":"立即重试"}</Button></Group></div>)}{data.cleanupJobs.length<data.cleanupTotal?<Button size="compact-xs" variant="default" disabled={busy} onClick={()=>void moreJobs()}>加载更多清理任务</Button>:null}</details></>:null}
+    <details className={styles.jobs} open={data.cleanupJobs.some(job=>job.lastError)}><summary>待清理 / 失败任务（{data.cleanupTotal}）</summary>{data.cleanupJobs.map(job=><div key={job.id}><Text size="sm">{job.reason}</Text><Text size="xs" className={styles.name}>{job.path}</Text><Group justify="space-between"><Text size="xs" c={job.lastError?"red":"dimmed"}>{job.lastError||"等待后台清理"} · 已尝试 {job.attempts} 次</Text><Button size="compact-xs" variant="default" disabled={busy||job.blocked} onClick={()=>void retry(job.id)}>{job.blocked?"需人工核对":"立即重试"}</Button></Group></div>)}{data.cleanupJobs.length<data.cleanupTotal?<Button size="compact-xs" variant="default" disabled={busy||jobsLoading} loading={jobsLoading} onClick={()=>void moreJobs()}>加载更多清理任务</Button>:null}</details></>:null}
     <Button size="compact-xs" variant="subtle" mt="md" onClick={()=>{onClose();onOpenAttachments();}}>管理图床附件</Button>
     <Text size="xs" c="dimmed" mt="md">图床附件在“附件与图床”管理；后台版本与数据库快照按既有回滚策略保留。未引用文件需超过 24 小时才可清理；缺失文件不会被误报为已释放空间。</Text>
   </div></Modal>;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { NodeSummaryDto } from "@chordv/shared";
+import type { ClientNodeProbeResultDto, NodeSummaryDto } from "@chordv/shared";
 import { reportNodeProbes, isUnauthorizedApiError } from "../api/client";
 import { probeLocalNodes, type RuntimeNodeProbeResult } from "../lib/runtime";
 
@@ -86,7 +86,8 @@ export function useNodeProbe(options: UseNodeProbeOptions) {
           if (!isCurrentProbe()) return null;
           result.push(...batch);
           const reportToken = options.getCurrentAccessToken();
-          if (reportToken) void reportNodeProbes(reportToken, batch).catch(() => undefined);
+          const measured = batch.filter((item): item is ClientNodeProbeResultDto => item.status !== "unknown");
+          if (reportToken && measured.length) void reportNodeProbes(reportToken, measured).catch(() => undefined);
         }
         const nextResults = Object.fromEntries(result.map((item) => [item.nodeId, item]));
         setProbeResults(nextResults);

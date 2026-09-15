@@ -34,7 +34,7 @@ export type RuntimeLogs = {
   log: string;
 };
 
-export type RuntimeNodeProbeResult = ClientNodeProbeResultDto;
+export type RuntimeNodeProbeResult = Omit<ClientNodeProbeResultDto,"status"> & {status:ClientNodeProbeResultDto["status"]|"unknown"};
 
 export type RuntimePlatform = PlatformTarget | "web" | "linux";
 

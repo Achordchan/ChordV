@@ -85,7 +85,7 @@ export function NodeListPanel(props: NodeListPanelProps) {
                     </Text>
                   </Group>
                   {probe?.error ? (
-                    <Text size="xs" c="red.6">
+                    <Text size="xs" c={status === "unknown" ? "dimmed" : "red.6"}>
                       {probe.error}
                     </Text>
                   ) : null}

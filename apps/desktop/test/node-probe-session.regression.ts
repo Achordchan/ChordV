@@ -4,7 +4,7 @@ import vm from "node:vm";
 import ts from "typescript";
 
 const code=ts.transpileModule(readFileSync(new URL("../src/hooks/useNodeProbe.ts",import.meta.url),"utf8"),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
-async function scenario(change:"refresh"|"logout"|"relogin"|"bootstrap") {
+async function scenario(change:"refresh"|"logout"|"relogin"|"bootstrap"|"unsupported") {
   let identity:string|null=change==="bootstrap"?null:"1:user",token:string|null="old",cursor=0;
   const cells:any[]=[],effects:Array<()=>void>=[],reports:string[]=[];
   const react={
@@ -24,12 +24,12 @@ async function scenario(change:"refresh"|"logout"|"relogin"|"bootstrap") {
   if(change==="logout"){identity=null;token=null;}
   if(change==="relogin")identity="2:user";
   hook=render();
-  finish([{nodeId:"node",status:"healthy",latencyMs:20}]);
+  finish([{nodeId:"node",status:change==="unsupported"?"unknown":"healthy",latencyMs:change==="unsupported"?null:20}]);
   await pending;hook=render();
-  const valid=change==="refresh"||change==="bootstrap";
+  const valid=change==="refresh"||change==="bootstrap"||change==="unsupported";
   assert.equal(Boolean(hook.probeResults.node),valid,change);
-  assert.deepEqual(reports,valid?[token!]:[],"reports must use the current token and login");
-  if(valid){token="newer";hook=render();assert.equal(hook.probeResults.node.latencyMs,20,"token refresh preserves completed results");}
+  assert.deepEqual(reports,valid&&change!=="unsupported"?[token!]:[],"reports must use the current token and login");
+  if(valid&&change!=="unsupported"){token="newer";hook=render();assert.equal(hook.probeResults.node.latencyMs,20,"token refresh preserves completed results");}
 }
-for(const change of ["refresh","logout","relogin","bootstrap"] as const)await scenario(change);
+for(const change of ["refresh","logout","relogin","bootstrap","unsupported"] as const)await scenario(change);
 console.log("local probes preserve token refresh, reject old logins and support immediate bootstrap measurement");

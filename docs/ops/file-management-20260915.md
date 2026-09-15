@@ -214,3 +214,12 @@ Prisma generate、API check、隔离 PostgreSQL 全量迁移和真实文件集�
 - `storage-catalog.service.ts`：按文件 ID 建立一次 Map，并去重请求 ID；清理候选匹配从逐项全表查找改为线性处理。
 
 API check、隔离 PostgreSQL 完整迁移及真实文件集成、diff 检查通过。无布局或 Mock 改动，未执行十万文件规模的实际负载测试。
+
+## PR #53 旧后台测速兼容与清理分页
+
+- `node_probe.rs`、`runtime.ts`：缺少本机测速地址返回本地 unknown 状态，不伪装成 TCP 失败。
+- `useNodeProbe.ts`、`NodeListPanel.tsx`：unknown 不上报离线，显示“未检测”及中性信息，保留连接能力。
+- `StorageManager.tsx`：更多清理任务请求使用读代次及独占请求标识；搜索/扫描后旧响应不追加、不推进页码，重复加载受控。
+- `node-probe-session.regression.ts`、`storage-pagination.regression.ts`、Rust 节点测试：验证 unknown 不上报、过期分页不写回、重复分页不发请求及缺失地址状态。
+
+Rust 17 项测试、desktop/admin check、node-probe-session、storage-pagination、diff 检查通过。布局影响限于未检测提示的中性色和分页按钮加载状态，未操作浏览器；没有生产 Mock 或依赖变化。Windows 和旧生产后台的真实端到端未实测。

@@ -27,7 +27,10 @@ async fn tcp_latency(host: &str, port: u16) -> Result<u32, String> {
 async fn probe_node(node: NodeSummaryDto) -> NodeProbeResultDto {
     let result = match (node.server_host.as_deref(), node.server_port) {
         (Some(host), Some(port)) if !host.trim().is_empty() && port > 0 => tcp_latency(host, port).await,
-        _ => Err("节点未提供本机检测地址，请更新后台并刷新节点列表".to_string()),
+        _ => return NodeProbeResultDto {
+            node_id:node.id,status:"unknown".into(),latency_ms:None,
+            checked_at:chrono_like_now(),error:Some("后台尚未提供本机检测信息".into()),
+        },
     };
     NodeProbeResultDto {
         node_id: node.id,
@@ -54,6 +57,16 @@ pub(super) async fn probe_nodes(nodes: Vec<NodeSummaryDto>) -> Result<Vec<NodePr
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn missing_endpoint_is_unknown_not_offline() {
+        let node: NodeSummaryDto = serde_json::from_value(serde_json::json!({
+            "id":"legacy","name":"legacy","region":"US","provider":"test",
+            "tags":[],"recommended":false,"latencyMs":1,"protocol":"vless","security":"reality"
+        })).unwrap();
+        let result = probe_node(node).await;
+        assert_eq!(result.status,"unknown");
+        assert!(result.latency_ms.is_none());
+    }
     #[tokio::test]
     async fn measures_real_local_tcp_listener() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
