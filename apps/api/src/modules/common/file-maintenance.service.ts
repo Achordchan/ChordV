@@ -9,7 +9,7 @@ import { PrismaService } from "./prisma.service";
 import { releaseArtifactStorageRoot } from "./release-center.utils";
 import { canonicalManagedReference, assertSafeFile, cleanupPath, hashStoredFile, managedPath, unlinkManagedFile } from "./storage-files";
 
-type ReferenceIndex = { since: Date; paths: Set<string>; resolved: Map<string,string> };
+type ReferenceIndex = { since: Date; paths: Set<string>; resolved: Map<string,string>; errors: Set<string> };
 
 @Injectable()
 export class FileMaintenanceService {
@@ -53,10 +53,12 @@ export class FileMaintenanceService {
     // are included without reloading and resolving the full inventory each time.
     if (batch) await this.refreshReferenceIndex(index, true);
     const candidate = path.dirname(absolute) === path.resolve(tmpdir()) ? absolute : await canonicalManagedReference(absolute);
-    return index.paths.has(candidate);
+    if (index.paths.has(candidate)) return true;
+    if (index.errors.size) throw new Error(`引用路径无法安全确认，已暂停清理：${[...index.errors].slice(0,3).join("；")}`);
+    return false;
   }
   async createReferenceIndex(): Promise<ReferenceIndex> {
-    const index: ReferenceIndex = {since:new Date(),paths:new Set(),resolved:new Map()};
+    const index: ReferenceIndex = {since:new Date(),paths:new Set(),resolved:new Map(),errors:new Set()};
     await this.refreshReferenceIndex(index, false);
     return index;
   }
@@ -70,12 +72,18 @@ export class FileMaintenanceService {
     const rows = [...artifacts,...versions,...components.map(row=>({storedFilePath:path.isAbsolute(row.storedFilePath!)?row.storedFilePath:path.join("runtime-components",row.storedFilePath!)}))];
     for (const row of rows) {
       const raw = row.storedFilePath!;
-      let canonical = index.resolved.get(raw);
-      if (!canonical || changesOnly) {
-        canonical = await canonicalManagedReference(raw);
-        index.resolved.set(raw,canonical);
+      try {
+        let canonical = index.resolved.get(raw);
+        if (!canonical || changesOnly) {
+          canonical = await canonicalManagedReference(raw);
+          index.resolved.set(raw,canonical);
+        }
+        index.paths.add(canonical);
+      } catch (error) {
+        // Keep the batch usable; each potentially affected job persists this
+        // diagnostic and backs off instead of silently aborting the worker.
+        index.errors.add(`${raw}: ${error instanceof Error ? error.message : String(error)}`);
       }
-      index.paths.add(canonical);
     }
   }
   async retry(id: string) {

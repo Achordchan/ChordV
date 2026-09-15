@@ -148,3 +148,11 @@ API check、隔离 PostgreSQL 全部迁移与真实文件集成、dev-data / rel
 - `file-management.integration.ts`：覆盖重复内容交付元数据修复、批次创建后新增别名引用保护。
 
 Prisma generate、API check、独立 PostgreSQL 完整迁移及真实文件测试、dev-data / release-artifact-import-service / runtime-components-service / component-release-safety 回归通过。没有界面、依赖或生产 Mock 改动，未执行真实生产磁盘负载测试。
+
+## PR #53 异常引用诊断与本地来源修复
+
+- `file-maintenance.service.ts`：逐条捕获引用解析异常，索引保留诊断；能确认引用的任务正常处理，无法确认安全性的未引用任务在各自错误处理内写入 lastError、attempts 和 nextAttemptAt，不再静默退出整个批次。
+- `release-center.service.ts`：本地上传重复内容也明确写入 sourceUrl=null，避免旧远程来源残留。
+- `file-management.integration.ts`：验证异常引用导致任务可见失败及退避、修复引用后重试成功，以及本地重复上传清除来源。
+
+API check、完整迁移和真实文件集成、dev-data / release-artifact-import-service 回归及 diff 检查通过。布局无变化，无新增 Mock；生产验证边界不变。

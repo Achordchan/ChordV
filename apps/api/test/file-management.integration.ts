@@ -46,6 +46,11 @@ async function main() {
     await releases.reuseReleaseArtifact("release_second",firstId);
     const repaired=await prisma.releaseArtifact.findUniqueOrThrow({where:{id:secondId}});copiedPath=path.join(root,repaired.storedFilePath!);
     assert.deepEqual(await fs.readFile(copiedPath),bytes,"an identical re-import repairs a missing file instead of retaining a broken record");
+    const localUpload=path.join(root,".incoming",randomUUID());await fs.mkdir(path.dirname(localUpload),{recursive:true});await fs.writeFile(localUpload,bytes);
+    await releases.uploadReleaseArtifact("release_second",{type:"dmg"},{path:localUpload,originalname:"local.dmg",size:bytes.length});
+    const locallyReplaced=await prisma.releaseArtifact.findUniqueOrThrow({where:{id:secondId}});
+    assert.equal(locallyReplaced.sourceUrl,null,"local duplicate upload must clear the old acquisition URL");
+    copiedPath=path.join(root,locallyReplaced.storedFilePath!);
     await prisma.release.update({where:{id:"release_second"},data:{status:"published"}});
     const client=await releases.checkClientUpdate({currentVersion:"1.0.0",platform:"macos",channel:"stable",artifactType:"dmg"});
     assert.ok(client.recommendedArtifact);assert.equal("sourceUrl" in client.recommendedArtifact!,false,"acquisition URLs must remain admin-only");
@@ -114,7 +119,13 @@ async function main() {
     const independent=path.join(root,".incoming",randomUUID());await fs.mkdir(path.dirname(independent),{recursive:true});await fs.writeFile(independent,"new");
     assert.equal(await files.deduplicate(independent,"invalid-candidate-test",3n),false);
     assert.equal(await fs.readFile(independent,"utf8"),"new");
+    const deferredJob=await files.enqueue(independent,"测试异常引用诊断");
+    await files.process();
+    const deferred=await prisma.fileCleanupJob.findUniqueOrThrow({where:{id:deferredJob.id}});
+    assert.equal(deferred.attempts,1);assert.match(deferred.lastError!,/引用路径无法安全确认/);
+    assert.ok(deferred.nextAttemptAt.getTime()>Date.now());await fs.access(independent);
     await prisma.releaseArtifact.delete({where:{id:invalidId}});
+    await files.retry(deferredJob.id);await assert.rejects(()=>fs.access(independent));
 
     // A legacy reference through a directory symlink protects the physical file.
     const alias=path.join(root,"release_alias");await fs.symlink(path.dirname(copiedPath),alias,"dir");

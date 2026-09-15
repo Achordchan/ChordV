@@ -769,7 +769,7 @@ export class ReleaseCenterService {
           return tx.releaseArtifact.update({ where: { id: duplicate.id }, data: {
             storedFilePath:preparedFile.storedFilePath, fileName:preparedFile.fileName, downloadUrl:buildReleaseArtifactDownloadUrl(duplicate.id),
             deliveryMode, isFullPackage:true, defaultMirrorPrefix:null, allowClientMirror:false,
-            isPrimary: isPrimary ?? duplicate.isPrimary, ...(file.sourceUrl ? {sourceUrl:file.sourceUrl}:{})
+            isPrimary: isPrimary ?? duplicate.isPrimary, sourceUrl: file.sourceUrl ?? null
           } });
         }
         return tx.releaseArtifact.create({
