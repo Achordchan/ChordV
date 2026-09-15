@@ -10,7 +10,7 @@ import { PrismaService } from "./prisma.service";
 import { FileMaintenanceService } from "./file-maintenance.service";
 import { releaseArtifactStorageRoot } from "./release-center.utils";
 import { runtimeVersionPath } from "./runtime-version-files";
-import { cleanupPath, isManagedOrphan, managedPath } from "./storage-files";
+import { canonicalManagedReference, cleanupPath, isManagedOrphan, managedPath } from "./storage-files";
 
 type Reference = { label: string; protected: boolean; pending?:boolean; hash?: string | null };
 type Entry = { id: string; name: string; category: string; sizeBytes: number; allocatedBytes: number; references: string[]; state: "referenced" | "orphan" | "protected" | "missing"; canCleanup: boolean; hash: string | null; modifiedAt: string | null; links: number };
@@ -42,8 +42,8 @@ export class StorageCatalogService {
     const refs = new Map<string,Reference[]>();
     const warnings:string[]=[];
     const statuses:Record<string,string>={draft:"草稿",published:"已发布",archived:"已归档",queued:"等待获取",downloading:"下载中",verifying:"校验中",ready:"已保存",failed:"获取失败",unchanged:"内容未变化"};
-    const add = (raw: string, reference: Reference) => {
-      try { const file=managedPath(raw);const list=refs.get(file)??[];list.push(reference);refs.set(file,list); }
+    const add = async (raw: string, reference: Reference) => {
+      try { const file=await canonicalManagedReference(raw);const list=refs.get(file)??[];list.push(reference);refs.set(file,list); }
       catch { warnings.push(`${reference.label}：引用路径异常 ${raw}，本次暂停孤立文件自动清理，请先在所属记录核对。`); }
     };
     const [artifacts, components, versions] = await Promise.all([
@@ -51,13 +51,14 @@ export class StorageCatalogService {
       this.prisma.runtimeComponent.findMany({ where: { storedFilePath: { not: null } } }),
       this.prisma.runtimeComponentVersion.findMany({ include: { component: { select: { kind: true, platform: true } } } })
     ]);
-    for (const row of artifacts) add(row.storedFilePath!, { label: `安装包 ${row.release.platform} ${row.release.version} · ${statuses[row.release.status]||row.release.status}`, protected:true, hash:row.fileHash });
-    for (const row of components) add(path.isAbsolute(row.storedFilePath!) ? row.storedFilePath! : path.join("runtime-components",row.storedFilePath!), { label:`旧组件 ${row.kind} ${row.platform}`, protected:true, hash:row.fileHash });
+    for (const row of artifacts) await add(row.storedFilePath!, { label: `安装包 ${row.release.platform} ${row.release.version} · ${statuses[row.release.status]||row.release.status}`, protected:true, hash:row.fileHash });
+    for (const row of components) await add(path.isAbsolute(row.storedFilePath!) ? row.storedFilePath! : path.join("runtime-components",row.storedFilePath!), { label:`旧组件 ${row.kind} ${row.platform}`, protected:true, hash:row.fileHash });
     for (const row of versions) {
       const running = ["queued","downloading","verifying"].includes(row.status);
       const protectedFile = running || row.status==="ready" || Boolean(row.storedFilePath);
-      add(runtimeVersionPath(row.id), { label:`组件 ${row.component.kind} ${row.component.platform} ${row.versionLabel || row.requestedVersion || row.id} · ${statuses[row.status]||row.status}`, pending:running, protected:protectedFile, hash:row.fileHash });
-      if(running) add(runtimeVersionPath(row.id)+".part", {label:`组件获取中 ${row.id}`,protected:true,pending:true});
+      await add(runtimeVersionPath(row.id), { label:`组件 ${row.component.kind} ${row.component.platform} ${row.versionLabel || row.requestedVersion || row.id} · ${statuses[row.status]||row.status}`, pending:running, protected:protectedFile, hash:row.fileHash });
+      if (row.storedFilePath) await add(row.storedFilePath, {label:`组件文件 ${row.component.kind} ${row.id}`,protected:true,hash:row.fileHash});
+      if(running) await add(runtimeVersionPath(row.id)+".part", {label:`组件获取中 ${row.id}`,protected:true,pending:true});
     }
     return {refs,warnings};
   }

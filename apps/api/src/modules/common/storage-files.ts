@@ -12,6 +12,18 @@ export function managedPath(value: string) {
   if (!relative || relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) throw new BadRequestException("文件不在托管目录内");
   return absolute;
 }
+/** Resolve internal aliases into the managed root's logical namespace. */
+export async function canonicalManagedReference(value: string) {
+  const absolute = managedPath(value);
+  let real: string;
+  try { real = await fs.realpath(absolute); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return absolute; throw error; }
+  const root = releaseArtifactStorageRoot();
+  const realRoot = await fs.realpath(root);
+  const relative = path.relative(realRoot, real);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new BadRequestException("引用的真实路径不在托管目录内");
+  return path.join(root, relative);
+}
 export function cleanupPath(value: string) {
   const absolute = path.resolve(value);
   if (path.dirname(absolute) === path.resolve(tmpdir()) && /^chordv-(?:import|upload)-[a-f0-9-]{36}(?:\.[a-z0-9]+)?$/i.test(path.basename(absolute))) return absolute;

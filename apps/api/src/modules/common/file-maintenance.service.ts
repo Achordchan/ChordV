@@ -1,12 +1,13 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { constants, promises as fs } from "node:fs";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import { DrainableJob } from "../../work-lifecycle";
 import { PrismaService } from "./prisma.service";
 import { releaseArtifactStorageRoot } from "./release-center.utils";
-import { assertSafeFile, cleanupPath, hashStoredFile, managedPath, unlinkManagedFile } from "./storage-files";
+import { canonicalManagedReference, assertSafeFile, cleanupPath, hashStoredFile, managedPath, unlinkManagedFile } from "./storage-files";
 
 @Injectable()
 export class FileMaintenanceService {
@@ -44,7 +45,20 @@ export class FileMaintenanceService {
         ...(relative.startsWith(`runtime-components${path.sep}versions${path.sep}`) ? [{ id, status: { in: absolute.endsWith(".part") ? ["queued", "downloading", "verifying"] : ["queued", "downloading", "verifying", "ready"] } }] : [])
       ] }, select: { id: true } })
     ]);
-    return Boolean(artifact || component || version);
+    if (artifact || component || version) return true;
+    // A physical candidate may be referenced through an internal directory alias.
+    // Literal indexed lookups above are fast; resolve all remaining stored aliases
+    // before authorizing deletion. Unreadable or invalid references fail closed.
+    const [artifacts, components, versions] = await Promise.all([
+      this.prisma.releaseArtifact.findMany({where:{storedFilePath:{not:null}},select:{storedFilePath:true}}),
+      this.prisma.runtimeComponent.findMany({where:{storedFilePath:{not:null}},select:{storedFilePath:true}}),
+      this.prisma.runtimeComponentVersion.findMany({where:{storedFilePath:{not:null}},select:{storedFilePath:true}})
+    ]);
+    const candidate = path.dirname(absolute) === path.resolve(tmpdir()) ? absolute : await canonicalManagedReference(absolute);
+    for (const row of [...artifacts,...versions,...components.map(row=>({storedFilePath:path.isAbsolute(row.storedFilePath!)?row.storedFilePath:path.join("runtime-components",row.storedFilePath!)}))]) {
+      if (await canonicalManagedReference(row.storedFilePath!) === candidate) return true;
+    }
+    return false;
   }
   async retry(id: string) {
     await this.prisma.fileCleanupJob.updateMany({ where: { id }, data: { nextAttemptAt: new Date() } });
@@ -110,8 +124,13 @@ export class FileMaintenanceService {
     const folder = managedPath(".incoming");
     await fs.mkdir(folder, { recursive: true });
     const destination = path.join(folder, randomUUID());
-    await fs.link(source, destination);
     try {
+      try { await fs.link(source, destination); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+        await fs.copyFile(source, destination, constants.COPYFILE_EXCL);
+      }
+      if (BigInt((await fs.stat(destination)).size) !== expectedSize) throw new BadRequestException("已有文件大小发生变化，请重新获取");
       if (await hashStoredFile(destination) !== expectedHash.toLowerCase()) throw new BadRequestException("已有文件校验失败，请重新获取");
       return destination;
     } catch(error) { await this.removeOrQueue(destination,"复用源文件校验失败"); throw error; }

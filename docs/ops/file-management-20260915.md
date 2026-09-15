@@ -130,3 +130,12 @@ git diff --check
 - `unified-download-panel.regression.ts`：覆盖兼容读取及条件清除入口。desktop check、unified-download-panel、runtime-assets-state（包含托管版本忽略镜像覆盖）、update-center 回归通过。
 
 此修正不恢复后台全局镜像设置，不新增生产 Mock；未执行浏览器视觉验收及 Windows 实机测试。
+
+## PR #53 引用别名保护与跨文件系统复用
+
+- `storage-files.ts`：新增真实路径规范化，内部别名映射回托管目录命名空间；越界或不可读引用明确报错。
+- `storage-catalog.service.ts`：引用索引异步解析真实路径，并同时保护组件记录中的已保存路径；无法安全解析时暂停孤立文件清理。
+- `file-maintenance.service.ts`：快速字面引用查询未命中时，对已保存引用进行真实路径复核，防止通过别名引用的物理文件被删除；暂存硬链接遇到 EXDEV 时使用独占复制，复制后再次验证大小和 Hash，失败仍清理或入队。
+- `file-management.integration.ts`：真实目录符号链接的扫描/删除保护，以及注入 EXDEV 后的真实复制验证。
+
+API check、隔离 PostgreSQL 全部迁移与真实文件集成、dev-data / release-artifact-import-service / runtime-components-service / component-release-safety / storage-routes 五组定向回归及 diff 检查通过。跨文件系统错误通过注入验证，未挂载实际第二块磁盘；本轮无 UI、依赖或生产 Mock 改动。

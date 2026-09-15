@@ -112,6 +112,27 @@ async function main() {
     assert.equal(await fs.readFile(independent,"utf8"),"new");
     await prisma.releaseArtifact.delete({where:{id:invalidId}});
 
+    // A legacy reference through a directory symlink protects the physical file.
+    const alias=path.join(root,"release_alias");await fs.symlink(path.dirname(copiedPath),alias,"dir");
+    await prisma.releaseArtifact.update({where:{id:secondId},data:{storedFilePath:path.join("release_alias",path.basename(copiedPath))}});
+    assert.equal(await files.references(copiedPath),true,"deletion must resolve reference aliases");
+    const aliasNow=Date.now;Date.now=()=>aliasNow()+48*60*60_000;
+    try {
+      const aliasedScan=await catalog.scan(new AbortController().signal,()=>{});
+      const entry=aliasedScan.items.find(item=>item.name===path.relative(root,copiedPath));
+      assert.equal(entry?.state,"referenced");assert.equal(entry?.canCleanup,false);
+      await files.enqueue(copiedPath,"测试物理路径引用保护");await files.process();await fs.access(copiedPath);
+    } finally { Date.now=aliasNow; }
+    await prisma.releaseArtifact.update({where:{id:secondId},data:{storedFilePath:path.relative(root,copiedPath)}});await fs.unlink(alias);
+
+    // Inject EXDEV but execute the real exclusive copy and hash verification.
+    const realLink=fs.link;fs.link=async()=>{throw Object.assign(new Error("cross-device"),{code:"EXDEV"});};
+    try {
+      const staged=await files.stageExisting(copiedPath,repaired.fileHash,repaired.fileSizeBytes);
+      assert.deepEqual(await fs.readFile(staged),bytes);assert.notEqual((await fs.stat(staged)).ino,(await fs.stat(copiedPath)).ino);
+      await files.removeOrQueue(staged,"测试跨文件系统复用清理");
+    } finally { fs.link=realLink; }
+
     // Downloads may remove their temporary entry after readdir but before lstat.
     const disappearing=path.join(tmpdir(),`chordv-upload-${randomUUID()}.dmg`);
     await fs.writeFile(disappearing,"temporary");
