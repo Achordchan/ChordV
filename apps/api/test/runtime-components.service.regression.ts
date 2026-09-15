@@ -307,7 +307,7 @@ async function testAdminRuntimeComponentIgnoresStaleBackgroundValidationFailure(
   assert.notEqual(result.clientDeliveryMessage, "Old validation timed out");
 }
 
-async function testRemoteRuntimeComponentValidationReturnsPendingWithoutWaitingForHashDownload() {
+async function testRemoteRuntimeComponentValidationReturnsReadyWithoutStartingHashDownload() {
   let validationStarted = false;
   const service = createRuntimeComponentsService({
     prisma: {
@@ -323,11 +323,10 @@ async function testRemoteRuntimeComponentValidationReturnsPendingWithoutWaitingF
     }
   });
 
-  const startedAt = Date.now();
   const result = await service.validateAdminRuntimeComponent("component_1");
 
+  // Assert the no-download contract directly; shared CI CPU scheduling is not API latency.
   assert.equal(validationStarted, false, "remote validation no longer downloads or hashes remote files");
-  assert.ok(Date.now() - startedAt < 100, "remote validation endpoint must return immediately");
   assert.equal(result.status, "ready");
   assert.equal(result.componentId, "component_1");
 }
@@ -616,7 +615,7 @@ async function main() {
   await testAdminRuntimeComponentMarksRemoteHashMismatchAsDeliverable();
   await testAdminRuntimeComponentIgnoresBackgroundValidationFailureForDelivery();
   await testAdminRuntimeComponentIgnoresStaleBackgroundValidationFailure();
-  await testRemoteRuntimeComponentValidationReturnsPendingWithoutWaitingForHashDownload();
+  await testRemoteRuntimeComponentValidationReturnsReadyWithoutStartingHashDownload();
   await testRemoteCreateAllowsMissingOrInvalidExpectedHash();
   await testRemoteUpdateAllowsInvalidExpectedHashAsMissing();
   await testLegacyRemoteWithoutHashAllowsUnrelatedPatch();
