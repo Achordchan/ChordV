@@ -208,3 +208,9 @@ desktop check、node-probe-session 和 diff 检查通过。无布局、依赖或
 - `file-management.integration.ts`：在旧任务读到剩余引用后并发删除最后引用、重新入队，确认新修订保留并可继续清理。
 
 Prisma generate、API check、隔离 PostgreSQL 全量迁移和真实文件集成、dev-data 及 diff 检查通过。没有布局、依赖或生产 Mock 改动；无生产文件操作。
+
+## PR #53 大清单候选匹配
+
+- `storage-catalog.service.ts`：按文件 ID 建立一次 Map，并去重请求 ID；清理候选匹配从逐项全表查找改为线性处理。
+
+API check、隔离 PostgreSQL 完整迁移及真实文件集成、diff 检查通过。无布局或 Mock 改动，未执行十万文件规模的实际负载测试。

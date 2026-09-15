@@ -156,7 +156,8 @@ export class StorageCatalogService {
   async cleanup(ids: string[]) {
     const {snapshot,paths} = await this.readSnapshot();
     if (!snapshot.scannedAt) throw new BadRequestException("请先扫描文件");
-    const candidates = ids.map(id=>snapshot.entries.find(entry=>entry.id===id));
+    const entriesById = new Map(snapshot.entries.map(entry=>[entry.id,entry]));
+    const candidates = [...new Set(ids)].map(id=>entriesById.get(id));
     if(candidates.some(entry=>!entry?.canCleanup)) throw new BadRequestException("仅可清理扫描确认的过期未引用文件");
     const index = candidates.length ? await this.files.createReferenceIndex() : undefined;
     for(const entry of candidates) {
