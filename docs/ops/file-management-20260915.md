@@ -186,3 +186,10 @@ API check、隔离 PostgreSQL 完整迁移和真实文件集成及 diff 检查�
 - `connection-race.regression.ts`：增加配置返回前/原生连接期间令牌轮换、原生等待期间退出、同账号重新登录的场景。
 
 desktop check、connection-race、logout-responsiveness 和 diff 检查通过。无布局、依赖或生产 Mock 改动；未做真实服务器令牌轮换及 Windows 实机端到端测试。
+
+## PR #53 指定清理任务立即重试
+
+- `file-maintenance.service.ts`：抽出共同的单任务处理方法，手动重试直接处理指定 ID，复用引用、路径、年龄保护和失败退避；不会因前方积压超过 50 条而执行其他任务后误报已重试。受保护任务仍拒绝执行。
+- `file-management.integration.ts`：创建 51 条更早积压任务，再重试指定真实文件，确认目标实际完成且积压任务未被替代执行。
+
+API check、隔离 PostgreSQL 完整迁移与真实文件集成、storage-routes、diff 检查通过。无界面或 Mock 改动，未执行生产清理。

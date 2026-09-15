@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
+import type { FileCleanupJob } from "@prisma/client";
 import { Cron } from "@nestjs/schedule";
 import { randomUUID } from "node:crypto";
 import { constants, promises as fs } from "node:fs";
@@ -87,9 +88,11 @@ export class FileMaintenanceService {
     }
   }
   async retry(id: string) {
-    await this.prisma.fileCleanupJob.updateMany({ where: { id }, data: { nextAttemptAt: new Date() } });
-    await this.process();
-    return { ok: true };
+    const job = await this.prisma.fileCleanupJob.findUnique({where:{id}});
+    if (!job) return {ok:true,processed:false};
+    if (job.blocked) throw new BadRequestException("该清理任务需要先人工核对异常路径");
+    await this.processJob(job);
+    return {ok:true,processed:true};
   }
   @Cron("15 * * * * *")
   @DrainableJob()
@@ -99,26 +102,27 @@ export class FileMaintenanceService {
     try {
       const jobs = await this.prisma.fileCleanupJob.findMany({ where: { nextAttemptAt: { lte: new Date() }, blocked:false }, take: 50, orderBy: { nextAttemptAt: "asc" } });
       const index = jobs.length ? await this.createReferenceIndex() : undefined;
-      for (const job of jobs) {
-        try {
-          // Random immutable file paths are never reassigned; references are rechecked at deletion time.
-          if (!await this.references(job.path,index)) {
-            if (job.reason.startsWith("扫描")) {
-              const stat = await fs.lstat(job.path).catch(()=>null);
-              if (stat && stat.mtimeMs>Date.now()-24*60*60_000) throw new Error("文件近期发生变化，延后清理");
-            }
-            await unlinkManagedFile(job.path);
-          }
-          await this.prisma.fileCleanupJob.deleteMany({ where: { id: job.id } });
-        } catch (error) {
-          await this.prisma.fileCleanupJob.updateMany({ where: { id: job.id }, data: {
-            attempts: { increment: 1 }, lastError: error instanceof Error ? error.message.slice(0, 1000) : "文件清理失败",
-            nextAttemptAt: new Date(Date.now() + Math.min(24 * 60 * 60_000, 60_000 * 2 ** Math.min(job.attempts, 10)))
-          } });
-        }
-      }
+      for (const job of jobs) await this.processJob(job,index);
     } catch (error) { this.logger.warn(`文件清理调度失败：${String(error)}`); }
     finally { this.busy = false; }
+  }
+  private async processJob(job: FileCleanupJob, index?: ReferenceIndex) {
+    try {
+      // Both explicit retries and scheduled work use the same live safety checks.
+      if (!await this.references(job.path,index)) {
+        if (job.reason.startsWith("扫描")) {
+          const stat = await fs.lstat(job.path).catch(()=>null);
+          if (stat && Math.max(stat.mtimeMs,stat.ctimeMs)>Date.now()-24*60*60_000) throw new Error("文件近期发生变化，延后清理");
+        }
+        await unlinkManagedFile(job.path);
+      }
+      await this.prisma.fileCleanupJob.deleteMany({where:{id:job.id}});
+    } catch (error) {
+      await this.prisma.fileCleanupJob.updateMany({where:{id:job.id},data:{
+        attempts:{increment:1},lastError:error instanceof Error?error.message.slice(0,1000):"文件清理失败",
+        nextAttemptAt:new Date(Date.now()+Math.min(24*60*60_000,60_000*2**Math.min(job.attempts,10)))
+      }});
+    }
   }
   async deduplicate(absolute: string, fileHash: string, size: bigint) {
     const [artifacts, versions, components] = await Promise.all([

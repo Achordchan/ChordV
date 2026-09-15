@@ -166,6 +166,16 @@ async function main() {
     try { await catalog.scan(new AbortController().signal,()=>{}); }
     finally { fs.lstat=realLstat;await fs.unlink(disappearing).catch(()=>{}); }
 
+    // A manual retry targets the selected task even with more than one batch overdue.
+    const backlog=Array.from({length:51},()=>({id:randomUUID(),path:path.join(root,".incoming",randomUUID()),reason:"测试积压",nextAttemptAt:new Date(0)}));
+    await prisma.fileCleanupJob.createMany({data:backlog});
+    const retryFile=path.join(root,".incoming",randomUUID());await fs.writeFile(retryFile,"retry");
+    const requested=await files.enqueue(retryFile,"测试指定重试");
+    assert.equal((await files.retry(requested.id)).processed,true);
+    await assert.rejects(()=>fs.access(retryFile));
+    assert.equal(await prisma.fileCleanupJob.count({where:{id:{in:backlog.map(job=>job.id)}}}),51,"manual retry must not substitute an unrelated batch");
+    await prisma.fileCleanupJob.deleteMany({where:{id:{in:backlog.map(job=>job.id)}}});
+
     // Cancellation during reference resolution or the final temporary-file pass
     // must not publish a new snapshot, and must release the service's busy flag.
     const snapshotBeforeCancel=await prisma.storageCatalogSnapshot.findFirstOrThrow();
