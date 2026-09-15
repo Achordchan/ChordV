@@ -20,10 +20,10 @@ export function NodeListPanel(props: NodeListPanelProps) {
   const listContent = (
     <Stack gap={isMobile ? 8 : "sm"}>
       {props.nodes.map((node) => {
-        const probe = props.probeResults[node.id];
+        const probe: RuntimeNodeProbeResult | undefined = Object.hasOwn(props.probeResults, node.id) ? props.probeResults[node.id] : undefined;
         const isSelected = props.selectedNodeId === node.id;
-        const latency = probe?.latencyMs ?? node.latencyMs;
-        const status = probe?.status ?? "healthy";
+        const latency = probe?.latencyMs ?? null;
+        const status = probe?.status ?? "unknown";
 
         return (
           <Paper
@@ -74,8 +74,8 @@ export function NodeListPanel(props: NodeListPanelProps) {
                         推荐
                       </Badge>
                     ) : null}
-                    <Badge variant="light" color={status === "healthy" ? "green" : "red"}>
-                      {status === "healthy" ? "可用" : "不可用"}
+                    <Badge variant="light" color={status === "unknown" ? "gray" : status === "healthy" ? "green" : "red"}>
+                      {status === "unknown" ? "未检测" : status === "healthy" ? "可用" : "不可用"}
                     </Badge>
                   </Group>
                   <Group gap={6} wrap="nowrap">
@@ -97,7 +97,7 @@ export function NodeListPanel(props: NodeListPanelProps) {
                   {latency !== null && latency !== undefined ? `${latency}ms` : "--"}
                 </Text>
                 <Text size="xs" c="dimmed">
-                  延迟
+                  本机 TCP 延迟
                 </Text>
               </Stack>
             </Group>

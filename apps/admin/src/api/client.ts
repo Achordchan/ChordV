@@ -60,6 +60,7 @@ export type AdminRuntimeComponentArchitecture = RuntimeComponentArchitecture;
 export type AdminRuntimeComponentKind = RuntimeComponentKind;
 export type AdminRuntimeComponentSource = RuntimeComponentSource;
 export type AdminReleaseArtifactRecordDto = {
+  sourceUrl?: string | null;
   id: string;
   source: "uploaded" | "external";
   type: AdminReleaseArtifactType;
@@ -199,6 +200,7 @@ function inferDeliveryMode(artifacts: SharedAdminReleaseArtifactDto[]): UpdateDe
 function mapArtifact(record: SharedAdminReleaseArtifactDto): AdminReleaseArtifactRecordDto {
   return {
     id: record.id,
+    sourceUrl: record.sourceUrl ?? null,
     source: record.source,
     type: record.type,
     deliveryMode: record.deliveryMode,

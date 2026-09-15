@@ -160,6 +160,9 @@ export interface SubscriptionStatusDto {
 }
 
 export interface NodeSummaryDto {
+  /** Public TCP endpoint for probes executed on the client device. */
+  serverHost?: string;
+  serverPort?: number;
   id: string;
   name: string;
   countryCode: string | null;
@@ -221,6 +224,7 @@ export interface ClientVersionDto {
 }
 
 export interface AdminReleaseArtifactDto {
+  sourceUrl?: string | null;
   id: string;
   releaseId: string;
   source: "uploaded" | "external";
@@ -520,6 +524,8 @@ export interface UpdateSubscriptionNodeAccessInputDto {
 }
 
 export interface AdminNodeRecordDto extends NodeSummaryDto {
+  /** Client-reported TCP observations in the last 15 minutes, one per account. */
+  clientProbeSummary?: { samples: number; healthy: number; averageLatencyMs: number | null; checkedAt: string } | null;
   statsLastSyncedAt: string | null;
   controlMode?: NodeControlMode;
   controlStatus?: string;

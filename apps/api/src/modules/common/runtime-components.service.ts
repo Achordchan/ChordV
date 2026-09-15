@@ -1,3 +1,4 @@
+import { FileMaintenanceService } from "./file-maintenance.service";
 import { publicSiteOrigin } from "./site-address.context";
 import { Optional } from "@nestjs/common";
 import { RuntimeVersionService } from "./runtime-version.service";
@@ -62,6 +63,7 @@ export class RuntimeComponentsService {
     private readonly prisma: PrismaService,
     private readonly authSessionService: AuthSessionService,
     private readonly downloadMirrorService: DownloadMirrorService,
+    private readonly files: FileMaintenanceService,
     private readonly adminRuntimeEventsService?: AdminRuntimeEventsService,
     @Optional() private readonly runtimeVersions?: RuntimeVersionService
   ) {}
@@ -355,13 +357,20 @@ export class RuntimeComponentsService {
   async deleteAdminRuntimeComponent(componentId: string) {
     const existing = await this.ensureRuntimeComponentExists(componentId);
     try {
-      await this.prisma.runtimeComponent.delete({
-        where: { id: componentId }
+      await this.prisma.$transaction(async tx => {
+        await tx.$queryRaw`SELECT id FROM "RuntimeComponent" WHERE id = ${componentId} FOR UPDATE`;
+        const versions = await tx.runtimeComponentVersion.findMany({ where: { componentId }, select: { id: true } });
+        await tx.runtimeComponent.delete({ where: { id: componentId } });
+        if (existing.storedFilePath) await this.queueRuntimeComponentCleanup(existing.storedFilePath, "删除旧组件文件", tx);
+        for (const version of versions) {
+          const file = path.join(runtimeComponentStorageRoot(), "versions", version.id);
+          await this.files.enqueue(file, "删除组件关联版本", tx);
+          await this.files.enqueue(file+".part", "删除组件关联临时文件", tx);
+        }
       });
     } catch (error) {
       throwLocalSaveAsServiceUnavailable(error, "内核组件删除失败，请刷新后重试。");
     }
-    this.startRuntimeComponentStoredFileCleanupBestEffort(existing.storedFilePath, "deleted runtime component upload");
     this.publishRuntimeComponentUpdatedBestEffort();
     return { id: componentId, deleted: true as const };
   }
@@ -559,10 +568,10 @@ export class RuntimeComponentsService {
       if (duplicate.id === keepId) {
         continue;
       }
-      await this.prisma.runtimeComponent.delete({ where: { id: duplicate.id } });
-      if (duplicate.storedFilePath) {
-        await removeRuntimeComponentFile(resolveRuntimeComponentAbsolutePath(duplicate.storedFilePath));
-      }
+      await this.prisma.$transaction(async tx => {
+        await tx.runtimeComponent.delete({where:{id:duplicate.id}});
+        if(duplicate.storedFilePath) await this.queueRuntimeComponentCleanup(duplicate.storedFilePath,"清理重复旧组件",tx);
+      });
     }
   }
 
@@ -773,25 +782,7 @@ export class RuntimeComponentsService {
   }
 
   private async removeRuntimeComponentFileBestEffort(absolutePath: string | null, label: string) {
-    if (!absolutePath) {
-      return;
-    }
-    const cleanupTask = removeRuntimeComponentFile(absolutePath).then(() => undefined);
-    void cleanupTask.catch((error) => {
-      this.logger.warn(`Runtime component saved, but delayed ${label} cleanup failed: ${readErrorMessage(error)}`);
-    });
-
-    try {
-      // Budget covers the waiting window only: on expiry the unlink keeps running
-      // for the background logger above instead of holding a drain work item.
-      await workLifecycle.awaitWithBudgetElse(cleanupTask, readRuntimeComponentFileCleanupBudgetMs(), () => {
-        this.logger.warn(
-          `Runtime component saved, but ${label} cleanup exceeded ${readRuntimeComponentFileCleanupBudgetMs()}ms and will continue in background.`
-        );
-      });
-    } catch (error) {
-      this.logger.warn(`Runtime component saved, but ${label} cleanup failed: ${readErrorMessage(error)}`);
-    }
+    if (absolutePath) await this.files.removeOrQueue(absolutePath, label);
   }
 
   private startRuntimeComponentFileCleanupBestEffort(absolutePath: string | null, label: string) {
@@ -806,23 +797,13 @@ export class RuntimeComponentsService {
     timer.unref?.();
   }
 
+  private queueRuntimeComponentCleanup(storedFilePath: string, label: string, writer?: Parameters<FileMaintenanceService["enqueue"]>[2]) {
+    try { return this.files.enqueue(resolveRuntimeComponentAbsolutePath(storedFilePath), label, writer); }
+    catch(error) { return this.files.enqueue(path.resolve(runtimeComponentStorageRoot(),storedFilePath), label, writer, error instanceof Error?error.message:"旧组件路径异常"); }
+  }
   private startRuntimeComponentStoredFileCleanupBestEffort(storedFilePath: string | null, label: string) {
-    if (!storedFilePath) {
-      return;
-    }
-    const timer = workLifecycle.defer(() => {
-      let absolutePath: string;
-      try {
-        absolutePath = resolveRuntimeComponentAbsolutePath(storedFilePath);
-      } catch (error) {
-        this.logger.warn(`Runtime component saved, but ${label} cleanup path is invalid: ${readErrorMessage(error)}`);
-        return;
-      }
-      return this.removeRuntimeComponentFileBestEffort(absolutePath, label).catch((error) => {
-        this.logger.warn(`Runtime component saved, but background ${label} cleanup failed: ${readErrorMessage(error)}`);
-      });
-    }, 0);
-    timer.unref?.();
+    if (!storedFilePath) return;
+    void this.queueRuntimeComponentCleanup(storedFilePath,label).catch(error=>this.logger.error(`组件清理任务保存失败：${String(error)}`));
   }
 
   private async validateUploadedRuntimeComponent(
@@ -886,6 +867,7 @@ export class RuntimeComponentsService {
         downloadUrl: buildRuntimeComponentDownloadUrl(componentId)
       };
     } catch (error) {
+      await this.files.removeOrQueue(absolutePath, "组件上传准备失败");
       throw mapUploadedFilePreparationError(error, "runtime component upload");
     }
   }
@@ -1453,14 +1435,6 @@ async function statReadableFile(filePath: string) {
       throw new NotFoundException("文件不存在或已丢失");
     }
     throw new ServiceUnavailableException("文件暂不可读，请检查服务器磁盘、目录权限或文件存储状态。");
-  }
-}
-
-async function removeRuntimeComponentFile(filePath: string) {
-  try {
-    await fs.rm(filePath, { force: true });
-  } catch {
-    return;
   }
 }
 

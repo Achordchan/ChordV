@@ -1,3 +1,4 @@
+import { teamOwnerOptions } from "../customers/team-owner-options";
 import { Group, NumberInput, Select, Switch, TextInput, Textarea } from "@mantine/core";
 import type {
   AdminSnapshotDto,
@@ -222,9 +223,8 @@ export function TeamEditorSection(props: {
       />
       <Select
         label="负责人"
-        data={props.snapshot.users
-          .filter((item) => item.role === "user" && (props.drawerRecordId ? item.teamId === null || item.id === props.teamForm.ownerUserId : item.teamId === null))
-          .map((item) => ({ value: item.id, label: `${item.displayName} · ${item.email}` }))}
+        searchable nothingFoundMessage="没有可选账号"
+        data={teamOwnerOptions(props.snapshot.users, props.drawerRecordId, props.snapshot.teams.find(team=>team.id===props.drawerRecordId)?.ownerUserId)}
         value={props.teamForm.ownerUserId}
         onChange={(value) => props.setTeamForm((current) => ({ ...current, ownerUserId: value || "" }))}
       />

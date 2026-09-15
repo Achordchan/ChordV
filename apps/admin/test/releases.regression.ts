@@ -12,7 +12,7 @@ import { buildCreateReleasePayload, buildUpdateReleasePayload, emptyReleaseEdito
 
 const { MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES } = updateLimits;
 
-const releaseRecordCardSource = readFileSync(resolve(import.meta.dirname, "../src/features/releases/ReleaseRecordCard.tsx"), "utf8");
+const releaseStyles = readFileSync(resolve(import.meta.dirname, "../src/features/releases/ReleaseWorkspace.module.css"), "utf8");
 const adminClientSource = readFileSync(resolve(import.meta.dirname, "../src/api/client.ts"), "utf8");
 const releasesPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/ReleasesPage.tsx"), "utf8");
 
@@ -55,10 +55,11 @@ function testCreateReleasePayloadKeepsReleaseFieldsSimple() {
     status: "draft",
     version: "1.2.0",
     title: "Windows 1.2.0",
-    changelog: ["Support release publishing", "Fix admin release flow"]
+    changelog: ["Support release publishing", "Fix admin release flow"],
+    forceUpgrade: false, minimumVersion: "0.0.0"
   });
-  assert.equal("minimumVersion" in payload, false, "backend should default minimumVersion to the release version");
-  assert.equal("forceUpgrade" in payload, false, "forceUpgrade must not be required for ordinary releases");
+  assert.equal(payload.minimumVersion, "0.0.0");
+  assert.equal(payload.forceUpgrade, false);
 }
 
 function testCreateReleasePayloadOmitsOptionalPublishingFlags() {
@@ -72,8 +73,8 @@ function testCreateReleasePayloadOmitsOptionalPublishingFlags() {
   const payload = buildCreateReleasePayload(form);
 
   assert.equal(payload.title, undefined);
-  assert.equal("minimumVersion" in payload, false);
-  assert.equal("forceUpgrade" in payload, false);
+  assert.equal(payload.minimumVersion, "0.0.0");
+  assert.equal(payload.forceUpgrade, false);
 }
 
 function testCreateAdminReleaseRequestDoesNotForceDisplayTitle() {
@@ -101,11 +102,12 @@ function testUpdateReleasePayloadDoesNotSendVersionOrPublishingFlags() {
 
   assert.deepEqual(payload, {
     title: "Windows 1.1.7",
-    changelog: ["Fix admin release", "Improve download"]
+    changelog: ["Fix admin release", "Improve download"],
+    forceUpgrade: false, minimumVersion: "0.0.0"
   });
   assert.equal("version" in payload, false, "release edits must not send the immutable version field");
-  assert.equal("minimumVersion" in payload, false, "simple release edits must not change minimumVersion");
-  assert.equal("forceUpgrade" in payload, false, "simple release edits must not change forceUpgrade");
+  assert.equal(payload.minimumVersion, "0.0.0");
+  assert.equal(payload.forceUpgrade, false);
 }
 
 function testBlankUpdateReleaseTitleDoesNotFallbackToVersion() {
@@ -120,7 +122,8 @@ function testBlankUpdateReleaseTitleDoesNotFallbackToVersion() {
 
   assert.deepEqual(payload, {
     title: "",
-    changelog: []
+    changelog: [],
+    forceUpgrade: false, minimumVersion: "0.0.0"
   });
   assert.equal("version" in payload, false, "blank title edits must not silently reuse version as display title");
 }
@@ -151,8 +154,7 @@ function testNewReleaseUsesHostedImportFields() {
   assert.match(markup, /上传配置/);
 }
 function testReleaseArtifactLongDownloadUrlDoesNotForceWideCards() {
-  assert.match(releaseRecordCardSource, /lineClamp=\{2\}/);
-  assert.match(releaseRecordCardSource, /overflowWrap: "anywhere"/);
+  assert.match(releaseStyles, /\.artifact p[^}]*overflow-wrap: anywhere/);
 }
 
 function testReleaseMutationsAlwaysReleaseSavingState() {
@@ -216,3 +218,8 @@ testSaveArtifactCommitsMutationSeqBeforeLocalState();
 testCreateReleaseIsBlockedWhileAnotherMutationIsSaving();
 
 console.log("release admin regression checks passed");
+
+const forcedForm = { ...emptyReleaseEditorForm("windows"), version: "1.2.0", forceUpgrade: true, minimumVersion: "1.1.8" };
+assert.equal(buildCreateReleasePayload(forcedForm).forceUpgrade, true);
+assert.equal(buildUpdateReleasePayload(forcedForm).minimumVersion, "1.1.8");
+assert.equal(buildUpdateReleasePayload({ ...forcedForm, forceUpgrade: false }).forceUpgrade, false);

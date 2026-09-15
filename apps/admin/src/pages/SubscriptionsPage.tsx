@@ -96,7 +96,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
   const personalSubscriptions = props.subscriptions.filter((item) => item.ownerType === "user");
 
   return (
-    <SectionCard
+    <SectionCard compact
       title="订阅与授权"
       searchValue={props.searchValue}
       onSearchChange={props.onSearchChange}
@@ -212,7 +212,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                       </ActionIcon>
                       <ActionIcon
                         variant="subtle"
-                        color="blue"
+                        color="teal.9"
                         title={convertDisabledReason}
                         aria-label="转为团队订阅"
                         onClick={() => canConvertToTeam && props.onOpenConvertToTeamModal(item)}
@@ -248,7 +248,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
           </DataTable>
         </Tabs.Panel>
         <Tabs.Panel value="team" pt="md">
-          <Accordion variant="separated" radius="xl">
+          <Accordion variant="separated" radius="sm">
             {props.filteredTeamSubscriptions.map((team) => {
               const currentSubscription = team.currentSubscription;
               const teamSubscriptionRecord = team.currentSubscription
@@ -309,7 +309,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                   </Accordion.Control>
                   <Accordion.Panel>
                     <Stack gap="md">
-                      <Paper withBorder radius="lg" p="md">
+                      <Paper withBorder radius="sm" p="md">
                         <Group justify="space-between" align="flex-start" wrap="wrap" gap="md">
                           <Stack gap={2}>
                             <Text fw={600}>共享订阅</Text>
@@ -381,14 +381,14 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                             ) : null}
                           </>
                         ) : (
-                          <Alert color="blue" variant="light" mt="md">
+                          <Alert color="teal.9" variant="light" mt="md">
                             当前团队还没有共享订阅，请先分配 Team 套餐，再进行节点授权和会话管理。
                           </Alert>
                         )}
                       </Paper>
 
                       {props.teamSubscriptionInlineEditorId === team.id ? (
-                        <Paper withBorder radius="lg" p="md">
+                        <Paper withBorder radius="sm" p="md">
                           <Stack gap="sm">
                             <Text fw={600}>分配 Team 套餐</Text>
                             <Select
@@ -429,7 +429,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
 
                       <SimpleGrid cols={{ base: 1, xl: 2 }} spacing="md" verticalSpacing="md">
                         <Stack gap="md">
-                          <Card withBorder radius="lg" p="md">
+                          <Card withBorder radius="sm" p="md">
                             <Stack gap="sm">
                               <Group justify="space-between" wrap="wrap" gap="sm">
                                 <div>
@@ -443,7 +443,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                                   {team.members.map((member) => {
                                     const userRecord = props.allUsers.find((item) => item.id === member.userId);
                                     return (
-                                      <Paper key={member.id} withBorder radius="lg" p="md">
+                                      <Paper key={member.id} withBorder radius="sm" p="md">
                                         <Group justify="space-between" align="center" wrap="wrap" gap="md">
                                           <Stack gap={4} style={{ flex: 1, minWidth: 220 }}>
                                             <Group gap="xs" wrap="wrap">
@@ -527,7 +527,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                           </Card>
                         </Stack>
 
-                        <Card withBorder radius="lg" p="md">
+                        <Card withBorder radius="sm" p="md">
                           <Stack gap="sm">
                             <Group justify="space-between" wrap="wrap" gap="sm">
                               <div>
@@ -547,7 +547,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                               </Alert>
                             ) : null}
                             {!usageLoaded && !usageLoading && !usageError ? (
-                              <Alert color="blue" variant="light">
+                              <Alert color="teal.9" variant="light">
                                 展开 Team 后会按需加载成员流量，避免后台列表被历史账单拖慢。
                               </Alert>
                             ) : null}
@@ -557,7 +557,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                             {usageSummary.length > 0 ? (
                               <Stack gap="sm">
                                 {usageSummary.map((entry) => (
-                                  <Paper key={entry.userId} withBorder radius="lg" p="md">
+                                  <Paper key={entry.userId} withBorder radius="sm" p="md">
                                     <Group justify="space-between" align="center" wrap="wrap" gap="md">
                                       <Stack gap={4} style={{ flex: 1, minWidth: 220 }}>
                                         <Text fw={600}>{entry.userDisplayName}</Text>

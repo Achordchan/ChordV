@@ -387,7 +387,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
 
       <Text size="sm" c="dimmed">全局下载镜像已迁移至系统设置 → 站点地址与下载镜像。</Text>
 
-      <Card withBorder radius="xl" p="lg">
+      <Card withBorder radius="sm" p="lg">
         <Stack gap="md">
           <Group justify="space-between" align="flex-start" wrap="wrap">
             <Stack gap={4}>
@@ -430,7 +430,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         </Stack>
       </Card>
 
-      <Card withBorder radius="xl" p="lg">
+      <Card withBorder radius="sm" p="lg">
         <Stack gap="md">
           <Group justify="space-between" align="flex-start" wrap="wrap">
             <Stack gap={4}>
@@ -516,7 +516,7 @@ function RuntimeComponentSlotCard(props: RuntimeComponentSlotCardProps) {
   } = props;
 
   return (
-    <Card withBorder radius="lg" p="md">
+    <Card withBorder radius="sm" p="md">
       <Stack gap="md">
         <Group justify="space-between" align="flex-start" wrap="wrap">
           <Stack gap={4}>
@@ -595,7 +595,7 @@ function RuntimeComponentSlotCard(props: RuntimeComponentSlotCardProps) {
                       <Group gap={6} wrap="nowrap">
                         <ActionIcon
                           variant="light"
-                          color="blue"
+                          color="teal.9"
                           onClick={() => onEdit(record)}
                           title="配置"
                           aria-label="配置"

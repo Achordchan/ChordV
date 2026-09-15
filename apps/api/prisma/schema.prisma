@@ -266,6 +266,7 @@ model SystemUpdateOperation {
 }
 
 model User {
+  clientNodeProbes ClientNodeProbe[]
   id                   String              @id
   email                String              @unique
   displayName          String
@@ -403,6 +404,7 @@ model TrafficLedger {
 }
 
 model Node {
+  clientNodeProbes ClientNodeProbe[]
   id               String          @id
   name             String
   countryCode      String?
@@ -901,6 +903,7 @@ model Release {
 }
 
 model ReleaseArtifact {
+  sourceUrl     String?
   id            String             @id
   releaseId     String
   source        ReleaseArtifactSource @default(external)
@@ -920,6 +923,7 @@ model ReleaseArtifact {
   release       Release            @relation(fields: [releaseId], references: [id], onDelete: Cascade)
 
   @@index([releaseId, isPrimary])
+  @@index([fileHash, fileSizeBytes])
 }
 
 model RuntimeComponent {
@@ -980,6 +984,7 @@ model RuntimeComponentDelivery {
 }
 
 model RuntimeComponentVersion {
+  retainUntil       DateTime?
   id                String @id
   componentId       String
   component         RuntimeComponent @relation(fields: [componentId], references: [id], onDelete: Cascade)
@@ -1001,4 +1006,30 @@ model RuntimeComponentVersion {
 
   @@index([componentId, createdAt])
   @@index([status, updatedAt])
+}
+
+// Latest observation per account and node; client reports never control node availability.
+model ClientNodeProbe {
+  userId    String
+  nodeId    String
+  status    String
+  latencyMs Int?
+  checkedAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  node Node @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  @@id([userId, nodeId])
+  @@index([checkedAt, nodeId])
+}
+
+model FileCleanupJob {
+  blocked Boolean @default(false)
+  id String @id
+  path String @unique
+  reason String
+  attempts Int @default(0)
+  lastError String?
+  nextAttemptAt DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([blocked, nextAttemptAt])
 }

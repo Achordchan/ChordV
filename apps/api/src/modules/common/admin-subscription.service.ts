@@ -1265,9 +1265,8 @@ export class AdminSubscriptionService {
       }
 
       const nextMembership = await this.getUserMembership(nextOwner.id);
-      const joinsCurrentTeamAsNewOwner = !nextMembership;
-      if (nextMembership && nextMembership.teamId !== teamId) {
-        throw new BadRequestException("该账号已属于其他团队");
+      if (!nextMembership || nextMembership.teamId !== teamId) {
+        throw new BadRequestException("负责人只能转移给本团队成员，请先添加成员。");
       }
 
       const activePersonal = await this.findCurrentPersonalSubscription(nextOwner.id);
@@ -1281,28 +1280,17 @@ export class AdminSubscriptionService {
           const currentNextOwnerMembership = await tx.teamMember.findUnique({
             where: { userId: nextOwner.id }
           });
-          if (currentNextOwnerMembership && currentNextOwnerMembership.teamId !== teamId) {
-            throw new ConflictException("The account already belongs to another team.");
+          if (!currentNextOwnerMembership || currentNextOwnerMembership.teamId !== teamId) {
+            throw new ConflictException("该账号已不属于本团队，请刷新后重试。");
           }
           await tx.teamMember.updateMany({
             where: { teamId, role: "owner" },
             data: { role: "member" }
           });
-          if (currentNextOwnerMembership) {
-            await tx.teamMember.update({
-              where: { id: currentNextOwnerMembership.id },
-              data: { role: "owner" }
-            });
-          } else {
-            await tx.teamMember.create({
-              data: {
-                id: createId("member"),
-                teamId,
-                userId: nextOwner.id,
-                role: "owner"
-              }
-            });
-          }
+          await tx.teamMember.update({
+            where: { id: currentNextOwnerMembership.id },
+            data: { role: "owner" }
+          });
           await tx.team.update({
             where: { id: teamId },
             data
@@ -1312,13 +1300,6 @@ export class AdminSubscriptionService {
         throw toAdminLocalSaveHttpError(error, "Team 保存失败，请刷新团队列表后重试。");
       }
       teamUpdatedInOwnerTransaction = true;
-
-      if (joinsCurrentTeamAsNewOwner) {
-        await this.closePersonalSupportTicketsForUserBestEffort(
-          nextOwner.id,
-          "当前账号已切换为 Team 归属，原个人订阅工单已失效。如需继续咨询，请在当前 Team 归属下重新创建工单。"
-        );
-      }
     }
 
     if (input.status !== undefined && input.status !== current.status) {

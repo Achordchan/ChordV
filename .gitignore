@@ -12,6 +12,8 @@ apps/desktop/src-tauri/bin.bak/
 apps/desktop/src-tauri/.tauri.*.platform.conf.json
 output/
 storage/
+!apps/admin/src/features/storage/
+!apps/admin/src/features/storage/**
 apps/api/storage/
 *.db
 *.sqlite*

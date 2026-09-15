@@ -1,0 +1,3 @@
+.launcher { position: fixed; left: 16px; bottom: 16px; z-index: 195; border-radius: 6px; }
+.window { position: fixed; left: 16px; top: 16px; z-index: 195; box-sizing: border-box; width: min(310px, calc(100vw - 32px)); max-height: calc(100dvh - 190px); overflow: auto; padding: 16px; border: 1px solid #dce3e9; border-radius: 10px; background: #fff; box-shadow: 0 5px 20px #17344414; }
+.window button, .window input { border-radius: 5px; }

@@ -1,3 +1,5 @@
+import { StorageCatalogService } from "./storage-catalog.service";
+import { FileMaintenanceService } from "./file-maintenance.service";
 import { AdminAuthGuard } from "./admin-auth.guard";
 import { AdminNodeService } from "./admin-node.service";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
@@ -26,6 +28,8 @@ import { MeteringRetentionService } from "./metering-retention.service";
 @Global()
 @Module({
   providers: [
+    FileMaintenanceService,
+    StorageCatalogService,
     SiteAddressService,
     DevDataService,
     AdminRuntimeEventsService,
@@ -51,6 +55,8 @@ import { MeteringRetentionService } from "./metering-retention.service";
     AdminAuthGuard
   ],
   exports: [
+    FileMaintenanceService,
+    StorageCatalogService,
     SiteAddressService,
     DevDataService,
     AdminRuntimeEventsService,

@@ -1,3 +1,4 @@
+import { AdminAppearance } from "./features/shared/AdminAppearance";
 import { AdminBootSkeleton, DataSkeleton } from "./features/shared/DataSkeleton";
 import { useActionConfirmation } from "./features/modals/useActionConfirmation";
 import settingsDialogStyles from "./features/editors/EditorDialog.module.css";
@@ -2864,7 +2865,7 @@ export function App() {
   const firstLoadError = sectionLoadErrors[dataSection];
 
   return (
-    <>
+    <AdminAppearance enabled={section !== "tickets"}>
       <AppShell
         className="admin-shell"
         navbar={{ width: 232, breakpoint: "sm", collapsed: { mobile: !mobileNavOpened } }}
@@ -3241,21 +3242,21 @@ export function App() {
         }}
       />
 
-      <Modal opened={convertSubscriptionTarget !== null} onClose={closeConvertToTeamModal} title="转入 Team 订阅" centered size="lg">
+      <Modal opened={convertSubscriptionTarget !== null} onClose={closeConvertToTeamModal} title="转入团队订阅" centered size="lg">
         <Stack gap="md">
-          <Alert color="blue" variant="light">
+          <Alert color="teal.9" variant="light">
             转入后会删除当前个人订阅，用户后续改按目标团队的共享订阅规则使用服务。原个人订阅的剩余流量、到期时间和历史不会继承。
           </Alert>
 
           <SimpleGrid cols={{ base: 1, md: 2 }} spacing="sm">
-            <Card withBorder radius="lg" p="md">
+            <Card withBorder radius="sm" p="md">
               <Stack gap={4}>
                 <Text size="sm" c="dimmed">当前个人用户</Text>
                 <Text fw={600}>{convertSubscriptionTarget?.ownerLabel ?? "-"}</Text>
                 <Text size="sm" c="dimmed">{convertSubscriptionTarget?.ownerEmail ?? "-"}</Text>
               </Stack>
             </Card>
-            <Card withBorder radius="lg" p="md">
+            <Card withBorder radius="sm" p="md">
               <Stack gap={4}>
                 <Text size="sm" c="dimmed">当前个人套餐</Text>
                 <Text fw={600}>{convertSubscriptionTarget?.currentPlanName ?? "-"}</Text>
@@ -3264,7 +3265,7 @@ export function App() {
           </SimpleGrid>
 
           <Select
-            label="目标 Team（需已有共享订阅）"
+            label="目标团队（需已有共享订阅）"
             placeholder="请选择团队"
             value={convertTargetTeamId}
             data={convertTargetTeamOptions}
@@ -3280,7 +3281,7 @@ export function App() {
             </Alert>
           ) : (
             <Alert color="yellow" variant="light">
-              当前没有可用 Team 订阅，请先给团队分配共享订阅。
+              当前没有可用团队订阅，请先给团队分配共享订阅。
             </Alert>
           )}
 
@@ -3289,12 +3290,12 @@ export function App() {
               取消
             </Button>
             <Button
-              color="blue"
+              color="teal.9"
               onClick={() => void handleConvertToTeam()}
               loading={convertSubmitting}
               disabled={!convertTargetTeamId || !selectedConvertTargetTeam?.currentSubscription}
             >
-              确认转入 Team
+              确认转入团队
             </Button>
           </Group>
         </Stack>
@@ -3375,7 +3376,7 @@ export function App() {
       />
 
       <AccountSecurityModal key={String(adminSecurityOpened)} opened={adminSecurityOpened} saving={adminSecuritySaving} form={adminSecurityForm} onChange={setAdminSecurityForm} onClose={closeAdminSecurityModal} onSave={() => void saveAdminSecurity()}/>
-    </>
+    </AdminAppearance>
   );
 }
 

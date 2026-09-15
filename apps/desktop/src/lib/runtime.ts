@@ -62,6 +62,7 @@ export type DesktopUpdateDownloadPhase =
   | "idle"
   | "preparing"
   | "downloading"
+  | "verifying"
   | "completed"
   | "failed";
 
@@ -211,6 +212,20 @@ async function loadInvoke() {
 
   const module = await import("@tauri-apps/api/core");
   return module.invoke;
+}
+
+/** TCP latency measured by the user's device, never by the backend server. */
+export async function probeLocalNodes(nodes: import("@chordv/shared").NodeSummaryDto[]): Promise<RuntimeNodeProbeResult[]> {
+  const invoke = await loadInvoke();
+  if (!invoke) throw new Error("本机节点检测需要在客户端运行，网页预览无法建立 TCP 连接。");
+  return invoke<RuntimeNodeProbeResult[]>("probe_nodes", { nodes });
+}
+
+/** Read-only local preflight; runs before component downloads and backend session creation. */
+export async function checkRuntimeNetworkConflict() {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform()) return;
+  await invoke("check_network_conflict");
 }
 
 export async function connectRuntime(config: GeneratedRuntimeConfigDto) {
@@ -510,6 +525,7 @@ function normalizeDesktopUpdateDownloadProgress(
 function readDesktopUpdateProgressPhase(value: unknown): DesktopUpdateDownloadPhase {
   if (value === "preparing") return "preparing";
   if (value === "downloading") return "downloading";
+  if (value === "verifying") return "verifying";
   if (value === "completed") return "completed";
   if (value === "failed") return "failed";
   return "idle";
@@ -716,6 +732,7 @@ function readFiniteProgressNumber(value: unknown) {
 function readRuntimeProgressPhase(value: unknown): RuntimeComponentDownloadProgress["phase"] {
   if (value === "preparing") return "preparing";
   if (value === "downloading") return "downloading";
+  if (value === "verifying") return "verifying";
   if (value === "extracting") return "extracting";
   if (value === "completed") return "completed";
   if (value === "failed") return "failed";

@@ -1,3 +1,5 @@
+import { request } from "../api/base";
+import { ReleaseFilesModal } from "../features/releases/ReleaseFilesModal";
 import { DataSkeleton } from "../features/shared/DataSkeleton";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert } from "@mantine/core";
@@ -80,6 +82,9 @@ export function ReleasesPage(props: ReleasesPageProps) {
   const [releaseEditorId, setReleaseEditorId] = useState<string | null>(null);
   const [releaseEditorOpened, setReleaseEditorOpened] = useState(false);
   const [releaseForm, setReleaseForm] = useState<ReleaseEditorFormState>(emptyReleaseEditorForm());
+  const [managerId,setManagerId] = useState<string|null>(null);
+  const [artifactMode,setArtifactMode] = useState<"external"|"uploaded"|"existing">("external");
+  const [reuseId,setReuseId] = useState<string|null>(null);
   const [artifactEditor, setArtifactEditor] = useState<ArtifactEditorState | null>(null);
   const [artifactForm, setArtifactForm] = useState<ArtifactEditorFormState>(emptyArtifactEditorForm());
   const [uploadMaxBytes, setUploadMaxBytes] = useState(DEFAULT_ADMIN_RELEASE_MAX_UPLOAD_BYTES);
@@ -202,26 +207,6 @@ export function ReleasesPage(props: ReleasesPageProps) {
       return;
     }
     forceCloseReleaseEditor();
-  }
-
-  function openArtifactFromReleaseEditor(source: ReleaseEditorFormState["artifactSource"]) {
-    if (!releaseEditorId) {
-      return;
-    }
-    const record = releases.find((item) => item.id === releaseEditorId);
-    if (!record) {
-      return;
-    }
-    forceCloseReleaseEditor();
-    openCreateArtifact(record.id, record.platform, source);
-  }
-
-  function isReleaseEditorArtifactEditingDisabled() {
-    if (!releaseEditorId) {
-      return false;
-    }
-    const record = releases.find((item) => item.id === releaseEditorId);
-    return !record || record.status !== "draft" || getReleaseBusyAction(record.id) !== null;
   }
 
   async function saveRelease() {
@@ -370,7 +355,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
     if (savingRef.current) {
       return;
     }
-    const confirmed = await confirmation.confirm({title:"删除发布",message:`删除 ${record.version}，已上传的安装包也将删除。`,confirmLabel:"删除发布",danger:true});
+    const confirmed = await confirmation.confirm({title:"删除发布",message:`删除 ${record.version} 发布记录及下载入口，文件进入清理队列；其他版本复用的文件不受影响。`,confirmLabel:"删除发布",danger:true});
     if (!confirmed) {
       return;
     }
@@ -405,6 +390,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
   ) {
     const release = releases.find((item) => item.id === releaseId);
     const platform = releasePlatform ?? release?.platform ?? "macos";
+    setArtifactMode(source); setReuseId(null);
     setArtifactEditor({ releaseId, artifactId: null, platform });
     setArtifactForm(emptyArtifactEditorForm(defaultArtifactTypeForPlatform(platform), source));
   }
@@ -412,6 +398,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
   function openEditArtifact(releaseId: string, artifact: AdminReleaseArtifactRecordDto) {
     const release = releases.find((item) => item.id === releaseId);
     setArtifactEditor({ releaseId, artifactId: artifact.id, platform: release?.platform ?? "macos" });
+    setArtifactMode(artifact.source); setReuseId(null);
     setArtifactForm(toArtifactEditorForm(artifact));
   }
 
@@ -485,7 +472,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
     }
     try {
       let releaseId = artifactEditor.releaseId;
-      const validationMessage = validateArtifactEditorInput();
+      const validationMessage = artifactMode === "existing" ? (!reuseId ? "请选择已有文件" : null) : validateArtifactEditorInput();
       if (validationMessage) {
         notifications.show({
           color: "yellow",
@@ -502,6 +489,10 @@ export function ReleasesPage(props: ReleasesPageProps) {
         throw new Error("缺少发布记录，无法保存安装包");
       }
 
+      if (artifactMode === "existing") {
+        await request("/admin/storage/reuse-release-file", {method:"POST",timeoutMs:8*60_000,body:JSON.stringify({releaseId,sourceArtifactId:reuseId,artifactId:artifactEditor.artifactId||undefined,isPrimary:artifactForm.isPrimary})});
+        await loadReleases(); forceCloseArtifactEditor(); notifications.show({color:"green",message:"已复用已有文件"}); return;
+      }
       if (!record) {
         if (artifactForm.source === "external") {
           setImportProgress(null);
@@ -574,7 +565,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
       notifications.show({
         color: "green",
         title: "发布中心",
-        message: "安装包已删除"
+        message: "安装包记录已删除，文件进入清理队列"
       });
     } catch (reason) {
       const result = showReleaseRequestFailure(reason, "删除安装包失败");
@@ -615,7 +606,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
       {confirmation.dialog}
       {!releaseEditorOpened ? <>
         {error ? <Alert color="red">{error}</Alert> : null}
-        {loading && releases.length === 0 ? <DataSkeleton variant="page" rows={4}/> : <ReleaseOverview records={visibleReleases} allRecords={releases} search={searchValue} onSearch={setSearchValue} platform={platformFilter} onPlatform={setPlatformFilter} busy={saving !== null} onCreate={openCreateRelease} onEdit={openEditRelease} onPublish={record=>void publishRelease(record)} onWithdraw={record=>void withdrawRelease(record)} onDelete={record=>void deleteRelease(record)} onAdd={record=>openCreateArtifact(record.id,record.platform,"external")} onEditArtifact={openEditArtifact} onDeleteArtifact={(id,artifactId)=>void removeArtifact(id,artifactId)} onCopy={url=>void copyDownloadUrl(url)}/>}
+        {loading && releases.length === 0 ? <DataSkeleton variant="page" rows={4}/> : <ReleaseOverview records={visibleReleases} allRecords={releases} search={searchValue} onSearch={setSearchValue} platform={platformFilter} onPlatform={setPlatformFilter} busy={saving !== null} onCreate={openCreateRelease} onEdit={openEditRelease} onPublish={record=>void publishRelease(record)} onWithdraw={record=>void withdrawRelease(record)} onDelete={record=>void deleteRelease(record)} onAdd={record=>setManagerId(record.id)} onEditArtifact={openEditArtifact} onDeleteArtifact={(id,artifactId)=>void removeArtifact(id,artifactId)} onCopy={url=>void copyDownloadUrl(url)}/>}
       </> : null}
 
       <ReleaseEditorModal
@@ -628,14 +619,16 @@ export function ReleasesPage(props: ReleasesPageProps) {
         title={releaseEditorId ? "编辑发布记录" : "新建发布记录"}
         submitLabel={releaseEditorId ? "保存发布记录" : "创建发布"}
         form={releaseForm}
-        artifactEditingDisabled={isReleaseEditorArtifactEditingDisabled()}
         onClose={closeReleaseEditor}
         onChange={setReleaseForm}
-        onManageArtifact={openArtifactFromReleaseEditor}
         onSubmit={() => void saveRelease()}
       />
 
+      <ReleaseFilesModal opened={Boolean(managerId)&&!artifactEditor} release={releases.find(item=>item.id===managerId)||null} onClose={()=>setManagerId(null)} onAdd={()=>{if(managerId)openCreateArtifact(managerId);}} onEdit={file=>{if(managerId)openEditArtifact(managerId,file);}} onDelete={file=>{if(managerId)void removeArtifact(managerId,file.id);}} onCopy={url=>void copyDownloadUrl(url)}/>
       <ArtifactEditorModal
+        mode={artifactMode} onModeChange={mode=>{setArtifactMode(mode);if(mode!=="existing")setArtifactForm(current=>({...current,source:mode,downloadUrl:mode==="external"?(getEditingArtifact()?.sourceUrl||current.downloadUrl):current.downloadUrl}));}}
+        reuseId={reuseId} onReuseChange={setReuseId} currentFile={getEditingArtifact()}
+        existingFiles={releases.filter(item=>item.platform===artifactEditor?.platform).flatMap(item=>item.artifacts.filter(file=>file.source==="uploaded"&&file.id!==artifactEditor?.artifactId).map(file=>({value:file.id,label:`${item.version} · ${file.fileName||file.type} · ${file.fileSizeBytes?(Number(file.fileSizeBytes)/1048576).toFixed(1)+" MB":""}`})))}
         opened={artifactEditor !== null}
         saving={saving?.startsWith("artifact:") ?? false}
         importProgress={importProgress}

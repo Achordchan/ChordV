@@ -58,7 +58,7 @@ export type RuntimeComponentFailureReportInput = {
 };
 
 export type RuntimeComponentDownloadProgress = {
-  phase: "preparing" | "downloading" | "extracting" | "completed" | "failed";
+  phase: "preparing" | "downloading" | "verifying" | "extracting" | "completed" | "failed";
   component: RuntimeComponentKind;
   fileName: string | null;
   downloadedBytes: number;
@@ -75,6 +75,7 @@ export type RuntimeComponentFileStatus = {
 };
 
 export type RuntimeAssetsUiState = {
+  downloadStage?: RuntimeComponentDownloadProgress["phase"];
   phase: "idle" | "checking" | "downloading" | "completed" | "ready" | "failed";
   currentComponent: RuntimeComponentKind | null;
   fileName: string | null;

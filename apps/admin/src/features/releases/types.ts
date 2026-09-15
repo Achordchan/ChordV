@@ -14,6 +14,8 @@ export type ReleaseEditorFormState = {
   status: AdminReleaseStatus;
   version: string;
   title: string;
+  forceUpgrade: boolean;
+  minimumVersion: string;
   artifactSource: "uploaded" | "external";
   externalDeliveryMode: "external_download" | "windows_full_replace_zip";
   downloadUrl: string;
@@ -49,6 +51,8 @@ export function emptyReleaseEditorForm(platform: AdminReleasePlatform = "macos")
     status: "draft",
     version: "",
     title: "",
+    forceUpgrade: false,
+    minimumVersion: "0.0.0",
     artifactSource: "external",
     externalDeliveryMode: platform === "windows" ? "windows_full_replace_zip" : "external_download",
     downloadUrl: "",
@@ -66,6 +70,8 @@ export function toReleaseEditorForm(record: AdminReleaseRecordDto): ReleaseEdito
     status: record.status,
     version: record.version,
     title: record.title,
+    forceUpgrade: record.forceUpgrade,
+    minimumVersion: record.minimumVersion,
     artifactSource: record.artifacts.find((artifact) => artifact.isPrimary)?.source ?? "external",
     externalDeliveryMode:
       record.platform === "windows" &&
@@ -93,6 +99,8 @@ export function buildCreateReleasePayload(
     version,
     title: form.title.trim() || undefined,
     changelog: splitReleaseChangelog(form.changelog),
+    forceUpgrade: form.forceUpgrade,
+    minimumVersion: form.minimumVersion.trim() || "0.0.0",
     ...(initialArtifact !== undefined ? { initialArtifact } : {})
   };
 }
@@ -100,7 +108,9 @@ export function buildCreateReleasePayload(
 export function buildUpdateReleasePayload(form: ReleaseEditorFormState): UpdateAdminReleaseInputDto {
   return {
     title: form.title.trim(),
-    changelog: splitReleaseChangelog(form.changelog)
+    changelog: splitReleaseChangelog(form.changelog),
+    forceUpgrade: form.forceUpgrade,
+    minimumVersion: form.minimumVersion.trim() || "0.0.0"
   };
 }
 

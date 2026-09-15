@@ -1,3 +1,5 @@
+import type { Prisma } from "@prisma/client";
+import { FileMaintenanceService } from "./file-maintenance.service";
 import { downloadHostedArtifact, type ArtifactImportInput, type ArtifactImportProgress } from "./release-artifact-import";
 import { workLifecycle } from "../../work-lifecycle";
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
@@ -40,10 +42,8 @@ import {
   normalizeVersion,
   pickPrimaryReleaseArtifact,
   type ReleaseRowLike,
-  releaseArtifactStorageRoot,
-  removeReleaseArtifactDirectory,
-  removeReleaseArtifactFile,
   readZipEntryData,
+  releaseArtifactStorageRoot,
   resolveReleaseArtifactAbsolutePath,
   resolveReleaseArtifactDeliveryMode,
   resolveReleaseArtifactForClient,
@@ -56,6 +56,7 @@ import {
 import { moveUploadedFile } from "./upload-file.utils";
 
 type UploadedReleaseFile = {
+  sourceUrl?: string | null;
   path: string;
   originalname: string;
   size: number;
@@ -72,7 +73,6 @@ type PreparedUploadedReleaseArtifactFile = {
 
 type ReleaseFallbackArtifact = ReleaseRowLike["artifacts"][number];
 
-const RELEASE_FILE_CLEANUP_BUDGET_MS = 300;
 const RELEASE_RESPONSE_REFRESH_BUDGET_MS = 300;
 
 function normalizeReleaseArtifactFileHash(value: string | null | undefined) {
@@ -163,7 +163,8 @@ export class ReleaseCenterService {
     private readonly prisma: PrismaService,
     private readonly clientEventsPublisher: ClientEventsPublisher,
     private readonly adminRuntimeEventsService: AdminRuntimeEventsService,
-    private readonly downloadMirrorService: DownloadMirrorService) {}
+    private readonly downloadMirrorService: DownloadMirrorService,
+    private readonly files: FileMaintenanceService) {}
 
   async listAdminReleases(input?: { platform?: PlatformTarget; status?: ReleaseStatus }): Promise<AdminReleaseRecordDto[]> {
     try {
@@ -421,26 +422,16 @@ export class ReleaseCenterService {
 
     this.assertReleaseRecordMutable(release);
 
-    const storedFilePaths = release.artifacts
-      .map((artifact: { storedFilePath?: string | null }) => artifact.storedFilePath)
-      .filter((value: string | null | undefined): value is string => Boolean(value));
-
     try {
-      await this.prisma.release.delete({
-        where: { id: releaseId }
+      await this.prisma.$transaction(async tx => {
+        const locked = await this.lockRelease(tx,releaseId,true);
+        await tx.release.delete({ where: { id: releaseId } });
+        for (const artifact of locked.artifacts) if(artifact.storedFilePath) await this.files.enqueue(path.resolve(releaseArtifactStorageRoot(),artifact.storedFilePath), "删除发布安装包", tx);
       });
     } catch (error) {
       throwLocalSaveAsServiceUnavailable(error, "发布记录删除失败，请刷新发布中心后重试。");
     }
 
-    this.startReleaseCleanupBestEffort("release artifact files after release delete", async () => {
-      await workLifecycle.all(
-        storedFilePaths.map((storedFilePath: string) =>
-          removeReleaseArtifactFile(resolveReleaseArtifactAbsolutePath(storedFilePath))
-        )
-      );
-      await removeReleaseArtifactDirectory(path.join(releaseArtifactStorageRoot(), releaseId));
-    });
 
     if (release.status === "published") {
       this.publishVersionUpdatedBestEffort(
@@ -631,12 +622,17 @@ export class ReleaseCenterService {
     let updatedArtifact: ReleaseFallbackArtifact;
     try {
       updatedArtifact = await this.prisma.$transaction(async (tx) => {
+        const locked = await this.lockRelease(tx,releaseId);
+        const actual = locked.artifacts.find(item=>item.id===artifactId);
+        if(!actual)throw new NotFoundException("安装包已被删除");
+
         if (isPrimary) {
           await tx.releaseArtifact.updateMany({
             where: { releaseId },
             data: { isPrimary: false }
           });
         }
+        if (actual.storedFilePath && input.source === "external") await this.files.enqueue(path.resolve(releaseArtifactStorageRoot(),actual.storedFilePath), "切换外链后的旧安装包", tx);
         return tx.releaseArtifact.update({
           where: { id: artifactId },
           data: {
@@ -676,9 +672,6 @@ export class ReleaseCenterService {
     } catch (error) {
       throwLocalSaveAsServiceUnavailable(error, "安装包信息保存失败，请刷新发布中心后重试。");
     }
-    if (current.storedFilePath && input.source === "external") {
-      this.startRemoveReleaseArtifactFileBestEffort(current.storedFilePath, "old uploaded release artifact after switching to external");
-    }
     return this.getAdminReleaseBestEffort(
       releaseId,
       this.buildArtifactMutationFallback(release, [this.fallbackArtifactFromCreate(updatedArtifact)]),
@@ -699,12 +692,26 @@ export class ReleaseCenterService {
         const extension = release.platform === "windows" ? "zip" : release.platform === "macos" ? "dmg" : release.platform === "android" ? "apk" : "ipa";
         const name = file.originalname.includes(".") ? file.originalname : `ChordV_${release.version}.${extension}`;
         const upload = { type: extension as ReleaseArtifactType, isPrimary: input.isPrimary, fileName: name };
-        const stored = { path: file.path, size: file.size, originalname: name };
+        const stored = { path: file.path, size: file.size, originalname: name, sourceUrl: input.sourceUrl };
         return input.artifactId
           ? await this.replaceReleaseArtifactUpload(releaseId, input.artifactId, upload, stored)
           : await this.uploadReleaseArtifact(releaseId, upload, stored);
-      } finally { await file.cleanup(); }
+      } finally { await this.files.removeOrQueue(file.path,"远程获取临时文件清理"); }
     } finally { this.activeImports.delete(releaseId); }
+  }
+
+  async reuseReleaseArtifact(releaseId: string, sourceArtifactId: string, artifactId?: string, isPrimary?: boolean) {
+    const target = await this.ensureReleaseExists(releaseId);
+    this.assertReleaseArtifactsMutable(target);
+    const source = await this.prisma.releaseArtifact.findUnique({ where: { id: sourceArtifactId }, include: { release: true } });
+    if (!source || source.source !== "uploaded" || !source.storedFilePath || source.release.platform !== target.platform) throw new BadRequestException("请选择同平台的已托管安装包");
+    const staged = await this.files.stageExisting(source.storedFilePath, source.fileHash, source.fileSizeBytes);
+    try {
+      const stat = await (await import("node:fs/promises")).stat(staged);
+      const file = { path: staged, originalname: source.fileName || "package.bin", size: stat.size, sourceUrl: source.sourceUrl };
+      const input = { type: fromPrismaReleaseArtifactType(source.type), fileName: source.fileName || undefined, ...(isPrimary!==undefined?{isPrimary}:artifactId?{}:{isPrimary:true}) };
+      return artifactId ? await this.replaceReleaseArtifactUpload(releaseId, artifactId, input, file) : await this.uploadReleaseArtifact(releaseId, input, file);
+    } finally { await this.files.removeOrQueue(staged, "复用安装包临时文件"); }
   }
 
   async uploadReleaseArtifact(
@@ -745,17 +752,31 @@ export class ReleaseCenterService {
         version: release.version
       });
       const createdArtifact = await this.prisma.$transaction(async (tx) => {
+        await this.lockRelease(tx,releaseId);
+        const duplicate = await tx.releaseArtifact.findFirst({ where: { releaseId, source: "uploaded", type: toPrismaReleaseArtifactType(uploadType), fileHash: preparedFile.fileHash, fileSizeBytes: preparedFile.fileSizeBytes } });
+
         if (isPrimary) {
           await tx.releaseArtifact.updateMany({
             where: { releaseId },
             data: { isPrimary: false }
           });
         }
+        if (duplicate) {
+          const oldPath = duplicate.storedFilePath ? resolveReleaseArtifactAbsolutePath(duplicate.storedFilePath) : null;
+          const healthy = oldPath ? await calculateUploadedReleaseArtifactSha256(oldPath).then(hash=>hash===preparedFile.fileHash).catch(()=>false) : false;
+          if (healthy) await this.files.enqueue(preparedFile.absolutePath, "重复安装包文件", tx);
+          else if (oldPath) await this.files.enqueue(oldPath, "修复缺失或损坏的安装包", tx);
+          return tx.releaseArtifact.update({ where: { id: duplicate.id }, data: {
+            ...(healthy ? {} : { storedFilePath:preparedFile.storedFilePath, fileName:preparedFile.fileName, downloadUrl:buildReleaseArtifactDownloadUrl(duplicate.id) }),
+            ...(isPrimary ? {isPrimary:true}:{}), ...(file.sourceUrl ? {sourceUrl:file.sourceUrl}:{})
+          } });
+        }
         return tx.releaseArtifact.create({
           data: {
             id: artifactId,
             releaseId,
             source: "uploaded",
+            sourceUrl: file.sourceUrl ?? null,
             type: toPrismaReleaseArtifactType(uploadType),
             deliveryMode,
             downloadUrl: preparedFile.downloadUrl,
@@ -814,7 +835,6 @@ export class ReleaseCenterService {
       uploadType === input.type ? input.deliveryMode : null
     );
 
-    const previousStoredFilePath = current.storedFilePath;
     const isPrimary = normalizeOptionalBoolean(input.isPrimary);
     let prepared: PreparedUploadedReleaseArtifactFile | null = null;
     try {
@@ -829,16 +849,24 @@ export class ReleaseCenterService {
         version: release.version
       });
       const updatedArtifact = await this.prisma.$transaction(async (tx) => {
+        await this.lockRelease(tx,releaseId);
+        const lockedArtifact = await tx.releaseArtifact.findUnique({ where: {id:artifactId} });
+        if (!lockedArtifact || lockedArtifact.releaseId !== releaseId) throw new NotFoundException("安装包已被删除");
+
         if (isPrimary) {
           await tx.releaseArtifact.updateMany({
             where: { releaseId },
             data: { isPrimary: false }
           });
         }
+        if (lockedArtifact.storedFilePath && lockedArtifact.storedFilePath !== preparedFile.storedFilePath) {
+          await this.files.enqueue(path.resolve(releaseArtifactStorageRoot(),lockedArtifact.storedFilePath), "替换旧安装包", tx);
+        }
         return tx.releaseArtifact.update({
           where: { id: artifactId },
           data: {
             source: "uploaded",
+            sourceUrl: file.sourceUrl ?? null,
             type: toPrismaReleaseArtifactType(uploadType),
             deliveryMode,
             downloadUrl: preparedFile.downloadUrl,
@@ -848,15 +876,12 @@ export class ReleaseCenterService {
             storedFilePath: preparedFile.storedFilePath,
             fileSizeBytes: preparedFile.fileSizeBytes,
             fileHash: preparedFile.fileHash,
-            isPrimary: isPrimary ?? current.isPrimary,
+            isPrimary: isPrimary ?? lockedArtifact.isPrimary,
             isFullPackage: true
           }
         });
       });
       const fallback = this.buildArtifactMutationFallback(release, [this.fallbackArtifactFromCreate(updatedArtifact)]);
-      if (prepared && previousStoredFilePath && previousStoredFilePath !== prepared.storedFilePath) {
-        this.startRemoveReleaseArtifactFileBestEffort(previousStoredFilePath, "old uploaded release artifact after replacement");
-      }
       return this.getAdminReleaseBestEffort(releaseId, fallback, "replace release artifact response refresh")
         .finally(() => this.publishReleaseCenterUpdatedBestEffort());
     } catch (error) {
@@ -891,12 +916,19 @@ export class ReleaseCenterService {
     } catch (error) {
       throwLocalReadAsServiceUnavailable(error, "安装包列表暂时不可用，请稍后重试。");
     }
-    const nextPrimary = artifact.isPrimary ? siblings.find((item) => item.id !== artifactId) ?? null : null;
+    let nextPrimary = artifact.isPrimary ? siblings.find((item) => item.id !== artifactId) ?? null : null;
     try {
       await this.prisma.$transaction(async (tx) => {
+        const locked=await this.lockRelease(tx,releaseId);
+        const actual=locked.artifacts.find(item=>item.id===artifactId);
+        if(!actual)throw new NotFoundException("安装包已被删除");
+        siblings=locked.artifacts;
+        nextPrimary=actual.isPrimary?siblings.find(item=>item.id!==artifactId)??null:null;
+
         await tx.releaseArtifact.delete({
           where: { id: artifactId }
         });
+        if (actual.storedFilePath) await this.files.enqueue(path.resolve(releaseArtifactStorageRoot(),actual.storedFilePath), "删除安装包", tx);
         if (nextPrimary) {
           await tx.releaseArtifact.update({
             where: { id: nextPrimary.id },
@@ -906,9 +938,6 @@ export class ReleaseCenterService {
       });
     } catch (error) {
       throwLocalSaveAsServiceUnavailable(error, "安装包信息删除失败，请刷新发布中心后重试。");
-    }
-    if (artifact.storedFilePath) {
-      this.startRemoveReleaseArtifactFileBestEffort(artifact.storedFilePath, "deleted release artifact file");
     }
     const fallbackArtifacts = siblings
       .filter((item) => item.id !== artifactId)
@@ -1017,7 +1046,7 @@ export class ReleaseCenterService {
           changelog: release.changelog,
           deliveryMode: (resolvedArtifact?.deliveryMode as ClientUpdateCheckResultDto["deliveryMode"] | undefined)
             ?? fallbackDeliveryMode,
-          recommendedArtifact: resolvedArtifact ? toAdminReleaseArtifactRecord(resolvedArtifact) : null,
+          recommendedArtifact: resolvedArtifact ? toAdminReleaseArtifactRecord(resolvedArtifact, false) : null,
           downloadUrl: null,
           fileName: null,
           fileSizeBytes: null,
@@ -1040,7 +1069,7 @@ export class ReleaseCenterService {
         changelog: release.changelog,
         deliveryMode: (resolvedArtifact?.deliveryMode as ClientUpdateCheckResultDto["deliveryMode"] | undefined)
           ?? fallbackDeliveryMode,
-        recommendedArtifact: resolvedArtifact ? toAdminReleaseArtifactRecord(resolvedArtifact) : null,
+        recommendedArtifact: resolvedArtifact ? toAdminReleaseArtifactRecord(resolvedArtifact, false) : null,
         downloadUrl: resolvedArtifact?.downloadUrl ?? null,
         fileName: resolvedArtifact?.fileName ?? null,
         fileSizeBytes: resolvedArtifact?.fileSizeBytes?.toString() ?? null,
@@ -1287,6 +1316,14 @@ export class ReleaseCenterService {
     await ensureFileReadable(input.absolutePath);
   }
 
+  private async lockRelease(tx: Prisma.TransactionClient, releaseId: string, allowPublished = false) {
+    await tx.$queryRaw`SELECT id FROM "Release" WHERE id = ${releaseId} FOR UPDATE`;
+    const release=await tx.release.findUnique({where:{id:releaseId},include:{artifacts:true}});
+    if(!release)throw new NotFoundException("发布记录不存在");
+    if(allowPublished)this.assertReleaseRecordMutable(release);else this.assertReleaseArtifactsMutable(release);
+    return release;
+  }
+
   private assertReleaseArtifactsMutable(release: { status: string }) {
     if (release.status !== "draft") {
       throw new BadRequestException("请先撤回发布，再编辑安装包。");
@@ -1346,6 +1383,7 @@ export class ReleaseCenterService {
       await fs.mkdir(path.dirname(absolutePath), { recursive: true });
       await moveUploadedFile(file.path, absolutePath);
       const fileHash = await calculateUploadedReleaseArtifactSha256(absolutePath);
+      await this.files.deduplicate(absolutePath, fileHash, BigInt(file.size));
 
       return {
         absolutePath,
@@ -1356,6 +1394,7 @@ export class ReleaseCenterService {
         downloadUrl: buildReleaseArtifactDownloadUrl(artifactId)
       };
     } catch (error) {
+      await this.files.removeOrQueue(absolutePath, "安装包准备失败");
       throw mapUploadedFilePreparationError(error, "release artifact upload");
     }
   }
@@ -1458,54 +1497,8 @@ export class ReleaseCenterService {
     return row;
   }
 
-  private async removeReleaseArtifactFileBestEffort(storedFilePath: string, label: string) {
-    await this.runReleaseCleanupBestEffort(label, () =>
-      removeReleaseArtifactFile(resolveReleaseArtifactAbsolutePath(storedFilePath))
-    );
-  }
-
-  private startRemoveReleaseArtifactFileBestEffort(storedFilePath: string, label: string) {
-    this.startReleaseCleanupBestEffort(label, () =>
-      removeReleaseArtifactFile(resolveReleaseArtifactAbsolutePath(storedFilePath))
-    );
-  }
-
   private async cleanupFailedReleaseArtifactUpload(absolutePath: string | null, label: string) {
-    await this.runReleaseCleanupBestEffort(label, () =>
-      absolutePath ? removeReleaseArtifactFile(absolutePath) : Promise.resolve()
-    );
-  }
-
-  private async runReleaseCleanupBestEffort(label: string, task: () => Promise<unknown>) {
-    const cleanupTask = task().then(() => undefined);
-    void cleanupTask.catch((error) => {
-      this.logger.warn(
-        `Local release change saved, but delayed ${label} cleanup failed: ${error instanceof Error ? error.message : String(error)}`
-      );
-    });
-
-    try {
-      await workLifecycle.awaitWithBudgetElse(cleanupTask, RELEASE_FILE_CLEANUP_BUDGET_MS, () => {
-        this.logger.warn(
-          `Local release change saved, but ${label} cleanup exceeded ${RELEASE_FILE_CLEANUP_BUDGET_MS}ms and will continue in background.`
-        );
-      });
-    } catch (error) {
-      this.logger.warn(
-        `Local release change saved, but ${label} cleanup failed: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-  }
-
-  private startReleaseCleanupBestEffort(label: string, task: () => Promise<unknown>) {
-    const timer = workLifecycle.defer(() => {
-      return this.runReleaseCleanupBestEffort(label, task).catch((error) => {
-        this.logger.warn(
-          `Local release change saved, but background ${label} cleanup failed: ${error instanceof Error ? error.message : String(error)}`
-        );
-      });
-    }, 0);
-    timer.unref?.();
+    if (absolutePath) await this.files.removeOrQueue(absolutePath, label);
   }
 
   private async ensureReleaseExists(releaseId: string) {

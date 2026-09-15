@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Query, Param, Patch, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Query, Param, Patch, Post, UseGuards } from "@nestjs/common";
 import { IsBoolean, IsIn, IsOptional, IsString, MaxLength } from "class-validator";
 import { AdminAuthGuard } from "../common/admin-auth.guard";
 import { RuntimeVersionService } from "../common/runtime-version.service";
@@ -21,6 +21,8 @@ class CreateSlotDto {
 export class RuntimeVersionController {
   constructor(private readonly versions: RuntimeVersionService) {}
   @Get("github-tags") tags(@Query("url") url: string) { return listGithubVersionTags(url); }
+  @Get(":id/history") history(@Param("id") id: string, @Query("page") page?: string) { return this.versions.history(id, Math.max(0, Math.min(10000, Math.floor(Number(page)) || 0))); }
+  @Delete(":id") remove(@Param("id") id: string) { return this.versions.deleteVersion(id); }
   @Get() list() { return this.versions.list(); }
   @Post("acquire") acquire(@Body() dto: AcquireDto) { return this.versions.acquire(dto); }
   @Patch(":id/auto-latest") policy(@Param("id") id: string, @Body() dto: PolicyDto) { return this.versions.setAutoLatest(id, dto.enabled); }

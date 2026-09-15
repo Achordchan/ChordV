@@ -1,7 +1,7 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NodeSummaryDto } from "@chordv/shared";
-import { fetchNodeProbes, isUnauthorizedApiError } from "../api/client";
-import type { RuntimeNodeProbeResult } from "../lib/runtime";
+import { reportNodeProbes, isUnauthorizedApiError } from "../api/client";
+import { probeLocalNodes, type RuntimeNodeProbeResult } from "../lib/runtime";
 
 export type NodeProbeGuidance = {
   code: "node_unavailable";
@@ -39,9 +39,19 @@ function defaultReadError(message: string) {
 }
 
 export function useNodeProbe(options: UseNodeProbeOptions) {
+  const generation = useRef(0);
+  const busy = useRef(false);
   const [probeBusy, setProbeBusy] = useState(false);
   const [probeCooldownUntil, setProbeCooldownUntil] = useState(0);
   const [probeResults, setProbeResults] = useState<Record<string, RuntimeNodeProbeResult>>({});
+
+  useEffect(() => {
+    generation.current += 1;
+    busy.current = false;
+    setProbeBusy(false);
+    setProbeResults({});
+    return () => { generation.current += 1; };
+  }, [options.accessToken]);
 
   const probeCooldownLeft = useMemo(
     () => Math.max(0, Math.ceil((probeCooldownUntil - (options.nowMs ?? Date.now())) / 1000)),
@@ -51,16 +61,21 @@ export function useNodeProbe(options: UseNodeProbeOptions) {
   const runProbe = useCallback(
     async (targetNodes: NodeSummaryDto[], auto: boolean, accessTokenOverride?: string | null) => {
       const accessToken = accessTokenOverride ?? options.accessToken ?? null;
-      if (probeBusy || targetNodes.length === 0 || !accessToken) {
+      if (busy.current || targetNodes.length === 0 || !accessToken) {
         return null;
       }
 
+      const requestGeneration = generation.current;
       try {
+        busy.current = true;
         setProbeBusy(true);
-        const result = await fetchNodeProbes(
-          accessToken,
-          targetNodes.map((node) => node.id)
-        );
+        const result: RuntimeNodeProbeResult[] = [];
+        for (let offset = 0; offset < targetNodes.length; offset += 32) {
+          const batch = await probeLocalNodes(targetNodes.slice(offset, offset + 32));
+          if (requestGeneration !== generation.current) return null;
+          result.push(...batch);
+          void reportNodeProbes(accessToken, batch).catch(() => undefined);
+        }
         const nextResults = Object.fromEntries(result.map((item) => [item.nodeId, item]));
         setProbeResults(nextResults);
         setProbeCooldownUntil(Date.now() + (options.probeCooldownMs ?? 25_000));
@@ -91,6 +106,7 @@ export function useNodeProbe(options: UseNodeProbeOptions) {
 
         return nextResults;
       } catch (reason) {
+        if (requestGeneration !== generation.current) return null;
         if (isUnauthorizedApiError(reason)) {
           await options.onUnauthorized?.();
           return null;
@@ -100,10 +116,10 @@ export function useNodeProbe(options: UseNodeProbeOptions) {
         }
         return null;
       } finally {
-        setProbeBusy(false);
+        if (requestGeneration === generation.current) { busy.current = false; setProbeBusy(false); }
       }
     },
-    [options, probeBusy]
+    [options]
   );
 
   return {

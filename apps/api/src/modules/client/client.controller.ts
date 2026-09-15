@@ -1,3 +1,5 @@
+import { ReportNodeProbesDto } from "./report-node-probes.dto";
+import { ClientAccessService } from "../common/client-access.service";
 import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Query, Sse, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
 import { Type } from "class-transformer";
 import { FileInterceptor } from "@nestjs/platform-express";
@@ -269,7 +271,8 @@ class MarkAnnouncementsReadDto {
 export class ClientController {
   constructor(
     private readonly clientService: ClientService,
-    private readonly runtimeComponentsService: RuntimeComponentsService
+    private readonly runtimeComponentsService: RuntimeComponentsService,
+    private readonly clientAccessService: ClientAccessService
   ) {}
 
   @Get("bootstrap")
@@ -288,6 +291,12 @@ export class ClientController {
   @UseGuards(ClientAuthGuard)
   getNodes(@Headers("authorization") authorization?: string) {
     return this.clientService.getNodes(authorization);
+  }
+
+  @Post("nodes/probe-results")
+  @UseGuards(ClientAuthGuard)
+  reportNodeProbes(@Body() body: ReportNodeProbesDto, @Headers("authorization") authorization?: string) {
+    return this.clientAccessService.reportClientNodeProbes(body.results, authorization);
   }
 
   @Post("nodes/probe")
@@ -437,7 +446,7 @@ export class ClientController {
       storage: diskStorage({
         destination: tmpdir(),
         filename: (_req: unknown, file: { originalname: string }, callback: MulterCallback) => {
-          callback(null, `${randomUUID()}${path.extname(file.originalname || "")}`);
+          callback(null, `chordv-upload-${randomUUID()}${path.extname(file.originalname || "")}`);
         }
       }),
       limits: {
@@ -461,7 +470,7 @@ export class ClientController {
       storage: diskStorage({
         destination: tmpdir(),
         filename: (_req: unknown, file: { originalname: string }, callback: MulterCallback) => {
-          callback(null, `${randomUUID()}${path.extname(file.originalname || "")}`);
+          callback(null, `chordv-upload-${randomUUID()}${path.extname(file.originalname || "")}`);
         }
       }),
       limits: {

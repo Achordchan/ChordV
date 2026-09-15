@@ -39,7 +39,6 @@ import {
   type RuntimeStatus
 } from "../lib/runtime";
 import {
-  canOpenRuntimeAssetsDialog,
   extractRuntimeAssetsErrorCode,
   normalizeRuntimeAssetsProgress,
   resolveRuntimeComponentCandidate,
@@ -97,11 +96,6 @@ type UseRuntimeAssetsOptions = {
   platformTarget: RuntimeStatus["platformTarget"];
   accessToken?: string | null;
   runtimeMirrorPrefix: string;
-  forceUpdateRequired?: boolean;
-  forcedAnnouncementActive?: boolean;
-  updateDialogOpened?: boolean;
-  announcementDrawerOpened?: boolean;
-  updateDownloadPhase?: "idle" | "preparing" | "downloading" | "completed" | "failed";
   mirrorPrefixStorageKey?: string;
   notify?: (notice: NoticeInput) => void;
   onUnauthorized?: () => Promise<unknown> | unknown;
@@ -190,7 +184,6 @@ async function downloadComponentWithFallback(
 
 export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
   const [runtimeAssets, setRuntimeAssets] = useState<RuntimeAssetsUiState>(createIdleRuntimeAssetsState);
-  const [runtimeAssetsDialogOpened, setRuntimeAssetsDialogOpened] = useState(false);
   const runtimeAssetsTaskRef = useRef<Promise<boolean> | null>(null);
   const cancelRequestedRef = useRef(false);
   const lastSummaryRef = useRef<RuntimeAssetsCheckSummary>(emptySummary());
@@ -276,20 +269,6 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
         appVersion: options.appVersion
       }).catch(() => null);
 
-      if (
-        ensureOptions.interactive ||
-        (ensureOptions.source !== "startup" &&
-          ensureOptions.source !== "update_check" &&
-          canOpenRuntimeAssetsDialog(
-            options.forceUpdateRequired ?? false,
-            options.forcedAnnouncementActive ?? false,
-            options.updateDialogOpened ?? false,
-            options.announcementDrawerOpened ?? false,
-            options.updateDownloadPhase ?? "idle"
-          ))
-      ) {
-        setRuntimeAssetsDialogOpened(true);
-      }
       return false;
     },
     [options]
@@ -308,7 +287,6 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
       errorMessage: null,
       blocking: false
     });
-    setRuntimeAssetsDialogOpened(false);
   }, []);
 
   const ensureRuntimeAssetsReady = useCallback(
@@ -333,9 +311,6 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
             ...current,
             blocking: current.blocking || ensureOptions.blockConnection
           }));
-          if (ensureOptions.blockConnection) {
-            setRuntimeAssetsDialogOpened(true);
-          }
         }
         if (ensureOptions.source === "update_check" && ensureOptions.forceCheck && !ensureOptions.inspectOnly) {
           // An activation can arrive during an older plan check. Wait, then
@@ -610,9 +585,6 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                 errorMessage: null,
                 blocking: ensureOptions.blockConnection
               });
-              if (ensureOptions.blockConnection || ensureOptions.interactive) {
-                setRuntimeAssetsDialogOpened(true);
-              }
               try {
                 await downloadComponentWithFallback(component, candidate?.url ?? null, () => cancelRequestedRef.current);
                 if (component.component === "xray") {
@@ -746,9 +718,6 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                       errorMessage: null,
                       blocking: ensureOptions.blockConnection
                     });
-                    if (ensureOptions.blockConnection || ensureOptions.interactive) {
-                      setRuntimeAssetsDialogOpened(true);
-                    }
                     try {
                       await downloadComponentWithFallback(component, candidate?.url ?? null, () => cancelRequestedRef.current);
                       summary.updated.push(component.displayName);
@@ -875,9 +844,6 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                       errorMessage: null,
                       blocking: ensureOptions.blockConnection
                     });
-                    if (ensureOptions.blockConnection || ensureOptions.interactive) {
-                      setRuntimeAssetsDialogOpened(true);
-                    }
                     try {
                       await downloadComponentWithFallback(xrayItem, candidate?.url ?? null, () => cancelRequestedRef.current);
                       localInfos = await refreshLocalRuntimeInfos();
@@ -1090,8 +1056,6 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
     setRuntimeAssets,
     runtimeAssetsReady,
     runtimeAssetsBusy,
-    runtimeAssetsDialogOpened,
-    setRuntimeAssetsDialogOpened,
     ensureRuntimeAssetsReady,
     getLastRuntimeAssetsCheckSummary,
     failRuntimeAssets,

@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = resolve(new URL("..", import.meta.url).pathname);
+const root = fileURLToPath(new URL("..", import.meta.url));
 const api = resolve(root, "apps/api");
 const direct = [
   ["test/panel-inbound.regression.ts", true], ["../admin/test/panel-inbound.regression.ts", true],
@@ -15,7 +16,7 @@ const direct = [
 function run(args, cwd = api) {
   return new Promise((yes, no) => { const child = spawn(args[0], args.slice(1), { cwd, stdio: "inherit", env: process.env }); child.once("error", no); child.once("exit", code => code === 0 ? yes() : no(new Error(`${args.join(" ")} failed (${code})`))); });
 }
-await run(["pnpm", "--filter", "@chordv/shared", "build"]);
+await run(["npm", "run", "build"], resolve(root, "packages/shared"));
 const tsx = resolve(api, "node_modules/.bin/tsx");
 const directTasks = direct.map(([file, strict]) => {
   const cwd = file.startsWith("../admin/") ? resolve(root, "apps/admin") : file.startsWith("../desktop/") ? resolve(root, "apps/desktop") : api;
@@ -29,4 +30,7 @@ const regressionTasks = packageJson.scripts["test:regression"].split(" && ").sli
   if (cwd !== api) { const index = args.indexOf("../admin/tsconfig.json"); if (index >= 0) args[index] = "tsconfig.json"; for (let i = 0; i < args.length; i++) args[i] = args[i].replace(/^(?:\.\.\/admin|\.\.\/desktop)\//, ""); }
   return run(args, cwd);
 });
-await Promise.all([...regressionTasks, ...directTasks]);
+const results = await Promise.allSettled([...regressionTasks, ...directTasks]);
+const failures = results.filter(result => result.status === "rejected");
+if (failures.length) throw new AggregateError(failures.map(result => result.reason), `${failures.length} API verification commands failed`);
+console.log(`API release verification passed (${results.length} test commands)`);

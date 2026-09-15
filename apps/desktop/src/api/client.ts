@@ -476,13 +476,10 @@ export function fetchNodes(accessToken: string) {
   });
 }
 
-export function fetchNodeProbes(accessToken: string, nodeIds: string[]) {
-  return request<ClientNodeProbeResultDto[]>("/client/nodes/probe", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`
-    },
-    body: JSON.stringify({ nodeIds })
+export function reportNodeProbes(accessToken: string, results: ClientNodeProbeResultDto[]) {
+  return request<{ ok: boolean }>("/client/nodes/probe-results", {
+    method: "POST", headers: { Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify({ results: results.map(({ nodeId, status, latencyMs }) => ({ nodeId, status, latencyMs })) })
   });
 }
 

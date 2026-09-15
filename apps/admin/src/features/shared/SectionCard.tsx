@@ -3,6 +3,7 @@ import { Card, Group, Stack, Text, TextInput } from "@mantine/core";
 import { IconSearch } from "@tabler/icons-react";
 
 export function SectionCard(props: {
+  compact?: boolean;
   searchValue: string;
   onSearchChange: (value: string) => void;
   onSearchSubmit?: () => void;
@@ -13,7 +14,7 @@ export function SectionCard(props: {
   children: ReactNode;
 }) {
   return (
-    <Card withBorder radius="xl" p="lg">
+    <Card withBorder radius={props.compact ? "sm" : "xl"} p="lg">
       <Group className="admin-section-card-head" justify="space-between" align="flex-start" mb="md" gap="md" wrap="wrap">
         {props.title || props.description ? (
           <Stack gap={2} style={{ flex: 1, minWidth: 220 }}>

@@ -1,6 +1,6 @@
 import styles from "./ArtifactEditor.module.css";
 import releaseStyles from "./ReleaseWorkspace.module.css";
-import { Button, FileInput, Group, Modal, SegmentedControl, Stack, Text } from "@mantine/core";
+import { Button, FileInput, Group, Modal, SegmentedControl, Select, Stack, Text } from "@mantine/core";
 import dialogStyles from "../editors/EditorDialog.module.css";
 import { RemoteArtifactSourceFields } from "./RemoteArtifactSourceFields";
 import { ArtifactImportProgress } from "./ArtifactImportProgress";
@@ -10,6 +10,12 @@ import type { AdminReleasePlatform } from "../../api/client";
 
 type ArtifactEditorModalProps = {
   opened: boolean;
+  mode: "external" | "uploaded" | "existing";
+  onModeChange: (mode: "external" | "uploaded" | "existing")=>void;
+  existingFiles: Array<{value:string;label:string}>;
+  reuseId: string | null;
+  onReuseChange: (id:string|null)=>void;
+  currentFile: { fileName?:string|null; fileSizeBytes?:string|null; downloadUrl:string; sourceUrl?:string|null } | null;
   saving: boolean;
   importProgress: ImportProgress | null;
   title: string;
@@ -32,7 +38,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
   const savingMessage =
     !props.saving
       ? null
-      : props.form.source === "uploaded" && props.form.selectedFile
+      : props.mode === "existing" ? "正在校验并复用已有文件…" : props.form.source === "uploaded" && props.form.selectedFile
         ? "正在上传安装包，大文件上传期间请等待当前请求返回。"
         : "正在获取安装包并保存到本站…";
 
@@ -52,29 +58,21 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
           <Text size="sm" c="dimmed" role="status">{savingMessage}</Text>
         ) : null}
 
+        {props.currentFile ? <section><Text size="sm" fw={600}>当前文件：{props.currentFile.fileName||"外链安装包"}</Text><Text size="xs" c="dimmed" style={{overflowWrap:"anywhere"}}>{props.currentFile.fileSizeBytes?`${(Number(props.currentFile.fileSizeBytes)/1048576).toFixed(1)} MB · `:""}{props.currentFile.downloadUrl}</Text><Text size="xs" c="dimmed">选择新来源或文件后才会替换，原文件会保留到保存成功。</Text></section> : null}
         <SegmentedControl
           classNames={{root: releaseStyles.sourcePicker, label: releaseStyles.sourceLabel, indicator: releaseStyles.sourceIndicator}}
           aria-label="安装包来源"
-          value={props.form.source}
-          onChange={(value) =>
-            props.onChange({
-              ...props.form,
-              source: value as ArtifactEditorFormState["source"],
-              externalDeliveryMode:
-                value === "external" && props.platform === "windows"
-                  ? "windows_full_replace_zip"
-                  : props.form.externalDeliveryMode,
-              selectedFile: value === "external" ? null : props.form.selectedFile
-            })
-          }
+          value={props.mode}
+          onChange={value=>props.onModeChange(value as ArtifactEditorModalProps["mode"])}
           data={[
             { value: "external", label: "远程获取" },
-            { value: "uploaded", label: "上传文件" }
+            { value: "uploaded", label: "上传文件" },
+            { value: "existing", label: "已有文件" }
           ]}
           disabled={props.saving}
         />
 
-        {props.form.source === "external" ? (
+        {props.mode === "existing" ? <Select label="选择已托管文件" searchable data={props.existingFiles} value={props.reuseId} onChange={props.onReuseChange} disabled={props.saving} nothingFoundMessage="没有可复用的同平台文件"/> : props.mode === "external" ? (
           <RemoteArtifactSourceFields value={props.form.downloadUrl} platform={props.platform} disabled={props.saving}
             onChange={downloadUrl => props.onChange({ ...props.form, downloadUrl, fileSizeBytes: "", fileHash: "" })} />
         ) : (
@@ -105,7 +103,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
           <Button radius="sm" variant="default" onClick={close} disabled={props.saving}>
             取消
           </Button>
-          <Button radius="sm" color="teal.9" onClick={props.onSubmit} loading={props.saving} disabled={props.form.source === "external" && !props.form.downloadUrl.trim()}>
+          <Button radius="sm" color="teal.9" onClick={props.onSubmit} loading={props.saving} disabled={props.mode === "existing" ? !props.reuseId : props.mode === "external" && !props.form.downloadUrl.trim()}>
             {props.submitLabel}
           </Button>
         </Group>
