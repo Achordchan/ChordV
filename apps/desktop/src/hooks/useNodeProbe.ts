@@ -14,6 +14,9 @@ export type NodeProbeGuidance = {
 
 type UseNodeProbeOptions = {
   accessToken: string | null;
+  sessionIdentity: string | null;
+  getCurrentSessionIdentity: () => string | null;
+  getCurrentAccessToken: () => string | null;
   nowMs?: number;
   probeCooldownMs?: number;
   selectedNodeId?: string | null;
@@ -45,13 +48,18 @@ export function useNodeProbe(options: UseNodeProbeOptions) {
   const [probeCooldownUntil, setProbeCooldownUntil] = useState(0);
   const [probeResults, setProbeResults] = useState<Record<string, RuntimeNodeProbeResult>>({});
 
-  useEffect(() => {
+  const identityRef = useRef(options.sessionIdentity);
+  const syncIdentity = useCallback((identity: string | null) => {
+    if (identityRef.current === identity) return;
+    identityRef.current = identity;
     generation.current += 1;
     busy.current = false;
     setProbeBusy(false);
     setProbeResults({});
-    return () => { generation.current += 1; };
-  }, [options.accessToken]);
+    setProbeCooldownUntil(0);
+  }, []);
+  useEffect(() => { syncIdentity(options.sessionIdentity); }, [options.sessionIdentity, syncIdentity]);
+  useEffect(() => () => { generation.current += 1; }, []);
 
   const probeCooldownLeft = useMemo(
     () => Math.max(0, Math.ceil((probeCooldownUntil - (options.nowMs ?? Date.now())) / 1000)),
@@ -60,21 +68,25 @@ export function useNodeProbe(options: UseNodeProbeOptions) {
 
   const runProbe = useCallback(
     async (targetNodes: NodeSummaryDto[], auto: boolean, accessTokenOverride?: string | null) => {
-      const accessToken = accessTokenOverride ?? options.accessToken ?? null;
-      if (busy.current || targetNodes.length === 0 || !accessToken) {
+      const identity = options.getCurrentSessionIdentity();
+      syncIdentity(identity);
+      const accessToken = options.getCurrentAccessToken() ?? accessTokenOverride ?? options.accessToken ?? null;
+      if (busy.current || targetNodes.length === 0 || !accessToken || !identity) {
         return null;
       }
 
       const requestGeneration = generation.current;
+      const isCurrentProbe = () => requestGeneration === generation.current && options.getCurrentSessionIdentity() === identity;
       try {
         busy.current = true;
         setProbeBusy(true);
         const result: RuntimeNodeProbeResult[] = [];
         for (let offset = 0; offset < targetNodes.length; offset += 32) {
           const batch = await probeLocalNodes(targetNodes.slice(offset, offset + 32));
-          if (requestGeneration !== generation.current) return null;
+          if (!isCurrentProbe()) return null;
           result.push(...batch);
-          void reportNodeProbes(accessToken, batch).catch(() => undefined);
+          const reportToken = options.getCurrentAccessToken();
+          if (reportToken) void reportNodeProbes(reportToken, batch).catch(() => undefined);
         }
         const nextResults = Object.fromEntries(result.map((item) => [item.nodeId, item]));
         setProbeResults(nextResults);
@@ -106,7 +118,7 @@ export function useNodeProbe(options: UseNodeProbeOptions) {
 
         return nextResults;
       } catch (reason) {
-        if (requestGeneration !== generation.current) return null;
+        if (!isCurrentProbe()) return null;
         if (isUnauthorizedApiError(reason)) {
           await options.onUnauthorized?.();
           return null;
@@ -119,7 +131,7 @@ export function useNodeProbe(options: UseNodeProbeOptions) {
         if (requestGeneration === generation.current) { busy.current = false; setProbeBusy(false); }
       }
     },
-    [options]
+    [options, syncIdentity]
   );
 
   return {

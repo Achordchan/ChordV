@@ -358,6 +358,9 @@ export function App() {
     setProbeResults,
     runProbe
   } = useNodeProbe({
+    sessionIdentity: session ? `${sessionGenerationRef.current}:${session.user.id}` : null,
+    getCurrentSessionIdentity: () => sessionRef.current ? `${sessionGenerationRef.current}:${sessionRef.current.user.id}` : null,
+    getCurrentAccessToken: () => sessionRef.current?.accessToken ?? null,
     accessToken: session?.accessToken ?? null,
     nowMs: now,
     selectedNodeId: selectedNodeId ?? runtime?.node.id ?? null,

@@ -193,3 +193,10 @@ desktop check、connection-race、logout-responsiveness 和 diff 检查通过。
 - `file-management.integration.ts`：创建 51 条更早积压任务，再重试指定真实文件，确认目标实际完成且积压任务未被替代执行。
 
 API check、隔离 PostgreSQL 完整迁移与真实文件集成、storage-routes、diff 检查通过。无界面或 Mock 改动，未执行生产清理。
+
+## PR #53 测速结果与登录身份
+
+- `App.tsx`、`useNodeProbe.ts`：测速按登录身份/代次失效，正常令牌轮换保留结果；每批上报读取当前 token。首次登录立即启动测速时同步身份，避免随后的首次渲染误取消。
+- `node-probe-session.regression.ts`：执行实际 hook，覆盖测量中令牌轮换、已完成结果保留、退出/重新登录拒收旧结果及即时登录测速。
+
+desktop check、node-probe-session 和 diff 检查通过。无布局、依赖或生产 Mock 改动；没有真实网络测速 E2E。
