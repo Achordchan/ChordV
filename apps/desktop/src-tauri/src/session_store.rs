@@ -30,14 +30,22 @@ impl SessionStore {
         let mut temp=tempfile::NamedTempFile::new_in(parent).map_err(|e|e.to_string())?;
         serde_json::to_writer(&mut temp,session).map_err(|e|e.to_string())?;
         temp.flush().map_err(|e|e.to_string())?;
+        temp.persist(path).map_err(|e|e.to_string())?;
+        // Readers remain behind the IO lock. A concurrent invalidation leaves
+        // its tombstone intact; failed persistence never changes committed state.
         self.epoch.compare_exchange(expected,expected.wrapping_add(2)&!1,Ordering::SeqCst,Ordering::SeqCst)
             .map_err(|_|"登录状态已变化，忽略过期会话".to_string())?;
-        temp.persist(path).map_err(|e|e.to_string())?;
         Ok(())
     }
+    #[cfg(test)]
     pub fn clear(&self,path:&Path,expected:u64)->Result<(),String> {
+        self.clear_with(path,expected,||Ok(()))
+    }
+    pub fn clear_with(&self,path:&Path,expected:u64,cleanup:impl FnOnce()->Result<(),String>)->Result<(),String> {
+        // Lock order is session IO -> runtime; no runtime holder waits for session IO.
         let _guard=self.io.lock().map_err(|_|"会话存储状态异常".to_string())?;
-        if self.generation()!=expected {return Ok(());} // Never clear a newer login.
+        if self.generation()!=expected {return Ok(());} // Never stop or clear a newer login.
+        cleanup()?;
         match fs::remove_file(path) {
             Ok(())=>Ok(()),Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(()),Err(e)=>Err(e.to_string())
         }
@@ -47,6 +55,23 @@ impl SessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn failed_persistence_keeps_the_tombstone_and_old_bytes_hidden(){
+        let folder=tempfile::tempdir().unwrap();let path=folder.path().join("session.json");let backup=folder.path().join("old.json");let store=SessionStore::new();
+        store.save(&path,&"old",store.generation()).unwrap();let expected=store.invalidate();
+        fs::rename(&path,&backup).unwrap();fs::create_dir(&path).unwrap();
+        assert!(store.save(&path,&"new",expected).is_err());assert_eq!(store.generation(),expected);
+        fs::remove_dir(&path).unwrap();fs::rename(&backup,&path).unwrap();
+        assert!(store.read::<String>(&path).unwrap().0.is_none());
+    }
+    #[test]
+    fn delayed_clear_never_runs_cleanup_for_a_new_login(){
+        let folder=tempfile::tempdir().unwrap();let path=folder.path().join("session.json");let store=SessionStore::new();
+        let clearing=store.invalidate();store.save(&path,&"new",store.generation()).unwrap();
+        let mut runtime_active=true;
+        store.clear_with(&path,clearing,||{runtime_active=false;Ok(())}).unwrap();
+        assert!(runtime_active);assert_eq!(store.read::<String>(&path).unwrap().0,Some("new".into()));
+    }
     #[test]
     fn refresh_cannot_read_old_credentials_during_pending_clear() {
         let folder=tempfile::tempdir().unwrap();let path=folder.path().join("session.json");let store=SessionStore::new();

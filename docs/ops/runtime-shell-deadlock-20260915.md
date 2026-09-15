@@ -78,3 +78,11 @@
 - useAuthBootstrap.ts / runtime-action-failure.regression.ts：凭据删除失败明确报告，不继续清除前端登录状态。
 
 初始提交 054b5ab 的 Windows/macOS runner 已通过。首轮修复本地 Rust 36 项及线程、退出相关回归通过；后续提交以各自最新 SHA 门禁为准。
+
+## PR #55 第二轮修复
+
+- session_store.rs：文件落盘成功后才提交代次，失败保留清理标记；clear_with 在会话 IO 保护区中复核归属、执行运行时清理并删除凭据，迟到清理不停止新登录连接。
+- exit_gate.rs / lib.rs：清理失败重置退出门禁供重试，只有成功才退出；断开和安装交接传播代理/内核停止错误，不把失败视为成功。
+- 新增持久化失败、迟到清理不停止新连接、退出失败重试测试。
+
+本地 Rust 39 项、线程测试、更新交接测试通过；8f0f8ed 的 Windows/macOS 门禁已通过，最新修复等待各自门禁和复审。

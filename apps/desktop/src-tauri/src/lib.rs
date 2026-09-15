@@ -689,14 +689,7 @@ async fn clear_session(app: AppHandle) -> Result<CommandResult, String> {
 }
 
 fn clear_session_blocking(app: &AppHandle, epoch:u64) -> Result<CommandResult, String> {
-    let state: State<'_, Mutex<RuntimeState>> = app.state();
-    if let Ok(mut state) = state.lock() {
-        shutdown_runtime(&app, &mut state);
-    } else {
-        let _ = clear_system_proxy();
-    }
-
-    NATIVE_SESSION_STORE.clear(&session_path(&app)?,epoch)?;
+    NATIVE_SESSION_STORE.clear_with(&session_path(app)?,epoch,||shutdown_runtime_state(app))?;
 
     Ok(CommandResult {
         ok: true,
@@ -2402,7 +2395,9 @@ fn quit_for_update_blocking(app: AppHandle) -> Result<CommandResult, String> {
             return Err("安装器校验失败，请重新下载".into());
         }
         set_installer_operation_active(&app, true)?;
-        shutdown_runtime_state(&app);
+        if let Err(error)=shutdown_runtime_state(&app) {
+            let _=set_installer_operation_active(&app,false);return Err(error);
+        }
         let current_pid = std::process::id();
         if let Err(error) = spawn_deferred_installer_open(&app, &installer_path, current_pid) {
             let _ = set_installer_operation_active(&app, false);
@@ -2501,7 +2496,7 @@ fn apply_desktop_full_update_blocking(app: AppHandle) -> Result<CommandResult, S
             let ready_marker_path = updater_dir.join("startup-ready.marker");
 
             write_full_update_script(&script_path)?;
-            shutdown_runtime_state(&app);
+            shutdown_runtime_state(&app)?;
             spawn_deferred_full_update_apply(
                 &script_path,
                 &private_package_path,
@@ -3466,7 +3461,10 @@ fn connect_runtime_blocking(app: &AppHandle, config: GeneratedRuntimeConfigDto, 
         let binding = app.state::<Mutex<RuntimeState>>();
         if let Ok(mut state) = binding.lock() {
             if state.active_session_id.as_deref() == Some(session_id.as_str()) && state.status != "connected" {
-                stop_runtime_process(app, &mut state);
+                if let Err(stop_error)=stop_runtime_process(app, &mut state) {
+                    state.status="error".into();state.last_error=Some(stop_error.clone());
+                    return Err(format!("{error}；{stop_error}"));
+                }
                 let _ = clear_system_proxy();
                 mark_failed_runtime_start(&mut state,error);
                 sync_shell_from_runtime(app, &state);
@@ -3503,7 +3501,7 @@ fn connect_runtime_inner(app: &AppHandle, config: GeneratedRuntimeConfigDto, gen
             return Err("组件正在更新，请完成后再连接。".into());
         }
         let had_runtime = state.active_session_id.is_some() || state.active_pid.is_some();
-        stop_runtime_process(&app, &mut state);
+        stop_runtime_process(&app, &mut state)?;
 
         if had_runtime {
             let _ = clear_system_proxy();
@@ -6210,11 +6208,14 @@ fn refresh_child_state(state: &mut RuntimeState) {
     }
 }
 
-fn stop_runtime_process(app: &AppHandle, state: &mut RuntimeState) {
+fn stop_runtime_process(app: &AppHandle, state: &mut RuntimeState) -> Result<(),String> {
     let stopped_pid = state.child.as_ref().map(Child::id);
     if let Some(mut child) = state.child.take() {
-        let _ = child.kill();
-        let _ = child.wait();
+        let result=(||->std::io::Result<()> {
+            if child.try_wait()?.is_none(){child.kill()?;child.wait()?;}
+            Ok(())
+        })();
+        if let Err(error)=result {state.child=Some(child);return Err(format!("停止内核失败：{error}"));}
     }
 
     #[cfg(windows)]
@@ -6222,7 +6223,7 @@ fn stop_runtime_process(app: &AppHandle, state: &mut RuntimeState) {
 
     if let Some(record) = load_runtime_pid_record(app) {
         if stopped_pid != Some(record.pid) && runtime_pid_belongs_to_chordv(app, &record) {
-            let _ = kill_pid(record.pid);
+            kill_pid(record.pid)?;
         }
     }
 
@@ -6235,6 +6236,7 @@ fn stop_runtime_process(app: &AppHandle, state: &mut RuntimeState) {
     state.active_config = None;
     state.local_http_port = None;
     state.local_socks_port = None;
+    Ok(())
 }
 
 fn session_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -6476,33 +6478,26 @@ fn chrono_like_now() -> String {
     datetime.to_rfc3339()
 }
 
-fn shutdown_runtime(app: &AppHandle, state: &mut RuntimeState) {
+fn shutdown_runtime(app: &AppHandle, state: &mut RuntimeState) -> Result<(),String> {
     CONNECTION_GENERATION.invalidate();
     if state.active_session_id.is_some() || state.active_pid.is_some() || state.child.is_some() || state.last_error.is_some() {
-        let _ = clear_system_proxy();
+        if let Err(error)=clear_system_proxy() {
+            let message=format!("系统代理清理失败，请重试退出：{error}");
+            state.last_error=Some(message.clone());
+            return Err(message); // Keep the listener alive while its proxy may still be enabled.
+        }
     }
-    stop_runtime_process(app, state);
-    state.status = "idle".into();
-    state.active_session_id = None;
-    state.active_node_id = None;
-    state.active_node_name = None;
-    state.active_config = None;
-    state.config_path = None;
-    state.log_path = None;
-    state.xray_binary_path = None;
-    state.local_http_port = None;
-    state.local_socks_port = None;
-    state.last_error = None;
+    stop_runtime_process(app,state).map_err(|error|{state.last_error=Some(error.clone());error})?;
+    state.status="idle".into();state.active_session_id=None;state.active_node_id=None;
+    state.active_node_name=None;state.active_config=None;state.config_path=None;state.log_path=None;
+    state.xray_binary_path=None;state.local_http_port=None;state.local_socks_port=None;state.last_error=None;
+    Ok(())
 }
 
-fn shutdown_runtime_state(app: &AppHandle) {
-    let state: State<'_, Mutex<RuntimeState>> = app.state();
-    if let Ok(mut state) = state.lock() {
-        shutdown_runtime(app, &mut state);
-    } else {
-        let _ = clear_system_proxy();
-        cleanup_stale_runtime(app);
-    };
+fn shutdown_runtime_state(app:&AppHandle)->Result<(),String>{
+    let binding=app.state::<Mutex<RuntimeState>>();
+    let mut state=binding.lock().map_err(|_|"运行时状态异常".to_string())?;
+    shutdown_runtime(app,&mut state)
 }
 
 fn tail_log(path: &Path, lines: usize) -> String { log_tail::read_tail(path,lines) }
@@ -6543,7 +6538,7 @@ fn rollback_connect_failure(
     let _ = child.kill();
     let _ = child.wait();
     let _ = clear_system_proxy();
-    stop_runtime_process(app, state);
+    let stop_error=stop_runtime_process(app,state).err();
     state.status = "error".into();
     state.active_session_id = None;
     state.active_node_id = None;
@@ -6555,7 +6550,7 @@ fn rollback_connect_failure(
     state.active_pid = None;
     state.local_http_port = None;
     state.local_socks_port = None;
-    state.last_error = Some(message);
+    state.last_error=Some(stop_error.map_or(message.clone(),|error|format!("{message}；{error}")));
     #[cfg(not(target_os = "android"))]
     sync_shell_from_runtime(app, state);
 }
@@ -7653,35 +7648,13 @@ fn emit_shell_action(app: &AppHandle, action: &str) -> Result<(), String> {
 #[cfg(not(target_os = "android"))]
 fn disconnect_runtime_internal(app: &AppHandle) -> Result<(), String> {
     CONNECTION_GENERATION.invalidate();
-    let runtime_state = app.state::<Mutex<RuntimeState>>();
-    let mut state = runtime_state
-        .lock()
-        .map_err(|_| "运行时状态异常".to_string())?;
-    state.status = "disconnecting".into();
-    let mut proxy_error: Option<String> = None;
-
-    if let Err(error) = clear_system_proxy() {
-        proxy_error = Some(error.to_string());
-    }
-
-    stop_runtime_process(app, &mut state);
-
-    state.status = "idle".into();
-    state.active_session_id = None;
-    state.active_node_id = None;
-    state.active_node_name = None;
-    state.config_path = None;
-    state.active_pid = None;
-    state.log_path = None;
-    state.xray_binary_path = None;
-    state.local_http_port = None;
-    state.local_socks_port = None;
-    state.last_error = proxy_error.clone().map(|error| format!("已停止内核，但清理系统代理失败：{error}"));
-
-    sync_shell_from_runtime(app, &state);
-    notify_native_lease_heartbeat(app);
-    if let Some(error)=proxy_error { return Err(format!("内核已停止，但系统代理清理失败：{error}")); }
-    Ok(())
+    let binding=app.state::<Mutex<RuntimeState>>();
+    let mut state=binding.lock().map_err(|_|"运行时状态异常".to_string())?;
+    let previous=state.status.clone();state.status="disconnecting".into();
+    let result=shutdown_runtime(app,&mut state);
+    if result.is_err(){state.status=previous;}
+    sync_shell_from_runtime(app,&state);notify_native_lease_heartbeat(app);
+    result
 }
 
 #[cfg(target_os = "android")]
@@ -7692,7 +7665,7 @@ fn disconnect_runtime_internal(app: &AppHandle) -> Result<(), String> {
         .lock()
         .map_err(|_| "运行时状态异常".to_string())?;
 
-    stop_runtime_process(app, &mut state);
+    stop_runtime_process(app, &mut state)?;
     state.status = "idle".into();
     state.active_session_id = None;
     state.active_node_id = None;
@@ -8220,11 +8193,21 @@ pub fn run() {
                     api.prevent_exit();
                     CONNECTION_GENERATION.invalidate();
                     let shutdown_app=app_handle.clone();
-                    tauri::async_runtime::spawn_blocking(move || {
-                        let _=STARTUP_READY.wait();
-                        shutdown_runtime_state(&shutdown_app);
-                        EXIT_CLEANUP.complete();
-                        shutdown_app.exit(0);
+                    tauri::async_runtime::spawn(async move {
+                        let cleanup_app=shutdown_app.clone();
+                        let result=tauri::async_runtime::spawn_blocking(move || {
+                            STARTUP_READY.wait()?;
+                            shutdown_runtime_state(&cleanup_app)
+                        }).await.unwrap_or_else(|error|Err(error.to_string()));
+                        match result {
+                            Ok(())=>{EXIT_CLEANUP.complete();shutdown_app.exit(0);},
+                            Err(error)=>{
+                                EXIT_CLEANUP.failed();
+                                append_download_diagnostic_log(&shutdown_app,"runtime-exit",error);
+                                let ui_app=shutdown_app.clone();
+                                let _=shutdown_app.run_on_main_thread(move||{let _=show_main_window_internal(&ui_app);});
+                            }
+                        }
                     });
                 }
             }
