@@ -1,0 +1,15 @@
+{
+  "version": "0.0.19",
+  "channel": "stable",
+  "tag": "backend-v0.0.19",
+  "publishedAt": "2026-09-15T07:56:20Z",
+  "htmlUrl": "https://github.com/Achordchan/ChordV/releases/tag/backend-v0.0.19",
+  "changelog": [
+    "新增文件与存储管理、安装包复用与安全清理；恢复强制更新入口；优化组件历史、团队编辑与客户端测速配套接口。"
+  ],
+  "artifact": {
+    "url": "https://github.com/Achordchan/ChordV/releases/download/backend-v0.0.19/chordv-backend-0.0.19.tar.gz",
+    "sha256": "3fadea174d17becd3ee53110d0135d91a25b09a4eaa8c7c9bb5606fa1c36e9d1",
+    "sizeBytes": 103873896
+  }
+}
