@@ -1,3 +1,4 @@
+import { assertSafeFile, hashStoredFile } from "./storage-files";
 import { FileMaintenanceService } from "./file-maintenance.service";
 import { BadRequestException, Injectable, Logger, NotFoundException, Optional } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
@@ -62,6 +63,16 @@ export class RuntimeVersionService {
     if (!latest && !version) throw new BadRequestException("请填写固定版本号");
     const tag = url.hostname === "github.com" ? url.pathname.match(/\/releases\/download\/([^/]+)\//)?.[1] : null;
     if (tag && decodeURIComponent(tag) !== version) throw new BadRequestException("所选版本与 GitHub 下载地址中的标签不一致");
+    // Hash outside the transaction so large component files cannot exhaust its lock budget.
+    const saved = !input.autoLatest ? await this.prisma.runtimeComponentVersion.findFirst({ where: { componentId: component.id, sourceUrl: url.href, requestedVersion: version, status: "ready" }, orderBy: { createdAt: "desc" } }) : null;
+    let verified = false;
+    if (saved?.fileHash) {
+      try {
+        const absolute = runtimeVersionPath(saved.id);
+        const stat = await assertSafeFile(absolute);
+        verified = BigInt(stat.size) === saved.fileSizeBytes && await hashStoredFile(absolute) === saved.fileHash.toLowerCase();
+      } catch { /* Missing or damaged saved content must be acquired again. */ }
+    }
     const job = await this.prisma.$transaction(async tx => {
       await tx.$queryRaw`SELECT id FROM "RuntimeComponent" WHERE id = ${component.id} FOR UPDATE`;
       const current = await tx.runtimeComponent.findUnique({ where: { id: component.id } });
@@ -71,12 +82,9 @@ export class RuntimeVersionService {
       await tx.runtimeComponentDelivery.upsert({ where: { componentId: component.id },
         create: { componentId: component.id, sourceUrl: url.href, selectedVersion: version, autoLatest: input.autoLatest, nextCheckAt: new Date(Date.now() + EVERY_SIX_HOURS) },
         update: { sourceUrl: url.href, selectedVersion: version, autoLatest: input.autoLatest, nextCheckAt: new Date(Date.now() + EVERY_SIX_HOURS) } });
-      if (!input.autoLatest) {
-        const existing = await tx.runtimeComponentVersion.findFirst({ where: { componentId: component.id, sourceUrl: url.href, requestedVersion: version, status: "ready" }, orderBy: { createdAt: "desc" } });
-        if (existing) {
-          const stat = await fs.stat(runtimeVersionPath(existing.id)).catch(() => null);
-          if (stat?.isFile() && BigInt(stat.size) === existing.fileSizeBytes) return existing;
-        }
+      if (verified && saved) {
+        const existing = await tx.runtimeComponentVersion.findUnique({ where: { id: saved.id } });
+        if (existing?.status === "ready" && existing.fileHash === saved.fileHash && existing.fileSizeBytes === saved.fileSizeBytes && existing.storedFilePath === saved.storedFilePath) return existing;
       }
       return tx.runtimeComponentVersion.create({ data: { id: randomUUID(), componentId: component.id, sourceUrl: url.href, requestedVersion: version, autoActivate: input.autoLatest && component.kind !== "xray" } });
     });

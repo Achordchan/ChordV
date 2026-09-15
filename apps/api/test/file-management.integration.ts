@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import { PrismaClient } from "@prisma/client";
 import { FileMaintenanceService } from "../src/modules/common/file-maintenance.service";
 import { StorageCatalogService } from "../src/modules/common/storage-catalog.service";
@@ -36,6 +37,7 @@ async function main() {
     await releases.reuseReleaseArtifact("release_second",firstId);
     assert.equal(await prisma.releaseArtifact.count({where:{releaseId:"release_second"}}),1,"reusing identical content must not create duplicate records");
     await files.process();
+    copiedPath=path.join(root,(await prisma.releaseArtifact.findUniqueOrThrow({where:{id:secondId}})).storedFilePath!);
     await fs.unlink(copiedPath);
     await releases.reuseReleaseArtifact("release_second",firstId);
     const repaired=await prisma.releaseArtifact.findUniqueOrThrow({where:{id:secondId}});copiedPath=path.join(root,repaired.storedFilePath!);
@@ -96,6 +98,30 @@ async function main() {
     assert.ok(oldActive.retainUntil && oldActive.retainUntil.getTime()>Date.now()+29*24*60*60_000,"deactivating a long-lived version starts a fresh compatibility grace period");
     await assert.rejects(()=>versions.deleteVersion(ids[0]),/保留 30 天/);
     const history=await versions.history(componentId);assert.equal(history.items.length,20);assert.equal(history.hasMore,true);
+
+    // Same-size corruption must queue a replacement, not reuse the damaged version.
+    await fs.writeFile(runtimeVersionPath(ids[21]),Buffer.alloc(bytes.length,42));
+    const reacquired=await versions.acquire({componentId,sourceUrl:"https://example.test/geoip.dat",version:"21",autoLatest:false});
+    assert.equal(reacquired.reused,false);assert.notEqual(reacquired.id,ids[21]);
+
+    // A malformed legacy candidate must not prevent valid new content from being saved.
+    const invalidId=randomUUID();
+    await prisma.releaseArtifact.create({data:{id:invalidId,releaseId:"release_second",source:"uploaded",type:"dmg",downloadUrl:"https://example.test/invalid.dmg",storedFilePath:outside,fileHash:"invalid-candidate-test",fileSizeBytes:3n}});
+    const independent=path.join(root,".incoming",randomUUID());await fs.mkdir(path.dirname(independent),{recursive:true});await fs.writeFile(independent,"new");
+    assert.equal(await files.deduplicate(independent,"invalid-candidate-test",3n),false);
+    assert.equal(await fs.readFile(independent,"utf8"),"new");
+    await prisma.releaseArtifact.delete({where:{id:invalidId}});
+
+    // Downloads may remove their temporary entry after readdir but before lstat.
+    const disappearing=path.join(tmpdir(),`chordv-upload-${randomUUID()}.dmg`);
+    await fs.writeFile(disappearing,"temporary");
+    const realLstat=fs.lstat;
+    fs.lstat=(async (...args: Parameters<typeof fs.lstat>)=>{
+      if(String(args[0])===disappearing) await fs.unlink(disappearing);
+      return realLstat(...args);
+    }) as typeof fs.lstat;
+    try { await catalog.scan(new AbortController().signal,()=>{}); }
+    finally { fs.lstat=realLstat;await fs.unlink(disappearing).catch(()=>{}); }
 
     const orphan=path.join(root,"release_orphan","artifact_test","file_test_old.dmg");await fs.mkdir(path.dirname(orphan),{recursive:true});await fs.writeFile(orphan,"orphan");
     const realNow=Date.now;Date.now=()=>realNow()+48*60*60_000;

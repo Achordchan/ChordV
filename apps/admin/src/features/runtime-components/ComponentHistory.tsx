@@ -20,7 +20,8 @@ export function ComponentHistory({componentId,onChanged}:{componentId:string;onC
     try{await request(`/admin/runtime-versions/${encodeURIComponent(item.id)}${remove?"":"/activate"}`,{method:remove?"DELETE":"POST"});await load();onChanged();}
     catch(reason){setError(reason instanceof Error?reason.message:"操作失败");}finally{setBusy(false);}
   };
-  return <>{confirmation.dialog}<details className={styles.details} onToggle={event=>{if(event.currentTarget.open&&!items&&!busy)void load();}}><summary>已保存的历史文件</summary>
+  return <>{confirmation.dialog}<details className={styles.details} onToggle={event=>{if(event.currentTarget.open&&!busy)void load();}}><summary>已保存的历史文件</summary>
+    <Button size="compact-xs" variant="subtle" disabled={busy} onClick={()=>void load()}>刷新历史</Button>
     {error?<Text size="xs" c="red">{error}</Text>:null}
     {items?.map(item=><div key={item.id} style={{padding:"10px 0",borderBottom:"1px solid #e4e9df"}}><Text size="sm">{item.versionLabel||item.requestedVersion||"未解析版本"}{item.active?" · 当前使用":""}</Text><Text size="xs" c="dimmed">{item.fileSizeBytes?`${(Number(item.fileSizeBytes)/1048576).toFixed(1)} MB · `:""}{item.status==="ready"?"文件已保存":item.status==="failed"?"获取失败":item.status==="unchanged"?"内容未变化":item.status==="queued"?"等待获取":item.status==="downloading"?"下载中":item.status==="verifying"?"校验中":item.status}</Text>
     {item.retainUntil&&!item.active?<Text size="xs" c="dimmed">兼容保留至 {new Date(item.retainUntil).toLocaleDateString("zh-CN")}</Text>:null}

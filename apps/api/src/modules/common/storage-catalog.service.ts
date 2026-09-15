@@ -116,7 +116,12 @@ export class StorageCatalogService {
       for(const entry of tempEntries) {
         const owned=/^chordv-(?:import|upload)-[a-f0-9-]{36}(?:\.[a-z0-9]+)?$/i.test(entry.name);
         if(!entry.isFile() || (!owned&&!/^[a-f0-9-]{36}\.[a-z0-9]+$/i.test(entry.name))) continue;
-        const absolute = path.join(tmpdir(),entry.name); const stat = await fs.lstat(absolute);
+        const absolute = path.join(tmpdir(),entry.name);
+        const stat = await fs.lstat(absolute).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") warnings.push(`临时文件暂不可读：${absolute} · ${error.code}`);
+          return null;
+        });
+        if (!stat?.isFile()) continue;
         const id = createHash("sha256").update(absolute).digest("hex"); paths.set(id,absolute);
         const canCleanup = !referenceIndex.warnings.length&&owned&&Math.max(stat.mtimeMs,stat.ctimeMs)<Date.now()-AGE;
         logicalBytes+=stat.size; allocatedBytes+=stat.blocks*512;

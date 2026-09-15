@@ -98,3 +98,14 @@ git diff --check
 ## 上线顺序
 
 先备份数据库并部署包含新迁移的后台，再验收“文件与存储”的扫描结果和清理队列。检查 CHORDV_RELEASE_STORAGE_ROOT、CHORDV_SYSTEM_RELEASES_DIR、CHORDV_SYSTEM_UPDATE_BACKUP_DIR 是否指向正确持久目录。文件名归属不明、路径异常、符号链接均保持保护；不要为了释放空间跳过引用检查或直接清空存储目录。
+
+## PR #53 首轮审查修复
+
+- `runtime-version.service.ts`：复用前在事务外校验实际大小及 SHA256，事务内复核记录身份；损坏文件重新排队获取。
+- `release-center.service.ts`：重复安装包保留记录 ID，改指向准备阶段已校验的新路径，旧路径事务内登记清理；移除持锁期间的大文件哈希。
+- `file-maintenance.service.ts`：去重候选的路径解析纳入异常处理，非法旧路径不再阻断有效新文件保存。
+- `storage-catalog.service.ts`：逐项处理临时文件消失和读取失败，扫描不中断，非 ENOENT 错误保留说明。
+- `ComponentHistory.tsx`：每次展开重新读取，并提供刷新历史操作；未修改通用样式。
+- `file-management.integration.ts`：新增同大小损坏、非法候选和临时文件消失回归；更新重复导入后的路径断言。
+
+隔离 PostgreSQL 完整迁移和真实文件集成测试通过；API/admin 类型检查通过。没有新增生产 Mock、依赖或旧实现并行入口；视觉、Windows 实机和生产环境验证边界不变。

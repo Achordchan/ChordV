@@ -763,11 +763,11 @@ export class ReleaseCenterService {
         }
         if (duplicate) {
           const oldPath = duplicate.storedFilePath ? resolveReleaseArtifactAbsolutePath(duplicate.storedFilePath) : null;
-          const healthy = oldPath ? await calculateUploadedReleaseArtifactSha256(oldPath).then(hash=>hash===preparedFile.fileHash).catch(()=>false) : false;
-          if (healthy) await this.files.enqueue(preparedFile.absolutePath, "重复安装包文件", tx);
-          else if (oldPath) await this.files.enqueue(oldPath, "修复缺失或损坏的安装包", tx);
+          // Preparation already verified and optionally deduplicated these immutable bytes.
+          // Keep the record ID, replace its path, and retire the old path after commit.
+          if (oldPath && oldPath !== preparedFile.absolutePath) await this.files.enqueue(oldPath, "替换重复安装包文件", tx);
           return tx.releaseArtifact.update({ where: { id: duplicate.id }, data: {
-            ...(healthy ? {} : { storedFilePath:preparedFile.storedFilePath, fileName:preparedFile.fileName, downloadUrl:buildReleaseArtifactDownloadUrl(duplicate.id) }),
+            storedFilePath:preparedFile.storedFilePath, fileName:preparedFile.fileName, downloadUrl:buildReleaseArtifactDownloadUrl(duplicate.id),
             ...(isPrimary ? {isPrimary:true}:{}), ...(file.sourceUrl ? {sourceUrl:file.sourceUrl}:{})
           } });
         }

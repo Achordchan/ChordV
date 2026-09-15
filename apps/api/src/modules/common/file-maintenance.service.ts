@@ -87,10 +87,10 @@ export class FileMaintenanceService {
     ]);
     const candidates = [...artifacts, ...versions, ...components.map(row=>({storedFilePath:path.isAbsolute(row.storedFilePath!)?row.storedFilePath:path.join("runtime-components",row.storedFilePath!)}))];
     for (const row of candidates) {
-      const candidate = managedPath(row.storedFilePath!);
-      if (candidate === absolute) continue;
       const swap = `${absolute}.link-${randomUUID()}`;
       try {
+        const candidate = managedPath(row.storedFilePath!);
+        if (candidate === absolute) continue;
         await assertSafeFile(candidate);
         await fs.link(candidate, swap);
         if (await hashStoredFile(swap) !== fileHash) continue;
