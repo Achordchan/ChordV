@@ -109,3 +109,13 @@ git diff --check
 - `file-management.integration.ts`：新增同大小损坏、非法候选和临时文件消失回归；更新重复导入后的路径断言。
 
 隔离 PostgreSQL 完整迁移和真实文件集成测试通过；API/admin 类型检查通过。没有新增生产 Mock、依赖或旧实现并行入口；视觉、Windows 实机和生产环境验证边界不变。
+
+## PR #53 第二轮审查修复
+
+- `schema.prisma`、`20260915160000_shared_storage_catalog/migration.sql`：新增独立扫描快照表。
+- `storage-catalog.service.ts`：扫描结果和文件路径映射原子写入数据库；按托管目录标识读取，移除进程内快照依赖，列表和清理使用各自读取的完整快照。
+- `file-management.integration.ts`：通过新建独立服务实例读取扫描并清理，验证请求切换实例仍能工作。多实例仍须访问同一实际托管文件系统；独立服务器的磁盘不会因此共享。
+- 客户端 `App.tsx`、`useRuntimeAssets.ts`、`useUpdateFlow.ts`：移除旧本地镜像的状态、读取、传递及重试写入，启动清除历史缓存。下载继续使用服务端分发地址。
+- `unified-download-panel.regression.ts`：增加旧本地镜像不再进入下载流程的回归检查。
+
+验证：Prisma generate、API/desktop 类型检查、隔离 PostgreSQL 全量迁移及真实文件集成测试、storage-routes / unified-download-panel / runtime-assets-state / update-center 定向回归均通过；没有新增样式或生产 Mock。上一轮 73 条完整回归通过，本轮按变更范围执行定向验证。

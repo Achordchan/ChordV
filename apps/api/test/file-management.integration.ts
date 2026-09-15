@@ -125,7 +125,7 @@ async function main() {
 
     const orphan=path.join(root,"release_orphan","artifact_test","file_test_old.dmg");await fs.mkdir(path.dirname(orphan),{recursive:true});await fs.writeFile(orphan,"orphan");
     const realNow=Date.now;Date.now=()=>realNow()+48*60*60_000;
-    try{const scan=await catalog.scan(new AbortController().signal,()=>{});const entry=scan.items.find(item=>item.name.endsWith("file_test_old.dmg"));assert.equal(entry?.canCleanup,true);await catalog.cleanup([entry!.id]);await assert.rejects(()=>fs.access(orphan));await fs.access(copiedPath);}finally{Date.now=realNow;}
+    try{const scan=await catalog.scan(new AbortController().signal,()=>{});const entry=scan.items.find(item=>item.name.endsWith("file_test_old.dmg"));assert.equal(entry?.canCleanup,true);const anotherProcess=new StorageCatalogService(prisma as never,new FileMaintenanceService(prisma as never));assert.equal((await anotherProcess.list()).scannedAt,scan.scannedAt,"fresh service must read shared scan state");await anotherProcess.cleanup([entry!.id]);await assert.rejects(()=>fs.access(orphan));await fs.access(copiedPath);}finally{Date.now=realNow;}
     console.log("PASS: real PostgreSQL + files: reuse/dedup, source deletion protection, durable failure retry, preparation rollback, published guard, history retention and orphan recovery");
   } finally {await prisma.$disconnect();}
 }

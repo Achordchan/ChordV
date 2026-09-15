@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, Injectable } from "@nestjs/common";
+import type { Prisma } from "@prisma/client";
 import { Cron } from "@nestjs/schedule";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -18,15 +19,21 @@ const AGE = 24*60*60_000;
 @Injectable()
 export class StorageCatalogService {
   private busy = false;
-  private paths = new Map<string,string>();
-  private snapshot: Snapshot = { scannedAt: null, entries: [], logicalBytes: 0, allocatedBytes: 0, hardlinkSavedBytes: 0, warnings: [] };
+  private catalogId() { return createHash("sha256").update(releaseArtifactStorageRoot()).digest("hex"); }
+  private async readSnapshot(): Promise<{snapshot: Snapshot; paths: Record<string,string>}> {
+    const row = await this.prisma.storageCatalogSnapshot.findUnique({where:{id:this.catalogId()}});
+    return row ? row.payload as unknown as {snapshot:Snapshot;paths:Record<string,string>} : {
+      snapshot:{scannedAt:null,entries:[],logicalBytes:0,allocatedBytes:0,hardlinkSavedBytes:0,warnings:[]},paths:{}
+    };
+  }
   constructor(private readonly prisma: PrismaService, private readonly files: FileMaintenanceService) {}
   async list(page = 0, search = "", cleanupPage = 0) {
-    const entries = this.snapshot.entries.filter(entry => `${entry.name} ${entry.references.join(" ")}`.toLowerCase().includes(search.toLowerCase()));
-    const { entries: _entries, ...summary } = this.snapshot;
-    return { ...summary, totalFiles: this.snapshot.entries.length, orphanCount: this.snapshot.entries.filter(entry=>entry.canCleanup).length,
-      missingCount: this.snapshot.entries.filter(entry=>entry.state==="missing").length,
-      reusableBytes: this.snapshot.entries.filter(entry=>entry.canCleanup).reduce((sum,entry)=>sum+(entry.links>1?0:entry.allocatedBytes),0),
+    const {snapshot} = await this.readSnapshot();
+    const entries = snapshot.entries.filter(entry => `${entry.name} ${entry.references.join(" ")}`.toLowerCase().includes(search.toLowerCase()));
+    const { entries: _entries, ...summary } = snapshot;
+    return { ...summary, totalFiles: snapshot.entries.length, orphanCount: snapshot.entries.filter(entry=>entry.canCleanup).length,
+      missingCount: snapshot.entries.filter(entry=>entry.state==="missing").length,
+      reusableBytes: snapshot.entries.filter(entry=>entry.canCleanup).reduce((sum,entry)=>sum+(entry.links>1?0:entry.allocatedBytes),0),
       items: entries.slice(page*100, page*100+100), hasMore: entries.length>(page+1)*100,
       cleanupTotal: await this.prisma.fileCleanupJob.count(),
       cleanupJobs: await this.prisma.fileCleanupJob.findMany({ orderBy: [{createdAt:"asc"},{id:"asc"}], skip:cleanupPage*100, take:100 }) };
@@ -127,18 +134,20 @@ export class StorageCatalogService {
         logicalBytes+=stat.size; allocatedBytes+=stat.blocks*512;
         entries.push({id,name:entry.name,category:owned?"临时下载":"历史临时文件（归属未确认）",sizeBytes:stat.size,allocatedBytes:stat.blocks*512,links:stat.nlink,references:owned?[]:["无法确认归属，不自动删除"],hash:null,state:canCleanup?"orphan":"protected",canCleanup,modifiedAt:stat.mtime.toISOString()});
       }
-      this.paths = paths;
       const disk = await fs.statfs(root).catch(()=>null);
-      this.snapshot = {scannedAt:new Date().toISOString(),entries,logicalBytes,allocatedBytes,hardlinkSavedBytes,warnings:warnings.length>100?[...warnings.slice(0,99),`另有 ${warnings.length-99} 条范围说明未展开`]:warnings,diskFreeBytes:disk?disk.bavail*disk.bsize:null};
+      const snapshot: Snapshot = {scannedAt:new Date().toISOString(),entries,logicalBytes,allocatedBytes,hardlinkSavedBytes,warnings:warnings.length>100?[...warnings.slice(0,99),`另有 ${warnings.length-99} 条范围说明未展开`]:warnings,diskFreeBytes:disk?disk.bavail*disk.bsize:null};
+      const payload = {snapshot,paths:Object.fromEntries(paths)} as unknown as Prisma.InputJsonValue;
+      await this.prisma.storageCatalogSnapshot.upsert({where:{id:this.catalogId()},create:{id:this.catalogId(),payload},update:{payload}});
       return this.list();
     } finally { this.busy=false; }
   }
   async cleanup(ids: string[]) {
-    if (!this.snapshot.scannedAt) throw new BadRequestException("请先扫描文件");
-    const candidates = ids.map(id=>this.snapshot.entries.find(entry=>entry.id===id));
+    const {snapshot,paths} = await this.readSnapshot();
+    if (!snapshot.scannedAt) throw new BadRequestException("请先扫描文件");
+    const candidates = ids.map(id=>snapshot.entries.find(entry=>entry.id===id));
     if(candidates.some(entry=>!entry?.canCleanup)) throw new BadRequestException("仅可清理扫描确认的过期未引用文件");
     for(const entry of candidates) {
-      const absolute = this.paths.get(entry!.id)!;
+      const absolute = paths[entry!.id];
       const stat = await fs.lstat(cleanupPath(absolute)).catch(()=>null);
       if(!stat || Math.max(stat.mtimeMs,stat.ctimeMs)>Date.now()-AGE || await this.files.references(absolute)) continue;
       await this.files.enqueue(absolute,"扫描发现的过期未引用文件");
@@ -150,6 +159,7 @@ export class StorageCatalogService {
   async recoverOrphans() {
     if(this.busy) return;
     await this.scan(AbortSignal.timeout(10*60_000),()=>undefined);
-    await this.cleanup(this.snapshot.entries.filter(entry=>entry.canCleanup).map(entry=>entry.id));
+    const {snapshot} = await this.readSnapshot();
+    await this.cleanup(snapshot.entries.filter(entry=>entry.canCleanup).map(entry=>entry.id));
   }
 }

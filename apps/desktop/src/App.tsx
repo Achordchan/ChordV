@@ -139,7 +139,6 @@ export function App() {
   const [mobileTab, setMobileTab] = useState<"home" | "nodes" | "profile">("home");
   const [serverProbe, setServerProbe] = useState<ServerProbeState>(createIdleServerProbeState());
   const [serverProbeBusy, setServerProbeBusy] = useState(false);
-  const [runtimeMirrorPrefix, setRuntimeMirrorPrefix] = useState("");
   const leaseHeartbeatFailedAtRef = useRef<number | null>(null);
   const lastGuidanceToastRef = useRef<string | null>(null);
   const lastRuntimeSignalKeyRef = useRef<string | null>(null);
@@ -254,7 +253,6 @@ export function App() {
     platformTarget: desktopStatus.platformTarget,
     accessToken: session?.accessToken ?? null,
     bootstrapVersion: bootstrap?.version ?? null,
-    runtimeMirrorPrefix,
     updateChannel: UPDATE_CHANNEL,
     readError,
     notify: notifications.show,
@@ -309,8 +307,6 @@ export function App() {
     appVersion,
     platformTarget: desktopStatus.platformTarget,
     accessToken: session?.accessToken ?? null,
-    runtimeMirrorPrefix,
-    mirrorPrefixStorageKey: RUNTIME_COMPONENT_MIRROR_PREFIX_KEY,
     notify: notifications.show,
     onUnauthorized: recoverSessionAfterUnauthorized,
     readError
@@ -816,7 +812,7 @@ export function App() {
   }, [desktopStatus.platformTarget]);
 
   useEffect(() => {
-    setRuntimeMirrorPrefix(localStorage.getItem(RUNTIME_COMPONENT_MIRROR_PREFIX_KEY) ?? "");
+    localStorage.removeItem(RUNTIME_COMPONENT_MIRROR_PREFIX_KEY);
   }, []);
 
   useEffect(() => {

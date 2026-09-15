@@ -1033,3 +1033,10 @@ model FileCleanupJob {
   updatedAt DateTime @updatedAt
   @@index([blocked, nextAttemptAt])
 }
+
+// Shared inventory for API processes operating on the same managed filesystem.
+model StorageCatalogSnapshot {
+  id        String   @id
+  payload   Json
+  updatedAt DateTime @updatedAt
+}

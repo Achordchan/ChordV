@@ -95,8 +95,6 @@ type UseRuntimeAssetsOptions = {
   appVersion: string;
   platformTarget: RuntimeStatus["platformTarget"];
   accessToken?: string | null;
-  runtimeMirrorPrefix: string;
-  mirrorPrefixStorageKey?: string;
   notify?: (notice: NoticeInput) => void;
   onUnauthorized?: () => Promise<unknown> | unknown;
   readError?: (message: string) => string;
@@ -520,7 +518,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
           if (!localReady && !inspectOnly) {
             const plan = await fetchRuntimeComponentsPlan({
               accessToken: options.accessToken ?? null,
-              clientMirrorPrefix: options.runtimeMirrorPrefix
+              clientMirrorPrefix: ""
             });
 
             if (!plan || !hasRequiredRuntimeComponents(plan)) {
@@ -573,7 +571,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
             }
 
             for (const component of pendingComponents) {
-              const candidate = resolveRuntimeComponentCandidate(component, options.runtimeMirrorPrefix);
+              const candidate = resolveRuntimeComponentCandidate(component, "");
               setRuntimeAssets({
                 phase: "downloading",
                 currentComponent: component.component,
@@ -639,7 +637,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
             try {
               sharedPlan = await fetchRuntimeComponentsPlan({
                 accessToken: options.accessToken ?? null,
-                clientMirrorPrefix: options.runtimeMirrorPrefix
+                clientMirrorPrefix: ""
               });
             } catch (reason) {
               if (isUnauthorizedApiError(reason)) {
@@ -706,7 +704,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                 } else {
                   for (const component of geoItems) {
                     silentBackground = false;
-                    const candidate = resolveRuntimeComponentCandidate(component, options.runtimeMirrorPrefix);
+                    const candidate = resolveRuntimeComponentCandidate(component, "");
                     setRuntimeAssets({
                       phase: "downloading",
                       currentComponent: component.component,
@@ -774,7 +772,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                   sharedPlan ??
                   (await fetchRuntimeComponentsPlan({
                     accessToken: options.accessToken ?? null,
-                    clientMirrorPrefix: options.runtimeMirrorPrefix
+                    clientMirrorPrefix: ""
                   }));
                 const xrayItem = plan?.components.find((item) => item.component === "xray") ?? null;
                 if (xrayItem) {
@@ -831,7 +829,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                       : "检测到 Xray 可更新";
                     summary.current = false;
                   } else {
-                    const candidate = resolveRuntimeComponentCandidate(xrayItem, options.runtimeMirrorPrefix);
+                    const candidate = resolveRuntimeComponentCandidate(xrayItem, "");
                     silentBackground = false;
                     setRuntimeAssets({
                       phase: "downloading",
@@ -1040,16 +1038,13 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
   }, []);
 
   const handleRetryRuntimeAssets = useCallback(() => {
-    if (options.mirrorPrefixStorageKey) {
-      localStorage.setItem(options.mirrorPrefixStorageKey, options.runtimeMirrorPrefix.trim());
-    }
     void ensureRuntimeAssetsReady({
       source: "retry",
       interactive: true,
       blockConnection: true,
       forceCheck: true
     });
-  }, [ensureRuntimeAssetsReady, options.mirrorPrefixStorageKey, options.runtimeMirrorPrefix]);
+  }, [ensureRuntimeAssetsReady]);
 
   return {
     runtimeAssets,

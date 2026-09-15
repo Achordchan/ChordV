@@ -87,7 +87,6 @@ type UseUpdateFlowOptions = {
   platformTarget: RuntimeStatus["platformTarget"];
   accessToken?: string | null;
   bootstrapVersion?: ClientVersionDto | null;
-  runtimeMirrorPrefix?: string;
   updateChannel?: ReleaseChannel;
   readError?: (message: string) => string;
   notify?: (notice: NoticeInput) => void;
@@ -452,7 +451,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           platform: updatePlatform,
           channel: options.updateChannel ?? "stable",
           artifactType: preferredArtifactType(updatePlatform),
-          clientMirrorPrefix: options.runtimeMirrorPrefix,
+          clientMirrorPrefix: undefined,
           accessToken: runOptions.accessToken ?? options.accessToken ?? undefined
         });
         const result =
@@ -463,7 +462,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
                 runOptions.bootstrapVersion ?? options.bootstrapVersion ?? null,
                 updatePlatform,
                 options.appVersion,
-                options.runtimeMirrorPrefix,
+                undefined,
                 lastKnownUpdateArtifactRef.current,
                 options.updateChannel ?? "stable"
               ));
