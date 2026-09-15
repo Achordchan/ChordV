@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import styles from "./ReleaseWorkspace.module.css";
-import { Button, Checkbox, FileInput, Group, SegmentedControl, Select, Stack, Text, TextInput, Textarea } from "@mantine/core";
-import { ExternalArtifactMetadataFields } from "./ExternalArtifactMetadataFields";
+import { Button, FileInput, Group, SegmentedControl, Select, Stack, Text, TextInput, Textarea } from "@mantine/core";
+import { RemoteArtifactSourceFields } from "./RemoteArtifactSourceFields";
+import { ArtifactImportProgress } from "./ArtifactImportProgress";
+import type { ArtifactImportProgress as ImportProgress } from "../../api/client";
 import type { ReleaseEditorFormState } from "./types";
 import { releasePlatformOptions } from "./types";
 
@@ -10,6 +12,7 @@ type ReleaseEditorModalProps = {
   editing: boolean;
   saving: boolean;
   savingMessage?: string | null;
+  importProgress: ImportProgress | null;
   title: string;
   submitLabel: string;
   form: ReleaseEditorFormState;
@@ -33,7 +36,7 @@ export function ReleaseEditorModal(p: ReleaseEditorModalProps) {
     <h2>{p.editing?"编辑":"准备"} {platform} {p.form.version||"新版本"}</h2>
     <div className={styles.steps} aria-label="发布准备步骤">{steps.map((title,index)=><span key={title} aria-current={step===index ? "step" : undefined} data-active={step===index} data-done={step>index}>{String(index+1).padStart(2,"0")} {title}</span>)}</div>
     <div className={styles.editorGrid}><div className={styles.form}>
-      {p.savingMessage?<Text role="status" size="sm" c="teal.9" mb="lg">{p.savingMessage}</Text>:null}
+      {p.savingMessage&&!p.importProgress?<Text role="status" size="sm" c="teal.9" mb="lg">{p.savingMessage}</Text>:null}
       <h3 ref={heading} tabIndex={-1} className={styles.stepHeading}>{step===0 ? "版本信息" : final ? "确认版本信息" : "设置下载来源"}</h3>
       <Stack gap="lg">
       {step===0?<>
@@ -46,8 +49,9 @@ export function ReleaseEditorModal(p: ReleaseEditorModalProps) {
         <Text size="sm" c="dimmed">{p.editing?"保存本次修改。":"保存后生成草稿；从发布列表确认发布，服务端会检查安装包可用性。"}</Text>
       </>}
       </Stack>
+      <ArtifactImportProgress value={p.saving ? p.importProgress : null} />
       <footer className={styles.editorFooter}><Button variant="default" disabled={p.saving} onClick={()=>step?setStep(step-1):p.onClose()}>{step?"上一步":"取消"}</Button>{final?<Button color="teal.9" loading={p.saving} onClick={p.onSubmit}>{p.editing?"保存修改":"保存草稿"}</Button>:<Button color="teal.9" disabled={p.saving||!p.form.version.trim()} onClick={()=>setStep(step+1)}>继续</Button>}</footer>
-    </div><aside className={styles.summary}><h3>发布摘要</h3><dl className={styles.facts}><div><dt>平台</dt><dd>{platform}</dd></div><div><dt>版本</dt><dd>{p.form.version||"待填写"}</dd></div><div><dt>状态</dt><dd>{p.editing?(p.form.status==="published"?"已发布":"草稿"):"尚未保存"}</dd></div><div><dt>分发方式</dt><dd>{p.form.artifactSource==="external"?"外部链接":"上传文件"}</dd></div></dl><details><summary>更新说明</summary><p>{p.form.changelog||"尚未填写"}</p></details></aside></div>
+    </div><aside className={styles.summary}><h3>发布摘要</h3><dl className={styles.facts}><div><dt>平台</dt><dd>{platform}</dd></div><div><dt>版本</dt><dd>{p.form.version||"待填写"}</dd></div><div><dt>状态</dt><dd>{p.editing?(p.form.status==="published"?"已发布":"草稿"):"尚未保存"}</dd></div><div><dt>分发方式</dt><dd>{p.form.artifactSource==="external"?"远程获取并托管":"上传文件"}</dd></div></dl><details><summary>更新说明</summary><p>{p.form.changelog||"尚未填写"}</p></details></aside></div>
   </section>;
 }
 type NewReleaseArtifactFieldsProps = {
@@ -70,46 +74,19 @@ export function NewReleaseArtifactFields(props: NewReleaseArtifactFieldsProps) {
           })
         }
         data={[
-          { value: "external", label: "外链地址" },
+          { value: "external", label: "远程获取" },
           { value: "uploaded", label: "上传文件" }
         ]}
         disabled={props.saving}
       />
 
       {props.form.artifactSource === "external" ? (
-        <>
-          <TextInput
-            label="外链下载地址"
-            description="客户端直接从此地址下载安装包。"
-            placeholder="https://…"
-            value={props.form.downloadUrl}
-            onChange={(event) => props.onChange({ ...props.form, downloadUrl: event.currentTarget.value })}
-            disabled={props.saving}
-          />
-          <ExternalArtifactMetadataFields
-            value={props.form}
-            disabled={props.saving}
-            onChange={(patch) => props.onChange({ ...props.form, ...patch })}
-          />
-          {props.form.platform === "windows" ? (
-            <Checkbox
-              label="按 Windows 全量替换 ZIP 发布"
-              description="外链地址即使没有 .zip 后缀，也会让客户端执行静默全量替换。"
-              checked={props.form.externalDeliveryMode === "windows_full_replace_zip"}
-              onChange={(event) =>
-                props.onChange({
-                  ...props.form,
-                  externalDeliveryMode: event.currentTarget.checked ? "windows_full_replace_zip" : "external_download"
-                })
-              }
-              disabled={props.saving}
-            />
-          ) : null}
-        </>
+        <RemoteArtifactSourceFields value={props.form.downloadUrl} platform={props.form.platform} disabled={props.saving}
+          onChange={downloadUrl => props.onChange({ ...props.form, downloadUrl, fileSizeBytes: "", fileHash: "" })} />
       ) : (
         <FileInput
           label="上传安装包文件"
-          description="也保留本地上传路径；如果外链下载慢，可以上传到服务器。"
+          description="文件保存到本站，由本站分发。"
           placeholder="选择安装包文件"
           accept={acceptedArtifactExtensionForPlatform(props.form.platform)}
           value={props.form.selectedFile}

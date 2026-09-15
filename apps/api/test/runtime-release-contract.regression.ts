@@ -7,7 +7,6 @@ import { pathToFileURL } from "node:url";
 import { MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES } from "@chordv/shared/update-limits";
 import { plainToInstance } from "class-transformer";
 import { validateSync } from "class-validator";
-import { buildExternalArtifactPayload } from "../../admin/src/features/releases/artifactPayloads";
 import { buildRemoteRuntimeComponentPayload, emptyRuntimeComponentEditorForm } from "../../admin/src/features/runtime-components/types";
 import { CreateReleaseArtifactDto, CreateRuntimeComponentDto } from "../src/modules/admin/admin.dto";
 import { RuntimeComponentsService } from "../src/modules/common/runtime-components.service";
@@ -89,16 +88,14 @@ async function main() {
   await runtimeService.createAdminRuntimeComponent(runtimePayload);
   assert.equal(savedRuntime?.expectedHash, "a".repeat(64));
 
-  const artifactPayload = buildExternalArtifactPayload(
-    "windows",
-    "https://cdn.example.com/ChordV-full.zip",
-    true,
-    "104857600",
-    "B".repeat(64),
-    "windows_full_replace_zip"
-  );
+  // Legacy external records remain readable even though the admin now imports files.
+  const artifactPayload = {
+    source: "external" as const, type: "zip" as const, deliveryMode: "desktop_full_replace" as const,
+    downloadUrl: "https://cdn.example.com/ChordV-full.zip", isPrimary: true,
+    fileSizeBytes: "104857600", fileHash: "b".repeat(64)
+  };
   const artifactDto = plainToInstance(CreateReleaseArtifactDto, artifactPayload);
-  assert.deepEqual(validateSync(artifactDto), [], "frontend external artifact payload must satisfy the real DTO");
+  assert.deepEqual(validateSync(artifactDto), [], "legacy external artifact payload must still satisfy the real DTO");
 
   const zeroSizeDto = plainToInstance(CreateReleaseArtifactDto, { ...artifactPayload, fileSizeBytes: "0" });
   assert.ok(

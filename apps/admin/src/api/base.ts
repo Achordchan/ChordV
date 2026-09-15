@@ -204,7 +204,7 @@ export async function refreshAdminAccessToken() {
   return refreshPromise;
 }
 
-export async function request<T>(path: string, init?: RequestOptions, useAuth = true) {
+export async function requestResponse(path: string, init?: RequestOptions, useAuth = true) {
   let response = await requestOnce(path, init, useAuth);
 
   if (!response.ok) {
@@ -235,6 +235,11 @@ export async function request<T>(path: string, init?: RequestOptions, useAuth = 
     throw new Error(buildHttpErrorMessage(response.status, text, response.headers.get(REQUEST_ID_HEADER)));
   }
 
+  return response;
+}
+
+export async function request<T>(path: string, init?: RequestOptions, useAuth = true) {
+  const response = await requestResponse(path, init, useAuth);
   if (response.status === 204) {
     return undefined as T;
   }

@@ -1,3 +1,4 @@
+import type { ArtifactImportInput, ArtifactImportProgress } from "./release-artifact-import";
 import { isNodeOnboardingReady } from "./node-onboarding-policy";
 import { workLifecycle } from "../../work-lifecycle";
 import {
@@ -1214,6 +1215,10 @@ export class DevDataService implements OnModuleInit {
     input: UpdateReleaseArtifactInputDto
   ): Promise<AdminReleaseRecordDto> {
     return this.releaseCenterService.updateReleaseArtifact(releaseId, artifactId, input);
+  }
+
+  async importReleaseArtifact(releaseId: string, input: ArtifactImportInput, progress: (value: ArtifactImportProgress) => void, signal: AbortSignal) {
+    return this.releaseCenterService.importReleaseArtifact(releaseId, input, progress, signal);
   }
 
   async uploadReleaseArtifact(

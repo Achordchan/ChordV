@@ -1,0 +1,12 @@
+.content { display: flex; flex-direction: column; max-height: calc(100dvh - 32px); border: 1px solid #e2e6dc; border-radius: 10px; background: #fcfcf8; color: #26372c; }
+.header { flex-shrink: 0; padding: 16px 20px; border-bottom: 1px solid #e8eadf; background: #fcfcf8; }
+.title { font-size: 18px; font-weight: 600; }
+.body { display: flex; flex-direction: column; min-height: 0; padding: 0; overflow: hidden; }
+.form { display: flex; flex-direction: column; min-height: 0; }
+.scroll { min-height: 0; overflow: auto; padding: 18px 20px; }
+.footer { flex-shrink: 0; padding: 14px 20px; border-top: 1px solid #e8eadf; }
+@media(max-width: 600px) {
+  .header { padding: 14px 16px; }
+  .scroll { padding: 16px; }
+  .footer { padding: 12px 16px; }
+}

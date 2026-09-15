@@ -1,13 +1,17 @@
-import { Alert, Button, Checkbox, FileInput, Group, Modal, SegmentedControl, Stack, TextInput } from "@mantine/core";
+import styles from "./ArtifactEditor.module.css";
+import releaseStyles from "./ReleaseWorkspace.module.css";
+import { Button, FileInput, Group, Modal, SegmentedControl, Stack, Text } from "@mantine/core";
 import dialogStyles from "../editors/EditorDialog.module.css";
-import { ExternalArtifactMetadataFields } from "./ExternalArtifactMetadataFields";
+import { RemoteArtifactSourceFields } from "./RemoteArtifactSourceFields";
+import { ArtifactImportProgress } from "./ArtifactImportProgress";
+import type { ArtifactImportProgress as ImportProgress } from "../../api/client";
 import type { ArtifactEditorFormState } from "./types";
 import type { AdminReleasePlatform } from "../../api/client";
 
 type ArtifactEditorModalProps = {
   opened: boolean;
   saving: boolean;
-  creatingRelease: boolean;
+  importProgress: ImportProgress | null;
   title: string;
   submitLabel: string;
   platform: AdminReleasePlatform;
@@ -30,7 +34,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
       ? null
       : props.form.source === "uploaded" && props.form.selectedFile
         ? "正在上传安装包，大文件上传期间请等待当前请求返回。"
-        : "正在保存安装包信息，请等待当前请求返回。";
+        : "正在获取安装包并保存到本站…";
 
   return (
     <Modal
@@ -38,19 +42,19 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
       onClose={close}
       title={props.title}
       centered
-      size="lg"
-      classNames={{content: dialogStyles.content, header: dialogStyles.header, title: dialogStyles.title, body: dialogStyles.body}}
+      size={540}
+      classNames={{content: styles.content, header: styles.header, title: styles.title, body: styles.body}}
       closeOnClickOutside={!props.saving}
       closeOnEscape={!props.saving}
     >
-      <Stack gap="lg" pb="lg" className={dialogStyles.form}>
-        {savingMessage ? (
-          <Alert color="yellow" variant="light">
-            {savingMessage}
-          </Alert>
+      <div className={`${dialogStyles.form} ${styles.form}`}><div className={styles.scroll}><Stack gap="md">
+        {savingMessage && !props.importProgress ? (
+          <Text size="sm" c="dimmed" role="status">{savingMessage}</Text>
         ) : null}
 
         <SegmentedControl
+          classNames={{root: releaseStyles.sourcePicker, label: releaseStyles.sourceLabel, indicator: releaseStyles.sourceIndicator}}
+          aria-label="安装包来源"
           value={props.form.source}
           onChange={(value) =>
             props.onChange({
@@ -64,44 +68,18 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
             })
           }
           data={[
-            { value: "external", label: "外链地址" },
+            { value: "external", label: "远程获取" },
             { value: "uploaded", label: "上传文件" }
           ]}
           disabled={props.saving}
         />
 
         {props.form.source === "external" ? (
-          <>
-            <TextInput
-              label="外链下载地址"
-              placeholder="https://example.com/ChordV_1.1.6_x64-full.zip"
-              value={props.form.downloadUrl}
-              onChange={(event) => props.onChange({ ...props.form, downloadUrl: event.currentTarget.value })}
-              disabled={props.saving}
-            />
-            <ExternalArtifactMetadataFields
-              value={props.form}
-              disabled={props.saving}
-              onChange={(patch) => props.onChange({ ...props.form, ...patch })}
-            />
-            {props.platform === "windows" ? (
-              <Checkbox
-                label="按 Windows 全量替换 ZIP 发布"
-                description="外链地址即使没有 .zip 后缀，也会让客户端执行静默全量替换。"
-                checked={props.form.externalDeliveryMode === "windows_full_replace_zip"}
-                onChange={(event) =>
-                  props.onChange({
-                    ...props.form,
-                    externalDeliveryMode: event.currentTarget.checked ? "windows_full_replace_zip" : "external_download"
-                  })
-                }
-                disabled={props.saving}
-              />
-            ) : null}
-          </>
+          <RemoteArtifactSourceFields value={props.form.downloadUrl} platform={props.platform} disabled={props.saving}
+            onChange={downloadUrl => props.onChange({ ...props.form, downloadUrl, fileSizeBytes: "", fileHash: "" })} />
         ) : (
           <FileInput
-            description={`单文件最大 ${formatUploadBytes(props.uploadMaxBytes)}。大文件上传需要等待，请不要重复点击。`}
+            description={`单文件最大 ${formatUploadBytes(props.uploadMaxBytes)}。`}
             label="上传安装包文件"
             placeholder="选择安装包文件"
             accept={acceptedArtifactExtensionForPlatform(props.platform)}
@@ -121,23 +99,17 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
           />
         )}
 
-        <Alert color="blue" variant="light">
-          {props.form.source === "external"
-            ? "外链会直接下发给客户端，不经过本地服务器中转下载。"
-            : props.creatingRelease
-              ? "保存后会创建发布记录，并上传这个安装包。"
-              : "选择“上传文件”并选择新文件后保存，即可替换安装包；选择“外链地址”则直接保存外链。"}
-        </Alert>
-
-        <Group justify="flex-end">
-          <Button variant="default" onClick={close} disabled={props.saving}>
+        <ArtifactImportProgress value={props.saving ? props.importProgress : null} />
+        </Stack></div>
+        <Group justify="flex-end" className={styles.footer}>
+          <Button radius="sm" variant="default" onClick={close} disabled={props.saving}>
             取消
           </Button>
-          <Button onClick={props.onSubmit} loading={props.saving}>
+          <Button radius="sm" color="teal.9" onClick={props.onSubmit} loading={props.saving} disabled={props.form.source === "external" && !props.form.downloadUrl.trim()}>
             {props.submitLabel}
           </Button>
         </Group>
-      </Stack>
+      </div>
     </Modal>
   );
 }

@@ -29,10 +29,7 @@
 .sourceLabel { min-width: 140px; padding: 12px 20px; font-size: 16px; color: #44523d; }
 .sourceLabel[data-active] { color: #153d26; font-weight: 650; text-decoration: underline; text-underline-offset: 5px; }
 .sourceIndicator { background: #fff; box-shadow: none; border: 1px solid #677c5c; }
-.optionalMetadata { border-top: 1px solid #cbd3c5; padding-top: 16px; }
-.optionalMetadata summary { cursor: pointer; color: #3e5434; font-size: 15px; padding: 10px 0; }
-.optionalMetadata[open] summary { margin-bottom: 16px; }
-.editor :focus-visible,.overview :focus-visible,.optionalMetadata summary:focus-visible { outline: 3px solid #245137; outline-offset: 3px; }
+.editor :focus-visible,.overview :focus-visible { outline: 3px solid #245137; outline-offset: 3px; }
 @media(max-width:600px) { .sourceLabel { min-width: 0; padding-inline: 16px; } .steps { gap: 12px; } .steps span { font-size: 14px; } .editor { padding-inline: 0; } .platform { padding: 14px; } }
 
 .statusFilter { padding: 0; border-radius: 0; border-bottom: 1px solid #bac5b4; background: transparent; max-width: 100%; }

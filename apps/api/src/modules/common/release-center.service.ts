@@ -1,3 +1,4 @@
+import { downloadHostedArtifact, type ArtifactImportInput, type ArtifactImportProgress } from "./release-artifact-import";
 import { workLifecycle } from "../../work-lifecycle";
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import * as path from "node:path";
@@ -156,6 +157,7 @@ async function assertWindowsFullUpdateZipContents(absolutePath: string) {
 @Injectable()
 export class ReleaseCenterService {
   private readonly logger = new Logger(ReleaseCenterService.name);
+  private readonly activeImports = new Set<string>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -682,6 +684,27 @@ export class ReleaseCenterService {
       this.buildArtifactMutationFallback(release, [this.fallbackArtifactFromCreate(updatedArtifact)]),
       "update release artifact response refresh"
     ).finally(() => this.publishReleaseCenterUpdatedBestEffort());
+  }
+
+  async importReleaseArtifact(releaseId: string, input: ArtifactImportInput, progress: (value: ArtifactImportProgress) => void, signal: AbortSignal) {
+    if (this.activeImports.has(releaseId)) throw new ConflictException("该版本正在获取安装包，请等待完成。");
+    if (this.activeImports.size >= 2) throw new ConflictException("已有两个安装包获取任务，请稍后再试。");
+    this.activeImports.add(releaseId);
+    try {
+      const release = await this.ensureReleaseExists(releaseId);
+      this.assertReleaseArtifactsMutable(release);
+      const file = await downloadHostedArtifact(input.sourceUrl, signal, progress);
+      try {
+        signal.throwIfAborted();
+        const extension = release.platform === "windows" ? "zip" : release.platform === "macos" ? "dmg" : release.platform === "android" ? "apk" : "ipa";
+        const name = file.originalname.includes(".") ? file.originalname : `ChordV_${release.version}.${extension}`;
+        const upload = { type: extension as ReleaseArtifactType, isPrimary: input.isPrimary, fileName: name };
+        const stored = { path: file.path, size: file.size, originalname: name };
+        return input.artifactId
+          ? await this.replaceReleaseArtifactUpload(releaseId, input.artifactId, upload, stored)
+          : await this.uploadReleaseArtifact(releaseId, upload, stored);
+      } finally { await file.cleanup(); }
+    } finally { this.activeImports.delete(releaseId); }
   }
 
   async uploadReleaseArtifact(

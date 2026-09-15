@@ -1,3 +1,4 @@
+import { requestResponse } from "./base";
 import type {
   AdminSupportTicketDetailDto as SharedAdminSupportTicketDetailDto,
   AdminSupportTicketSummaryDto as SharedAdminSupportTicketSummaryDto,
@@ -779,4 +780,38 @@ export async function reopenAdminSupportTicket(ticketId: string) {
     method: "POST",
     timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
+}
+
+
+export type ArtifactImportProgress = { stage: "downloading" | "saving"; downloadedBytes: number; totalBytes: number | null };
+export async function importAdminReleaseArtifact(releaseId: string, input: { sourceUrl: string; artifactId?: string; isPrimary?: boolean }, onProgress: (value: ArtifactImportProgress) => void) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), LONG_ADMIN_ACTION_TIMEOUT_MS);
+  try {
+    const response = await requestResponse(`/admin/releases/${encodeURIComponent(releaseId)}/artifacts/import`, {
+      method: "POST", body: JSON.stringify(input), signal: controller.signal
+    });
+    if (!response.body) throw new Error("网络请求中断，保存状态不确定，请刷新发布中心确认安装包状态。");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) throw new Error("网络请求中断，保存状态不确定，请刷新发布中心确认安装包状态。");
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.length > 2 * 1024 * 1024) throw new Error("获取响应超出限制，保存状态不确定，请刷新确认安装包状态。");
+        let boundary: number;
+        while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+          const frame = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 2);
+          const data = frame.split("\n").filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
+          if (!data) continue;
+          const event = JSON.parse(data);
+          if (event.type === "progress") onProgress(event);
+          if (event.type === "error") throw new Error(event.message || "安装包获取失败。");
+          if (event.type === "complete") return mapRelease(event.record);
+        }
+      }
+    } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
+  } finally { window.clearTimeout(timer); }
 }
