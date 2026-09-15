@@ -9,6 +9,8 @@ import { PrismaService } from "./prisma.service";
 import { releaseArtifactStorageRoot } from "./release-center.utils";
 import { canonicalManagedReference, assertSafeFile, cleanupPath, hashStoredFile, managedPath, unlinkManagedFile } from "./storage-files";
 
+type ReferenceIndex = { since: Date; paths: Set<string>; resolved: Map<string,string> };
+
 @Injectable()
 export class FileMaintenanceService {
   private readonly logger = new Logger(FileMaintenanceService.name);
@@ -31,7 +33,7 @@ export class FileMaintenanceService {
       await this.enqueue(value, reason).catch(queueError => this.logger.error(`文件清理任务未能保存：${String(queueError)}；原错误：${String(error)}`));
     }
   }
-  async references(absolute: string) {
+  async references(absolute: string, batch?: ReferenceIndex) {
     const root = releaseArtifactStorageRoot();
     const real = await fs.realpath(absolute).catch(()=>absolute);
     const relative = path.relative(root, absolute);
@@ -46,19 +48,35 @@ export class FileMaintenanceService {
       ] }, select: { id: true } })
     ]);
     if (artifact || component || version) return true;
-    // A physical candidate may be referenced through an internal directory alias.
-    // Literal indexed lookups above are fast; resolve all remaining stored aliases
-    // before authorizing deletion. Unreadable or invalid references fail closed.
-    const [artifacts, components, versions] = await Promise.all([
-      this.prisma.releaseArtifact.findMany({where:{storedFilePath:{not:null}},select:{storedFilePath:true}}),
-      this.prisma.runtimeComponent.findMany({where:{storedFilePath:{not:null}},select:{storedFilePath:true}}),
-      this.prisma.runtimeComponentVersion.findMany({where:{storedFilePath:{not:null}},select:{storedFilePath:true}})
-    ]);
+    const index = batch ?? await this.createReferenceIndex();
+    // Recheck rows changed since the batch began so concurrent alias references
+    // are included without reloading and resolving the full inventory each time.
+    if (batch) await this.refreshReferenceIndex(index, true);
     const candidate = path.dirname(absolute) === path.resolve(tmpdir()) ? absolute : await canonicalManagedReference(absolute);
-    for (const row of [...artifacts,...versions,...components.map(row=>({storedFilePath:path.isAbsolute(row.storedFilePath!)?row.storedFilePath:path.join("runtime-components",row.storedFilePath!)}))]) {
-      if (await canonicalManagedReference(row.storedFilePath!) === candidate) return true;
+    return index.paths.has(candidate);
+  }
+  async createReferenceIndex(): Promise<ReferenceIndex> {
+    const index: ReferenceIndex = {since:new Date(),paths:new Set(),resolved:new Map()};
+    await this.refreshReferenceIndex(index, false);
+    return index;
+  }
+  private async refreshReferenceIndex(index: ReferenceIndex, changesOnly: boolean) {
+    const where = {storedFilePath:{not:null},...(changesOnly?{updatedAt:{gte:index.since}}:{})};
+    const [artifacts, components, versions] = await Promise.all([
+      this.prisma.releaseArtifact.findMany({where,select:{storedFilePath:true}}),
+      this.prisma.runtimeComponent.findMany({where,select:{storedFilePath:true}}),
+      this.prisma.runtimeComponentVersion.findMany({where,select:{storedFilePath:true}})
+    ]);
+    const rows = [...artifacts,...versions,...components.map(row=>({storedFilePath:path.isAbsolute(row.storedFilePath!)?row.storedFilePath:path.join("runtime-components",row.storedFilePath!)}))];
+    for (const row of rows) {
+      const raw = row.storedFilePath!;
+      let canonical = index.resolved.get(raw);
+      if (!canonical || changesOnly) {
+        canonical = await canonicalManagedReference(raw);
+        index.resolved.set(raw,canonical);
+      }
+      index.paths.add(canonical);
     }
-    return false;
   }
   async retry(id: string) {
     await this.prisma.fileCleanupJob.updateMany({ where: { id }, data: { nextAttemptAt: new Date() } });
@@ -72,10 +90,11 @@ export class FileMaintenanceService {
     this.busy = true;
     try {
       const jobs = await this.prisma.fileCleanupJob.findMany({ where: { nextAttemptAt: { lte: new Date() }, blocked:false }, take: 50, orderBy: { nextAttemptAt: "asc" } });
+      const index = jobs.length ? await this.createReferenceIndex() : undefined;
       for (const job of jobs) {
         try {
           // Random immutable file paths are never reassigned; references are rechecked at deletion time.
-          if (!await this.references(job.path)) {
+          if (!await this.references(job.path,index)) {
             if (job.reason.startsWith("扫描")) {
               const stat = await fs.lstat(job.path).catch(()=>null);
               if (stat && stat.mtimeMs>Date.now()-24*60*60_000) throw new Error("文件近期发生变化，延后清理");

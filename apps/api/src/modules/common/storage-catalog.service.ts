@@ -147,10 +147,11 @@ export class StorageCatalogService {
     if (!snapshot.scannedAt) throw new BadRequestException("请先扫描文件");
     const candidates = ids.map(id=>snapshot.entries.find(entry=>entry.id===id));
     if(candidates.some(entry=>!entry?.canCleanup)) throw new BadRequestException("仅可清理扫描确认的过期未引用文件");
+    const index = candidates.length ? await this.files.createReferenceIndex() : undefined;
     for(const entry of candidates) {
       const absolute = paths[entry!.id];
       const stat = await fs.lstat(cleanupPath(absolute)).catch(()=>null);
-      if(!stat || Math.max(stat.mtimeMs,stat.ctimeMs)>Date.now()-AGE || await this.files.references(absolute)) continue;
+      if(!stat || Math.max(stat.mtimeMs,stat.ctimeMs)>Date.now()-AGE || await this.files.references(absolute,index)) continue;
       await this.files.enqueue(absolute,"扫描发现的过期未引用文件");
     }
     await this.files.process(); return {ok:true};

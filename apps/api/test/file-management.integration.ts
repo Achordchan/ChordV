@@ -34,7 +34,11 @@ async function main() {
     const copied=await prisma.releaseArtifact.findUniqueOrThrow({where:{id:secondId}});
     const originalPath=path.join(root,original.storedFilePath!);let copiedPath=path.join(root,copied.storedFilePath!);
     assert.equal((await fs.stat(originalPath)).ino,(await fs.stat(copiedPath)).ino,"reused files share physical storage without sharing paths");
+    await prisma.releaseArtifact.update({where:{id:secondId},data:{deliveryMode:"external_download",isFullPackage:false,allowClientMirror:true,defaultMirrorPrefix:"https://old.example.test"}});
     await releases.reuseReleaseArtifact("release_second",firstId);
+    const updatedDelivery=await prisma.releaseArtifact.findUniqueOrThrow({where:{id:secondId}});
+    assert.equal(updatedDelivery.deliveryMode,"desktop_installer_download");assert.equal(updatedDelivery.isFullPackage,true);
+    assert.equal(updatedDelivery.allowClientMirror,false);assert.equal(updatedDelivery.defaultMirrorPrefix,null);
     assert.equal(await prisma.releaseArtifact.count({where:{releaseId:"release_second"}}),1,"reusing identical content must not create duplicate records");
     await files.process();
     copiedPath=path.join(root,(await prisma.releaseArtifact.findUniqueOrThrow({where:{id:secondId}})).storedFilePath!);
@@ -124,6 +128,13 @@ async function main() {
       await files.enqueue(copiedPath,"测试物理路径引用保护");await files.process();await fs.access(copiedPath);
     } finally { Date.now=aliasNow; }
     await prisma.releaseArtifact.update({where:{id:secondId},data:{storedFilePath:path.relative(root,copiedPath)}});await fs.unlink(alias);
+
+    const changedTarget=path.join(root,"release_changed","artifact_changed","file_changed.dmg");await fs.mkdir(path.dirname(changedTarget),{recursive:true});await fs.writeFile(changedTarget,bytes);
+    const beforeChange=await files.createReferenceIndex();
+    const changedAlias=path.join(root,"changed_alias");await fs.symlink(path.dirname(changedTarget),changedAlias,"dir");
+    await prisma.releaseArtifact.update({where:{id:secondId},data:{storedFilePath:path.join("changed_alias",path.basename(changedTarget))}});
+    assert.equal(await files.references(changedTarget,beforeChange),true,"batch checks must include a newly written alias reference");
+    await prisma.releaseArtifact.update({where:{id:secondId},data:{storedFilePath:path.relative(root,copiedPath)}});await fs.unlink(changedAlias);await fs.unlink(changedTarget);
 
     // Inject EXDEV but execute the real exclusive copy and hash verification.
     const realLink=fs.link;fs.link=async()=>{throw Object.assign(new Error("cross-device"),{code:"EXDEV"});};

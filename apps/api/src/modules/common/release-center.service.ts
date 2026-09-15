@@ -768,7 +768,8 @@ export class ReleaseCenterService {
           if (oldPath && oldPath !== preparedFile.absolutePath) await this.files.enqueue(oldPath, "替换重复安装包文件", tx);
           return tx.releaseArtifact.update({ where: { id: duplicate.id }, data: {
             storedFilePath:preparedFile.storedFilePath, fileName:preparedFile.fileName, downloadUrl:buildReleaseArtifactDownloadUrl(duplicate.id),
-            ...(isPrimary ? {isPrimary:true}:{}), ...(file.sourceUrl ? {sourceUrl:file.sourceUrl}:{})
+            deliveryMode, isFullPackage:true, defaultMirrorPrefix:null, allowClientMirror:false,
+            isPrimary: isPrimary ?? duplicate.isPrimary, ...(file.sourceUrl ? {sourceUrl:file.sourceUrl}:{})
           } });
         }
         return tx.releaseArtifact.create({

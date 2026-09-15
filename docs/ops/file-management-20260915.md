@@ -139,3 +139,12 @@ git diff --check
 - `file-management.integration.ts`：真实目录符号链接的扫描/删除保护，以及注入 EXDEV 后的真实复制验证。
 
 API check、隔离 PostgreSQL 全部迁移与真实文件集成、dev-data / release-artifact-import-service / runtime-components-service / component-release-safety / storage-routes 五组定向回归及 diff 检查通过。跨文件系统错误通过注入验证，未挂载实际第二块磁盘；本轮无 UI、依赖或生产 Mock 改动。
+
+## PR #53 重复交付元数据与清理批次索引
+
+- `release-center.service.ts`：相同内容复用记录也写入已验证的 deliveryMode、isFullPackage、托管镜像策略及显式主包设置，不保留过时交付元数据。
+- `file-maintenance.service.ts`、`storage-catalog.service.ts`：每个清理批次建立共享真实路径引用索引；删除前继续进行即时字面引用查询，并增量读取批次开始后更新的引用，避免每个候选重新读取全部路径。
+- `schema.prisma`、`20260915163000_file_reference_indexes/migration.sql`：为三类引用记录的 updatedAt 增量查询添加索引。
+- `file-management.integration.ts`：覆盖重复内容交付元数据修复、批次创建后新增别名引用保护。
+
+Prisma generate、API check、独立 PostgreSQL 完整迁移及真实文件测试、dev-data / release-artifact-import-service / runtime-components-service / component-release-safety 回归通过。没有界面、依赖或生产 Mock 改动，未执行真实生产磁盘负载测试。

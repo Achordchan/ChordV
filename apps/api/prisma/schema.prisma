@@ -924,6 +924,7 @@ model ReleaseArtifact {
 
   @@index([releaseId, isPrimary])
   @@index([fileHash, fileSizeBytes])
+  @@index([updatedAt])
 }
 
 model RuntimeComponent {
@@ -950,6 +951,7 @@ model RuntimeComponent {
 
   @@unique([platform, architecture, kind])
   @@index([platform, architecture, enabled])
+  @@index([updatedAt])
 }
 
 model RuntimeComponentFailureReport {
@@ -1006,6 +1008,7 @@ model RuntimeComponentVersion {
 
   @@index([componentId, createdAt])
   @@index([status, updatedAt])
+  @@index([updatedAt])
 }
 
 // Latest observation per account and node; client reports never control node availability.
