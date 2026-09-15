@@ -1,3 +1,13 @@
+mod log_tail;
+mod startup_gate;
+static STARTUP_READY: startup_gate::StartupGate = startup_gate::StartupGate::new();
+static EXIT_CLEANUP_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(not(target_os = "android"))]
+mod tls_fingerprint;
+mod session_store;
+static NATIVE_SESSION_STORE: session_store::SessionStore = session_store::SessionStore::new();
+mod bounded_command;
+use bounded_command::{ChildGuard, CommandDeadlineExt, with_command_budget};
 mod connection_generation;
 mod node_probe;
 mod android_mobile_plugin;
@@ -29,8 +39,6 @@ use tauri::{ipc::Channel, AppHandle, Emitter, Manager, RunEvent, State};
 use tokio::sync::{oneshot, Mutex as AsyncMutex};
 use url::Url;
 
-#[cfg(not(target_os = "android"))]
-use native_tls::TlsConnector;
 use sha2::{Digest, Sha256};
 
 #[cfg(unix)]
@@ -145,7 +153,7 @@ struct SessionLeaseStatusDto {
     detail_reason: Option<String>,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct ShellState {
     status: String,
     signed_in: bool,
@@ -642,13 +650,24 @@ struct RemoteTextFetchResult {
 }
 
 #[tauri::command]
-fn load_session(app: AppHandle) -> Result<Option<AuthSessionDto>, String> {
+async fn load_session(app: AppHandle) -> Result<Option<AuthSessionDto>, String> {
+    tauri::async_runtime::spawn_blocking(move || load_session_blocking(app))
+        .await.map_err(|error| error.to_string())?
+}
+
+fn load_session_blocking(app: AppHandle) -> Result<Option<AuthSessionDto>, String> {
     read_session_from_disk(&app)
 }
 
 #[tauri::command]
-fn save_session(app: AppHandle, session: AuthSessionDto) -> Result<CommandResult, String> {
-    write_session_to_disk(&app, &session)?;
+async fn save_session(app: AppHandle, session: AuthSessionDto) -> Result<CommandResult, String> {
+    let epoch=NATIVE_SESSION_STORE.generation();
+    tauri::async_runtime::spawn_blocking(move || save_session_blocking(app, session, epoch))
+        .await.map_err(|error| error.to_string())?
+}
+
+fn save_session_blocking(app: AppHandle, session: AuthSessionDto, epoch:u64) -> Result<CommandResult, String> {
+    write_session_to_disk(&app, &session, epoch)?;
 
     Ok(CommandResult {
         ok: true,
@@ -659,7 +678,14 @@ fn save_session(app: AppHandle, session: AuthSessionDto) -> Result<CommandResult
 }
 
 #[tauri::command]
-fn clear_session(app: AppHandle) -> Result<CommandResult, String> {
+async fn clear_session(app: AppHandle) -> Result<CommandResult, String> {
+    CONNECTION_GENERATION.invalidate();
+    let epoch=NATIVE_SESSION_STORE.invalidate();
+    tauri::async_runtime::spawn_blocking(move || clear_session_blocking(&app, epoch))
+        .await.map_err(|error| error.to_string())?
+}
+
+fn clear_session_blocking(app: &AppHandle, epoch:u64) -> Result<CommandResult, String> {
     let state: State<'_, Mutex<RuntimeState>> = app.state();
     if let Ok(mut state) = state.lock() {
         shutdown_runtime(&app, &mut state);
@@ -667,10 +693,7 @@ fn clear_session(app: AppHandle) -> Result<CommandResult, String> {
         let _ = clear_system_proxy();
     }
 
-    let path = session_path(&app)?;
-    if path.exists() {
-        fs::remove_file(path).map_err(|error| error.to_string())?;
-    }
+    NATIVE_SESSION_STORE.clear(&session_path(&app)?,epoch)?;
 
     Ok(CommandResult {
         ok: true,
@@ -681,25 +704,13 @@ fn clear_session(app: AppHandle) -> Result<CommandResult, String> {
 }
 
 fn read_session_from_disk(app: &AppHandle) -> Result<Option<AuthSessionDto>, String> {
-    let path = session_path(app)?;
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    let session =
-        serde_json::from_str::<AuthSessionDto>(&content).map_err(|error| error.to_string())?;
-    Ok(Some(session))
+    NATIVE_SESSION_STORE.read(&session_path(app)?).map(|(session,_)|session)
 }
 
-fn write_session_to_disk(app: &AppHandle, session: &AuthSessionDto) -> Result<(), String> {
-    let path = session_path(app)?;
-    let parent = path.parent().ok_or_else(|| "会话路径无效".to_string())?;
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let serialized = serde_json::to_string(session).map_err(|error| error.to_string())?;
-    fs::write(&path, serialized).map_err(|error| error.to_string())?;
-    set_private_permissions(&path)?;
-    Ok(())
+fn write_session_to_disk(app: &AppHandle, session: &AuthSessionDto, epoch:u64) -> Result<(), String> {
+    let path=session_path(app)?;
+    NATIVE_SESSION_STORE.save(&path,session,epoch)?;
+    set_private_permissions(&path)
 }
 
 #[tauri::command]
@@ -734,7 +745,7 @@ async fn api_request(request: ApiRequestInput) -> Result<ApiResponseOutput, Stri
         .map(|value| value.trim().to_lowercase())
         .filter(|value| !value.is_empty());
     if let Some(expected) = pinned_fingerprint {
-        verify_server_certificate_fingerprint(&url, &expected)?;
+        verify_server_certificate_fingerprint(&url, &expected).await?;
     }
 
     let method = reqwest::Method::from_bytes(request.method.trim().to_uppercase().as_bytes())
@@ -835,10 +846,12 @@ fn stop_client_event_stream(
 }
 
 #[tauri::command]
-fn record_client_diagnostic(
-    app: AppHandle,
-    input: ClientDiagnosticInput,
-) -> Result<CommandResult, String> {
+async fn record_client_diagnostic(app: AppHandle, input: ClientDiagnosticInput) -> Result<CommandResult, String> {
+    tauri::async_runtime::spawn_blocking(move || record_client_diagnostic_blocking(app,input))
+        .await.map_err(|error|error.to_string())?
+}
+
+fn record_client_diagnostic_blocking(app: AppHandle, input: ClientDiagnosticInput) -> Result<CommandResult, String> {
     let category = input.category.trim();
     let message = input.message.trim();
     if !category.is_empty() && !message.is_empty() {
@@ -1112,6 +1125,7 @@ fn parse_api_error_message(body: &str) -> String {
 async fn refresh_access_session_inner(
     app: &AppHandle,
     refresh_token: &str,
+    epoch: u64,
 ) -> Result<AuthSessionDto, String> {
     let url = format!("{}/api/auth/refresh", api_base_url().trim_end_matches('/'));
     let response = api_client()?
@@ -1131,8 +1145,10 @@ async fn refresh_access_session_inner(
     }
     let session = serde_json::from_str::<AuthSessionDto>(&body)
         .map_err(|error| format!("解析登录态失败：{error}"))?;
-    write_session_to_disk(app, &session)?;
-    let _ = app.emit("chordv://native-session-refreshed", &session);
+    write_session_to_disk(app, &session, epoch)?;
+    let mut event=serde_json::to_value(&session).map_err(|error|error.to_string())?;
+    event["previousRefreshToken"]=json!(refresh_token);
+    let _ = app.emit("chordv://native-session-refreshed", &event);
     Ok(session)
 }
 
@@ -1143,7 +1159,8 @@ async fn refresh_access_session(
     let refresh_state = app.state::<AsyncMutex<NativeSessionRefreshState>>();
     let _guard = refresh_state.lock().await;
 
-    let session = read_session_from_disk(app)?.ok_or_else(|| "当前没有可用登录态".to_string())?;
+    let (session, epoch)=NATIVE_SESSION_STORE.read::<AuthSessionDto>(&session_path(app)?)?;
+    let session=session.ok_or_else(|| "当前没有可用登录态".to_string())?;
     let stored_refresh_token = session.refresh_token.trim().to_string();
     let hinted_refresh_token = refresh_token_hint
         .map(str::trim)
@@ -1159,7 +1176,7 @@ async fn refresh_access_session(
         return Err("当前没有可用刷新令牌".into());
     }
 
-    refresh_access_session_inner(app, &stored_refresh_token).await
+    refresh_access_session_inner(app, &stored_refresh_token, epoch).await
 }
 
 #[tauri::command]
@@ -1570,6 +1587,16 @@ async fn download_desktop_installer(
     input: DesktopInstallerDownloadInput,
     progress_channel: Channel<DesktopInstallerDownloadProgress>,
 ) -> Result<DesktopInstallerDownloadResult, String> {
+    tauri::async_runtime::spawn_blocking(move || tauri::async_runtime::block_on(download_desktop_installer_inner(app, input, progress_channel)))
+        .await.map_err(|error| error.to_string())?
+}
+
+async fn download_desktop_installer_inner(
+    app: AppHandle,
+    input: DesktopInstallerDownloadInput,
+    progress_channel: Channel<DesktopInstallerDownloadProgress>,
+) -> Result<DesktopInstallerDownloadResult, String> {
+    STARTUP_READY.wait()?;
     #[cfg(target_os = "android")]
     {
         let _ = (app, input, progress_channel);
@@ -2025,7 +2052,12 @@ fn take_pending_full_update_package(
 }
 
 #[tauri::command]
-fn open_desktop_installer(app: AppHandle, path: String) -> Result<CommandResult, String> {
+async fn open_desktop_installer(app: AppHandle, path: String) -> Result<CommandResult, String> {
+    tauri::async_runtime::spawn_blocking(move || open_desktop_installer_blocking(app, path))
+        .await.map_err(|error| error.to_string())?
+}
+
+fn open_desktop_installer_blocking(app: AppHandle, path: String) -> Result<CommandResult, String> {
     #[cfg(target_os = "android")]
     {
         let _ = (app, path);
@@ -2071,7 +2103,12 @@ fn open_desktop_installer(app: AppHandle, path: String) -> Result<CommandResult,
 }
 
 #[tauri::command]
-fn open_external_url(url: String) -> Result<CommandResult, String> {
+async fn open_external_url(url: String) -> Result<CommandResult, String> {
+    tauri::async_runtime::spawn_blocking(move || open_external_url_blocking(url))
+        .await.map_err(|error| error.to_string())?
+}
+
+fn open_external_url_blocking(url: String) -> Result<CommandResult, String> {
     let parsed_url =
         Url::parse(url.trim()).map_err(|error| format!("外部链接格式无效：{error}"))?;
     if !matches!(parsed_url.scheme(), "http" | "https") {
@@ -2087,10 +2124,19 @@ fn open_external_url(url: String) -> Result<CommandResult, String> {
 }
 
 #[tauri::command]
-fn test_routing_rule(
+async fn test_routing_rule(
     app: AppHandle,
     input: RoutingRuleTestInput,
 ) -> Result<RoutingRuleTestResultDto, String> {
+    tauri::async_runtime::spawn_blocking(move || test_routing_rule_blocking(app, input))
+        .await.map_err(|error| error.to_string())?
+}
+
+fn test_routing_rule_blocking(
+    app: AppHandle,
+    input: RoutingRuleTestInput,
+) -> Result<RoutingRuleTestResultDto, String> {
+    STARTUP_READY.wait()?;
     let started_at = Instant::now();
     let target = normalize_routing_test_target(&input.value)?;
     let host = if target.match_type == "domain" {
@@ -2249,7 +2295,14 @@ fn write_desktop_update_install_report(
 }
 
 #[tauri::command]
-fn consume_desktop_update_install_report(
+async fn consume_desktop_update_install_report(
+    app: AppHandle,
+) -> Result<Option<DesktopUpdateInstallReportDto>, String> {
+    tauri::async_runtime::spawn_blocking(move || consume_desktop_update_install_report_blocking(app))
+        .await.map_err(|error| error.to_string())?
+}
+
+fn consume_desktop_update_install_report_blocking(
     app: AppHandle,
 ) -> Result<Option<DesktopUpdateInstallReportDto>, String> {
     let path = desktop_update_report_path(&app)?;
@@ -2296,7 +2349,12 @@ fn consume_desktop_update_install_report(
 }
 
 #[tauri::command]
-fn quit_for_update(app: AppHandle) -> Result<CommandResult, String> {
+async fn quit_for_update(app: AppHandle) -> Result<CommandResult, String> {
+    tauri::async_runtime::spawn_blocking(move || quit_for_update_blocking(app))
+        .await.map_err(|error| error.to_string())?
+}
+
+fn quit_for_update_blocking(app: AppHandle) -> Result<CommandResult, String> {
     #[cfg(target_os = "android")]
     {
         let _ = app;
@@ -2362,7 +2420,12 @@ fn quit_for_update(app: AppHandle) -> Result<CommandResult, String> {
 }
 
 #[tauri::command]
-fn apply_desktop_full_update(app: AppHandle) -> Result<CommandResult, String> {
+async fn apply_desktop_full_update(app: AppHandle) -> Result<CommandResult, String> {
+    tauri::async_runtime::spawn_blocking(move || apply_desktop_full_update_blocking(app))
+        .await.map_err(|error| error.to_string())?
+}
+
+fn apply_desktop_full_update_blocking(app: AppHandle) -> Result<CommandResult, String> {
     #[cfg(not(windows))]
     {
         let _ = app;
@@ -2468,7 +2531,12 @@ fn apply_desktop_full_update(app: AppHandle) -> Result<CommandResult, String> {
 }
 
 #[tauri::command]
-fn desktop_runtime_environment(app: AppHandle) -> Result<DesktopRuntimeEnvironment, String> {
+async fn desktop_runtime_environment(app: AppHandle) -> Result<DesktopRuntimeEnvironment, String> {
+    tauri::async_runtime::spawn_blocking(move || desktop_runtime_environment_blocking(app))
+        .await.map_err(|error| error.to_string())?
+}
+
+fn desktop_runtime_environment_blocking(app: AppHandle) -> Result<DesktopRuntimeEnvironment, String> {
     #[cfg(target_os = "android")]
     {
         let _ = app;
@@ -2487,10 +2555,19 @@ fn desktop_runtime_environment(app: AppHandle) -> Result<DesktopRuntimeEnvironme
 }
 
 #[tauri::command]
-fn get_runtime_component_local_info(
+async fn get_runtime_component_local_info(
     app: AppHandle,
     component: RuntimeComponentKindInput,
 ) -> Result<RuntimeComponentLocalInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || get_runtime_component_local_info_blocking(app, component))
+        .await.map_err(|error| error.to_string())?
+}
+
+fn get_runtime_component_local_info_blocking(
+    app: AppHandle,
+    component: RuntimeComponentKindInput,
+) -> Result<RuntimeComponentLocalInfo, String> {
+    STARTUP_READY.wait()?;
     #[cfg(target_os = "android")]
     {
         let _ = (app, component);
@@ -2554,7 +2631,7 @@ fn detect_xray_version_label(path: &Path) -> Option<String> {
     command.arg("version");
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
-    let output = command.output().ok()?;
+    let output = command.bounded_output().ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     parse_xray_version_output(&format!("{stdout}\n{stderr}"))
@@ -2614,10 +2691,19 @@ async fn fetch_remote_text(url: String) -> Result<RemoteTextFetchResult, String>
 }
 
 #[tauri::command]
-fn check_runtime_component_file(
+async fn check_runtime_component_file(
     app: AppHandle,
     component: RuntimeComponentDownloadItemInput,
 ) -> Result<RuntimeComponentFileStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || check_runtime_component_file_blocking(app, component))
+        .await.map_err(|error| error.to_string())?
+}
+
+fn check_runtime_component_file_blocking(
+    app: AppHandle,
+    component: RuntimeComponentDownloadItemInput,
+) -> Result<RuntimeComponentFileStatus, String> {
+    STARTUP_READY.wait()?;
     #[cfg(target_os = "android")]
     {
         let _ = (app, component);
@@ -2692,9 +2778,17 @@ fn check_runtime_component_file(
 }
 
 #[tauri::command]
-fn ensure_bundled_runtime_components(
+async fn ensure_bundled_runtime_components(
     app: AppHandle,
 ) -> Result<BundledRuntimeComponentsStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || ensure_bundled_runtime_components_blocking(app))
+        .await.map_err(|error| error.to_string())?
+}
+
+fn ensure_bundled_runtime_components_blocking(
+    app: AppHandle,
+) -> Result<BundledRuntimeComponentsStatus, String> {
+    STARTUP_READY.wait()?;
     #[cfg(target_os = "android")]
     {
         let _ = app;
@@ -2758,6 +2852,15 @@ async fn download_runtime_component(
     app: AppHandle,
     input: RuntimeComponentDownloadInput,
 ) -> Result<RuntimeComponentDownloadResult, String> {
+    tauri::async_runtime::spawn_blocking(move || tauri::async_runtime::block_on(download_runtime_component_inner(app, input)))
+        .await.map_err(|error| error.to_string())?
+}
+
+async fn download_runtime_component_inner(
+    app: AppHandle,
+    input: RuntimeComponentDownloadInput,
+) -> Result<RuntimeComponentDownloadResult, String> {
+    STARTUP_READY.wait()?;
     #[cfg(target_os = "android")]
     {
         let _ = (app, input);
@@ -3200,7 +3303,7 @@ fn hide_main_window(app: AppHandle) -> Result<CommandResult, String> {
 
 #[tauri::command]
 fn quit_application(app: AppHandle) -> Result<CommandResult, String> {
-    shutdown_runtime_state(&app);
+    CONNECTION_GENERATION.invalidate();
     app.exit(0);
     Ok(CommandResult {
         ok: true,
@@ -3275,24 +3378,31 @@ fn app_ready(_app: AppHandle) -> Result<CommandResult, String> {
 }
 
 #[tauri::command]
-fn runtime_status(_app: AppHandle, state: State<'_, Mutex<RuntimeState>>) -> RuntimeStatusResponse {
-    let mut state = state.lock().expect("runtime state lock");
-    refresh_child_state(&mut state);
-    #[cfg(not(target_os = "android"))]
-    sync_shell_from_runtime(&_app, &state);
-    to_runtime_status_response(&state)
+async fn runtime_status(app: AppHandle) -> Result<RuntimeStatusResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let binding = app.state::<Mutex<RuntimeState>>();
+        let mut state = binding.lock().map_err(|_| "运行时状态异常".to_string())?;
+        refresh_child_state(&mut state);
+        #[cfg(not(target_os = "android"))]
+        sync_shell_from_runtime(&app, &state);
+        Ok(to_runtime_status_response(&state))
+    }).await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn runtime_logs(app: AppHandle, state: State<'_, Mutex<RuntimeState>>) -> RuntimeLogResponse {
-    let mut state = state.lock().expect("runtime state lock");
-    refresh_child_state(&mut state);
+async fn runtime_logs(app: AppHandle) -> Result<RuntimeLogResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || runtime_logs_blocking(&app))
+        .await.map_err(|error| error.to_string())?
+}
 
-    let runtime_log = state
-        .log_path
-        .as_ref()
-        .map(|path| tail_log(path, 80))
-        .unwrap_or_default();
+fn runtime_logs_blocking(app: &AppHandle) -> Result<RuntimeLogResponse, String> {
+    let log_path = {
+        let binding = app.state::<Mutex<RuntimeState>>();
+        let mut state = binding.lock().map_err(|_| "运行时状态异常".to_string())?;
+        refresh_child_state(&mut state);
+        state.log_path.clone()
+    };
+    let runtime_log = log_path.as_ref().map(|path| tail_log(path, 80)).unwrap_or_default();
     let download_log = download_diagnostics_log_path(&app)
         .ok()
         .map(|path| tail_log(&path, 120))
@@ -3309,17 +3419,16 @@ fn runtime_logs(app: AppHandle, state: State<'_, Mutex<RuntimeState>>) -> Runtim
         }
     };
 
-    RuntimeLogResponse { log }
+    Ok(RuntimeLogResponse { log })
 }
 
 #[tauri::command]
-fn runtime_snapshot(
-    state: State<'_, Mutex<RuntimeState>>,
-) -> Result<RuntimeSnapshotResponse, String> {
-    let state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
-    Ok(RuntimeSnapshotResponse {
-        runtime: state.active_config.clone(),
-    })
+async fn runtime_snapshot(app: AppHandle) -> Result<RuntimeSnapshotResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let binding = app.state::<Mutex<RuntimeState>>();
+        let state = binding.lock().map_err(|_| "运行时状态异常".to_string())?;
+        Ok(RuntimeSnapshotResponse { runtime: state.active_config.clone() })
+    }).await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -3327,7 +3436,7 @@ async fn check_network_conflict(app: AppHandle) -> Result<(), String> {
     let check = tauri::async_runtime::spawn_blocking(move || {
         let runtime = app.state::<Mutex<RuntimeState>>();
         let (http, socks) = {
-            let state = runtime.lock().map_err(|_| "运行时状态异常".to_string())?;
+            let state = runtime.try_lock().map_err(|_| "连接状态正在切换，请稍后重试。".to_string())?;
             if state.active_pid.is_some() {
                 (state.local_http_port.unwrap_or(0), state.local_socks_port.unwrap_or(0))
             } else { (0, 0) }
@@ -3347,6 +3456,36 @@ async fn connect_runtime(app: AppHandle, config: GeneratedRuntimeConfigDto) -> R
 }
 
 fn connect_runtime_blocking(app: &AppHandle, config: GeneratedRuntimeConfigDto, generation: u64) -> Result<CommandResult, String> {
+    STARTUP_READY.wait()?;
+    let session_id = config.session_id.clone();
+    let result = connect_runtime_inner(app, config, generation);
+    if let Err(error) = &result {
+        let binding = app.state::<Mutex<RuntimeState>>();
+        if let Ok(mut state) = binding.lock() {
+            if state.active_session_id.as_deref() == Some(session_id.as_str()) && state.status != "connected" {
+                stop_runtime_process(app, &mut state);
+                let _ = clear_system_proxy();
+                mark_failed_runtime_start(&mut state,error);
+                sync_shell_from_runtime(app, &state);
+            }
+        };
+    }
+    result
+}
+
+fn mark_failed_runtime_start(state: &mut RuntimeState, error:&str) {
+    state.status="error".into();
+    state.active_session_id=None;
+    state.active_node_id=None;
+    state.active_node_name=None;
+    state.active_config=None;
+    state.active_pid=None;
+    state.local_http_port=None;
+    state.local_socks_port=None;
+    state.last_error=Some(error.into());
+}
+
+fn connect_runtime_inner(app: &AppHandle, config: GeneratedRuntimeConfigDto, generation: u64) -> Result<CommandResult, String> {
     let state = app.state::<Mutex<RuntimeState>>();
     {
         let mut state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
@@ -3454,9 +3593,9 @@ fn connect_runtime_blocking(app: &AppHandle, config: GeneratedRuntimeConfigDto, 
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
 
-    let mut child = command
+    let mut child = ChildGuard::new(command
         .spawn()
-        .map_err(|error| format!("启动内核失败：{error}"))?;
+        .map_err(|error| format!("启动内核失败：{error}"))?);
 
     if let Some(exit_status) = child.try_wait().map_err(|error| error.to_string())? {
         let log = tail_log(&log_path, 40);
@@ -3479,7 +3618,7 @@ fn connect_runtime_blocking(app: &AppHandle, config: GeneratedRuntimeConfigDto, 
         });
     }
 
-    if let Err(error) = verify_runtime_ready(&app, config.local_http_port, config.local_socks_port)
+    if let Err(error) = verify_runtime_ready(&app, config.local_http_port, config.local_socks_port, generation)
     {
         rollback_connect_failure(&app, &mut state, &mut child, error.clone());
         return Err(error);
@@ -3510,13 +3649,14 @@ fn connect_runtime_blocking(app: &AppHandle, config: GeneratedRuntimeConfigDto, 
         }
     }
 
+    CONNECTION_GENERATION.ensure_current(generation)?;
     state.status = "connected".into();
     state.config_path = Some(config_path.clone());
     state.log_path = Some(log_path.clone());
     state.xray_binary_path = Some(xray_binary_path.clone());
     state.active_pid = Some(child.id());
     persist_runtime_pid(&app, child.id(), &xray_binary_path);
-    state.child = Some(child);
+    state.child = Some(child.into_inner());
     sync_shell_from_runtime(&app, &state);
     notify_native_lease_heartbeat(&app);
 
@@ -3563,13 +3703,8 @@ fn append_download_diagnostic_log(app: &AppHandle, category: &str, message: impl
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
         return;
     };
-    let _ = writeln!(
-        file,
-        "[{}] [{}] {}",
-        chrono_like_now(),
-        category,
-        message.as_ref()
-    );
+    let line=format!("[{}] [{}] {}\n",chrono_like_now(),category,message.as_ref());
+    let _=file.write_all(line.as_bytes());
 }
 
 fn ensure_runtime_bin_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -4230,7 +4365,7 @@ fn runtime_platform_name() -> &'static str {
 fn detect_runtime_component_architecture() -> &'static str {
     #[cfg(target_os = "macos")]
     {
-        if let Ok(output) = Command::new("uname").arg("-m").output() {
+        if let Ok(output) = Command::new("uname").arg("-m").bounded_output() {
             let architecture = String::from_utf8_lossy(&output.stdout)
                 .trim()
                 .to_lowercase();
@@ -6073,6 +6208,7 @@ fn refresh_child_state(state: &mut RuntimeState) {
 }
 
 fn stop_runtime_process(app: &AppHandle, state: &mut RuntimeState) {
+    let stopped_pid = state.child.as_ref().map(Child::id);
     if let Some(mut child) = state.child.take() {
         let _ = child.kill();
         let _ = child.wait();
@@ -6082,7 +6218,7 @@ fn stop_runtime_process(app: &AppHandle, state: &mut RuntimeState) {
     state.runtime_component_handles.clear();
 
     if let Some(record) = load_runtime_pid_record(app) {
-        if runtime_pid_belongs_to_chordv(app, &record) {
+        if stopped_pid != Some(record.pid) && runtime_pid_belongs_to_chordv(app, &record) {
             let _ = kill_pid(record.pid);
         }
     }
@@ -6202,7 +6338,7 @@ fn runtime_pid_alive(pid: u32) -> bool {
     {
         Command::new("kill")
             .args(["-0", &pid.to_string()])
-            .status()
+            .bounded_status()
             .map(|status| status.success())
             .unwrap_or(false)
     }
@@ -6213,7 +6349,7 @@ fn runtime_pid_alive(pid: u32) -> bool {
         command.creation_flags(CREATE_NO_WINDOW);
         command
             .args(["/FI", &format!("PID eq {pid}")])
-            .output()
+            .bounded_output()
             .map(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
             .unwrap_or(false)
     }
@@ -6224,7 +6360,7 @@ fn runtime_process_command(pid: u32) -> Option<String> {
     {
         Command::new("ps")
             .args(["-p", &pid.to_string(), "-o", "command="])
-            .output()
+            .bounded_output()
             .ok()
             .and_then(|output| {
                 if output.status.success() {
@@ -6247,7 +6383,7 @@ fn runtime_process_command(pid: u32) -> Option<String> {
                     "$p = Get-CimInstance Win32_Process -Filter \"ProcessId = {pid}\"; if ($p) {{ \"$($p.ExecutablePath)`n$($p.CommandLine)\" }}"
                 ),
             ])
-            .output()
+            .bounded_output()
             .ok()
             .and_then(|output| {
                 if output.status.success() {
@@ -6298,7 +6434,7 @@ fn kill_pid(pid: u32) -> Result<(), String> {
     {
         let status = Command::new("kill")
             .args(["-9", &pid.to_string()])
-            .status()
+            .bounded_status()
             .map_err(|error| error.to_string())?;
         if status.success() {
             return Ok(());
@@ -6311,7 +6447,7 @@ fn kill_pid(pid: u32) -> Result<(), String> {
         let mut command = Command::new("taskkill");
         command.args(["/PID", &pid.to_string(), "/T", "/F"]);
         command.creation_flags(CREATE_NO_WINDOW);
-        let status = command.status().map_err(|error| error.to_string())?;
+        let status = command.bounded_status().map_err(|error| error.to_string())?;
         if status.success() {
             return Ok(());
         }
@@ -6323,44 +6459,13 @@ fn kill_pid(pid: u32) -> Result<(), String> {
 }
 
 
-fn verify_server_certificate_fingerprint(url: &Url, expected: &str) -> Result<(), String> {
+async fn verify_server_certificate_fingerprint(url: &Url, expected: &str) -> Result<(), String> {
     #[cfg(target_os = "android")]
-    {
-        let _ = (url, expected);
-        return Ok(());
-    }
-
+    {let _=(url,expected);Ok(())}
     #[cfg(not(target_os = "android"))]
-    {
-        let host = url
-            .host_str()
-            .ok_or_else(|| "API 地址缺少主机名".to_string())?;
-        let port = url.port_or_known_default().unwrap_or(443);
-        let tcp = TcpStream::connect((host, port))
-            .map_err(|error| format!("建立 TLS 连接失败：{error}"))?;
-        let connector = TlsConnector::builder()
-            .danger_accept_invalid_certs(true)
-            .build()
-            .map_err(|error| format!("初始化 TLS 连接器失败：{error}"))?;
-        let tls = connector
-            .connect(host, tcp)
-            .map_err(|error| format!("TLS 握手失败：{error}"))?;
-        let cert = tls
-            .peer_certificate()
-            .map_err(|error| format!("读取服务端证书失败：{error}"))?
-            .ok_or_else(|| "服务端未返回证书".to_string())?;
-        let der = cert
-            .to_der()
-            .map_err(|error| format!("解析服务端证书失败：{error}"))?;
-        let hash = Sha256::digest(der);
-        let actual = hex::encode(hash);
-        let normalized = expected.replace(':', "").to_lowercase();
-        if actual != normalized {
-            return Err("API 证书指纹校验失败".into());
-        }
-        Ok(())
-    }
+    {tls_fingerprint::verify(url,expected).await}
 }
+
 
 fn chrono_like_now() -> String {
     let now = std::time::SystemTime::now();
@@ -6370,8 +6475,9 @@ fn chrono_like_now() -> String {
 
 fn shutdown_runtime(app: &AppHandle, state: &mut RuntimeState) {
     CONNECTION_GENERATION.invalidate();
-    let _ = clear_system_proxy();
-
+    if state.active_session_id.is_some() || state.active_pid.is_some() || state.child.is_some() || state.last_error.is_some() {
+        let _ = clear_system_proxy();
+    }
     stop_runtime_process(app, state);
     state.status = "idle".into();
     state.active_session_id = None;
@@ -6396,31 +6502,7 @@ fn shutdown_runtime_state(app: &AppHandle) {
     };
 }
 
-fn tail_log(path: &Path, lines: usize) -> String {
-    use std::collections::VecDeque;
-    use std::io::{BufRead, BufReader};
-
-    let Ok(file) = File::open(path) else {
-        return String::new();
-    };
-
-    let reader = BufReader::new(file);
-    let mut ring: VecDeque<String> = VecDeque::with_capacity(lines.max(1));
-    for line in reader.lines() {
-        let Ok(line) = line else {
-            continue;
-        };
-        if ring.len() == lines {
-            ring.pop_front();
-        }
-        ring.push_back(line);
-    }
-
-    ring.into_iter().collect::<Vec<_>>().join(
-        "
-",
-    )
-}
+fn tail_log(path: &Path, lines: usize) -> String { log_tail::read_tail(path,lines) }
 
 fn is_port_open(port: u16) -> bool {
     TcpStream::connect(("127.0.0.1", port)).is_ok()
@@ -6475,13 +6557,14 @@ fn rollback_connect_failure(
     sync_shell_from_runtime(app, state);
 }
 
-fn verify_runtime_ready(_app: &AppHandle, http_port: u16, socks_port: u16) -> Result<(), String> {
+fn verify_runtime_ready(_app: &AppHandle, http_port: u16, socks_port: u16, generation: u64) -> Result<(), String> {
     let start = Instant::now();
     let timeout = Duration::from_secs(6);
     let mut http_ready = false;
     let mut socks_ready = false;
 
     while start.elapsed() < timeout {
+        CONNECTION_GENERATION.ensure_current(generation)?;
         http_ready = is_port_open(http_port);
         socks_ready = is_port_open(socks_port);
         if http_ready && socks_ready {
@@ -6500,6 +6583,10 @@ fn verify_runtime_ready(_app: &AppHandle, http_port: u16, socks_port: u16) -> Re
 
 
 fn set_system_proxy(http_port: u16, socks_port: u16) -> Result<(), io::Error> {
+    with_command_budget(Duration::from_secs(15), || set_system_proxy_within_budget(http_port, socks_port))
+}
+
+fn set_system_proxy_within_budget(http_port: u16, socks_port: u16) -> Result<(), io::Error> {
     #[cfg(target_os = "macos")]
     {
         set_proxy(http_port, socks_port)
@@ -6518,11 +6605,12 @@ fn set_system_proxy(http_port: u16, socks_port: u16) -> Result<(), io::Error> {
 }
 
 fn clear_system_proxy() -> Result<(), io::Error> {
+    with_command_budget(Duration::from_secs(15), || clear_system_proxy_within_budget())
+}
+
+fn clear_system_proxy_within_budget() -> Result<(), io::Error> {
     #[cfg(target_os = "macos")]
     {
-        if !macos_proxy_owned_by_chordv()? {
-            return Ok(());
-        }
         clear_proxy()
     }
 
@@ -6541,6 +6629,10 @@ fn clear_system_proxy() -> Result<(), io::Error> {
 }
 
 fn detect_external_network_conflict(http_port: u16, socks_port: u16) -> Result<(), String> {
+    with_command_budget(Duration::from_millis(2500), || detect_external_network_conflict_within_budget(http_port, socks_port))
+}
+
+fn detect_external_network_conflict_within_budget(http_port: u16, socks_port: u16) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         detect_macos_external_network_conflict(http_port, socks_port)
@@ -6560,14 +6652,14 @@ fn detect_external_network_conflict(http_port: u16, socks_port: u16) -> Result<(
 
 #[cfg(target_os = "macos")]
 fn detect_macos_external_network_conflict(http_port: u16, socks_port: u16) -> Result<(), String> {
-    if let Some(vpn_name) = detect_connected_macos_vpn_name() {
+    if let Some(vpn_name) = detect_connected_macos_vpn_name()? {
         return Err(format!(
             "external_vpn_conflict: 检测到系统中已有 VPN 正在运行（{}），请先断开后再连接 ChordV。",
             vpn_name
         ));
     }
 
-    if let Some(proxy_summary) = detect_macos_proxy_conflict(http_port, socks_port) {
+    if let Some(proxy_summary) = detect_macos_proxy_conflict(http_port, socks_port)? {
         return Err(format!(
             "external_proxy_conflict: 检测到系统代理已由其他应用占用（{}），请先关闭后再连接 ChordV。",
             proxy_summary
@@ -6578,16 +6670,16 @@ fn detect_macos_external_network_conflict(http_port: u16, socks_port: u16) -> Re
 }
 
 #[cfg(target_os = "macos")]
-fn detect_connected_macos_vpn_name() -> Option<String> {
+fn detect_connected_macos_vpn_name() -> Result<Option<String>, String> {
     let output = Command::new("scutil")
         .args(["--nc", "list"])
-        .output()
-        .ok()?;
+        .bounded_output()
+        .map_err(|error| format!("无法完成系统网络检查：{error}"))?;
     if !output.status.success() {
-        return None;
+        return Err("无法读取系统 VPN 状态".into());
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    text.lines().find_map(|line| {
+    Ok(text.lines().find_map(|line| {
         let trimmed = line.trim();
         if !trimmed.contains("(Connected)") {
             return None;
@@ -6598,14 +6690,14 @@ fn detect_connected_macos_vpn_name() -> Option<String> {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
         quoted.or_else(|| Some(trimmed.to_string()))
-    })
+    }))
 }
 
 #[cfg(target_os = "macos")]
-fn detect_macos_proxy_conflict(http_port: u16, socks_port: u16) -> Option<String> {
-    let output = Command::new("scutil").arg("--proxy").output().ok()?;
+fn detect_macos_proxy_conflict(http_port: u16, socks_port: u16) -> Result<Option<String>, String> {
+    let output = Command::new("scutil").arg("--proxy").bounded_output().map_err(|error| format!("无法读取系统代理：{error}"))?;
     if !output.status.success() {
-        return None;
+        return Err("无法读取系统代理状态".into());
     }
     let text = String::from_utf8_lossy(&output.stdout);
 
@@ -6637,28 +6729,28 @@ fn detect_macos_proxy_conflict(http_port: u16, socks_port: u16) -> Option<String
         );
 
     if http_conflict {
-        return Some(format!(
+        return Ok(Some(format!(
             "HTTP {}:{}",
             http_proxy.unwrap_or_else(|| "未知地址".to_string()),
             proxy_dict_u16(&text, "HTTPPort").unwrap_or_default()
-        ));
+        )));
     }
     if https_conflict {
-        return Some(format!(
+        return Ok(Some(format!(
             "HTTPS {}:{}",
             https_proxy.unwrap_or_else(|| "未知地址".to_string()),
             proxy_dict_u16(&text, "HTTPSPort").unwrap_or_default()
-        ));
+        )));
     }
     if socks_conflict {
-        return Some(format!(
+        return Ok(Some(format!(
             "SOCKS {}:{}",
             socks_proxy.unwrap_or_else(|| "未知地址".to_string()),
             proxy_dict_u16(&text, "SOCKSPort").unwrap_or_default()
-        ));
+        )));
     }
 
-    None
+    Ok(None)
 }
 
 #[cfg(target_os = "macos")]
@@ -6693,7 +6785,7 @@ fn matches_our_proxy(host: Option<&str>, port: Option<u16>, expected_port: u16) 
 
 #[cfg(windows)]
 fn detect_windows_external_network_conflict(http_port: u16, socks_port: u16) -> Result<(), String> {
-    if let Some(vpn_name) = detect_connected_windows_vpn_name() {
+    if let Some(vpn_name) = detect_connected_windows_vpn_name()? {
         return Err(format!(
             "external_vpn_conflict: 检测到系统中已有 VPN 正在运行（{}），请先断开后再连接 ChordV。",
             vpn_name
@@ -6702,7 +6794,7 @@ fn detect_windows_external_network_conflict(http_port: u16, socks_port: u16) -> 
 
     let _ = socks_port;
     let expected = windows_manual_proxy_server(http_port);
-    if let Some(proxy_server) = detect_windows_proxy_conflict(&expected) {
+    if let Some(proxy_server) = detect_windows_proxy_conflict(&expected)? {
         return Err(format!(
             "external_proxy_conflict: 检测到系统代理已由其他应用占用（{}），请先关闭后再连接 ChordV。",
             proxy_server
@@ -6713,7 +6805,7 @@ fn detect_windows_external_network_conflict(http_port: u16, socks_port: u16) -> 
 }
 
 #[cfg(windows)]
-fn detect_connected_windows_vpn_name() -> Option<String> {
+fn detect_connected_windows_vpn_name() -> Result<Option<String>, String> {
     let mut command = Command::new("powershell");
     command.creation_flags(CREATE_NO_WINDOW);
     let output = command
@@ -6722,20 +6814,20 @@ fn detect_connected_windows_vpn_name() -> Option<String> {
             "-Command",
             "Get-VpnConnection | Where-Object {$_.ConnectionStatus -eq 'Connected'} | Select-Object -ExpandProperty Name",
         ])
-        .output()
-        .ok()?;
+        .bounded_output()
+        .map_err(|error| format!("无法完成系统网络检查：{error}"))?;
     if !output.status.success() {
-        return None;
+        return Err("无法读取系统 VPN 状态".into());
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    text.lines()
+    Ok(text.lines()
         .map(str::trim)
         .find(|value| !value.is_empty())
-        .map(|value| value.to_string())
+        .map(|value| value.to_string()))
 }
 
 #[cfg(windows)]
-fn detect_windows_proxy_conflict(expected_proxy_server: &str) -> Option<String> {
+fn detect_windows_proxy_conflict(expected_proxy_server: &str) -> Result<Option<String>, String> {
     let mut enable = Command::new("reg");
     enable.creation_flags(CREATE_NO_WINDOW);
     let enable_output = enable
@@ -6745,11 +6837,11 @@ fn detect_windows_proxy_conflict(expected_proxy_server: &str) -> Option<String> 
             "/v",
             "ProxyEnable",
         ])
-        .output()
-        .ok()?;
+        .bounded_output()
+        .map_err(|error| format!("无法读取 Windows 系统代理：{error}"))?;
     let enable_text = String::from_utf8_lossy(&enable_output.stdout).to_lowercase();
     if !enable_output.status.success() || !enable_text.contains("0x1") {
-        return None;
+        return Ok(None);
     }
 
     let mut server = Command::new("reg");
@@ -6761,16 +6853,16 @@ fn detect_windows_proxy_conflict(expected_proxy_server: &str) -> Option<String> 
             "/v",
             "ProxyServer",
         ])
-        .output()
-        .ok()?;
+        .bounded_output()
+        .map_err(|error| format!("无法读取 Windows 系统代理：{error}"))?;
     if !server_output.status.success() {
-        return Some("未知代理".to_string());
+        return Ok(Some("未知代理".to_string()));
     }
     let server_text = String::from_utf8_lossy(&server_output.stdout);
     if server_text.contains(expected_proxy_server) {
-        return None;
+        return Ok(None);
     }
-    server_text
+    Ok(server_text
         .lines()
         .find_map(|line| {
             let trimmed = line.trim();
@@ -6783,13 +6875,25 @@ fn detect_windows_proxy_conflict(expected_proxy_server: &str) -> Option<String> 
                 None
             }
         })
-        .or_else(|| Some("未知代理".to_string()))
+        .or_else(|| Some("未知代理".to_string())))
 }
 
 #[cfg(target_os = "macos")]
 fn set_proxy(http_port: u16, socks_port: u16) -> Result<(), std::io::Error> {
     let bypass_hosts = api_proxy_bypass_hosts();
-    for service in network_services() {
+    for service in network_services()? {
+        let mut bypass_command = Command::new("networksetup");
+        bypass_command.arg("-setproxybypassdomains").arg(&service);
+        for host in &bypass_hosts {
+            bypass_command.arg(host);
+        }
+        let status = bypass_command.bounded_status()?;
+        if !status.success() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("设置代理绕过域名失败：{service}"),
+            ));
+        }
         run_networksetup(&[
             "-setwebproxy",
             &service,
@@ -6811,18 +6915,6 @@ fn set_proxy(http_port: u16, socks_port: u16) -> Result<(), std::io::Error> {
         run_networksetup(&["-setwebproxystate", &service, "on"])?;
         run_networksetup(&["-setsecurewebproxystate", &service, "on"])?;
         run_networksetup(&["-setsocksfirewallproxystate", &service, "on"])?;
-        let mut bypass_command = Command::new("networksetup");
-        bypass_command.arg("-setproxybypassdomains").arg(&service);
-        for host in &bypass_hosts {
-            bypass_command.arg(host);
-        }
-        let status = bypass_command.status()?;
-        if !status.success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("设置代理绕过域名失败：{service}"),
-            ));
-        }
         verify_macos_proxy_config(&service, http_port, socks_port, &bypass_hosts)?;
     }
 
@@ -6831,19 +6923,20 @@ fn set_proxy(http_port: u16, socks_port: u16) -> Result<(), std::io::Error> {
 
 #[cfg(target_os = "macos")]
 fn clear_proxy() -> Result<(), std::io::Error> {
-    for service in network_services() {
-        let _ = run_networksetup(&["-setwebproxystate", &service, "off"]);
-        let _ = run_networksetup(&["-setsecurewebproxystate", &service, "off"]);
-        let _ = run_networksetup(&["-setsocksfirewallproxystate", &service, "off"]);
+    let mut first_error=None;
+    for service in macos_proxy_owned_services()? {
+        for option in ["-setwebproxystate","-setsecurewebproxystate","-setsocksfirewallproxystate"] {
+            if let Err(error)=run_networksetup(&[option,&service,"off"]) { if first_error.is_none(){first_error=Some(error);} }
+        }
     }
-
-    Ok(())
+    first_error.map_or(Ok(()),Err)
 }
 
 #[cfg(target_os = "macos")]
-fn macos_proxy_owned_by_chordv() -> Result<bool, io::Error> {
+fn macos_proxy_owned_services() -> Result<Vec<String>, io::Error> {
+    let mut owned=Vec::new();
     let bypass_hosts = api_proxy_bypass_hosts();
-    for service in network_services() {
+    for service in network_services()? {
         let web_proxy = networksetup_output(&["-getwebproxy", &service])?;
         let secure_proxy = networksetup_output(&["-getsecurewebproxy", &service])?;
         let socks_proxy = networksetup_output(&["-getsocksfirewallproxy", &service])?;
@@ -6857,10 +6950,10 @@ fn macos_proxy_owned_by_chordv() -> Result<bool, io::Error> {
                 .any(|line| line.trim().eq_ignore_ascii_case(host))
         });
         if proxy_owned && bypass_owned {
-            return Ok(true);
+            owned.push(service);
         }
     }
-    Ok(false)
+    Ok(owned)
 }
 
 #[cfg(target_os = "macos")]
@@ -6975,7 +7068,7 @@ fn windows_proxy_owned_by_chordv() -> Result<bool, io::Error> {
             "/v",
             "ProxyEnable",
         ])
-        .output()?;
+        .bounded_output()?;
     let enable_text = String::from_utf8_lossy(&enable_output.stdout).to_lowercase();
     if !enable_output.status.success() || !enable_text.contains("0x1") {
         return Ok(false);
@@ -6990,7 +7083,7 @@ fn windows_proxy_owned_by_chordv() -> Result<bool, io::Error> {
             "/v",
             "ProxyServer",
         ])
-        .output()?;
+        .bounded_output()?;
     if !server_output.status.success() {
         return Ok(false);
     }
@@ -7008,7 +7101,7 @@ fn windows_proxy_owned_by_chordv() -> Result<bool, io::Error> {
             "/v",
             "ProxyOverride",
         ])
-        .output()?;
+        .bounded_output()?;
     if !override_output.status.success() {
         return Ok(false);
     }
@@ -7030,7 +7123,7 @@ fn run_windows_reg(args: &[&str]) -> Result<(), io::Error> {
     let mut command = Command::new("reg");
     command.args(args);
     command.creation_flags(CREATE_NO_WINDOW);
-    let status = command.status()?;
+    let status = command.bounded_status()?;
     if status.success() {
         Ok(())
     } else {
@@ -7055,7 +7148,7 @@ fn verify_windows_proxy_config(
             "/v",
             "ProxyEnable",
         ])
-        .output()?;
+        .bounded_output()?;
     let enable_text = String::from_utf8_lossy(&enable_output.stdout).to_lowercase();
     if !enable_output.status.success() || !enable_text.contains("0x1") {
         return Err(io::Error::new(
@@ -7073,7 +7166,7 @@ fn verify_windows_proxy_config(
             "/v",
             "ProxyServer",
         ])
-        .output()?;
+        .bounded_output()?;
     let server_text = String::from_utf8_lossy(&server_output.stdout);
     if !server_output.status.success() || !server_text.contains(expected_proxy_server) {
         return Err(io::Error::new(
@@ -7091,7 +7184,7 @@ fn verify_windows_proxy_config(
             "/v",
             "ProxyOverride",
         ])
-        .output()?;
+        .bounded_output()?;
     let override_text = String::from_utf8_lossy(&override_output.stdout);
     if !override_output.status.success() || !override_text.contains(expected_proxy_override) {
         return Err(io::Error::new(
@@ -7105,7 +7198,7 @@ fn verify_windows_proxy_config(
 
 #[cfg(target_os = "macos")]
 fn run_networksetup(args: &[&str]) -> Result<(), io::Error> {
-    let status = Command::new("networksetup").args(args).status()?;
+    let status = Command::new("networksetup").args(args).bounded_status()?;
     if status.success() {
         Ok(())
     } else {
@@ -7118,7 +7211,7 @@ fn run_networksetup(args: &[&str]) -> Result<(), io::Error> {
 
 #[cfg(target_os = "macos")]
 fn networksetup_output(args: &[&str]) -> Result<String, io::Error> {
-    let output = Command::new("networksetup").args(args).output()?;
+    let output = Command::new("networksetup").args(args).bounded_output()?;
     if !output.status.success() {
         return Err(io::Error::new(
             io::ErrorKind::Other,
@@ -7210,15 +7303,9 @@ fn refresh_windows_proxy_settings() -> Result<(), io::Error> {
 }
 
 #[cfg(target_os = "macos")]
-fn network_services() -> Vec<String> {
-    let output = Command::new("networksetup")
-        .arg("-listnetworkserviceorder")
-        .output();
-
-    let Ok(output) = output else {
-        return vec!["Wi-Fi".into(), "Ethernet".into()];
-    };
-
+fn network_services() -> Result<Vec<String>, io::Error> {
+    let output = Command::new("networksetup").arg("-listnetworkserviceorder").bounded_output()?;
+    if !output.status.success() { return Err(io::Error::new(io::ErrorKind::Other,"无法读取网络服务列表")); }
     let text = String::from_utf8_lossy(&output.stdout);
     let mut services = Vec::new();
     let mut pending_name: Option<String> = None;
@@ -7250,9 +7337,9 @@ fn network_services() -> Vec<String> {
     }
 
     if services.is_empty() {
-        vec!["Wi-Fi".into(), "Ethernet".into()]
+        Err(io::Error::new(io::ErrorKind::NotFound,"未找到可配置的网络服务"))
     } else {
-        services
+        Ok(services)
     }
 }
 
@@ -7275,7 +7362,7 @@ fn cleanup_stale_runtime(app: &AppHandle) {
         #[cfg(unix)]
         let _ = Command::new("pkill")
             .args(["-f", &stale_binary.to_string_lossy()])
-            .status();
+            .bounded_status();
     }
 
     let _ = fs::remove_dir_all(runtime_dir.join("bin").join("cache"));
@@ -7404,7 +7491,7 @@ try {{
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status();
+        .bounded_status();
 }
 
 fn cleanup_runtime_artifacts_on_startup(app: &AppHandle) {
@@ -7596,10 +7683,11 @@ fn disconnect_runtime_internal(app: &AppHandle) -> Result<(), String> {
     state.xray_binary_path = None;
     state.local_http_port = None;
     state.local_socks_port = None;
-    state.last_error = proxy_error.map(|error| format!("已停止内核，但清理系统代理失败：{error}"));
+    state.last_error = proxy_error.clone().map(|error| format!("已停止内核，但清理系统代理失败：{error}"));
 
     sync_shell_from_runtime(app, &state);
     notify_native_lease_heartbeat(app);
+    if let Some(error)=proxy_error { return Err(format!("内核已停止，但系统代理清理失败：{error}")); }
     Ok(())
 }
 
@@ -7881,10 +7969,24 @@ fn build_shell_tray_menu(
 
 #[cfg(not(target_os = "android"))]
 fn refresh_shell_ui(app: &AppHandle) -> Result<(), String> {
-    let shell_binding = app.state::<Mutex<ShellState>>();
-    let shell = shell_binding
-        .lock()
-        .map_err(|_| "桌面壳层状态异常".to_string())?;
+    // Runtime workers may own RuntimeState here. Menu constructors synchronously
+    // wait for the main thread, so dispatch the whole render without waiting.
+    let render_app = app.clone();
+    app.run_on_main_thread(move || {
+        if let Err(error) = render_shell_ui(&render_app) {
+            append_download_diagnostic_log(&render_app, "shell-ui", format!("菜单刷新失败：{error}"));
+        }
+    }).map_err(|error| error.to_string())
+}
+
+#[cfg(not(target_os = "android"))]
+fn render_shell_ui(app: &AppHandle) -> Result<(), String> {
+    // Menu APIs must never execute while a shared application mutex is held.
+    let shell = {
+        let binding = app.state::<Mutex<ShellState>>();
+        let state = binding.lock().map_err(|_| "桌面壳层状态异常".to_string())?;
+        state.clone()
+    };
     #[cfg(target_os = "macos")]
     let menu = build_shell_menu(app, &shell)?;
     #[cfg(target_os = "windows")]
@@ -7921,10 +8023,11 @@ fn refresh_shell_ui(_app: &AppHandle) -> Result<(), String> {
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn setup_desktop_tray(app: &AppHandle) -> Result<(), String> {
-    let shell_binding = app.state::<Mutex<ShellState>>();
-    let shell = shell_binding
-        .lock()
-        .map_err(|_| "桌面壳层状态异常".to_string())?;
+    let shell = {
+        let binding = app.state::<Mutex<ShellState>>();
+        let state = binding.lock().map_err(|_| "桌面壳层状态异常".to_string())?;
+        state.clone()
+    };
     let menu = build_shell_tray_menu(app, &shell)?;
     let icon = app
         .default_window_icon()
@@ -7989,25 +8092,30 @@ pub fn run() {
 
     let app = builder
         .setup(|app| {
-            cleanup_runtime_artifacts_on_startup(&app.handle());
+            let startup_app=app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let result=tauri::async_runtime::spawn_blocking(move || {
+                    with_command_budget(Duration::from_secs(20), || {
+                        cleanup_runtime_artifacts_on_startup(&startup_app);
+                        #[cfg(not(target_os = "android"))]
+                        {
+                            ensure_runtime_bin_dir(&startup_app)?;
+                            let _=cleanup_outdated_installer_packages(&startup_app);
+                        }
+                        #[cfg(target_os = "macos")]
+                        {let _=cleanup_mounted_installer_volumes(&startup_app);}
+                        Ok::<(),String>(())
+                    })
+                }).await.unwrap_or_else(|error|Err(error.to_string()));
+                STARTUP_READY.finish(result);
+            });
             start_native_lease_heartbeat_loop(app.handle().clone());
             #[cfg(not(target_os = "android"))]
             if let Some(window) = app.get_webview_window("main") {
                 let _ = set_main_window_title(&window, &app.handle());
             }
-            #[cfg(not(target_os = "android"))]
-            {
-                let _ = ensure_runtime_bin_dir(&app.handle());
-                let _ = cleanup_outdated_installer_packages(&app.handle());
-            }
             #[cfg(windows)]
-            {
-                let _ = write_full_update_startup_ready_marker(&app.handle());
-            }
-            #[cfg(target_os = "macos")]
-            {
-                let _ = cleanup_mounted_installer_volumes(&app.handle());
-            }
+            {let _ = write_full_update_startup_ready_marker(&app.handle());}
             #[cfg(not(target_os = "android"))]
             {
                 refresh_shell_ui(&app.handle())?;
@@ -8079,7 +8187,7 @@ pub fn run() {
                 let status = {
                     let runtime_binding = app_handle.state::<Mutex<RuntimeState>>();
                     runtime_binding
-                        .lock()
+                        .try_lock()
                         .ok()
                         .map(|runtime| runtime.status.clone())
                 };
@@ -8111,15 +8219,19 @@ pub fn run() {
                 let _ = hide_main_window_internal(app_handle);
             }
         }
-        RunEvent::ExitRequested { .. } | RunEvent::Exit => {
-            let state: State<'_, Mutex<RuntimeState>> = app_handle.state();
-            if let Ok(mut state) = state.lock() {
-                shutdown_runtime(app_handle, &mut state);
-            } else {
-                let _ = clear_system_proxy();
+        RunEvent::ExitRequested { api, .. } => {
+            if !EXIT_CLEANUP_STARTED.swap(true,std::sync::atomic::Ordering::SeqCst) {
+                api.prevent_exit();
+                CONNECTION_GENERATION.invalidate();
+                let shutdown_app=app_handle.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let _=STARTUP_READY.wait();
+                    shutdown_runtime_state(&shutdown_app);
+                    shutdown_app.exit(0);
+                });
             }
-            cleanup_stale_runtime(app_handle);
         }
+
         _ => {}
     });
 }
@@ -8288,5 +8400,22 @@ mod update_trust_tests {
         assert!(checked_desktop_update_download_size(900, 124, 1024).is_ok());
         assert!(checked_desktop_update_download_size(900, 125, 1024).is_err());
         assert!(checked_desktop_update_download_size(u64::MAX, 1, u64::MAX).is_err());
+    }
+}
+
+#[cfg(test)]
+mod runtime_failure_tests {
+    use super::*;
+    #[test]
+    fn startup_errors_do_not_leave_a_connecting_session() {
+        for phase in ["starting","connecting"] {
+            let mut state=RuntimeState::default();state.status=phase.into();
+            state.active_session_id=Some("failed-session".into());state.active_node_id=Some("node".into());
+            state.active_pid=Some(42);state.local_http_port=Some(1080);
+            mark_failed_runtime_start(&mut state,"configuration write failed");
+            assert_eq!(state.status,"error");assert!(state.active_session_id.is_none());
+            assert!(state.active_pid.is_none());assert!(state.local_http_port.is_none());
+            assert_eq!(state.last_error.as_deref(),Some("configuration write failed"));
+        }
     }
 }

@@ -1,3 +1,4 @@
+import { canApplyNativeSessionRefresh } from "./lib/nativeSessionRefresh";
 import { ClientUpdateProgressPanel } from "./components/ClientUpdateProgressPanel";
 import { lazy, Suspense } from "react";
 import { shouldReportNodeAccessRevoked } from "./lib/startupReadiness";
@@ -1225,7 +1226,7 @@ export function App() {
       .catch(() => null);
 
     void subscribeNativeSessionRefreshed((nextSession) => {
-      if (disposed) {
+      if (disposed || !canApplyNativeSessionRefresh(sessionRef.current,nextSession)) {
         return;
       }
       setSession(nextSession);

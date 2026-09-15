@@ -761,12 +761,14 @@ export async function subscribeNativeLeaseHeartbeat(handler: (event: NativeLease
   };
 }
 
-export async function subscribeNativeSessionRefreshed(handler: (session: AuthSessionDto) => void) {
+export type NativeSessionRefreshEvent = AuthSessionDto & { previousRefreshToken: string };
+
+export async function subscribeNativeSessionRefreshed(handler: (session: NativeSessionRefreshEvent) => void) {
   if (!isTauriApp() || isAndroidPlatform()) {
     return () => {};
   }
   const { listen } = await import("@tauri-apps/api/event");
-  const unlisten = await listen<AuthSessionDto>("chordv://native-session-refreshed", (event) => {
+  const unlisten = await listen<NativeSessionRefreshEvent>("chordv://native-session-refreshed", (event) => {
     if (event.payload) {
       handler(event.payload);
     }

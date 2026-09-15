@@ -226,8 +226,10 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         if (disconnectOptions?.notifyServer !== false && sessionId && accessToken) {
           void disconnectSession(accessToken, sessionId).catch(() => null);
         }
+        return true;
       } catch (reason) {
         options.showErrorToast(reason instanceof Error ? options.readError(reason.message) : "断开失败");
+        return false;
       } finally {
         setActionBusy(null);
       }
@@ -874,7 +876,14 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         if (runtimeStatus) {
           options.setDesktopStatus(runtimeStatus);
         }
-        await options.forceStopLocalRuntime();
+        try {
+          await options.forceStopLocalRuntime();
+        } catch (stopReason) {
+          if (config?.sessionId) void disconnectSession(configAccessToken,config.sessionId).catch(()=>null);
+          const stopMessage=stopReason instanceof Error?options.readError(stopReason.message):"本机连接停止失败";
+          options.showErrorToast(`${earlyMessage}\n${stopMessage}`);
+          return;
+        }
         if (runtimeStatus?.status === "error") {
           options.setDesktopStatus(runtimeStatus);
         }
@@ -943,7 +952,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
 
     if (wasConnected) {
       options.setConnectionGuidance(null);
-      await disconnectCurrentRuntime({ notifyServer: true });
+      if (!await disconnectCurrentRuntime({ notifyServer: true })) return false;
     }
 
     await handleConnect({ bypassStatusGate: true, nodeId: preferredNodeId });

@@ -444,8 +444,10 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
         await forceStopLocalRuntime();
       }
     } catch (reason) {
-      await forceStopLocalRuntime();
-      showErrorToast(reason instanceof Error ? readError(reason.message) : "刷新失败");
+      let message=reason instanceof Error ? readError(reason.message) : "刷新失败";
+      try { await forceStopLocalRuntime(); }
+      catch (stopReason) {message+=`\n${stopReason instanceof Error?readError(stopReason.message):"本机连接停止失败"}`;}
+      showErrorToast(message);
     } finally {
       setRefreshing(false);
     }
@@ -478,6 +480,8 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
       if (!rememberPassword) {
         setCredentials((current) => ({ ...current, password: "" }));
       }
+    } catch (reason) {
+      showErrorToast(reason instanceof Error ? readError(reason.message) : "退出失败，请重试。");
     } finally {
       setLogoutBusy(false);
     }
@@ -490,7 +494,9 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
     rememberPassword,
     session,
     setCredentials,
-    setLogoutBusy
+    setLogoutBusy,
+    readError,
+    showErrorToast
   ]);
 
   const mergeSubscriptionState = useCallback(
