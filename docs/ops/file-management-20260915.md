@@ -177,3 +177,12 @@ cargo test --lib 16 项通过（包含两项新增竞态用例）；connection-r
 - `file-management.integration.ts`：在真实引用解析和临时文件读取时注入取消，确认快照保持不变、扫描忙碌标记释放、随后可以再次扫描。
 
 API check、隔离 PostgreSQL 完整迁移和真实文件集成及 diff 检查通过；无布局、依赖或生产 Mock 改动。已经进入单次文件系统/数据库调用的操作仍需等待该调用返回，检查点阻止后续工作。
+
+## PR #53 区分令牌刷新与退出登录
+
+- `App.tsx`：同步维护会话引用和登录代次；同账号令牌刷新保持身份，退出或账号变化失效旧操作。
+- `useAuthBootstrap.ts`：退出与清理开始时立即失效登录代次，覆盖等待本机清理期间的迟到操作。
+- `useRuntimeActions.ts`：预检、配置返回和原生连接结束按登录身份校验，不再把正常 access token 轮换误判为退出；请求使用当前有效 token。
+- `connection-race.regression.ts`：增加配置返回前/原生连接期间令牌轮换、原生等待期间退出、同账号重新登录的场景。
+
+desktop check、connection-race、logout-responsiveness 和 diff 检查通过。无布局、依赖或生产 Mock 改动；未做真实服务器令牌轮换及 Windows 实机端到端测试。

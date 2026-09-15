@@ -112,7 +112,7 @@ const DownloadProgressDebug = (import.meta.env.DEV || import.meta.env.VITE_CHORD
   ? lazy(() => import("./dev/DownloadProgressDebug").then(module => ({ default: module.DownloadProgressDebug }))) : null;
 
 export function App() {
-  const [session, setSession] = useState<AuthSessionDto | null>(null);
+  const [session, setSessionState] = useState<AuthSessionDto | null>(null);
   const [bootstrap, setBootstrap] = useState<ClientBootstrapDto | null>(null);
   const [nodes, setNodes] = useState<NodeSummaryDto[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -157,6 +157,15 @@ export function App() {
   const shellActionRef = useRef<(() => Promise<void>) | null>(null);
   const openLogsActionRef = useRef<(() => void) | null>(null);
   const sessionRef = useRef<AuthSessionDto | null>(null);
+  const sessionGenerationRef = useRef(0);
+  const invalidateSessionOperations = useCallback(() => { sessionGenerationRef.current += 1; }, []);
+  const setSession = useCallback<Dispatch<SetStateAction<AuthSessionDto | null>>>((update) => {
+    const previous = sessionRef.current;
+    const next = typeof update === "function" ? update(previous) : update;
+    if (!next || previous?.user.id !== next.user.id) sessionGenerationRef.current += 1;
+    sessionRef.current = next;
+    setSessionState(next);
+  }, []);
   const unauthorizedRecoveryTaskRef = useRef<Promise<AuthSessionDto | null> | null>(null);
   const lastShellSummaryRef = useRef("");
   const pendingShellSummaryRef = useRef("");
@@ -422,6 +431,7 @@ export function App() {
     mergeSubscriptionState,
     restoreStoredSession
   } = useAuthBootstrap({
+    invalidateSessionOperations,
     session,
     nodes,
     credentials,
@@ -517,6 +527,7 @@ export function App() {
     markTicketUnread,
     recoverSessionAfterUnauthorized,
     getCurrentAccessToken: () => sessionRef.current?.accessToken ?? null,
+    getCurrentSessionIdentity: () => sessionRef.current ? `${sessionGenerationRef.current}:${sessionRef.current.user.id}` : null,
     clearSession,
     runUpdateCheck: runUpdateCheckForActions,
     refreshRuntime,
@@ -697,7 +708,6 @@ export function App() {
     probeResultsRef.current = probeResults;
   }, [probeResults]);
 
-  sessionRef.current = session;
 
   useEffect(() => {
     if (session) {

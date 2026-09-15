@@ -134,6 +134,7 @@ type UseRuntimeActionsOptions = {
   markTicketUnread: (ticketId: string) => void;
   recoverSessionAfterUnauthorized: () => Promise<AuthSessionDto | null> | AuthSessionDto | null;
   getCurrentAccessToken: () => string | null;
+  getCurrentSessionIdentity: () => string | null;
   clearSession: (stopRuntime?: boolean) => Promise<void>;
   runUpdateCheck: (input: RunUpdateCheckInput) => Promise<void>;
   refreshRuntime: () => Promise<RuntimeStatus | null>;
@@ -728,18 +729,19 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
     connectInFlight.current = true;
     setActionBusy("connect");
     try {
-      const preflightToken = options.session.accessToken;
+      const connectionIdentity = options.getCurrentSessionIdentity();
+      const isCurrentLogin = () => connectionIdentity !== null && options.getCurrentSessionIdentity() === connectionIdentity;
       try {
         await checkRuntimeNetworkConflict();
       } catch (reason) {
-        if (options.getCurrentAccessToken() !== preflightToken) return;
+        if (!isCurrentLogin()) return;
         const message = reason instanceof Error ? options.readError(reason.message) : options.readError(String(reason));
         const guidance = deriveGuidanceFromConnectFailure(message, options.fallbackNodeId, options.desktopStatus.platformTarget);
         if (guidance) applyGuidance(guidance, true, false);
         else options.showErrorToast(message);
         return;
       }
-      if (options.getCurrentAccessToken() !== preflightToken) return;
+      if (!isCurrentLogin()) return;
       const shouldEnsureRuntimeAssets =
         !options.runtimeAssetsReady ||
         options.runtimeAssets.phase === "idle" ||
@@ -764,9 +766,9 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         return;
       }
 
-      if (options.getCurrentAccessToken() !== preflightToken) return;
+      if (!isCurrentLogin()) return;
       let config: GeneratedRuntimeConfigDto | null = null;
-      let configAccessToken = options.session.accessToken;
+      let configAccessToken = options.getCurrentAccessToken() ?? options.session.accessToken;
 
       try {
         setActionBusy("connect");
@@ -793,7 +795,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           });
         try {
           debugAndroidConnect("handleConnect:connect-session:request", { nodeId: selectedNode.id, mode: options.mode });
-          config = await connectWithAccessToken(options.session.accessToken);
+          config = await connectWithAccessToken(configAccessToken);
           debugAndroidConnect("handleConnect:connect-session:success", {
             sessionId: config.sessionId,
             nodeId: config.node.id
@@ -803,7 +805,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           if (isAccessTokenExpiredApiError(reason)) {
             const recoveredSession = await options.recoverSessionAfterUnauthorized();
             const recoveredAccessToken = recoveredSession?.accessToken ?? options.getCurrentAccessToken();
-            if (!recoveredAccessToken) {
+            if (!isCurrentLogin() || !recoveredAccessToken) {
               throw reason;
             }
             config = await connectWithAccessToken(recoveredAccessToken);
@@ -824,7 +826,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         if (!config) {
           throw new Error("连接配置生成失败");
         }
-        if (options.getCurrentAccessToken() !== configAccessToken) {
+        if (!isCurrentLogin()) {
           // A completed request from a signed-out account must never start a local connection.
           void disconnectSession(configAccessToken, config.sessionId).catch(() => null);
           await options.refreshRuntime();
@@ -835,7 +837,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           nodeId: config.node.id
         });
         await connectRuntime(config);
-        if (options.getCurrentAccessToken() !== configAccessToken) {
+        if (!isCurrentLogin()) {
           await options.refreshRuntime();
           return;
         }
@@ -849,7 +851,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         options.leaseHeartbeatFailedAtRef.current = null;
         await options.refreshRuntime();
       } catch (reason) {
-        if (options.getCurrentAccessToken() !== configAccessToken) {
+        if (!isCurrentLogin()) {
           if (config?.sessionId) void disconnectSession(configAccessToken, config.sessionId).catch(() => null);
           await options.refreshRuntime();
           return;
