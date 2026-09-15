@@ -1,3 +1,4 @@
+mod connection_generation;
 mod node_probe;
 mod android_mobile_plugin;
 mod android_runtime;
@@ -57,6 +58,8 @@ use tauri::tray::{MouseButton, TrayIconEvent};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+static CONNECTION_GENERATION: connection_generation::ConnectionGeneration = connection_generation::ConnectionGeneration::new();
 
 const ANDROID_TUN_NAME: &str = "chordv-vpn";
 const ANDROID_TUN_MTU: u16 = 1500;
@@ -3338,14 +3341,16 @@ async fn check_network_conflict(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 async fn connect_runtime(app: AppHandle, config: GeneratedRuntimeConfigDto) -> Result<CommandResult, String> {
-    tauri::async_runtime::spawn_blocking(move || connect_runtime_blocking(&app, config))
+    let generation = CONNECTION_GENERATION.capture();
+    tauri::async_runtime::spawn_blocking(move || connect_runtime_blocking(&app, config, generation))
         .await.map_err(|error| error.to_string())?
 }
 
-fn connect_runtime_blocking(app: &AppHandle, config: GeneratedRuntimeConfigDto) -> Result<CommandResult, String> {
+fn connect_runtime_blocking(app: &AppHandle, config: GeneratedRuntimeConfigDto, generation: u64) -> Result<CommandResult, String> {
     let state = app.state::<Mutex<RuntimeState>>();
     {
         let mut state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
+        CONNECTION_GENERATION.ensure_current(generation)?;
         if state.status == "starting" || state.status == "connecting" {
             return Err("连接正在进行中".into());
         }
@@ -3376,6 +3381,7 @@ fn connect_runtime_blocking(app: &AppHandle, config: GeneratedRuntimeConfigDto) 
             return Err(error);
         }
 
+        CONNECTION_GENERATION.ensure_current(generation)?;
         state.status = "starting".into();
         state.active_session_id = Some(config.session_id.clone());
         state.active_node_id = Some(config.node.id.clone());
@@ -3396,6 +3402,7 @@ fn connect_runtime_blocking(app: &AppHandle, config: GeneratedRuntimeConfigDto) 
         Ok(path) => path,
         Err(error) => {
             let mut state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
+            CONNECTION_GENERATION.ensure_current(generation)?;
             if state.active_session_id.as_deref() != Some(config.session_id.as_str()) {
                 return Err("连接已取消".into());
             }
@@ -3414,6 +3421,7 @@ fn connect_runtime_blocking(app: &AppHandle, config: GeneratedRuntimeConfigDto) 
     };
 
     let mut state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
+    CONNECTION_GENERATION.ensure_current(generation)?;
     if state.status != "starting" || state.active_session_id.as_deref() != Some(config.session_id.as_str()) {
         return Err("连接已取消".into());
     }
@@ -3522,6 +3530,7 @@ fn connect_runtime_blocking(app: &AppHandle, config: GeneratedRuntimeConfigDto) 
 
 #[tauri::command]
 async fn disconnect_runtime(app: AppHandle) -> Result<CommandResult, String> {
+    CONNECTION_GENERATION.invalidate();
     tauri::async_runtime::spawn_blocking(move || disconnect_runtime_internal(&app))
         .await.map_err(|error| error.to_string())??;
 
@@ -6360,6 +6369,7 @@ fn chrono_like_now() -> String {
 }
 
 fn shutdown_runtime(app: &AppHandle, state: &mut RuntimeState) {
+    CONNECTION_GENERATION.invalidate();
     let _ = clear_system_proxy();
 
     stop_runtime_process(app, state);
@@ -7562,6 +7572,7 @@ fn emit_shell_action(app: &AppHandle, action: &str) -> Result<(), String> {
 
 #[cfg(not(target_os = "android"))]
 fn disconnect_runtime_internal(app: &AppHandle) -> Result<(), String> {
+    CONNECTION_GENERATION.invalidate();
     let runtime_state = app.state::<Mutex<RuntimeState>>();
     let mut state = runtime_state
         .lock()
@@ -7594,6 +7605,7 @@ fn disconnect_runtime_internal(app: &AppHandle) -> Result<(), String> {
 
 #[cfg(target_os = "android")]
 fn disconnect_runtime_internal(app: &AppHandle) -> Result<(), String> {
+    CONNECTION_GENERATION.invalidate();
     let runtime_state = app.state::<Mutex<RuntimeState>>();
     let mut state = runtime_state
         .lock()

@@ -163,3 +163,10 @@ API check、完整迁移和真实文件集成、dev-data / release-artifact-impo
 - `apps/admin/test/storage-scan.regression.ts`：执行实际扫描函数，分别验证请求头等待、流读取停滞时的超时与用户取消，共四种路径；使用可控 AbortController，不实际等待十分钟。
 
 admin check、storage-scan 定向回归和 diff 检查通过。无布局、依赖、生产 Mock 改动；未进行浏览器视觉验证。
+
+## PR #53 排队连接的退出竞态
+
+- `apps/desktop/src-tauri/src/connection_generation.rs`：原子连接代次，支持捕获、失效和阶段检查；新增真实工作线程排队取消与准备阶段取消测试。
+- `apps/desktop/src-tauri/src/lib.rs`：连接任务入队前捕获代次，工作线程获取运行时锁后及初始化/启动后续阶段复核；断开请求、实际清理及运行时关闭均使旧代次失效，覆盖退出先完成、旧连接任务后启动的时序。
+
+cargo test --lib 16 项通过（包含两项新增竞态用例）；connection-race、connection-guidance 及 diff 检查通过。未改变布局或增加 Mock/依赖；测试验证排队代次机制，不冒充 Windows 实机或真实系统代理端到端验收。
