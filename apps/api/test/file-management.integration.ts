@@ -166,6 +166,26 @@ async function main() {
     try { await catalog.scan(new AbortController().signal,()=>{}); }
     finally { fs.lstat=realLstat;await fs.unlink(disappearing).catch(()=>{}); }
 
+    // Cancellation during reference resolution or the final temporary-file pass
+    // must not publish a new snapshot, and must release the service's busy flag.
+    const snapshotBeforeCancel=await prisma.storageCatalogSnapshot.findFirstOrThrow();
+    const cancelReferences=new AbortController();const realRealpath=fs.realpath;
+    fs.realpath=(async(...args:Parameters<typeof fs.realpath>)=>{
+      const result=await realRealpath(...args);cancelReferences.abort(new Error("cancel references"));return result;
+    }) as typeof fs.realpath;
+    try { await assert.rejects(()=>catalog.scan(cancelReferences.signal,()=>{}),/cancel references/); }
+    finally { fs.realpath=realRealpath; }
+    assert.deepEqual((await prisma.storageCatalogSnapshot.findFirstOrThrow()).payload,snapshotBeforeCancel.payload);
+    const cancelTemp=new AbortController(),temp=path.join(tmpdir(),`chordv-upload-${randomUUID()}.dmg`);
+    await fs.writeFile(temp,"temporary");
+    fs.lstat=(async(...args:Parameters<typeof fs.lstat>)=>{
+      const result=await realLstat(...args);if(String(args[0])===temp)cancelTemp.abort(new Error("cancel temp"));return result;
+    }) as typeof fs.lstat;
+    try { await assert.rejects(()=>catalog.scan(cancelTemp.signal,()=>{}),/cancel temp/); }
+    finally { fs.lstat=realLstat;await fs.unlink(temp); }
+    assert.deepEqual((await prisma.storageCatalogSnapshot.findFirstOrThrow()).payload,snapshotBeforeCancel.payload);
+    await catalog.scan(new AbortController().signal,()=>{});
+
     const orphan=path.join(root,"release_orphan","artifact_test","file_test_old.dmg");await fs.mkdir(path.dirname(orphan),{recursive:true});await fs.writeFile(orphan,"orphan");
     const realNow=Date.now;Date.now=()=>realNow()+48*60*60_000;
     try{const scan=await catalog.scan(new AbortController().signal,()=>{});const entry=scan.items.find(item=>item.name.endsWith("file_test_old.dmg"));assert.equal(entry?.canCleanup,true);const anotherProcess=new StorageCatalogService(prisma as never,new FileMaintenanceService(prisma as never));assert.equal((await anotherProcess.list()).scannedAt,scan.scannedAt,"fresh service must read shared scan state");await anotherProcess.cleanup([entry!.id]);await assert.rejects(()=>fs.access(orphan));await fs.access(copiedPath);}finally{Date.now=realNow;}

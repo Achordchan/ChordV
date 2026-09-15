@@ -170,3 +170,10 @@ admin check、storage-scan 定向回归和 diff 检查通过。无布局、依�
 - `apps/desktop/src-tauri/src/lib.rs`：连接任务入队前捕获代次，工作线程获取运行时锁后及初始化/启动后续阶段复核；断开请求、实际清理及运行时关闭均使旧代次失效，覆盖退出先完成、旧连接任务后启动的时序。
 
 cargo test --lib 16 项通过（包含两项新增竞态用例）；connection-race、connection-guidance 及 diff 检查通过。未改变布局或增加 Mock/依赖；测试验证排队代次机制，不冒充 Windows 实机或真实系统代理端到端验收。
+
+## PR #53 后端扫描取消检查
+
+- `storage-catalog.service.ts`：用户取消/截止信号贯穿引用解析、缺失文件核对、附加目录、临时文件遍历及快照写入前，取消后不再继续保存结果。
+- `file-management.integration.ts`：在真实引用解析和临时文件读取时注入取消，确认快照保持不变、扫描忙碌标记释放、随后可以再次扫描。
+
+API check、隔离 PostgreSQL 完整迁移和真实文件集成及 diff 检查通过；无布局、依赖或生产 Mock 改动。已经进入单次文件系统/数据库调用的操作仍需等待该调用返回，检查点阻止后续工作。
