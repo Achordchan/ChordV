@@ -1,7 +1,9 @@
+import { ClientUpdateProgressPanel } from "./components/ClientUpdateProgressPanel";
+import { lazy, Suspense } from "react";
 import { shouldReportNodeAccessRevoked } from "./lib/startupReadiness";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { Alert, Button, Checkbox, LoadingOverlay, Modal, Progress, Stack, Text, TextInput, ThemeIcon, UnstyledButton } from "@mantine/core";
+import { Alert, Button, Checkbox, LoadingOverlay, Modal, Stack, Text, ThemeIcon, UnstyledButton } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { IconHome2, IconStack2, IconUserCircle } from "@tabler/icons-react";
 import type {
@@ -106,8 +108,11 @@ declare global {
   }
 }
 
+const DownloadProgressDebug = (import.meta.env.DEV || import.meta.env.VITE_CHORDV_LOCAL_PREVIEW === "1")
+  ? lazy(() => import("./dev/DownloadProgressDebug").then(module => ({ default: module.DownloadProgressDebug }))) : null;
+
 export function App() {
-  const [session, setSession] = useState<AuthSessionDto | null>(null);
+  const [session, setSessionState] = useState<AuthSessionDto | null>(null);
   const [bootstrap, setBootstrap] = useState<ClientBootstrapDto | null>(null);
   const [nodes, setNodes] = useState<NodeSummaryDto[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -134,7 +139,6 @@ export function App() {
   const [mobileTab, setMobileTab] = useState<"home" | "nodes" | "profile">("home");
   const [serverProbe, setServerProbe] = useState<ServerProbeState>(createIdleServerProbeState());
   const [serverProbeBusy, setServerProbeBusy] = useState(false);
-  const [runtimeMirrorPrefix, setRuntimeMirrorPrefix] = useState("");
   const leaseHeartbeatFailedAtRef = useRef<number | null>(null);
   const lastGuidanceToastRef = useRef<string | null>(null);
   const lastRuntimeSignalKeyRef = useRef<string | null>(null);
@@ -153,6 +157,15 @@ export function App() {
   const shellActionRef = useRef<(() => Promise<void>) | null>(null);
   const openLogsActionRef = useRef<(() => void) | null>(null);
   const sessionRef = useRef<AuthSessionDto | null>(null);
+  const sessionGenerationRef = useRef(0);
+  const invalidateSessionOperations = useCallback(() => { sessionGenerationRef.current += 1; }, []);
+  const setSession = useCallback<Dispatch<SetStateAction<AuthSessionDto | null>>>((update) => {
+    const previous = sessionRef.current;
+    const next = typeof update === "function" ? update(previous) : update;
+    if (!next || previous?.user.id !== next.user.id) sessionGenerationRef.current += 1;
+    sessionRef.current = next;
+    setSessionState(next);
+  }, []);
   const unauthorizedRecoveryTaskRef = useRef<Promise<AuthSessionDto | null> | null>(null);
   const lastShellSummaryRef = useRef("");
   const pendingShellSummaryRef = useRef("");
@@ -244,19 +257,28 @@ export function App() {
       }) => Promise<import("./hooks/useRuntimeAssets").RuntimeAssetsCheckSummary | null>)
     | null
   >(null);
+  // Only legacy mirror-eligible downloads consume this saved override.
+  const [runtimeMirrorPrefix, setRuntimeMirrorPrefix] = useState(() => {
+    try { return localStorage.getItem(RUNTIME_COMPONENT_MIRROR_PREFIX_KEY) ?? ""; } catch { return ""; }
+  });
+  const clearLegacyDownloadMirror = () => {
+    localStorage.removeItem(RUNTIME_COMPONENT_MIRROR_PREFIX_KEY);
+    setRuntimeMirrorPrefix("");
+    notifications.show({message:"旧下载镜像已清除，请重新下载。",color:"teal"});
+  };
   const updateFlow = useUpdateFlow({
+    runtimeMirrorPrefix,
     appVersion,
     platformTarget: desktopStatus.platformTarget,
     accessToken: session?.accessToken ?? null,
     bootstrapVersion: bootstrap?.version ?? null,
-    runtimeMirrorPrefix,
     updateChannel: UPDATE_CHANNEL,
     readError,
     notify: notifications.show,
     showError: showErrorToast,
     onUnauthorized: recoverSessionAfterUnauthorized,
     isPromptBlocked: () =>
-      booting || windowTransitioning || runtimeAssetsBusy || runtimeAssetsDialogOpened || announcementDrawerOpened || Boolean(forcedAnnouncement),
+      booting || windowTransitioning || runtimeAssetsBusy || announcementDrawerOpened || Boolean(forcedAnnouncement),
     checkRuntimeComponents: async (input) => {
       const runner = runtimeComponentsCheckRef.current;
       if (!runner) {
@@ -276,8 +298,6 @@ export function App() {
     updateDownload,
     deferredUpdatePromptKeyRef,
     lastUpdatePromptVersionRef,
-    describeUpdateDownload: readUpdateDownloadDescription,
-    displayUpdateDownloadProgress: readUpdateDownloadProgress,
     runUpdateCheck: runUpdateCheckFromHook,
     runUpdateCheckAndFocus,
     handleManualUpdateCheck,
@@ -298,23 +318,15 @@ export function App() {
     runtimeAssets,
     runtimeAssetsReady,
     runtimeAssetsBusy,
-    runtimeAssetsDialogOpened,
-    setRuntimeAssetsDialogOpened,
     ensureRuntimeAssetsReady,
     getLastRuntimeAssetsCheckSummary,
     handleCancelRuntimeAssets,
     handleRetryRuntimeAssets
   } = useRuntimeAssets({
+    runtimeMirrorPrefix,
     appVersion,
     platformTarget: desktopStatus.platformTarget,
     accessToken: session?.accessToken ?? null,
-    runtimeMirrorPrefix,
-    forceUpdateRequired,
-    forcedAnnouncementActive: Boolean(forcedAnnouncement),
-    updateDialogOpened,
-    announcementDrawerOpened,
-    updateDownloadPhase: updateDownload.phase,
-    mirrorPrefixStorageKey: RUNTIME_COMPONENT_MIRROR_PREFIX_KEY,
     notify: notifications.show,
     onUnauthorized: recoverSessionAfterUnauthorized,
     readError
@@ -322,7 +334,7 @@ export function App() {
   const componentVersionSync = useComponentVersionSync({
     enabled: !booting && mainLayoutReady && !windowTransitioning && !forceUpdateRequired && (updateCheckStatus === "ready" || updateCheckStatus === "failed"),
     accessToken: session?.accessToken ?? null, status: desktopStatus, assetsBusy: runtimeAssetsBusy,
-    applicationUpdateBusy: ["preparing", "downloading"].includes(updateDownload.phase),
+    applicationUpdateBusy: ["preparing", "downloading", "verifying"].includes(updateDownload.phase),
     ensure: ensureRuntimeAssetsReady, onStatus: setDesktopStatus
   });
   runtimeComponentsCheckRef.current = async (input) => {
@@ -346,6 +358,9 @@ export function App() {
     setProbeResults,
     runProbe
   } = useNodeProbe({
+    sessionIdentity: session ? `${sessionGenerationRef.current}:${session.user.id}` : null,
+    getCurrentSessionIdentity: () => sessionRef.current ? `${sessionGenerationRef.current}:${sessionRef.current.user.id}` : null,
+    getCurrentAccessToken: () => sessionRef.current?.accessToken ?? null,
     accessToken: session?.accessToken ?? null,
     nowMs: now,
     selectedNodeId: selectedNodeId ?? runtime?.node.id ?? null,
@@ -419,6 +434,7 @@ export function App() {
     mergeSubscriptionState,
     restoreStoredSession
   } = useAuthBootstrap({
+    invalidateSessionOperations,
     session,
     nodes,
     credentials,
@@ -514,6 +530,7 @@ export function App() {
     markTicketUnread,
     recoverSessionAfterUnauthorized,
     getCurrentAccessToken: () => sessionRef.current?.accessToken ?? null,
+    getCurrentSessionIdentity: () => sessionRef.current ? `${sessionGenerationRef.current}:${sessionRef.current.user.id}` : null,
     clearSession,
     runUpdateCheck: runUpdateCheckForActions,
     refreshRuntime,
@@ -694,7 +711,6 @@ export function App() {
     probeResultsRef.current = probeResults;
   }, [probeResults]);
 
-  sessionRef.current = session;
 
   useEffect(() => {
     if (session) {
@@ -818,10 +834,6 @@ export function App() {
       delete window.__CHORDV_DESKTOP_SHELL__;
     };
   }, [desktopStatus.platformTarget]);
-
-  useEffect(() => {
-    setRuntimeMirrorPrefix(localStorage.getItem(RUNTIME_COMPONENT_MIRROR_PREFIX_KEY) ?? "");
-  }, []);
 
   useEffect(() => {
     const preventContextMenu = (event: MouseEvent) => {
@@ -1486,7 +1498,7 @@ export function App() {
     if (!deferredUpdatePromptKeyRef.current) {
       return;
     }
-    if (booting || windowTransitioning || updateDialogOpened || runtimeAssetsBusy || runtimeAssetsDialogOpened || forcedAnnouncement || announcementDrawerOpened) {
+    if (booting || windowTransitioning || updateDialogOpened || runtimeAssetsBusy || forcedAnnouncement || announcementDrawerOpened) {
       return;
     }
     if (!effectiveUpdateActionable) {
@@ -1509,7 +1521,6 @@ export function App() {
     windowTransitioning,
     forcedAnnouncement,
     runtimeAssetsBusy,
-    runtimeAssetsDialogOpened,
     updateDialogOpened
   ]);
 
@@ -1678,7 +1689,7 @@ export function App() {
               <Button
                 size="xs"
                 variant={forceUpdateRequired ? "filled" : "light"}
-                loading={updateDownload.phase === "preparing" || updateDownload.phase === "downloading"}
+                loading={updateDownload.phase === "preparing" || updateDownload.phase === "downloading" || updateDownload.phase === "verifying"}
                 onClick={() => setUpdateDialogOpened(true)}
               >
                 查看下载进度
@@ -1691,6 +1702,7 @@ export function App() {
 
   return (
     <div className={appClassName}>
+      {DownloadProgressDebug ? <Suspense fallback={null}><DownloadProgressDebug realDownloadVisible={(runtimeAssets.phase !== "idle" && runtimeAssets.phase !== "ready") || updateDownload.phase !== "idle"}/></Suspense> : null}
       <LoadingOverlay visible={booting} zIndex={200} overlayProps={{ color: "#fff", backgroundOpacity: 1 }} />
       {bootstrap && !windowTransitioning ? (
         <MeteringFloatingBanner
@@ -1698,18 +1710,11 @@ export function App() {
           message={bootstrap.subscription.meteringMessage ?? null}
         />
       ) : null}
-      {!windowTransitioning && runtimeAssets.phase !== "idle" && runtimeAssets.phase !== "ready" ? (
-        <div className="desktop-runtime-overlay">
+      {!windowTransitioning && ((runtimeAssets.phase !== "idle" && runtimeAssets.phase !== "ready") || (updateDownload.phase !== "idle" && !updateDialogOpened)) ? (
+        <div className="desktop-runtime-overlay" data-metering-notice={bootstrap?.subscription.meteringStatus === "degraded" && Boolean(bootstrap.subscription.meteringMessage) || undefined}>
           <div className="desktop-runtime-overlay__inner">
-            <RuntimeAssetsBanner
-              state={runtimeAssets}
-              onRetry={runtimeAssets.phase === "failed" ? handleRetryRuntimeAssets : null}
-              onCancel={
-                runtimeAssets.phase === "downloading" || runtimeAssets.phase === "checking"
-                  ? handleCancelRuntimeAssets
-                  : null
-              }
-            />
+            <RuntimeAssetsBanner onResetLegacyMirror={runtimeMirrorPrefix ? clearLegacyDownloadMirror : null} state={runtimeAssets} onRetry={handleRetryRuntimeAssets} onCancel={handleCancelRuntimeAssets}/>
+            {!updateDialogOpened ? <ClientUpdateProgressPanel onResetLegacyMirror={runtimeMirrorPrefix ? clearLegacyDownloadMirror : null} state={updateDownload} version={effectiveUpdate?.latestVersion} onRetry={()=>void handleUpdateDownload()} onInstall={()=>void handleQuitForUpdate()}/> : null}
           </div>
         </div>
       ) : null}
@@ -2048,69 +2053,6 @@ export function App() {
         </Stack>
       </Modal>
 
-      <Modal
-        opened={runtimeAssetsDialogOpened && !windowTransitioning}
-        onClose={() => setRuntimeAssetsDialogOpened(false)}
-        centered
-        title="必要内核组件未就绪"
-        withCloseButton
-        closeOnClickOutside
-        closeOnEscape
-      >
-        <Stack gap="md">
-          <Alert color="red" variant="light">
-            {runtimeAssets.errorMessage ?? "必要内核组件下载失败，当前暂时不能连接。"}
-          </Alert>
-          {runtimeAssets.errorCode ? (
-            <Text size="sm" c="dimmed">
-              错误代码：{runtimeAssets.errorCode}
-            </Text>
-          ) : null}
-          <TextInput
-            label="自定义下载加速前缀"
-            placeholder="例如 https://ghfast.top/"
-            value={runtimeMirrorPrefix}
-            onChange={(event) => setRuntimeMirrorPrefix(event.currentTarget.value)}
-          />
-          <Text size="sm" c="dimmed">
-            如果默认下载地址在当前网络下较慢或无法访问，可以填写自己的加速前缀后再重试。
-          </Text>
-          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
-            <Button
-              variant="default"
-              onClick={async () => {
-                const content = [
-                  runtimeAssets.errorCode ? `错误代码：${runtimeAssets.errorCode}` : null,
-                  runtimeAssets.errorMessage
-                ]
-                  .filter(Boolean)
-                  .join("\n");
-                await navigator.clipboard.writeText(content);
-                notifications.show({
-                  color: "blue",
-                  title: "错误信息已复制",
-                  message: "现在可以直接把错误信息发给管理员或开发者。"
-                });
-              }}
-            >
-              复制错误信息
-            </Button>
-            {(runtimeAssets.phase === "downloading" || runtimeAssets.phase === "checking") ? (
-              <Button variant="default" color="red" onClick={handleCancelRuntimeAssets}>
-                取消下载
-              </Button>
-            ) : (
-              <>
-                <Button variant="default" onClick={() => setRuntimeAssetsDialogOpened(false)}>
-                  稍后重试
-                </Button>
-                <Button onClick={handleRetryRuntimeAssets}>重试下载</Button>
-              </>
-            )}
-          </div>
-        </Stack>
-      </Modal>
-
             <UpdateCenterModal
         state={updateCenter}
         appVersion={appVersion}
@@ -2157,28 +2099,7 @@ export function App() {
           <Text size="sm" c="dimmed">
             发布渠道：正式版，仓库地址（<a href="https://github.com/achordchan" target="_blank" rel="noopener noreferrer">github.com/achordchan</a>）
           </Text>
-          {(effectiveUpdate?.deliveryMode === "desktop_installer_download" ||
-            effectiveUpdate?.deliveryMode === "desktop_full_replace") &&
-          updateDownload.phase !== "idle" ? (
-            <Stack gap={6}>
-              <Text fw={600}>
-                {effectiveUpdate?.deliveryMode === "desktop_full_replace" ? "更新包下载" : "安装器下载"}
-              </Text>
-              <Text size="sm" c="dimmed">
-                {effectiveUpdate?.deliveryMode === "desktop_full_replace"
-                  ? "新版本会先在应用内下载完整 ZIP 更新包，完成后自动替换并重启。"
-                  : "新版本会先在应用内下载安装包。下载完成后点击“安装并重启”，应用退出后自动完成替换安装；失败时会打开安装包并提示原因。"}
-              </Text>
-              <Progress
-                value={readUpdateDownloadProgress()}
-                animated={updateDownload.phase === "downloading"}
-                striped={updateDownload.phase === "downloading"}
-              />
-              <Text size="sm" c="dimmed">
-                {readUpdateDownloadDescription()}
-              </Text>
-            </Stack>
-          ) : null}
+          <ClientUpdateProgressPanel onResetLegacyMirror={runtimeMirrorPrefix ? clearLegacyDownloadMirror : null} state={updateDownload} version={effectiveUpdate?.latestVersion} onRetry={()=>void handleUpdateDownload()} onInstall={()=>void handleQuitForUpdate()}/>
           <Stack gap={6}>
             <Text fw={600}>更新内容</Text>
             {effectiveUpdate?.changelog.length ? (
@@ -2197,7 +2118,7 @@ export function App() {
             {!forceUpdateRequired ? (
               <Button
                 variant="default"
-                disabled={updateDownload.phase === "preparing" || updateDownload.phase === "downloading"}
+                disabled={updateDownload.phase === "preparing" || updateDownload.phase === "downloading" || updateDownload.phase === "verifying"}
                 onClick={() => setUpdateDialogOpened(false)}
               >
                 稍后再说
@@ -2213,7 +2134,7 @@ export function App() {
                 </Button>
               ) : (
                 <Button
-                  loading={updateDownload.phase === "preparing" || updateDownload.phase === "downloading"}
+                  loading={updateDownload.phase === "preparing" || updateDownload.phase === "downloading" || updateDownload.phase === "verifying"}
                   onClick={() => void handleUpdateDownload()}
                 >
                   {updateActionLabel(effectiveUpdate, updateDownload)}

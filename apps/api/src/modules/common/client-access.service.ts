@@ -1,5 +1,6 @@
 import { isNodeOnboardingReady } from "./node-onboarding-policy";
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   HttpException,
@@ -225,13 +226,34 @@ export class ClientAccessService {
     for (const row of rows) {
       if (!isNodeOnboardingReady(row.node)) continue;
       if (!nodeMap.has(row.nodeId)) {
-        nodeMap.set(row.nodeId, toNodeSummary(row.node));
+        nodeMap.set(row.nodeId, { ...toNodeSummary(row.node), serverHost: row.node.serverHost, serverPort: row.node.serverPort });
       }
     }
     return Array.from(nodeMap.values());
     } catch (error) {
       throwLocalReadAsServiceUnavailable(error, "节点列表暂时不可用，请稍后重试。");
     }
+  }
+
+  async reportClientNodeProbes(results: Array<{ nodeId: string; status: "healthy" | "offline"; latencyMs: number | null }>, token?: string) {
+    const user = await this.authSessionService.authenticateAccessToken(token);
+    await this.consumeRateLimit([`node-probe-report:user:${user.id}`], {
+      limit: 30, windowMs: 60_000, blockMs: 60_000, message: "节点检测上报过于频繁，请稍后重试。"
+    });
+    const allowed = new Set((await this.getNodes(token)).map(node => node.id));
+    const unique = new Map(results.map(result => [result.nodeId, result]));
+    if (unique.size !== results.length || results.length > 32 || results.some(result =>
+      !allowed.has(result.nodeId) || !["healthy", "offline"].includes(result.status) || (result.status === "healthy" && (!Number.isInteger(result.latencyMs) || result.latencyMs! < 1 || result.latencyMs! > 60000))
+    )) throw new BadRequestException("节点检测结果无效或节点未授权。");
+    const checkedAt = new Date();
+    await this.prisma.$transaction(results.map(result => {
+      const data = { status: result.status, latencyMs: result.status === "healthy" ? result.latencyMs : null, checkedAt };
+      return this.prisma.clientNodeProbe.upsert({
+        where: { userId_nodeId: { userId: user.id, nodeId: result.nodeId } },
+        create: { userId: user.id, nodeId: result.nodeId, ...data }, update: data
+      });
+    }));
+    return { ok: true };
   }
 
   async probeClientNodes(nodeIds: string[], token?: string): Promise<ClientNodeProbeResultDto[]> {

@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type {
   AuthSessionDto,
@@ -28,6 +28,7 @@ import {
   isUnauthorizedApiError
 } from "../api/client";
 import {
+  checkRuntimeNetworkConflict,
   connectRuntime,
   createIdleRuntimeStatus,
   focusDesktopWindow,
@@ -133,6 +134,7 @@ type UseRuntimeActionsOptions = {
   markTicketUnread: (ticketId: string) => void;
   recoverSessionAfterUnauthorized: () => Promise<AuthSessionDto | null> | AuthSessionDto | null;
   getCurrentAccessToken: () => string | null;
+  getCurrentSessionIdentity: () => string | null;
   clearSession: (stopRuntime?: boolean) => Promise<void>;
   runUpdateCheck: (input: RunUpdateCheckInput) => Promise<void>;
   refreshRuntime: () => Promise<RuntimeStatus | null>;
@@ -145,6 +147,7 @@ type UseRuntimeActionsOptions = {
 };
 
 export function useRuntimeActions(options: UseRuntimeActionsOptions) {
+  const connectInFlight = useRef(false);
   const [actionBusy, setActionBusy] = useState<"connect" | "disconnect" | null>(null);
 
   const handleProtectedAccessRevoked = useCallback(
@@ -221,12 +224,11 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         }));
         await options.forceStopLocalRuntime();
         if (disconnectOptions?.notifyServer !== false && sessionId && accessToken) {
-          await disconnectSession(accessToken, sessionId).catch(() => null);
+          void disconnectSession(accessToken, sessionId).catch(() => null);
         }
       } catch (reason) {
         options.showErrorToast(reason instanceof Error ? options.readError(reason.message) : "断开失败");
       } finally {
-        await options.refreshRuntime();
         setActionBusy(null);
       }
     },
@@ -723,143 +725,183 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       });
       return;
     }
-    const shouldEnsureRuntimeAssets =
-      !options.runtimeAssetsReady ||
-      options.runtimeAssets.phase === "idle" ||
-      options.runtimeAssets.phase === "failed";
-    if (shouldEnsureRuntimeAssets) {
-      const ready = await options.ensureRuntimeAssetsReady({
-        source: options.runtimeAssets.phase === "failed" ? "retry" : "connect",
-        interactive: true,
-        blockConnection: true,
-        // 失败重试才强制远端；普通连接只保证本地组件就位，避免一点连接就重新扫 GEO。
-        forceCheck: options.runtimeAssets.phase === "failed"
-      });
-      if (!ready) {
+    if (connectInFlight.current) return;
+    connectInFlight.current = true;
+    setActionBusy("connect");
+    try {
+      const connectionIdentity = options.getCurrentSessionIdentity();
+      const isCurrentLogin = () => connectionIdentity !== null && options.getCurrentSessionIdentity() === connectionIdentity;
+      try {
+        await checkRuntimeNetworkConflict();
+      } catch (reason) {
+        if (!isCurrentLogin()) return;
+        const message = reason instanceof Error ? options.readError(reason.message) : options.readError(String(reason));
+        const guidance = deriveGuidanceFromConnectFailure(message, options.fallbackNodeId, options.desktopStatus.platformTarget);
+        if (guidance) applyGuidance(guidance, true, false);
+        else options.showErrorToast(message);
         return;
       }
-    }
-    if (!bypassStatusGate && !options.canAttemptConnect) {
-      debugAndroidConnect("handleConnect:blocked", {
-        canConnect: options.canConnect,
-        nodeId: selectedNode.id
-      });
-      return;
-    }
-
-    let config: GeneratedRuntimeConfigDto | null = null;
-    let configAccessToken = options.session.accessToken;
-
-    try {
-      setActionBusy("connect");
-      debugAndroidConnect("handleConnect:start", {
-        status: options.desktopStatus.status,
-        nodeId: selectedNode.id,
-        mode: options.mode
-      });
-      if (options.desktopStatus.platformTarget === "android" && options.desktopStatus.status === "error") {
-        const staleSessionId = options.runtime?.sessionId ?? options.desktopStatus.activeSessionId;
-        debugAndroidConnect("handleConnect:clear-stale-runtime", { staleSessionId });
-        await options.forceStopLocalRuntime();
-        if (staleSessionId) {
-          await disconnectSession(options.session.accessToken, staleSessionId).catch(() => null);
+      if (!isCurrentLogin()) return;
+      const shouldEnsureRuntimeAssets =
+        !options.runtimeAssetsReady ||
+        options.runtimeAssets.phase === "idle" ||
+        options.runtimeAssets.phase === "failed";
+      if (shouldEnsureRuntimeAssets) {
+        const ready = await options.ensureRuntimeAssetsReady({
+          source: options.runtimeAssets.phase === "failed" ? "retry" : "connect",
+          interactive: true,
+          blockConnection: true,
+          // 失败重试才强制远端；普通连接只保证本地组件就位，避免一点连接就重新扫 GEO。
+          forceCheck: options.runtimeAssets.phase === "failed"
+        });
+        if (!ready) {
+          return;
         }
-        options.setDesktopStatus(createIdleRuntimeStatus(options.desktopStatus.platformTarget));
       }
-      options.setDesktopStatus((current) => ({ ...current, status: "connecting", lastError: null }));
-      const connectWithAccessToken = async (accessToken: string) =>
-        connectSession({
-          accessToken,
+      if (!bypassStatusGate && !options.canAttemptConnect) {
+        debugAndroidConnect("handleConnect:blocked", {
+          canConnect: options.canConnect,
+          nodeId: selectedNode.id
+        });
+        return;
+      }
+
+      if (!isCurrentLogin()) return;
+      let config: GeneratedRuntimeConfigDto | null = null;
+      let configAccessToken = options.getCurrentAccessToken() ?? options.session.accessToken;
+
+      try {
+        setActionBusy("connect");
+        debugAndroidConnect("handleConnect:start", {
+          status: options.desktopStatus.status,
           nodeId: selectedNode.id,
           mode: options.mode
         });
-      try {
-        debugAndroidConnect("handleConnect:connect-session:request", { nodeId: selectedNode.id, mode: options.mode });
-        config = await connectWithAccessToken(options.session.accessToken);
-        debugAndroidConnect("handleConnect:connect-session:success", {
-          sessionId: config.sessionId,
-          nodeId: config.node.id
-        });
-      } catch (reason) {
-        debugAndroidConnect("handleConnect:connect-session:error", reason instanceof Error ? reason.message : reason);
-        if (isAccessTokenExpiredApiError(reason)) {
-          const recoveredSession = await options.recoverSessionAfterUnauthorized();
-          const recoveredAccessToken = recoveredSession?.accessToken ?? options.getCurrentAccessToken();
-          if (!recoveredAccessToken) {
-            throw reason;
+        if (options.desktopStatus.platformTarget === "android" && options.desktopStatus.status === "error") {
+          const staleSessionId = options.runtime?.sessionId ?? options.desktopStatus.activeSessionId;
+          debugAndroidConnect("handleConnect:clear-stale-runtime", { staleSessionId });
+          await options.forceStopLocalRuntime();
+          if (staleSessionId) {
+            await disconnectSession(options.session.accessToken, staleSessionId).catch(() => null);
           }
-          config = await connectWithAccessToken(recoveredAccessToken);
-          configAccessToken = recoveredAccessToken;
-          debugAndroidConnect("handleConnect:connect-session:recovered", {
+          options.setDesktopStatus(createIdleRuntimeStatus(options.desktopStatus.platformTarget));
+        }
+        options.setDesktopStatus((current) => ({ ...current, status: "connecting", lastError: null }));
+        const connectWithAccessToken = async (accessToken: string) =>
+          connectSession({
+            accessToken,
+            nodeId: selectedNode.id,
+            mode: options.mode
+          });
+        try {
+          debugAndroidConnect("handleConnect:connect-session:request", { nodeId: selectedNode.id, mode: options.mode });
+          config = await connectWithAccessToken(configAccessToken);
+          debugAndroidConnect("handleConnect:connect-session:success", {
             sessionId: config.sessionId,
             nodeId: config.node.id
           });
-        } else if (isForbiddenApiError(reason)) {
-          if (await handleProtectedAccessRevoked(reason)) {
-            return;
-          }
-          throw reason;
-        } else if (!isUnauthorizedApiError(reason)) {
-          throw reason;
-        }
-      }
-      if (!config) {
-        throw new Error("连接配置生成失败");
-      }
-      debugAndroidConnect("handleConnect:runtime:start", {
-        sessionId: config.sessionId,
-        nodeId: config.node.id
-      });
-      await connectRuntime(config);
-      debugAndroidConnect("handleConnect:runtime:success", {
-        sessionId: config.sessionId,
-        nodeId: config.node.id
-      });
-      options.setRuntime(config);
-      options.setConnectionGuidance(null);
-      options.setGuidanceDialog(null);
-      options.leaseHeartbeatFailedAtRef.current = null;
-      await options.refreshRuntime();
-    } catch (reason) {
-      const runtimeStatus = await loadConnectFailureRuntimeStatus().catch(() => null);
-      debugAndroidConnect("handleConnect:failed", {
-        reason: reason instanceof Error ? reason.message : reason,
-        runtimeStatus: runtimeStatus
-          ? {
-              status: runtimeStatus.status,
-              reasonCode: runtimeStatus.reasonCode,
-              lastError: runtimeStatus.lastError
+        } catch (reason) {
+          debugAndroidConnect("handleConnect:connect-session:error", reason instanceof Error ? reason.message : reason);
+          if (isAccessTokenExpiredApiError(reason)) {
+            const recoveredSession = await options.recoverSessionAfterUnauthorized();
+            const recoveredAccessToken = recoveredSession?.accessToken ?? options.getCurrentAccessToken();
+            if (!isCurrentLogin() || !recoveredAccessToken) {
+              throw reason;
             }
-          : null
-      });
-      if (runtimeStatus) {
-        options.setDesktopStatus(runtimeStatus);
-      }
-      await options.forceStopLocalRuntime();
-      if (runtimeStatus?.status === "error") {
-        options.setDesktopStatus(runtimeStatus);
-      }
-      if (config?.sessionId) {
-        await disconnectSession(configAccessToken, config.sessionId).catch(() => null);
-      }
-      const message = reason instanceof Error ? options.readError(reason.message) : "连接失败";
-      const runtimeGuidance = runtimeStatus
-        ? deriveGuidanceFromRuntimeFailure(composeRuntimeFailureText(runtimeStatus), options.fallbackNodeId)
-        : null;
-      const connectGuidance =
-        deriveGuidanceFromConnectFailure(
-          message,
-          options.fallbackNodeId,
-          runtimeStatus?.platformTarget ?? options.desktopStatus.platformTarget
-        ) ??
-        runtimeGuidance;
-      if (connectGuidance) {
-        applyGuidance(connectGuidance, true, true);
-      } else {
-        options.showErrorToast(message);
+            config = await connectWithAccessToken(recoveredAccessToken);
+            configAccessToken = recoveredAccessToken;
+            debugAndroidConnect("handleConnect:connect-session:recovered", {
+              sessionId: config.sessionId,
+              nodeId: config.node.id
+            });
+          } else if (isForbiddenApiError(reason)) {
+            if (await handleProtectedAccessRevoked(reason)) {
+              return;
+            }
+            throw reason;
+          } else if (!isUnauthorizedApiError(reason)) {
+            throw reason;
+          }
+        }
+        if (!config) {
+          throw new Error("连接配置生成失败");
+        }
+        if (!isCurrentLogin()) {
+          // A completed request from a signed-out account must never start a local connection.
+          void disconnectSession(configAccessToken, config.sessionId).catch(() => null);
+          await options.refreshRuntime();
+          return;
+        }
+        debugAndroidConnect("handleConnect:runtime:start", {
+          sessionId: config.sessionId,
+          nodeId: config.node.id
+        });
+        await connectRuntime(config);
+        if (!isCurrentLogin()) {
+          void disconnectSession(configAccessToken, config.sessionId).catch(() => null);
+          await options.refreshRuntime();
+          return;
+        }
+        debugAndroidConnect("handleConnect:runtime:success", {
+          sessionId: config.sessionId,
+          nodeId: config.node.id
+        });
+        options.setRuntime(config);
+        options.setConnectionGuidance(null);
+        options.setGuidanceDialog(null);
+        options.leaseHeartbeatFailedAtRef.current = null;
+        await options.refreshRuntime();
+      } catch (reason) {
+        if (!isCurrentLogin()) {
+          if (config?.sessionId) void disconnectSession(configAccessToken, config.sessionId).catch(() => null);
+          await options.refreshRuntime();
+          return;
+        }
+        const earlyMessage = reason instanceof Error ? options.readError(reason.message) : options.readError(String(reason));
+        const earlyGuidance = deriveGuidanceFromConnectFailure(earlyMessage, options.fallbackNodeId, options.desktopStatus.platformTarget);
+        if (earlyGuidance && isDialogOnlyGuidance(earlyGuidance.code)) applyGuidance(earlyGuidance, true, false);
+        const runtimeStatus = await loadConnectFailureRuntimeStatus().catch(() => null);
+        debugAndroidConnect("handleConnect:failed", {
+          reason: reason instanceof Error ? reason.message : reason,
+          runtimeStatus: runtimeStatus
+            ? {
+                status: runtimeStatus.status,
+                reasonCode: runtimeStatus.reasonCode,
+                lastError: runtimeStatus.lastError
+              }
+            : null
+        });
+        if (runtimeStatus) {
+          options.setDesktopStatus(runtimeStatus);
+        }
+        await options.forceStopLocalRuntime();
+        if (runtimeStatus?.status === "error") {
+          options.setDesktopStatus(runtimeStatus);
+        }
+        if (config?.sessionId) {
+          void disconnectSession(configAccessToken, config.sessionId).catch(() => null);
+        }
+        const message = reason instanceof Error ? options.readError(reason.message) : "连接失败";
+        const runtimeGuidance = runtimeStatus
+          ? deriveGuidanceFromRuntimeFailure(composeRuntimeFailureText(runtimeStatus), options.fallbackNodeId)
+          : null;
+        const connectGuidance =
+          deriveGuidanceFromConnectFailure(
+            message,
+            options.fallbackNodeId,
+            runtimeStatus?.platformTarget ?? options.desktopStatus.platformTarget
+          ) ??
+          runtimeGuidance;
+        if (connectGuidance) {
+          applyGuidance(connectGuidance, true, true);
+        } else {
+          options.showErrorToast(message);
+        }
+      } finally {
+        debugAndroidConnect("handleConnect:finish");
       }
     } finally {
-      debugAndroidConnect("handleConnect:finish");
+      connectInFlight.current = false;
       setActionBusy(null);
     }
   }, [actionBusy, applyGuidance, debugAndroidConnect, options]);
@@ -954,18 +996,6 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
     ) {
       await handleDisconnect();
       return;
-    }
-
-    if (!options.runtimeAssetsReady || options.runtimeAssets.phase === "idle" || options.runtimeAssets.phase === "failed") {
-      const ready = await options.ensureRuntimeAssetsReady({
-        source: options.runtimeAssets.phase === "failed" ? "retry" : "connect",
-        interactive: true,
-        blockConnection: true,
-        forceCheck: options.runtimeAssets.phase === "failed"
-      });
-      if (!ready) {
-        return;
-      }
     }
 
     await handleConnect();

@@ -1,3 +1,5 @@
+mod connection_generation;
+mod node_probe;
 mod android_mobile_plugin;
 mod android_runtime;
 mod routing_diagnostics;
@@ -10,7 +12,7 @@ use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
-    net::{SocketAddr, TcpStream, ToSocketAddrs},
+    net::TcpStream,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{mpsc, Mutex, OnceLock},
@@ -57,8 +59,7 @@ use tauri::tray::{MouseButton, TrayIconEvent};
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-#[cfg(windows)]
-const DEFAULT_PROXY_TEST_URL: &str = "http://example.com/";
+static CONNECTION_GENERATION: connection_generation::ConnectionGeneration = connection_generation::ConnectionGeneration::new();
 
 const ANDROID_TUN_NAME: &str = "chordv-vpn";
 const ANDROID_TUN_MTU: u16 = 1500;
@@ -1904,6 +1905,10 @@ async fn download_desktop_installer(
             }
 
             file.flush().map_err(|error| format!("写入安装器文件失败：{error}"))?;
+            send_update_download_progress(&app, &progress_channel, DesktopInstallerDownloadProgress {
+                phase: "verifying".into(), file_name: Some(file_name.clone()), downloaded_bytes,
+                total_bytes, local_path: None, message: Some("正在校验客户端更新包…".into()),
+            });
             validate_installer_file(
                 &temp_path,
                 downloaded_bytes,
@@ -3005,6 +3010,18 @@ async fn download_runtime_component(
                     ));
                 }
             }
+            emit_runtime_component_progress(
+                &app,
+                RuntimeComponentDownloadProgress {
+                    phase: "verifying".into(),
+                    component: component_name.into(),
+                    file_name: Some(input.component.file_name.clone()),
+                    downloaded_bytes,
+                    total_bytes,
+                    message: Some(format!("正在校验 {}…", runtime_component_display_name(component))),
+                },
+            );
+
             let archive_checksum = runtime_component_download_checksum(
                 component,
                 input.component.checksum_sha256.as_deref(),
@@ -3155,8 +3172,8 @@ fn cancel_runtime_component_download(app: AppHandle) -> Result<CommandResult, St
 }
 
 #[tauri::command]
-fn probe_nodes(nodes: Vec<NodeSummaryDto>) -> Vec<NodeProbeResultDto> {
-    nodes.into_iter().map(probe_single_node).collect()
+async fn probe_nodes(nodes: Vec<NodeSummaryDto>) -> Result<Vec<NodeProbeResultDto>, String> {
+    node_probe::probe_nodes(nodes).await
 }
 
 #[tauri::command]
@@ -3306,13 +3323,37 @@ fn runtime_snapshot(
 }
 
 #[tauri::command]
-fn connect_runtime(
-    app: AppHandle,
-    config: GeneratedRuntimeConfigDto,
-    state: State<'_, Mutex<RuntimeState>>,
-) -> Result<CommandResult, String> {
+async fn check_network_conflict(app: AppHandle) -> Result<(), String> {
+    let check = tauri::async_runtime::spawn_blocking(move || {
+        let runtime = app.state::<Mutex<RuntimeState>>();
+        let (http, socks) = {
+            let state = runtime.lock().map_err(|_| "运行时状态异常".to_string())?;
+            if state.active_pid.is_some() {
+                (state.local_http_port.unwrap_or(0), state.local_socks_port.unwrap_or(0))
+            } else { (0, 0) }
+        };
+        detect_external_network_conflict(http, socks)
+    });
+    tokio::time::timeout(Duration::from_secs(3), check).await
+        .map_err(|_| "本机网络占用检查超时，请稍后重试。".to_string())?
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn connect_runtime(app: AppHandle, config: GeneratedRuntimeConfigDto) -> Result<CommandResult, String> {
+    let generation = CONNECTION_GENERATION.capture();
+    tauri::async_runtime::spawn_blocking(move || connect_runtime_blocking(&app, config, generation))
+        .await.map_err(|error| error.to_string())?
+}
+
+fn connect_runtime_blocking(app: &AppHandle, config: GeneratedRuntimeConfigDto, generation: u64) -> Result<CommandResult, String> {
+    let state = app.state::<Mutex<RuntimeState>>();
     {
         let mut state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
+        CONNECTION_GENERATION.ensure_current(generation)?;
+        if state.status == "starting" || state.status == "connecting" {
+            return Err("连接正在进行中".into());
+        }
         // Same lock order as starting an asset download: runtime, then download.
         // A tray connection must not launch files being replaced by an update.
         let downloads: State<'_, Mutex<RuntimeComponentDownloadState>> = app.state();
@@ -3340,6 +3381,7 @@ fn connect_runtime(
             return Err(error);
         }
 
+        CONNECTION_GENERATION.ensure_current(generation)?;
         state.status = "starting".into();
         state.active_session_id = Some(config.session_id.clone());
         state.active_node_id = Some(config.node.id.clone());
@@ -3360,6 +3402,10 @@ fn connect_runtime(
         Ok(path) => path,
         Err(error) => {
             let mut state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
+            CONNECTION_GENERATION.ensure_current(generation)?;
+            if state.active_session_id.as_deref() != Some(config.session_id.as_str()) {
+                return Err("连接已取消".into());
+            }
             state.status = "error".into();
             state.active_session_id = None;
             state.active_node_id = None;
@@ -3375,6 +3421,10 @@ fn connect_runtime(
     };
 
     let mut state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
+    CONNECTION_GENERATION.ensure_current(generation)?;
+    if state.status != "starting" || state.active_session_id.as_deref() != Some(config.session_id.as_str()) {
+        return Err("连接已取消".into());
+    }
     state.status = "connecting".into();
     state.active_session_id = Some(config.session_id.clone());
     state.active_node_id = Some(config.node.id.clone());
@@ -3408,8 +3458,6 @@ fn connect_runtime(
         .spawn()
         .map_err(|error| format!("启动内核失败：{error}"))?;
 
-    thread::sleep(Duration::from_millis(900));
-
     if let Some(exit_status) = child.try_wait().map_err(|error| error.to_string())? {
         let log = tail_log(&log_path, 40);
         state.status = "error".into();
@@ -3431,6 +3479,12 @@ fn connect_runtime(
         });
     }
 
+    if let Err(error) = verify_runtime_ready(&app, config.local_http_port, config.local_socks_port)
+    {
+        rollback_connect_failure(&app, &mut state, &mut child, error.clone());
+        return Err(error);
+    }
+
     if let Err(error) = set_system_proxy(config.local_http_port, config.local_socks_port) {
         rollback_connect_failure(
             &app,
@@ -3439,12 +3493,6 @@ fn connect_runtime(
             format!("设置系统代理失败：{error}"),
         );
         return Err(format!("设置系统代理失败：{error}"));
-    }
-
-    if let Err(error) = verify_runtime_ready(&app, config.local_http_port, config.local_socks_port)
-    {
-        rollback_connect_failure(&app, &mut state, &mut child, error.clone());
-        return Err(error);
     }
 
     #[cfg(windows)]
@@ -3481,12 +3529,10 @@ fn connect_runtime(
 }
 
 #[tauri::command]
-fn disconnect_runtime(
-    app: AppHandle,
-    state: State<'_, Mutex<RuntimeState>>,
-) -> Result<CommandResult, String> {
-    let _ = state;
-    disconnect_runtime_internal(&app)?;
+async fn disconnect_runtime(app: AppHandle) -> Result<CommandResult, String> {
+    CONNECTION_GENERATION.invalidate();
+    tauri::async_runtime::spawn_blocking(move || disconnect_runtime_internal(&app))
+        .await.map_err(|error| error.to_string())??;
 
     Ok(CommandResult {
         ok: true,
@@ -6276,58 +6322,6 @@ fn kill_pid(pid: u32) -> Result<(), String> {
     Err(format!("当前平台不支持结束进程：{pid}"))
 }
 
-fn probe_single_node(node: NodeSummaryDto) -> NodeProbeResultDto {
-    let checked_at = chrono_like_now();
-    let Some(server_host) = node.server_host.as_deref() else {
-        return NodeProbeResultDto {
-            node_id: node.id,
-            status: "offline".into(),
-            latency_ms: None,
-            checked_at,
-            error: Some("节点缺少测速地址".into()),
-        };
-    };
-    let Some(server_port) = node.server_port else {
-        return NodeProbeResultDto {
-            node_id: node.id,
-            status: "offline".into(),
-            latency_ms: None,
-            checked_at,
-            error: Some("节点缺少测速端口".into()),
-        };
-    };
-    let start = Instant::now();
-    let outcome = resolve_socket_addr(server_host, server_port).and_then(|address| {
-        TcpStream::connect_timeout(&address, Duration::from_secs(4))
-            .map_err(|error| error.to_string())
-    });
-
-    match outcome {
-        Ok(_) => NodeProbeResultDto {
-            node_id: node.id,
-            status: "healthy".into(),
-            latency_ms: Some((start.elapsed().as_millis().max(1)).min(u128::from(u32::MAX)) as u32),
-            checked_at,
-            error: None,
-        },
-        Err(error) => NodeProbeResultDto {
-            node_id: node.id,
-            status: "offline".into(),
-            latency_ms: None,
-            checked_at,
-            error: Some(error),
-        },
-    }
-}
-
-fn resolve_socket_addr(host: &str, port: u16) -> Result<SocketAddr, String> {
-    let mut addresses = (host, port)
-        .to_socket_addrs()
-        .map_err(|error| error.to_string())?;
-    addresses
-        .next()
-        .ok_or_else(|| format!("无法解析地址：{host}:{port}"))
-}
 
 fn verify_server_certificate_fingerprint(url: &Url, expected: &str) -> Result<(), String> {
     #[cfg(target_os = "android")]
@@ -6375,6 +6369,7 @@ fn chrono_like_now() -> String {
 }
 
 fn shutdown_runtime(app: &AppHandle, state: &mut RuntimeState) {
+    CONNECTION_GENERATION.invalidate();
     let _ = clear_system_proxy();
 
     stop_runtime_process(app, state);
@@ -6480,7 +6475,7 @@ fn rollback_connect_failure(
     sync_shell_from_runtime(app, state);
 }
 
-fn verify_runtime_ready(app: &AppHandle, http_port: u16, socks_port: u16) -> Result<(), String> {
+fn verify_runtime_ready(_app: &AppHandle, http_port: u16, socks_port: u16) -> Result<(), String> {
     let start = Instant::now();
     let timeout = Duration::from_secs(6);
     let mut http_ready = false;
@@ -6492,74 +6487,17 @@ fn verify_runtime_ready(app: &AppHandle, http_port: u16, socks_port: u16) -> Res
         if http_ready && socks_ready {
             break;
         }
-        thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(25));
     }
 
     if !http_ready || !socks_ready {
         return Err("本地代理端口启动失败".into());
     }
 
-    #[cfg(windows)]
-    if let Err(error) = verify_http_proxy_flow(http_port) {
-        append_download_diagnostic_log(
-            app,
-            "runtime",
-            format!("windows proxy egress self-check skipped as non-fatal: {error}"),
-        );
-    }
-
     Ok(())
 }
 
-#[cfg(windows)]
-fn verify_http_proxy_flow(http_port: u16) -> Result<(), String> {
-    let address = ("127.0.0.1", http_port);
-    let mut stream = TcpStream::connect_timeout(
-        &address
-            .to_socket_addrs()
-            .map_err(|error| format!("解析本地代理地址失败：{error}"))?
-            .next()
-            .ok_or_else(|| "解析本地代理地址失败".to_string())?,
-        Duration::from_secs(4),
-    )
-    .map_err(|error| format!("连接本地代理失败：{error}"))?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(6)))
-        .map_err(|error| error.to_string())?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(6)))
-        .map_err(|error| error.to_string())?;
 
-    let request = format!(
-        "GET {DEFAULT_PROXY_TEST_URL} HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\nUser-Agent: ChordV-SelfCheck\r\n\r\n"
-    );
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|error| format!("写入本地代理失败：{error}"))?;
-    stream.flush().map_err(|error| error.to_string())?;
-
-    let mut reader = BufReader::new(stream);
-    let mut first_line = String::new();
-    reader
-        .read_line(&mut first_line)
-        .map_err(|error| format!("读取本地代理响应失败：{error}"))?;
-
-    if !first_line.starts_with("HTTP/1.1 ") && !first_line.starts_with("HTTP/1.0 ") {
-        return Err("本地代理连通性校验失败".into());
-    }
-
-    let status = first_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|value| value.parse::<u16>().ok())
-        .ok_or_else(|| "本地代理返回了无效状态码".to_string())?;
-
-    if (200..400).contains(&status) {
-        Ok(())
-    } else {
-        Err(format!("本地代理连通性校验失败：HTTP {status}"))
-    }
-}
 
 fn set_system_proxy(http_port: u16, socks_port: u16) -> Result<(), io::Error> {
     #[cfg(target_os = "macos")]
@@ -7634,6 +7572,7 @@ fn emit_shell_action(app: &AppHandle, action: &str) -> Result<(), String> {
 
 #[cfg(not(target_os = "android"))]
 fn disconnect_runtime_internal(app: &AppHandle) -> Result<(), String> {
+    CONNECTION_GENERATION.invalidate();
     let runtime_state = app.state::<Mutex<RuntimeState>>();
     let mut state = runtime_state
         .lock()
@@ -7666,6 +7605,7 @@ fn disconnect_runtime_internal(app: &AppHandle) -> Result<(), String> {
 
 #[cfg(target_os = "android")]
 fn disconnect_runtime_internal(app: &AppHandle) -> Result<(), String> {
+    CONNECTION_GENERATION.invalidate();
     let runtime_state = app.state::<Mutex<RuntimeState>>();
     let mut state = runtime_state
         .lock()
@@ -8116,6 +8056,7 @@ pub fn run() {
             runtime_status,
             runtime_snapshot,
             runtime_logs,
+            check_network_conflict,
             connect_runtime,
             disconnect_runtime,
             android_runtime::android_runtime_status,

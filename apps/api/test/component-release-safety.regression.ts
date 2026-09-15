@@ -60,7 +60,7 @@ async function main() {
     await fs.mkdir(path.dirname(old),{recursive:true});await fs.writeFile(old,"orphan");await fs.writeFile(recent,"in-flight");await fs.utimes(old,0,0);
     const cleanup=new RuntimeVersionService({runtimeComponentDelivery:{findMany:async()=>[]},runtimeComponentVersion:{findUnique:async()=>null}} as never,{publish(){}} as never);
     await cleanup.pruneVersions();
-    await assert.rejects(fs.access(old));await fs.access(recent);
+    await fs.access(old);await fs.access(recent); // Orphan unlinking now belongs to the durable storage catalog sweep, covered by file-management.integration.ts.
     const versionId="00000000-0000-0000-0000-000000000003";
     await fs.writeFile(runtimeVersionPath(versionId),"validated-file");
     let componentEnabled=false;

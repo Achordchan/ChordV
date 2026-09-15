@@ -1,0 +1,17 @@
+import assert from "node:assert/strict";
+import { createIdleRuntimeAssetsState } from "../src/lib/runtimeComponents";
+import { downloadProgressPresentation } from "../src/lib/downloadProgressPresentation";
+import { normalizeRuntimeAssetsProgress } from "../src/lib/runtimeAssetsState";
+const initial = { ...createIdleRuntimeAssetsState(), phase: "downloading" as const, currentComponent: "xray" as const, downloadedBytes: 1480, totalBytes: 1880 };
+assert.equal(downloadProgressPresentation(initial).percent, 1480 / 1880 * 100);
+assert.equal(downloadProgressPresentation(initial).percentLabel, 79);
+assert.equal(downloadProgressPresentation({ ...initial, downloadedBytes: 1, totalBytes: 1000 }).percent, 0.1);
+assert.equal(downloadProgressPresentation({ ...initial, downloadedBytes: 999, totalBytes: 1000 }).percentLabel, 99);
+assert.equal(downloadProgressPresentation({ ...initial, totalBytes: null }).percent, null);
+const verifying = normalizeRuntimeAssetsProgress(initial, { phase: "verifying", component: "xray", fileName: "xray.zip", downloadedBytes: 1880, totalBytes: 1880, message: "校验中" });
+assert.equal(verifying.phase, "downloading", "verification must not mark the overall task complete");
+assert.equal(downloadProgressPresentation(verifying).processing, true);
+assert.match(downloadProgressPresentation(verifying).title, /正在校验/);
+assert.equal(downloadProgressPresentation(verifying).percent, 100, "all download bytes arrived before verification");
+assert.equal(downloadProgressPresentation({ ...initial, phase: "completed" }).percent, 100);
+console.log("byte-accurate progress, rounding and explicit verification stage checks passed");

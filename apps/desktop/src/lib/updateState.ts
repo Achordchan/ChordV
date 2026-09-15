@@ -3,7 +3,7 @@ import type { ClientUpdateArtifact, ClientUpdateCheckResult, ReleaseArtifactType
 import { detectRuntimePlatform, type DesktopUpdateDownloadProgress, type RuntimeStatus } from "./runtime";
 
 export type UpdateDownloadState = {
-  phase: "idle" | "preparing" | "downloading" | "completed" | "failed";
+  phase: "idle" | "preparing" | "downloading" | "verifying" | "completed" | "failed";
   fileName: string | null;
   downloadedBytes: number;
   totalBytes: number | null;
@@ -239,6 +239,7 @@ export function createLegacyUpdateResult(
 }
 
 export function updateActionLabel(update: ClientUpdateCheckResult, downloadState?: UpdateDownloadState) {
+  if (downloadState?.phase === "verifying") return "正在校验更新包";
   if (update.deliveryMode === "desktop_full_replace") {
     if (downloadState?.phase === "preparing") {
       return "正在准备更新包";
@@ -340,43 +341,6 @@ export function downloadProgressPercent(downloadState: UpdateDownloadState) {
   return Math.max(0, Math.min(100, (downloadState.downloadedBytes / downloadState.totalBytes) * 100));
 }
 
-export function displayUpdateDownloadProgress(downloadState: UpdateDownloadState, indeterminateValue: number) {
-  if (downloadState.phase === "completed") {
-    return 100;
-  }
-  if (downloadState.phase === "failed") {
-    return hasKnownTotalBytes(downloadState.totalBytes) ? downloadProgressPercent(downloadState) : 0;
-  }
-  if (!hasKnownTotalBytes(downloadState.totalBytes)) {
-    if (downloadState.phase === "preparing") {
-      return 12;
-    }
-    if (downloadState.phase === "downloading") {
-      return indeterminateValue;
-    }
-    return 0;
-  }
-  if (downloadState.phase === "downloading" && downloadState.downloadedBytes <= 0) {
-    return indeterminateValue;
-  }
-  return downloadProgressPercent(downloadState);
-}
-
-export function phaseMessage(phase: UpdateDownloadState["phase"]) {
-  switch (phase) {
-    case "preparing":
-      return "正在准备下载";
-    case "downloading":
-      return "正在下载更新包";
-    case "completed":
-      return "更新包已下载完成";
-    case "failed":
-      return "更新包下载失败";
-    default:
-      return "等待开始下载";
-  }
-}
-
 export function formatByteSize(bytes: number) {
   if (!Number.isFinite(bytes) || bytes <= 0) {
     return "0 B";
@@ -391,20 +355,4 @@ export function formatByteSize(bytes: number) {
     return `${(bytes / 1024).toFixed(1)} KB`;
   }
   return `${bytes} B`;
-}
-
-export function describeUpdateDownload(downloadState: UpdateDownloadState) {
-  if (downloadState.phase === "idle") {
-    return "点击下方按钮后，系统会先下载更新包。";
-  }
-  const amount = hasKnownTotalBytes(downloadState.totalBytes)
-    ? `${formatByteSize(downloadState.downloadedBytes)} / ${formatByteSize(downloadState.totalBytes)}`
-    : downloadState.downloadedBytes > 0
-      ? `已下载 ${formatByteSize(downloadState.downloadedBytes)}`
-      : null;
-  const prefix = downloadState.fileName ? `${downloadState.fileName} · ` : "";
-  const message = downloadState.message ?? phaseMessage(downloadState.phase);
-  return `${prefix}${message}${
-    amount && (downloadState.phase === "downloading" || downloadState.phase === "completed") ? `（${amount}）` : ""
-  }`;
 }

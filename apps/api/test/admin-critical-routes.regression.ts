@@ -1,5 +1,7 @@
-import { ImportReleaseArtifactDto } from "../src/modules/admin/import-release-artifact.dto";
 import "reflect-metadata";
+import { ReportNodeProbesDto } from "../src/modules/client/report-node-probes.dto";
+import { ClientAccessService } from "../src/modules/common/client-access.service";
+import { ImportReleaseArtifactDto } from "../src/modules/admin/import-release-artifact.dto";
 import assert from "node:assert/strict";
 import { Module, RequestMethod, UnauthorizedException, ValidationPipe } from "@nestjs/common";
 import { METHOD_METADATA, PATH_METADATA } from "@nestjs/common/constants";
@@ -65,7 +67,8 @@ Reflect.defineMetadata("design:paramtypes", [CreateReleaseDto], AdminController.
 Reflect.defineMetadata("design:paramtypes", [String, CreateReleaseArtifactDto], AdminController.prototype, "createReleaseArtifact");
 Reflect.defineMetadata("design:paramtypes", [String, ImportReleaseArtifactDto, Object], AdminController.prototype, "importReleaseArtifact");
 Reflect.defineMetadata("design:paramtypes", [DevDataService, RuntimeComponentsService], DownloadsController);
-Reflect.defineMetadata("design:paramtypes", [ClientService, RuntimeComponentsService], ClientController);
+Reflect.defineMetadata("design:paramtypes", [ClientService, RuntimeComponentsService, ClientAccessService], ClientController);
+Reflect.defineMetadata("design:paramtypes", [ReportNodeProbesDto, String], ClientController.prototype, "reportNodeProbes");
 Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
 Reflect.defineMetadata("design:paramtypes", [AuthSessionService], ClientAuthGuard);
 
@@ -293,6 +296,7 @@ const imageBedServiceStub = {
     },
     { provide: DevDataService, useValue: devDataServiceStub },
     { provide: ClientService, useValue: clientServiceStub },
+    { provide: ClientAccessService, useValue: { reportClientNodeProbes: async () => ({ ok: true }) } },
     { provide: RuntimeComponentsService, useValue: runtimeComponentsServiceStub },
     { provide: ImageBedService, useValue: imageBedServiceStub },
     { provide: DownloadMirrorService, useValue: downloadMirrorServiceStub },
@@ -363,6 +367,12 @@ async function main() {
   try {
     const baseUrl = await app.getUrl();
     const expireAt = "2030-01-01T00:00:00.000Z";
+    const probePath = "/api/client/nodes/probe-results";
+    assert.equal((await fetch(`${baseUrl}${probePath}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ results: [] }) })).status, 401);
+    assert.equal((await requestJson(baseUrl, probePath, { method: "POST", authorization: "Bearer user-test-token", body: { results: [{ nodeId: "n", status: "healthy", latencyMs: 180 }] } })).status, 201);
+    assert.equal((await requestJson(baseUrl, probePath, { method: "POST", authorization: "Bearer user-test-token", body: { results: [{ nodeId: "n", status: "healthy", latencyMs: -1 }] } })).status, 400);
+    assert.equal((await requestJson(baseUrl, probePath, { method: "POST", authorization: "Bearer user-test-token", body: { results: Array.from({ length: 33 }, () => ({ nodeId: "n", status: "offline", latencyMs: null })) } })).status, 400);
+
 
     await assertJsonBadRequest(baseUrl, "/api/admin/plans", {
       name: "Null Plan",

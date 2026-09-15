@@ -459,6 +459,10 @@ async function testRuntimeComponentMutationsPublishAdminRefreshEvent() {
   const updated = makeRemoteComponent({ id: "component_1", fileName: "xray-new.exe", expectedHash: "b".repeat(64) });
   const service = createRuntimeComponentsService({
     prisma: {
+      $transaction: async (task: (tx: unknown)=>Promise<unknown>) => task({
+        $queryRaw: async()=>[], runtimeComponentVersion:{findMany:async()=>[]},
+        runtimeComponent:{delete:async()=>({id:"component_1"})}
+      }),
       runtimeComponent: {
         create: async (payload: Record<string, any>) => makeRemoteComponent(payload.data),
         update: async (payload: Record<string, any>) => ({ ...updated, ...payload.data }),

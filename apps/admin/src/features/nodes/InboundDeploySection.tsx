@@ -193,7 +193,7 @@ export function InboundDeploySection(props: SectionProps) {
       ) : null}
 
       {deployment.stage === "queued" ? (
-        <Alert color="blue" variant="light">
+        <Alert color="teal.9" variant="light">
           <Group gap="sm" wrap="nowrap">
             <Loader size="xs" />
             <Text size="sm">

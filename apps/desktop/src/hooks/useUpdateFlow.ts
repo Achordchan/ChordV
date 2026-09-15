@@ -24,10 +24,7 @@ import {
   compareVersion,
   createIdleUpdateDownloadState,
   createLegacyUpdateResult,
-  describeUpdateDownload,
-  displayUpdateDownloadProgress,
   formatVersionLabel,
-  hasKnownTotalBytes,
   inferInstallerFileName,
   normalizeUpdateDownloadProgress,
   preferredArtifactType,
@@ -87,10 +84,10 @@ type RuntimeAssetsCheckSummary = {
 
 type UseUpdateFlowOptions = {
   appVersion: string;
+  runtimeMirrorPrefix?: string;
   platformTarget: RuntimeStatus["platformTarget"];
   accessToken?: string | null;
   bootstrapVersion?: ClientVersionDto | null;
-  runtimeMirrorPrefix?: string;
   updateChannel?: ReleaseChannel;
   readError?: (message: string) => string;
   notify?: (notice: NoticeInput) => void;
@@ -189,7 +186,6 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
   const [updateDialogOpened, setUpdateDialogOpened] = useState(false);
   const [updateCenter, setUpdateCenter] = useState<UpdateCenterState>(createIdleUpdateCenterState);
   const [updateDownload, setUpdateDownload] = useState<UpdateDownloadState>(createIdleUpdateDownloadState);
-  const [indeterminateUpdateProgress, setIndeterminateUpdateProgress] = useState(18);
   const lastKnownUpdateArtifactRef = useRef<ClientUpdateArtifact | null>(null);
   const lastUpdatePromptVersionRef = useRef<string | null>(null);
   const deferredUpdatePromptKeyRef = useRef<string | null>(null);
@@ -251,24 +247,6 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     }
   }, [updateCheckResult?.artifact]);
 
-  useEffect(() => {
-    if (updateDownload.phase !== "downloading" || hasKnownTotalBytes(updateDownload.totalBytes)) {
-      setIndeterminateUpdateProgress(18);
-      return;
-    }
-
-    const timer = window.setInterval(() => {
-      setIndeterminateUpdateProgress((current) => {
-        const next = current + 7;
-        return next >= 92 ? 18 : next;
-      });
-    }, 180);
-
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, [updateDownload.phase, updateDownload.totalBytes]);
-
   const handleUpdateDownload = useCallback(async () => {
     const resolvedDownloadUrl = resolveUpdateDownloadUrl(effectiveUpdate?.downloadUrl ?? null);
     const originDownloadUrl = resolveUpdateDownloadUrl(effectiveUpdate?.artifact?.originDownloadUrl ?? null);
@@ -296,7 +274,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       return true;
     }
 
-    if (updateDownload.phase === "preparing" || updateDownload.phase === "downloading") {
+    if (updateDownload.phase === "preparing" || updateDownload.phase === "downloading" || updateDownload.phase === "verifying") {
       return false;
     }
 
@@ -331,6 +309,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       effectiveUpdate.artifact?.fileName ??
       inferInstallerFileName(resolvedDownloadUrl, effectiveUpdate.artifact?.fileType ?? preferredArtifactType(updatePlatform));
 
+    setUpdateDialogOpened(false);
     setUpdateDownload({
       phase: "preparing",
       fileName: preferredFileName,
@@ -645,6 +624,20 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     [options, updatePlatform]
   );
 
+  const previousMirrorPrefix = useRef(options.runtimeMirrorPrefix);
+  useEffect(() => {
+    if (previousMirrorPrefix.current === options.runtimeMirrorPrefix) return;
+    previousMirrorPrefix.current = options.runtimeMirrorPrefix;
+    if (updateDownload.phase !== "failed") return;
+    // A failed installer may still hold a URL resolved through the removed mirror.
+    // Hide its retry action until fresh metadata has supplied the direct route.
+    dispatchUpdateCheck({type:"reset"});
+    setUpdateDownload(createIdleUpdateDownloadState());
+    setUpdateDialogOpened(false);
+    lastKnownUpdateArtifactRef.current = null;
+    void runUpdateCheck({source:"manual",inspectOnly:true,includeRuntimeComponents:false});
+  }, [options.runtimeMirrorPrefix, runUpdateCheck, updateDownload.phase]);
+
   const handleManualUpdateCheck = useCallback(async () => {
     return runUpdateCheck({
       accessToken: options.accessToken,
@@ -783,11 +776,8 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     setUpdateDialogOpened,
     updateDownload,
     setUpdateDownload,
-    indeterminateUpdateProgress,
     deferredUpdatePromptKeyRef,
     lastUpdatePromptVersionRef,
-    describeUpdateDownload: () => describeUpdateDownload(updateDownload),
-    displayUpdateDownloadProgress: () => displayUpdateDownloadProgress(updateDownload, indeterminateUpdateProgress),
     runUpdateCheck,
     runUpdateCheckAndFocus,
     handleManualUpdateCheck,

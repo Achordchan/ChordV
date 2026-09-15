@@ -136,7 +136,7 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
       </Stack> : null}
 
       {stage === "legacy" && node ? <Stack gap="sm">
-        <Alert color="blue">
+        <Alert color="teal.9">
           {node.registrationStatus === "agent_ready"
             ? "旧版节点已注册。Go 一键接入不覆盖其现有身份，请按迁移流程处理。"
             : "该旧版节点缺少 Go 接入参数，请重新添加节点并导入面板链接。"}
@@ -174,7 +174,7 @@ export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNo
           <Group justify="space-between">
             <Button
               size="xs"
-              color="blue"
+              color="teal.9"
               variant="light"
               loading={regenerating}
               onClick={() => { if (hasValidation) void retryValidation(); else if (node?.registrationStatus === "agent_ready") refresh(); else void regenerate(); }}

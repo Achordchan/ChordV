@@ -1,3 +1,4 @@
+import { teamOwnerOptions } from "./team-owner-options";
 import { Button, Group, Modal, Paper, Select, Stack, Text, TextInput } from "@mantine/core";
 import type { AdminTeamRecordDto, TeamStatus } from "@chordv/shared";
 import dialogStyles from "../editors/EditorDialog.module.css";
@@ -5,7 +6,7 @@ import type { UsersPageProps } from "./types";
 
 export function TeamProfileEditorPanel(props: UsersPageProps & { team: AdminTeamRecordDto }) {
   return (
-    <Paper withBorder radius="sm" p="md">
+    <Paper withBorder radius="sm" p="md" className={dialogStyles.form}>
       <Stack gap="sm">
         <Text fw={600}>编辑团队</Text>
         <TextInput
@@ -15,13 +16,10 @@ export function TeamProfileEditorPanel(props: UsersPageProps & { team: AdminTeam
         />
         <Select
           label="负责人"
-          data={props.allUsers
-            .filter(
-              (user) =>
-                user.role === "user" &&
-                (user.teamId === null || user.id === props.teamForm.ownerUserId || user.id === props.team.ownerUserId)
-            )
-            .map((user) => ({ value: user.id, label: `${user.displayName} · ${user.email}` }))}
+          searchable nothingFoundMessage="团队内没有可选成员"
+          description="仅可转移给本团队已启用成员。"
+          disabled={props.teamProfileBusyKey === props.team.id}
+          data={teamOwnerOptions(props.allUsers, props.team.id, props.team.ownerUserId)}
           value={props.teamForm.ownerUserId}
           onChange={(value) => props.setTeamForm((current) => ({ ...current, ownerUserId: value || "" }))}
         />

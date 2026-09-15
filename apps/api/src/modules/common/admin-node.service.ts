@@ -63,7 +63,21 @@ export class AdminNodeService {
       }),
       "节点列表读取失败，请刷新后重试。"
     );
-    return rows.map((row) => toAdminNodeRecord(row));
+    const observations = await this.prisma.clientNodeProbe.groupBy({
+      by: ["nodeId", "status"],
+      where: { checkedAt: { gte: new Date(Date.now() - 15 * 60_000) }, nodeId: { in: rows.map(row => row.id) } },
+      _count: { _all: true }, _avg: { latencyMs: true }, _max: { checkedAt: true }
+    });
+    return rows.map(row => {
+      const samples = observations.filter(item => item.nodeId === row.id);
+      const healthy = samples.find(item => item.status === "healthy");
+      const checkedAt = samples.map(item => item._max.checkedAt?.toISOString() ?? "").sort().at(-1);
+      return { ...toAdminNodeRecord(row), clientProbeSummary: checkedAt ? {
+        samples: samples.reduce((sum, item) => sum + item._count._all, 0),
+        healthy: healthy?._count._all ?? 0,
+        averageLatencyMs: healthy?._avg.latencyMs == null ? null : Math.round(healthy._avg.latencyMs), checkedAt
+      } : null };
+    });
   }
 
   async listLeaseRevocationJobs(): Promise<AdminLeaseRevocationJobDto[]> {

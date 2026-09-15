@@ -148,6 +148,52 @@ function createRuntimeSessionService(overrides: Record<string, unknown> = {}) {
   return createInstance<RuntimeSessionService>(RuntimeSessionService.prototype, overrides);
 }
 
+// Legacy service fixtures model the durable queue as post-commit work. Real queue persistence,
+// retries and filesystem reference protection are covered by file-management.integration.ts.
+function withFileMaintenanceFixture(overrides: Record<string, any>) {
+  const prisma = overrides.prisma ?? {};
+  const effects = new WeakMap<object, Array<() => Promise<void>>>();
+  const files = overrides.files ?? {
+    deduplicate: async () => false,
+    removeOrQueue: async (file: string) => { await rm(file, {force:true}); },
+    enqueue: async (file: string, _reason: string, writer?: object, blockedReason?: string) => {
+      if(blockedReason){overrides.logger?.warn?.("cleanup path is invalid");return{id:file};}
+      const root=path.resolve(process.env.CHORDV_RELEASE_STORAGE_ROOT||path.join(process.cwd(),"storage","releases"));
+      if(!file.startsWith(root+path.sep)){overrides.logger?.warn?.("invalid cleanup path recorded");return{id:file};}
+      const effect = async () => { if(overrides.removeRuntimeComponentFileBestEffort)await overrides.removeRuntimeComponentFileBestEffort(file,_reason);else await rm(file, {force:true}); };
+      const pending = writer ? effects.get(writer) : null;
+      if(pending) pending.push(effect); else await effect();
+      return {id:file};
+    }
+  };
+  return { files, prisma: { ...prisma, $transaction: async (task: any) => {
+    const pending: Array<() => Promise<void>> = [];
+    const run = async (tx: any) => {
+      const releaseDelegate=tx.release??prisma.release??{findUnique:({where}:any)=>overrides.ensureReleaseExists?.(where.id)};
+      const artifactDelegate={...prisma.releaseArtifact,...tx.releaseArtifact};
+      const releaseWithRelations={...releaseDelegate,findUnique:async(input:any)=>{
+        const record=await releaseDelegate.findUnique(input);
+        if(record&&input.include?.artifacts&&!(record.artifacts?.length)){
+          let rows=await artifactDelegate.findMany?.({where:{releaseId:input.where.id}});
+          if(!rows?.length){const item=await artifactDelegate.findFirst?.({where:{releaseId:input.where.id}});rows=item?[item]:[];}
+          return {...record,artifacts:rows??[]};
+        }
+        return record;
+      }};
+      const writer = { ...tx,
+        $queryRaw: tx.$queryRaw ?? (async()=>[]),
+        release: releaseWithRelations,
+        runtimeComponentVersion: tx.runtimeComponentVersion ?? {findMany:async()=>[]},
+        releaseArtifact: { findFirst:async()=>null, findUnique:(input:any)=>(tx.releaseArtifact?.findFirst??prisma.releaseArtifact?.findFirst)?.(input), ...(tx.releaseArtifact??prisma.releaseArtifact) }
+      };
+      effects.set(writer,pending);return task(writer);
+    };
+    const result = prisma.$transaction ? await prisma.$transaction(run) : await run(prisma);
+    for(const effect of pending) { const timer=setTimeout(()=>{void effect().catch(()=>undefined);},0); timer.unref?.(); }
+    return result;
+  } } };
+}
+
 function createReleaseCenterService(overrides: Record<string, unknown> = {}) {
   const adminRuntimeEventsOverride =
     typeof overrides.adminRuntimeEventsService === "object" && overrides.adminRuntimeEventsService !== null
@@ -166,6 +212,7 @@ function createReleaseCenterService(overrides: Record<string, unknown> = {}) {
     },
     assertReleaseArtifactContentMatchesMetadata: async () => undefined,
     ...overrides,
+    ...withFileMaintenanceFixture(overrides),
     downloadMirrorService: createDefaultDownloadMirrorService(downloadMirrorOverride),
     adminRuntimeEventsService: {
       publishVersionUpdated: () => undefined,
@@ -182,6 +229,7 @@ function createRuntimeComponentsService(overrides: Record<string, unknown> = {})
       : {};
   return createInstance<RuntimeComponentsService>(RuntimeComponentsService.prototype, {
     ...overrides,
+    ...withFileMaintenanceFixture(overrides),
     downloadMirrorService: createDefaultDownloadMirrorService(downloadMirrorOverride)
   });
 }
@@ -11057,7 +11105,7 @@ async function testUpdateUploadedReleaseArtifactToExternalDeletesOldFile() {
           findFirst: async () => currentArtifact
         },
         release: {
-          findUnique: async () => ({
+          findUnique: async () => updates.length ? ({
             ...release,
             artifacts: [
               makeReleaseCenterTestArtifact({
@@ -11070,7 +11118,7 @@ async function testUpdateUploadedReleaseArtifactToExternalDeletesOldFile() {
                 fileHash: null
               })
             ]
-          })
+          }) : release
         },
         $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
           task({
@@ -11523,22 +11571,7 @@ async function testUploadWindowsReleaseRejectsExeFileName() {
   assert.deepEqual(cleanupCalls, []);
 }
 
-async function testReleaseCleanupBestEffortReturnsWhenCleanupStalls() {
-  const service = createReleaseCenterService({
-    logger: {
-      warn: () => undefined
-    }
-  });
-
-  await Promise.race([
-    service["runReleaseCleanupBestEffort"]("stalled cleanup", async () => new Promise<never>(() => undefined)),
-    new Promise<never>((_resolve, reject) => {
-      setTimeout(() => reject(new Error("release cleanup waited for stalled cleanup task")), 750);
-    })
-  ]);
-}
-
-async function testDeleteReleaseStartsCleanupAfterLocalReturn() {
+async function testDeleteReleaseQueuesCleanupInTransaction() {
   let deleted = false;
   let returned = false;
   let cleanupStarted = false;
@@ -11546,10 +11579,10 @@ async function testDeleteReleaseStartsCleanupAfterLocalReturn() {
     logger: {
       warn: () => undefined
     },
-    runReleaseCleanupBestEffort: async () => {
-      assert.equal(returned, true, "release cleanup must start after deleteRelease returns");
-      cleanupStarted = true;
-    },
+    files: { enqueue: async (_file:string,_reason:string,writer:unknown) => {
+      assert.ok(writer, "cleanup job must be enqueued within the deletion transaction");
+      assert.equal(returned, false, "queue must persist before returning");cleanupStarted=true;return{id:"job"};
+    } },
     prisma: {
       release: {
         findUnique: async () =>
@@ -11573,9 +11606,7 @@ async function testDeleteReleaseStartsCleanupAfterLocalReturn() {
 
   assert.equal(result.ok, true);
   assert.equal(deleted, true, "local release delete must finish before cleanup");
-  assert.equal(cleanupStarted, false, "cleanup must not run before local delete response returns");
-  await waitUntil(() => cleanupStarted);
-  assert.equal(cleanupStarted, true, "cleanup should still run in background");
+  assert.equal(cleanupStarted, true, "cleanup has been durably queued before response; filesystem work belongs to the worker");
 }
 
 async function testDeleteReleaseMapsLocalSaveFailure() {
@@ -12866,7 +12897,7 @@ async function testUpdateTeamOwnerTransferRejectsConcurrentForeignMembership() {
       id: "new_owner",
       status: "active"
     }),
-    getUserMembership: async () => null,
+    getUserMembership: async () => ({ id: "member_new", teamId: "team_1" }),
     findCurrentPersonalSubscription: async () => null,
     prisma: {
       $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
@@ -12902,7 +12933,7 @@ async function testUpdateTeamOwnerTransferRejectsConcurrentForeignMembership() {
 
   await assert.rejects(
     () => service.updateTeam("team_1", { ownerUserId: "new_owner" }),
-    (error) => error instanceof ConflictException && /belongs to another team/i.test(error.message),
+    (error) => error instanceof ConflictException && /不属于本团队/.test(error.message),
     "owner transfer must re-check membership inside the transaction before changing team state"
   );
   assert.equal(oldOwnerDemoted, false, "old owner must not be demoted after the new owner joins another team");
@@ -17586,8 +17617,7 @@ async function main() {
   await testReleaseArtifactContentValidationMatchesDownloadedBytes();
   await testReleaseArtifactContentValidationRejectsInvalidWindowsZip();
   await testUploadWindowsReleaseRejectsExeFileName();
-  await testReleaseCleanupBestEffortReturnsWhenCleanupStalls();
-  await testDeleteReleaseStartsCleanupAfterLocalReturn();
+  await testDeleteReleaseQueuesCleanupInTransaction();
   await testDeleteReleaseMapsLocalSaveFailure();
   await testReleaseArtifactPatchCannotRewriteUploadedUrl();
   await testUpdateCheckSkipsUploadedArtifactMissingStoredFile();

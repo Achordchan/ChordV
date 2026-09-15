@@ -420,7 +420,7 @@ export class AdminController {
       storage: diskStorage({
         destination: tmpdir(),
         filename: (_req: unknown, file: { originalname: string }, callback: MulterCallback) => {
-          callback(null, `${randomUUID()}${path.extname(file.originalname || "")}`);
+          callback(null, `chordv-upload-${randomUUID()}${path.extname(file.originalname || "")}`);
         }
       }),
       limits: {
@@ -498,7 +498,7 @@ export class AdminController {
       storage: diskStorage({
         destination: tmpdir(),
         filename: (_req: unknown, file: { originalname: string }, callback: MulterCallback) => {
-          callback(null, `${randomUUID()}${path.extname(file.originalname || "")}`);
+          callback(null, `chordv-upload-${randomUUID()}${path.extname(file.originalname || "")}`);
         }
       }),
       limits: {
@@ -522,7 +522,7 @@ export class AdminController {
       storage: diskStorage({
         destination: tmpdir(),
         filename: (_req: unknown, file: { originalname: string }, callback: MulterCallback) => {
-          callback(null, `${randomUUID()}${path.extname(file.originalname || "")}`);
+          callback(null, `chordv-upload-${randomUUID()}${path.extname(file.originalname || "")}`);
         }
       }),
       limits: {
@@ -591,7 +591,7 @@ export class AdminController {
       storage: diskStorage({
         destination: tmpdir(),
         filename: (_req: unknown, file: { originalname: string }, callback: MulterCallback) => {
-          callback(null, `${randomUUID()}${path.extname(file.originalname || "")}`);
+          callback(null, `chordv-upload-${randomUUID()}${path.extname(file.originalname || "")}`);
         }
       }),
       limits: {
@@ -628,7 +628,7 @@ export class AdminController {
       storage: diskStorage({
         destination: tmpdir(),
         filename: (_req: unknown, file: { originalname: string }, callback: MulterCallback) => {
-          callback(null, `${randomUUID()}${path.extname(file.originalname || "")}`);
+          callback(null, `chordv-upload-${randomUUID()}${path.extname(file.originalname || "")}`);
         }
       }),
       limits: {

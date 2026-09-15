@@ -53,6 +53,7 @@ const MAX_ZIP_VALIDATION_ENTRIES =
     : DEFAULT_MAX_ZIP_VALIDATION_ENTRIES;
 
 export type ReleaseArtifactRowLike = {
+  sourceUrl?: string | null;
   id: string;
   releaseId: string;
   source: string;
@@ -596,16 +597,14 @@ function assertZipEntryPathSafe(entry: string) {
 export async function removeReleaseArtifactFile(filePath: string) {
   try {
     await fs.rm(filePath, { force: true });
-  } catch {
-    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
 }
 
 export async function removeReleaseArtifactDirectory(directoryPath: string) {
-  try {
-    await fs.rm(directoryPath, { recursive: true, force: true });
-  } catch {
-    return;
+  try { await fs.rmdir(directoryPath); } catch (error) {
+    if (!["ENOENT", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
   }
 }
 
@@ -1095,12 +1094,13 @@ export function assertFullUpdateDownloadUrlAllowed(rawUrl: string) {
   }
 }
 
-export function toAdminReleaseArtifactRecord(row: ReleaseArtifactRowLike): AdminReleaseArtifactDto {
+export function toAdminReleaseArtifactRecord(row: ReleaseArtifactRowLike, includeSource = true): AdminReleaseArtifactDto {
   const downloadUrl = row.source === "uploaded" ? buildReleaseArtifactDownloadUrl(row.id) : row.downloadUrl;
   return {
     id: row.id,
     releaseId: row.releaseId,
     source: row.source as "uploaded" | "external",
+    ...(includeSource ? {sourceUrl:row.sourceUrl ?? null} : {}),
     type: fromPrismaReleaseArtifactType(row.type),
     deliveryMode: row.deliveryMode as UpdateDeliveryMode,
     downloadUrl,
@@ -1137,7 +1137,7 @@ export function toAdminReleaseRecord(row: ReleaseRowLike): AdminReleaseRecordDto
     publishedAt: row.publishedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
-    artifacts: row.artifacts.map(toAdminReleaseArtifactRecord)
+    artifacts: row.artifacts.map(artifact=>toAdminReleaseArtifactRecord(artifact))
   };
 }
 

@@ -14,9 +14,12 @@ const theme = createTheme({
   fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif"
 });
 
+const Root = (import.meta.env.DEV || import.meta.env.VITE_CHORDV_LOCAL_PREVIEW === "1") && new URLSearchParams(window.location.search).has("download-preview")
+  ? React.lazy(() => import("./dev/DownloadProgressDebug")) : App;
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <MantineProvider theme={theme} defaultColorScheme="light">
     <Notifications position="top-right" autoClose={2600} />
-    <App />
+    <React.Suspense fallback={null}><Root /></React.Suspense>
   </MantineProvider>
 );

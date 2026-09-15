@@ -31,28 +31,6 @@ export function resolveRuntimeComponentCandidate(component: RuntimeComponentDown
   return selectedCandidate ? { url: selectedCandidate.url, source: selectedCandidate.source } : null;
 }
 
-export function canOpenRuntimeAssetsDialog(
-  forceUpdateRequired: boolean,
-  forcedAnnouncementActive: boolean,
-  updateDialogOpened: boolean,
-  announcementDrawerOpened: boolean,
-  updateDownloadPhase: "idle" | "preparing" | "downloading" | "completed" | "failed"
-) {
-  if (forcedAnnouncementActive) {
-    return false;
-  }
-  if (updateDialogOpened) {
-    return false;
-  }
-  if (updateDownloadPhase === "preparing" || updateDownloadPhase === "downloading") {
-    return false;
-  }
-  if (announcementDrawerOpened) {
-    return false;
-  }
-  return !forceUpdateRequired;
-}
-
 function hasKnownTotalBytes(totalBytes: number | null): totalBytes is number {
   return typeof totalBytes === "number" && Number.isFinite(totalBytes) && totalBytes > 0;
 }
@@ -91,7 +69,7 @@ export function normalizeRuntimeAssetsPhase(
   if (phase === "completed") {
     return "completed";
   }
-  if (phase === "preparing" || phase === "downloading" || phase === "extracting") {
+  if (phase === "preparing" || phase === "downloading" || phase === "verifying" || phase === "extracting") {
     return "downloading";
   }
   if (current.phase === "completed") {
@@ -137,6 +115,7 @@ export function normalizeRuntimeAssetsProgress(
   const totalBytes = phase === "completed" && !hasKnownTotalBytes(mergedTotalBytes) && downloadedBytes > 0 ? downloadedBytes : mergedTotalBytes;
   return {
     phase,
+    downloadStage: progress.phase,
     currentComponent: progress.component,
     fileName: progress.fileName ?? current.fileName,
     downloadedBytes,

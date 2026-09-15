@@ -21,6 +21,7 @@ function harness(failSave = false) {
   };
   const Harness = new Function("downloadHostedArtifact", "ConflictException", `${code};return ImportHarness;`)(download,ConflictException);
   const instance = new Harness();
+  instance.files = {removeOrQueue:async()=>{calls.push("cleanup");}};
   instance.activeImports = new Set();
   instance.ensureReleaseExists = async () => ({platform:"macos",version:"1.1.8",status:"draft"});
   instance.assertReleaseArtifactsMutable = (release:any) => { if(release.status!=="draft")throw new Error("draft required"); };

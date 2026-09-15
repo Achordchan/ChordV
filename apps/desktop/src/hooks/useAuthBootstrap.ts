@@ -77,6 +77,7 @@ export type UseAuthBootstrapOptions = {
   refreshing: boolean;
   logoutBusy: boolean;
   setSession: SetState<AuthSessionDto | null>;
+  invalidateSessionOperations?: () => void;
   setBootstrap: SetState<ClientBootstrapDto | null>;
   setNodes: SetState<NodeSummaryDto[]>;
   setSelectedNodeId: SetState<string | null>;
@@ -132,6 +133,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
     refreshing,
     logoutBusy,
     setSession,
+    invalidateSessionOperations,
     setBootstrap,
     setNodes,
     setSelectedNodeId,
@@ -170,6 +172,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
 
   const clearSession = useCallback(
     async (stopRuntime = true) => {
+      invalidateSessionOperations?.();
       if (stopRuntime) {
         await forceStopLocalRuntime();
       }
@@ -186,6 +189,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
     },
     [
       clearStoredSession,
+      invalidateSessionOperations,
       forceStopLocalRuntime,
       setBootstrap,
       setConnectionGuidance,
@@ -464,10 +468,11 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
 
     try {
       setLogoutBusy(true);
+      invalidateSessionOperations?.();
       const accessToken = session?.accessToken ?? null;
       await forceStopLocalRuntime();
       if (session) {
-        await logoutSession(accessToken ?? session.accessToken, session.refreshToken).catch(() => null);
+        void logoutSession(accessToken ?? session.accessToken, session.refreshToken).catch(() => null);
       }
       await clearSession(false);
       if (!rememberPassword) {
@@ -478,6 +483,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
     }
   }, [
     clearSession,
+    invalidateSessionOperations,
     forceStopLocalRuntime,
     logoutBusy,
     logoutSession,

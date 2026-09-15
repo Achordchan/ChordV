@@ -266,6 +266,7 @@ model SystemUpdateOperation {
 }
 
 model User {
+  clientNodeProbes ClientNodeProbe[]
   id                   String              @id
   email                String              @unique
   displayName          String
@@ -403,6 +404,7 @@ model TrafficLedger {
 }
 
 model Node {
+  clientNodeProbes ClientNodeProbe[]
   id               String          @id
   name             String
   countryCode      String?
@@ -901,6 +903,7 @@ model Release {
 }
 
 model ReleaseArtifact {
+  sourceUrl     String?
   id            String             @id
   releaseId     String
   source        ReleaseArtifactSource @default(external)
@@ -920,6 +923,8 @@ model ReleaseArtifact {
   release       Release            @relation(fields: [releaseId], references: [id], onDelete: Cascade)
 
   @@index([releaseId, isPrimary])
+  @@index([fileHash, fileSizeBytes])
+  @@index([updatedAt])
 }
 
 model RuntimeComponent {
@@ -946,6 +951,7 @@ model RuntimeComponent {
 
   @@unique([platform, architecture, kind])
   @@index([platform, architecture, enabled])
+  @@index([updatedAt])
 }
 
 model RuntimeComponentFailureReport {
@@ -980,6 +986,7 @@ model RuntimeComponentDelivery {
 }
 
 model RuntimeComponentVersion {
+  retainUntil       DateTime?
   id                String @id
   componentId       String
   component         RuntimeComponent @relation(fields: [componentId], references: [id], onDelete: Cascade)
@@ -1001,4 +1008,39 @@ model RuntimeComponentVersion {
 
   @@index([componentId, createdAt])
   @@index([status, updatedAt])
+  @@index([updatedAt])
+}
+
+// Latest observation per account and node; client reports never control node availability.
+model ClientNodeProbe {
+  userId    String
+  nodeId    String
+  status    String
+  latencyMs Int?
+  checkedAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  node Node @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  @@id([userId, nodeId])
+  @@index([checkedAt, nodeId])
+}
+
+model FileCleanupJob {
+  revision Int @default(0)
+  blocked Boolean @default(false)
+  id String @id
+  path String @unique
+  reason String
+  attempts Int @default(0)
+  lastError String?
+  nextAttemptAt DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([blocked, nextAttemptAt])
+}
+
+// Shared inventory for API processes operating on the same managed filesystem.
+model StorageCatalogSnapshot {
+  id        String   @id
+  payload   Json
+  updatedAt DateTime @updatedAt
 }
