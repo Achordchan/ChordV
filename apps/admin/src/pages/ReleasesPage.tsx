@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import type {
+  ArtifactImportProgress,
   AdminReleaseArtifactRecordDto,
   AdminReleaseArtifactType,
   AdminReleasePlatform,
@@ -11,7 +12,7 @@ import type {
 } from "../api/client";
 import {
   createAdminRelease,
-  createAdminReleaseArtifact,
+  importAdminReleaseArtifact,
   deleteAdminRelease,
   deleteAdminReleaseArtifact,
   fetchAdminUploadLimits,
@@ -20,11 +21,9 @@ import {
   replaceAdminReleaseArtifactUpload,
   unpublishAdminRelease,
   updateAdminRelease,
-  updateAdminReleaseArtifact,
   uploadAdminReleaseArtifact
 } from "../api/client";
 import { ArtifactEditorModal } from "../features/releases/ArtifactEditorModal";
-import { buildExternalArtifactPayload, validateExternalArtifactMetadata } from "../features/releases/artifactPayloads";
 import { ReleaseEditorModal } from "../features/releases/ReleaseEditorModal";
 import { ReleaseOverview } from "../features/releases/ReleaseOverview";
 import { useActionConfirmation } from "../features/modals/useActionConfirmation";
@@ -76,7 +75,8 @@ export function ReleasesPage(props: ReleasesPageProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
-  const [releaseSaveStep, setReleaseSaveStep] = useState<"creating" | "uploading" | null>(null);
+  const [releaseSaveStep, setReleaseSaveStep] = useState<"creating" | "uploading" | "importing" | null>(null);
+  const [importProgress, setImportProgress] = useState<ArtifactImportProgress | null>(null);
   const [releaseEditorId, setReleaseEditorId] = useState<string | null>(null);
   const [releaseEditorOpened, setReleaseEditorOpened] = useState(false);
   const [releaseForm, setReleaseForm] = useState<ReleaseEditorFormState>(emptyReleaseEditorForm());
@@ -160,6 +160,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
       return false;
     }
     savingRef.current = actionKey;
+    setImportProgress(null);
     setSaving(actionKey);
     return true;
   }
@@ -246,39 +247,28 @@ export function ReleasesPage(props: ReleasesPageProps) {
         return;
       }
       releaseMutationSeqRef.current += 1;
-      const payload = buildCreateReleasePayload(
-        releaseForm,
-        !releaseEditorId && releaseForm.artifactSource === "external" && releaseForm.downloadUrl.trim()
-          ? buildExternalArtifactPayload(
-              releaseForm.platform,
-              releaseForm.downloadUrl,
-              true,
-              releaseForm.fileSizeBytes,
-              releaseForm.fileHash,
-              releaseForm.externalDeliveryMode
-            )
-          : undefined
-      );
+      const payload = buildCreateReleasePayload(releaseForm);
 
       if (!releaseEditorId) {
         setReleaseSaveStep("creating");
         let record = await createAdminRelease(payload);
-        if (releaseForm.artifactSource === "uploaded" && releaseForm.selectedFile) {
+        if ((releaseForm.artifactSource === "uploaded" && releaseForm.selectedFile) || (releaseForm.artifactSource === "external" && releaseForm.downloadUrl.trim())) {
           try {
-            setReleaseSaveStep("uploading");
-            record = await uploadAdminReleaseArtifact(
-              record.id,
-              buildUploadedArtifactPayload(releaseForm.platform, releaseForm.selectedFile, releaseForm.fileName, true),
-              releaseForm.selectedFile
-            );
+            if (releaseForm.artifactSource === "external") {
+              setReleaseSaveStep("importing"); setImportProgress(null);
+              record = await importAdminReleaseArtifact(record.id, { sourceUrl: releaseForm.downloadUrl.trim(), isPrimary: true }, setImportProgress);
+            } else {
+              setReleaseSaveStep("uploading");
+              record = await uploadAdminReleaseArtifact(record.id, buildUploadedArtifactPayload(releaseForm.platform, releaseForm.selectedFile!, releaseForm.fileName, true), releaseForm.selectedFile!);
+            }
           } catch (uploadError) {
-            const message = readError(uploadError, "安装包上传失败");
+            const message = readError(uploadError, "安装包保存失败");
             const uncertain = isPotentiallyCompletedMutationFailure(message);
             if (uncertain) {
               notifications.show({
                 color: "yellow",
-                title: "发布记录已创建，安装包上传状态不确定",
-                message: `${buildUncertainMutationMessage("安装包上传")} 请刷新发布中心确认安装包状态。`
+                title: "发布记录已创建，安装包保存状态不确定",
+                message: `${buildUncertainMutationMessage("安装包保存")} 请刷新发布中心确认安装包状态。`
               });
               void loadReleases();
             } else {
@@ -286,7 +276,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
               setReleases((current) => upsertRelease(current, record));
               notifications.show({
                 color: "yellow",
-                title: "发布记录已创建，安装包上传失败",
+                title: "发布记录已创建，安装包保存失败",
                 message: `${message}。请在列表中继续新增安装包，或删除这条草稿。`
               });
             }
@@ -300,7 +290,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
         notifications.show({
           color: "green",
           title: "发布中心",
-          message: releaseFormHasArtifact(releaseForm) ? "发布记录和安装包已创建" : "发布记录已创建，可继续添加外链或上传文件"
+          message: releaseFormHasArtifact(releaseForm) ? "发布记录和安装包已创建" : "发布记录已创建，可继续远程获取或上传安装包"
         });
         return;
       }
@@ -472,20 +462,16 @@ export function ReleasesPage(props: ReleasesPageProps) {
       if (fileMessage) return fileMessage;
     }
     if (artifactForm.source === "external" && !artifactForm.downloadUrl.trim()) {
-      return "请填写外链下载地址。";
+      return "请填写安装包来源地址。";
     }
     if (artifactForm.source === "external" && !/^https?:\/\//i.test(artifactForm.downloadUrl.trim())) {
-      return "外链下载地址必须是完整的 http/https 地址。";
+      return "请填写完整的 HTTPS 来源地址。";
     }
     if (
       artifactForm.source === "external" &&
-      (artifactEditor.platform === "windows" || artifactEditor.platform === "macos") &&
       !/^https:\/\//i.test(artifactForm.downloadUrl.trim())
     ) {
-      return "桌面外链安装包必须使用 HTTPS 下载地址。";
-    }
-    if (artifactForm.source === "external") {
-      return validateExternalArtifactMetadata(artifactForm.fileSizeBytes, artifactForm.fileHash);
+      return "远程获取安装包必须使用 HTTPS 来源地址。";
     }
     return null;
   }
@@ -518,17 +504,10 @@ export function ReleasesPage(props: ReleasesPageProps) {
 
       if (!record) {
         if (artifactForm.source === "external") {
-          const externalPayload = buildExternalArtifactPayload(
-            artifactEditor.platform,
-            artifactForm.downloadUrl,
-            artifactForm.isPrimary,
-            artifactForm.fileSizeBytes,
-            artifactForm.fileHash,
-            artifactForm.externalDeliveryMode
-          );
-          record = artifactEditor.artifactId
-            ? await updateAdminReleaseArtifact(releaseId!, artifactEditor.artifactId, externalPayload)
-            : await createAdminReleaseArtifact(releaseId!, externalPayload);
+          setImportProgress(null);
+          record = await importAdminReleaseArtifact(releaseId, {
+            sourceUrl: artifactForm.downloadUrl.trim(), artifactId: artifactEditor.artifactId ?? undefined, isPrimary: artifactForm.isPrimary
+          }, setImportProgress);
         }
         if (!record && artifactForm.source === "uploaded" && !artifactForm.selectedFile && artifactEditor.artifactId) {
           const editingArtifact = getEditingArtifact();
@@ -644,6 +623,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
         opened={releaseEditorOpened}
         editing={Boolean(releaseEditorId)}
         saving={saving === "release-editor"}
+        importProgress={importProgress}
         savingMessage={saving === "release-editor" ? buildReleaseEditorSavingMessage(releaseSaveStep, Boolean(releaseEditorId), releaseForm) : null}
         title={releaseEditorId ? "编辑发布记录" : "新建发布记录"}
         submitLabel={releaseEditorId ? "保存发布记录" : "创建发布"}
@@ -658,7 +638,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
       <ArtifactEditorModal
         opened={artifactEditor !== null}
         saving={saving?.startsWith("artifact:") ?? false}
-        creatingRelease={false}
+        importProgress={importProgress}
         platform={artifactEditor?.platform ?? "macos"}
         title={artifactEditor?.artifactId ? "编辑安装包" : "新增安装包"}
         submitLabel={artifactEditor?.artifactId ? "保存安装包" : "保存安装包"}
@@ -712,13 +692,12 @@ function validateReleaseEditorInput(
     return null;
   }
   if (!/^https?:\/\//i.test(downloadUrl)) {
-    return "外链下载地址必须是完整的 http/https 地址。";
+    return "请填写完整的 HTTPS 来源地址。";
   }
-  const targetPlatform = platform ?? form.platform;
-  if ((targetPlatform === "windows" || targetPlatform === "macos") && !/^https:\/\//i.test(downloadUrl)) {
-    return "桌面外链安装包必须使用 HTTPS 下载地址。";
+  if (!/^https:\/\//i.test(downloadUrl)) {
+    return "远程获取安装包必须使用 HTTPS 来源地址。";
   }
-  return validateExternalArtifactMetadata(form.fileSizeBytes, form.fileHash);
+  return null;
 }
 
 function compareReleaseRecord(left: AdminReleaseRecordDto, right: AdminReleaseRecordDto) {
@@ -833,13 +812,14 @@ function releaseFormHasArtifact(form: ReleaseEditorFormState) {
 }
 
 function buildReleaseEditorSavingMessage(
-  step: "creating" | "uploading" | null,
+  step: "creating" | "uploading" | "importing" | null,
   editing: boolean,
   form: ReleaseEditorFormState
 ) {
   if (step === "creating") {
     return "正在创建发布记录。记录创建成功后会继续处理安装包。";
   }
+  if (step === "importing") return "正在从来源地址获取安装包，完成后自动保存到本站。";
   if (step === "uploading") {
     return "正在上传安装包。大文件上传期间请等待，不要重复提交。";
   }

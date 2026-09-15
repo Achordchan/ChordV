@@ -5,7 +5,6 @@ import { MantineProvider } from "@mantine/core";
 import updateLimits from "@chordv/shared/update-limits";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { buildExternalArtifactPayload } from "../src/features/releases/artifactPayloads";
 import { register } from "node:module";
 register(new URL("./css-module-loader.mjs", import.meta.url));
 const { NewReleaseArtifactFields } = await import("../src/features/releases/ReleaseEditorModal");
@@ -126,98 +125,7 @@ function testBlankUpdateReleaseTitleDoesNotFallbackToVersion() {
   assert.equal("version" in payload, false, "blank title edits must not silently reuse version as display title");
 }
 
-function testWindowsZipExternalArtifactCanStayExternalDownload() {
-  const payload = buildExternalArtifactPayload(
-    "windows",
-    " https://cdn.example.com/ChordV_1.1.6_x64-full.zip ",
-    true,
-    "104857600",
-    "a".repeat(64),
-    "external_download"
-  );
-
-  assert.equal(payload.source, "external");
-  assert.equal(payload.type, "external");
-  assert.equal(payload.deliveryMode, "external_download");
-  assert.equal(payload.downloadUrl, "https://cdn.example.com/ChordV_1.1.6_x64-full.zip");
-  assert.equal(payload.fileName, "ChordV_1.1.6_x64-full.zip");
-  assert.equal(payload.isPrimary, true);
-  assert.equal(payload.fileSizeBytes, "104857600");
-  assert.equal(payload.fileHash, "a".repeat(64));
-}
-
-function testWindowsZipExternalArtifactCanBeFullReplaceWhenExplicit() {
-  const payload = buildExternalArtifactPayload(
-    "windows",
-    "https://cdn.example.com/ChordV_1.1.6_x64-full.zip",
-    true,
-    "104857600",
-    "a".repeat(64),
-    "windows_full_replace_zip"
-  );
-
-  assert.equal(payload.source, "external");
-  assert.equal(payload.type, "zip");
-  assert.equal(payload.deliveryMode, "desktop_full_replace");
-}
-
-function testWindowsNonZipExternalArtifactCanBeFullReplaceWhenExplicit() {
-  const payload = buildExternalArtifactPayload(
-    "windows",
-    " https://cdn.example.com/download?id=ChordV_1.1.6_x64-full ",
-    true,
-    "104857600",
-    "a".repeat(64),
-    "windows_full_replace_zip"
-  );
-
-  assert.equal(payload.source, "external");
-  assert.equal(payload.type, "zip");
-  assert.equal(payload.deliveryMode, "desktop_full_replace");
-  assert.equal(payload.downloadUrl, "https://cdn.example.com/download?id=ChordV_1.1.6_x64-full");
-  assert.equal(payload.isPrimary, true);
-  assert.equal(payload.fileSizeBytes, "104857600");
-  assert.equal(payload.fileHash, "a".repeat(64));
-}
-
-
-function testExternalArtifactOptionalHashDoesNotBlock() {
-  const missing = buildExternalArtifactPayload(
-    "windows",
-    "https://cdn.example.com/ChordV-full.zip",
-    true,
-    "104857600",
-    "",
-    "windows_full_replace_zip"
-  );
-  const invalid = buildExternalArtifactPayload(
-    "windows",
-    "https://cdn.example.com/ChordV-full.zip",
-    true,
-    "104857600",
-    "invalid",
-    "windows_full_replace_zip"
-  );
-
-  assert.equal(missing.fileHash, null);
-  assert.equal(invalid.fileHash, null);
-}
-function testDesktopExternalArtifactRejectsHttpUrl() {
-  assert.throws(
-    () =>
-      buildExternalArtifactPayload(
-        "windows",
-        "http://cdn.example.com/ChordV-full.zip",
-        true,
-        "104857600",
-        "a".repeat(64),
-        "windows_full_replace_zip"
-      ),
-    /HTTPS/
-  );
-}
-
-function testNewReleaseModalRendersExternalMetadataFields() {
+function testNewReleaseUsesHostedImportFields() {
   const form = {
     ...emptyReleaseEditorForm("windows"),
     version: "1.2.0",
@@ -237,25 +145,10 @@ function testNewReleaseModalRendersExternalMetadataFields() {
     )
   );
 
-  assert.match(markup, /外链下载地址/);
-  assert.match(markup, /文件大小（字节）/);
-  assert.match(markup, /SHA-256 校验值/);
-  assert.match(markup, new RegExp(String(MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES)));
-}
-
-function testExternalArtifactPayloadRejectsDesktopOversize() {
-  assert.throws(
-    () =>
-      buildExternalArtifactPayload(
-        "windows",
-        "https://cdn.example.com/ChordV-full.zip",
-        true,
-        String(MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES + 1),
-        "a".repeat(64),
-        "windows_full_replace_zip"
-      ),
-    /不能超过 1 GiB/
-  );
+  assert.match(markup, /安装包来源地址/);
+  assert.doesNotMatch(markup, /文件大小（字节）/);
+  assert.match(markup, /自动计算文件大小与 SHA-256/);
+  assert.match(markup, /上传配置/);
 }
 function testReleaseArtifactLongDownloadUrlDoesNotForceWideCards() {
   assert.match(releaseRecordCardSource, /lineClamp=\{2\}/);
@@ -315,13 +208,7 @@ testCreateReleasePayloadOmitsOptionalPublishingFlags();
 testCreateAdminReleaseRequestDoesNotForceDisplayTitle();
 testUpdateReleasePayloadDoesNotSendVersionOrPublishingFlags();
 testBlankUpdateReleaseTitleDoesNotFallbackToVersion();
-testWindowsZipExternalArtifactCanStayExternalDownload();
-testWindowsZipExternalArtifactCanBeFullReplaceWhenExplicit();
-testWindowsNonZipExternalArtifactCanBeFullReplaceWhenExplicit();
-testExternalArtifactOptionalHashDoesNotBlock();
-testDesktopExternalArtifactRejectsHttpUrl();
-testNewReleaseModalRendersExternalMetadataFields();
-testExternalArtifactPayloadRejectsDesktopOversize();
+testNewReleaseUsesHostedImportFields();
 testReleaseArtifactLongDownloadUrlDoesNotForceWideCards();
 testReleaseMutationsAlwaysReleaseSavingState();
 testReleaseUncertainMutationsRefreshInsteadOfHardFailing();

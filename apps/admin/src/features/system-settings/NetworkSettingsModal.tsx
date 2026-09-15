@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Alert, Button, Divider, Group, Modal, Stack, Switch, Text, Textarea, TextInput } from "@mantine/core";
+import { Alert, Button, Group, Modal, Stack, Switch, Text, Textarea, TextInput } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import type { AdminDownloadMirrorConfigDto, SiteAddressConfigDto } from "@chordv/shared";
 import { request } from "../../api/base";
@@ -40,7 +40,7 @@ export function NetworkSettingsModal({ opened, onClose }: { opened: boolean; onC
     } catch (reason) { if (id === epoch.current) setError(readError(reason,"保存失败，请重新读取确认当前配置")); }
     finally { busy.current=false; if(id===epoch.current)setSaving(false); }
   };
-  return <Modal opened={opened} onClose={()=>{if(!busy.current)onClose();}} title="站点地址与下载镜像" centered size="lg" closeOnClickOutside={false} closeOnEscape={!saving} withCloseButton={!saving}>
+  return <Modal opened={opened} onClose={()=>{if(!busy.current)onClose();}} title="站点地址" centered size="lg" closeOnClickOutside={false} closeOnEscape={!saving} withCloseButton={!saving}>
     <Stack gap="lg">
       {error && <Alert color="red">{error}<Button variant="subtle" disabled={saving} onClick={()=>void load()}>重新读取</Button></Alert>}
       {loading ? <Text role="status">正在读取网络设置…</Text> : site && mirror ? <>
@@ -48,11 +48,11 @@ export function NetworkSettingsModal({ opened, onClose }: { opened: boolean; onC
         <TextInput label="客户端主站点地址" description="例如 https://v.achord.cn" value={site.primaryOrigin} disabled={saving} onChange={e=>setSite({...site,primaryOrigin:e.currentTarget.value})}/>
         <Textarea label="迁移期间保留的旧地址" description="每行一个完整 HTTPS 地址；用于地址发现和跨域兼容。" value={aliases} disabled={saving} onChange={e=>setAliases(e.currentTarget.value)} autosize minRows={2}/>
         <Group justify="flex-end"><Button loading={saving} onClick={()=>void save("site")}>保存站点地址</Button></Group>
-        <Divider/>
-        <Textarea label="全局下载镜像" description="安装包与运行组件共用，每行一个镜像前缀；留空直连。" autosize minRows={2} value={mirror.defaultMirrorPrefix??""} disabled={saving} onChange={e=>setMirror({...mirror,defaultMirrorPrefix:e.currentTarget.value||null})}/>
+        <details><summary>兼容设置：旧外链与后台更新镜像</summary><Stack gap="md" mt="md">
+        <Textarea label="全局下载镜像" description="仅供旧外链及后台自更新使用；本站托管文件不需要配置。每行一个镜像前缀，留空直连。" autosize minRows={2} value={mirror.defaultMirrorPrefix??""} disabled={saving} onChange={e=>setMirror({...mirror,defaultMirrorPrefix:e.currentTarget.value||null})}/>
         <Switch label="允许客户端自定义镜像" checked={mirror.allowClientMirror} disabled={saving} onChange={e=>setMirror({...mirror,allowClientMirror:e.currentTarget.checked})}/>
         <Switch label="后台自更新也使用镜像" checked={mirror.useMirrorForSystemUpdate} disabled={saving} onChange={e=>setMirror({...mirror,useMirrorForSystemUpdate:e.currentTarget.checked})}/>
-        <Group justify="flex-end"><Button loading={saving} onClick={()=>void save("mirror")}>保存镜像</Button></Group>
+        <Group justify="flex-end"><Button loading={saving} onClick={()=>void save("mirror")}>保存镜像</Button></Group></Stack></details>
       </> : null}
     </Stack>
   </Modal>;

@@ -1,3 +1,5 @@
+import { ImportReleaseArtifactDto } from "./import-release-artifact.dto";
+import { workLifecycle } from "../../work-lifecycle";
 import {
   BadRequestException,
   Body,
@@ -443,6 +445,30 @@ export class AdminController {
   @Post("tickets/:ticketId/reopen")
   reopenSupportTicket(@Param("ticketId") ticketId: string) {
     return this.devDataService.reopenAdminSupportTicket(ticketId);
+  }
+
+  @Post("releases/:releaseId/artifacts/import")
+  async importReleaseArtifact(@Param("releaseId") releaseId: string, @Body() body: ImportReleaseArtifactDto, @Res() response: Response) {
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(8 * 60_000)]);
+    response.setHeader("Content-Type", "text/event-stream");
+    response.setHeader("Cache-Control", "no-cache, no-transform");
+    response.setHeader("X-Accel-Buffering", "no");
+    response.flushHeaders();
+    const send = (value: unknown) => { if (!response.destroyed && !response.writableEnded) response.write(`data: ${JSON.stringify(value)}\n\n`); };
+    const close = () => controller.abort();
+    response.once("close", close);
+    const stopDrain = workLifecycle.onDrain(close);
+    const heartbeat = setInterval(() => { if (!response.destroyed && !response.writableEnded) response.write(": keep-alive\n\n"); }, 15_000);
+    try {
+      send({ type: "progress", stage: "downloading", downloadedBytes: 0, totalBytes: null });
+      const record = await this.devDataService.importReleaseArtifact(releaseId, body, value => send({ type: "progress", ...value }), signal);
+      send({ type: "complete", record });
+    } catch (error) {
+      send({ type: "error", message: error instanceof Error ? error.message : "安装包获取失败，请重试。" });
+    } finally {
+      clearInterval(heartbeat); stopDrain(); response.off("close", close); response.end();
+    }
   }
 
   @Get("releases")

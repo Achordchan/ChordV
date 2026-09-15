@@ -1,6 +1,7 @@
+import { ImportReleaseArtifactDto } from "../src/modules/admin/import-release-artifact.dto";
 import "reflect-metadata";
 import assert from "node:assert/strict";
-import { Module, RequestMethod, ValidationPipe } from "@nestjs/common";
+import { Module, RequestMethod, UnauthorizedException, ValidationPipe } from "@nestjs/common";
 import { METHOD_METADATA, PATH_METADATA } from "@nestjs/common/constants";
 import { NestFactory } from "@nestjs/core";
 import { AdminController } from "../src/modules/admin/admin.controller";
@@ -62,6 +63,7 @@ Reflect.defineMetadata("design:paramtypes", [CreateAnnouncementDto], AdminContro
 Reflect.defineMetadata("design:paramtypes", [CreateRuntimeComponentDto], AdminController.prototype, "createRuntimeComponent");
 Reflect.defineMetadata("design:paramtypes", [CreateReleaseDto], AdminController.prototype, "createRelease");
 Reflect.defineMetadata("design:paramtypes", [String, CreateReleaseArtifactDto], AdminController.prototype, "createReleaseArtifact");
+Reflect.defineMetadata("design:paramtypes", [String, ImportReleaseArtifactDto, Object], AdminController.prototype, "importReleaseArtifact");
 Reflect.defineMetadata("design:paramtypes", [DevDataService, RuntimeComponentsService], DownloadsController);
 Reflect.defineMetadata("design:paramtypes", [ClientService, RuntimeComponentsService], ClientController);
 Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
@@ -202,6 +204,11 @@ const devDataServiceStub = {
   publishRelease: async (releaseId: string) => record("release-publish", releaseId),
   unpublishRelease: async (releaseId: string) => record("release-unpublish", releaseId),
   deleteRelease: async (releaseId: string) => record("release-delete", releaseId),
+  importReleaseArtifact: async (releaseId: string, body: any, progress: (value: unknown) => void) => {
+    progress({ stage: "saving", downloadedBytes: 128, totalBytes: 128 });
+    if (body.sourceUrl.endsWith("fail")) throw new Error("fixture import failed");
+    return { id: releaseId, artifacts: [{ source: "uploaded", fileSizeBytes: "128" }] };
+  },
   createReleaseArtifact: async (releaseId: string, body: unknown) => record("release-artifact-create", releaseId, body),
   uploadReleaseArtifact: async (releaseId: string, body: unknown, file: unknown) =>
     record("release-artifact-upload", releaseId, { ...toPlainJson(body) as Record<string, unknown>, hasFile: Boolean(file) }),
@@ -278,8 +285,10 @@ const imageBedServiceStub = {
     {
       provide: AuthSessionService,
       useValue: {
-        authenticateAccessToken: async (authorization?: string) =>
-          authorization === "Bearer user-test-token" ? { id: "user_1", role: "user" } : { id: "admin_1", role: "admin" }
+        authenticateAccessToken: async (authorization?: string) => {
+          if (!authorization) throw new UnauthorizedException("missing test token");
+          return authorization === "Bearer user-test-token" ? { id: "user_1", role: "user" } : { id: "admin_1", role: "admin" };
+        }
       }
     },
     { provide: DevDataService, useValue: devDataServiceStub },
@@ -820,6 +829,22 @@ async function main() {
       201
     );
 
+    const importPath = "/api/admin/releases/release_1/artifacts/import";
+    recordAdminRouteRequest(importPath, "POST");
+    const doImport = (token: string, sourceUrl: string) => fetch(`${baseUrl}${importPath}`, {
+      method: "POST", headers: { "Content-Type": "application/json", authorization: token }, body: JSON.stringify({ sourceUrl })
+    });
+    assert.equal((await doImport("", "https://example.com/file.dmg")).status, 401);
+    assert.equal((await doImport("Bearer user-test-token", "https://example.com/file.dmg")).status, 403);
+    assert.equal((await doImport("Bearer admin-test-token", "http://example.com/file.dmg")).status, 400);
+    const stream = await doImport("Bearer admin-test-token", "https://example.com/file.dmg");
+    assert.ok(stream.ok);
+    assert.match(stream.headers.get("content-type") ?? "", /text\/event-stream/);
+    assert.equal(stream.headers.get("x-accel-buffering"), "no");
+    const events = await stream.text();
+    assert.match(events, /"type":"progress"/); assert.match(events, /"type":"complete"/); assert.match(events, /"source":"uploaded"/);
+    const failed = await doImport("Bearer admin-test-token", "https://example.com/fail");
+    assert.match(await failed.text(), /"type":"error"/);
     assertAllAdminHttpRoutesCovered();
 
     const clientStartIndex = calls.findIndex((call) => call.route === "client-bootstrap");

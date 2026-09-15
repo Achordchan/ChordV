@@ -21,6 +21,6 @@ export function UnifiedReleaseCenter({refreshSignal, initialTab = "releases", se
     <Tabs.List><Tabs.Tab value="releases">客户端版本</Tabs.Tab><Tabs.Tab value="components">运行组件</Tabs.Tab>{(legacyNeeded || tab==="sources") && <Tabs.Tab value="sources">旧组件迁移</Tabs.Tab>}</Tabs.List>
     <Tabs.Panel value="releases" pt="lg"><ReleasesPage refreshSignal={refreshSignal}/></Tabs.Panel>
     <Tabs.Panel value="components" pt="lg"><ComponentDeliveryPage refreshSignal={refreshSignal} sessionActive={sessionActive}/></Tabs.Panel>
-    <Tabs.Panel value="sources" pt="lg">{legacyNeeded ? <><Text size="sm" mb="md">仍有启用中的旧来源组件。完成迁移后此入口自动退役，下载文件继续保留兼容。</Text><RuntimeComponentsPage refreshSignal={refreshSignal}/></> : <Text>组件迁移已完成，旧管理入口已退役。全局镜像可在系统设置中管理。</Text>}</Tabs.Panel>
+    <Tabs.Panel value="sources" pt="lg">{legacyNeeded ? <><Text size="sm" mb="md">仍有启用中的旧来源组件。完成迁移后此入口自动退役，下载文件继续保留兼容。</Text><RuntimeComponentsPage refreshSignal={refreshSignal}/></> : <Text>组件迁移已完成，旧管理入口已退役。新组件由本站托管分发。</Text>}</Tabs.Panel>
   </Tabs>;
 }
