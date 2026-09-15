@@ -156,3 +156,10 @@ Prisma generate、API check、独立 PostgreSQL 完整迁移及真实文件测�
 - `file-management.integration.ts`：验证异常引用导致任务可见失败及退避、修复引用后重试成功，以及本地重复上传清除来源。
 
 API check、完整迁移和真实文件集成、dev-data / release-artifact-import-service 回归及 diff 检查通过。布局无变化，无新增 Mock；生产验证边界不变。
+
+## PR #53 前端扫描全程超时
+
+- `apps/admin/src/features/storage/storage-api.ts`：合并用户取消和 10 分钟超时信号，传入扫描请求，覆盖响应头等待和整个流读取过程。
+- `apps/admin/test/storage-scan.regression.ts`：执行实际扫描函数，分别验证请求头等待、流读取停滞时的超时与用户取消，共四种路径；使用可控 AbortController，不实际等待十分钟。
+
+admin check、storage-scan 定向回归和 diff 检查通过。无布局、依赖、生产 Mock 改动；未进行浏览器视觉验证。
