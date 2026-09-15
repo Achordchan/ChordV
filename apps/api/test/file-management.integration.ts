@@ -176,6 +176,25 @@ async function main() {
     assert.equal(await prisma.fileCleanupJob.count({where:{id:{in:backlog.map(job=>job.id)}}}),51,"manual retry must not substitute an unrelated batch");
     await prisma.fileCleanupJob.deleteMany({where:{id:{in:backlog.map(job=>job.id)}}});
 
+    // A later enqueue for the same path must survive an older worker's completion.
+    const sharedCleanupPath=path.join(root,"release_queue","artifact_shared","file_shared.dmg");await fs.mkdir(path.dirname(sharedCleanupPath),{recursive:true});await fs.writeFile(sharedCleanupPath,bytes);
+    const remainingRef=randomUUID();await prisma.releaseArtifact.create({data:{id:remainingRef,releaseId:"release_second",source:"uploaded",type:"dmg",downloadUrl:"https://example.test/shared",storedFilePath:path.relative(root,sharedCleanupPath)}});
+    const oldJob=await files.enqueue(sharedCleanupPath,"删除第一个旧引用");
+    const actualReferences=files.references.bind(files);
+    files.references=async(absolute,index)=>{
+      const result=await actualReferences(absolute,index);
+      if(absolute===sharedCleanupPath){
+        assert.equal(result,true);
+        await prisma.releaseArtifact.delete({where:{id:remainingRef}});
+        await files.enqueue(sharedCleanupPath,"并发删除最后一个引用");
+      }
+      return result;
+    };
+    try { await files.retry(oldJob.id); } finally { files.references=actualReferences; }
+    const refreshedJob=await prisma.fileCleanupJob.findUniqueOrThrow({where:{id:oldJob.id}});
+    assert.ok(refreshedJob.revision>oldJob.revision,"old completion must preserve a refreshed cleanup request");
+    await files.retry(oldJob.id);await assert.rejects(()=>fs.access(sharedCleanupPath));
+
     // Cancellation during reference resolution or the final temporary-file pass
     // must not publish a new snapshot, and must release the service's busy flag.
     const snapshotBeforeCancel=await prisma.storageCatalogSnapshot.findFirstOrThrow();

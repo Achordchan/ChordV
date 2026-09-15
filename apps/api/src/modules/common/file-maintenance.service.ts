@@ -22,7 +22,7 @@ export class FileMaintenanceService {
     let lastError: string | undefined = blockedReason;
     try { cleanupPath(absolute); } catch(error) { lastError = error instanceof Error ? error.message : "清理路径异常"; this.logger.warn(`已登记受保护的异常清理路径：${absolute}`); }
     return writer.fileCleanupJob.upsert({ where: { path: absolute },
-      create: { id: randomUUID(), path: absolute, reason, blocked:Boolean(lastError), ...(lastError?{lastError}: {}) }, update: { reason, blocked:Boolean(lastError), ...(lastError?{lastError}: {}) } });
+      create: { id: randomUUID(), path: absolute, reason, blocked:Boolean(lastError), ...(lastError?{lastError}: {}) }, update: { reason, blocked:Boolean(lastError), lastError:lastError??null, attempts:0, nextAttemptAt:new Date(), revision:{increment:1} } });
   }
   async removeOrQueue(value: string, reason: string) {
     try {
@@ -116,9 +116,9 @@ export class FileMaintenanceService {
         }
         await unlinkManagedFile(job.path);
       }
-      await this.prisma.fileCleanupJob.deleteMany({where:{id:job.id}});
+      await this.prisma.fileCleanupJob.deleteMany({where:{id:job.id,revision:job.revision}});
     } catch (error) {
-      await this.prisma.fileCleanupJob.updateMany({where:{id:job.id},data:{
+      await this.prisma.fileCleanupJob.updateMany({where:{id:job.id,revision:job.revision},data:{
         attempts:{increment:1},lastError:error instanceof Error?error.message.slice(0,1000):"文件清理失败",
         nextAttemptAt:new Date(Date.now()+Math.min(24*60*60_000,60_000*2**Math.min(job.attempts,10)))
       }});

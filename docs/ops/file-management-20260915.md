@@ -200,3 +200,11 @@ API check、隔离 PostgreSQL 完整迁移与真实文件集成、storage-routes
 - `node-probe-session.regression.ts`：执行实际 hook，覆盖测量中令牌轮换、已完成结果保留、退出/重新登录拒收旧结果及即时登录测速。
 
 desktop check、node-probe-session 和 diff 检查通过。无布局、依赖或生产 Mock 改动；没有真实网络测速 E2E。
+
+## PR #53 保留并发更新的清理请求
+
+- `schema.prisma`、`20260915170000_cleanup_job_revision/migration.sql`：清理任务新增 revision。
+- `file-maintenance.service.ts`：同一路径重新入队时递增修订并重置重试状态；任务完成或失败回写均匹配读取时的修订，不覆盖或删除并发刷新后的请求。
+- `file-management.integration.ts`：在旧任务读到剩余引用后并发删除最后引用、重新入队，确认新修订保留并可继续清理。
+
+Prisma generate、API check、隔离 PostgreSQL 全量迁移和真实文件集成、dev-data 及 diff 检查通过。没有布局、依赖或生产 Mock 改动；无生产文件操作。

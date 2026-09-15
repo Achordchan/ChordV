@@ -1025,6 +1025,7 @@ model ClientNodeProbe {
 }
 
 model FileCleanupJob {
+  revision Int @default(0)
   blocked Boolean @default(false)
   id String @id
   path String @unique
