@@ -1,7 +1,10 @@
+mod exit_gate;
+#[cfg(any(target_os="macos",test))]
+mod proxy_cleanup;
 mod log_tail;
 mod startup_gate;
 static STARTUP_READY: startup_gate::StartupGate = startup_gate::StartupGate::new();
-static EXIT_CLEANUP_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static EXIT_CLEANUP: exit_gate::ExitGate = exit_gate::ExitGate::new();
 #[cfg(not(target_os = "android"))]
 mod tls_fingerprint;
 mod session_store;
@@ -6923,37 +6926,27 @@ fn set_proxy(http_port: u16, socks_port: u16) -> Result<(), std::io::Error> {
 
 #[cfg(target_os = "macos")]
 fn clear_proxy() -> Result<(), std::io::Error> {
-    let mut first_error=None;
-    for service in macos_proxy_owned_services()? {
-        for option in ["-setwebproxystate","-setsecurewebproxystate","-setsocksfirewallproxystate"] {
-            if let Err(error)=run_networksetup(&[option,&service,"off"]) { if first_error.is_none(){first_error=Some(error);} }
-        }
-    }
-    first_error.map_or(Ok(()),Err)
+    proxy_cleanup::clear_owned_services(&network_services()?,
+        |service|with_command_budget(Duration::from_secs(2),||macos_proxy_service_owned(service)),
+        |service|{
+            let mut first_error=None;
+            for option in ["-setwebproxystate","-setsecurewebproxystate","-setsocksfirewallproxystate"] {
+                if let Err(error)=run_networksetup(&[option,service,"off"]) { if first_error.is_none(){first_error=Some(error);} }
+            }
+            first_error.map_or(Ok(()),Err)
+        })
 }
 
 #[cfg(target_os = "macos")]
-fn macos_proxy_owned_services() -> Result<Vec<String>, io::Error> {
-    let mut owned=Vec::new();
-    let bypass_hosts = api_proxy_bypass_hosts();
-    for service in network_services()? {
-        let web_proxy = networksetup_output(&["-getwebproxy", &service])?;
-        let secure_proxy = networksetup_output(&["-getsecurewebproxy", &service])?;
-        let socks_proxy = networksetup_output(&["-getsocksfirewallproxy", &service])?;
-        let bypass_output = networksetup_output(&["-getproxybypassdomains", &service])?;
-        let proxy_owned = macos_proxy_points_to_loopback(&web_proxy)
-            || macos_proxy_points_to_loopback(&secure_proxy)
-            || macos_proxy_points_to_loopback(&socks_proxy);
-        let bypass_owned = bypass_hosts.iter().all(|host| {
-            bypass_output
-                .lines()
-                .any(|line| line.trim().eq_ignore_ascii_case(host))
-        });
-        if proxy_owned && bypass_owned {
-            owned.push(service);
-        }
-    }
-    Ok(owned)
+fn macos_proxy_service_owned(service:&str) -> Result<bool, io::Error> {
+    let bypass_hosts=api_proxy_bypass_hosts();
+    let web_proxy=networksetup_output(&["-getwebproxy",service])?;
+    let secure_proxy=networksetup_output(&["-getsecurewebproxy",service])?;
+    let socks_proxy=networksetup_output(&["-getsocksfirewallproxy",service])?;
+    let bypass_output=networksetup_output(&["-getproxybypassdomains",service])?;
+    let proxy_owned=macos_proxy_points_to_loopback(&web_proxy)||macos_proxy_points_to_loopback(&secure_proxy)||macos_proxy_points_to_loopback(&socks_proxy);
+    let bypass_owned=bypass_hosts.iter().all(|host|bypass_output.lines().any(|line|line.trim().eq_ignore_ascii_case(host)));
+    Ok(proxy_owned && bypass_owned)
 }
 
 #[cfg(target_os = "macos")]
@@ -8220,15 +8213,20 @@ pub fn run() {
             }
         }
         RunEvent::ExitRequested { api, .. } => {
-            if !EXIT_CLEANUP_STARTED.swap(true,std::sync::atomic::Ordering::SeqCst) {
-                api.prevent_exit();
-                CONNECTION_GENERATION.invalidate();
-                let shutdown_app=app_handle.clone();
-                tauri::async_runtime::spawn_blocking(move || {
-                    let _=STARTUP_READY.wait();
-                    shutdown_runtime_state(&shutdown_app);
-                    shutdown_app.exit(0);
-                });
+            match EXIT_CLEANUP.request() {
+                exit_gate::ExitAction::Exit => {},
+                exit_gate::ExitAction::WaitForCleanup => api.prevent_exit(),
+                exit_gate::ExitAction::StartCleanup => {
+                    api.prevent_exit();
+                    CONNECTION_GENERATION.invalidate();
+                    let shutdown_app=app_handle.clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        let _=STARTUP_READY.wait();
+                        shutdown_runtime_state(&shutdown_app);
+                        EXIT_CLEANUP.complete();
+                        shutdown_app.exit(0);
+                    });
+                }
             }
         }
 

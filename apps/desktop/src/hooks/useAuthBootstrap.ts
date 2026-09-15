@@ -176,7 +176,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
       if (stopRuntime) {
         await forceStopLocalRuntime();
       }
-      await clearStoredSession().catch(() => null);
+      await clearStoredSession();
       setSession(null);
       setBootstrap(null);
       setNodes([]);
