@@ -838,6 +838,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         });
         await connectRuntime(config);
         if (!isCurrentLogin()) {
+          void disconnectSession(configAccessToken, config.sessionId).catch(() => null);
           await options.refreshRuntime();
           return;
         }

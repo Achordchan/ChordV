@@ -223,3 +223,11 @@ API check、隔离 PostgreSQL 完整迁移及真实文件集成、diff 检查通
 - `node-probe-session.regression.ts`、`storage-pagination.regression.ts`、Rust 节点测试：验证 unknown 不上报、过期分页不写回、重复分页不发请求及缺失地址状态。
 
 Rust 17 项测试、desktop/admin check、node-probe-session、storage-pagination、diff 检查通过。布局影响限于未检测提示的中性色和分页按钮加载状态，未操作浏览器；没有生产 Mock 或依赖变化。Windows 和旧生产后台的真实端到端未实测。
+
+## PR #53 Android 排队启动取消
+
+- `connection_generation.rs`：增加取得运行时锁后校验代次的方法，及真实线程/互斥锁竞态用例，断言停止后旧任务不能将运行时改为活动。
+- `android_runtime.rs`：启动在等待锁前捕获代次，取得锁后及初始化前检查；停止路径立即失效并在清理时再次失效。
+- `useRuntimeActions.ts`、`connection-race.regression.ts`：迟到的已完成启动也撤销对应服务端租约，并增加断言。
+
+Rust 18 项测试、desktop check、connection-race、diff 检查通过。未执行 Android 真机 VPN 或 Windows 真机测试；平台桥接实际行为仍需设备验收。无样式、依赖或生产 Mock 改动。

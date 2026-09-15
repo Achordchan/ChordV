@@ -13,7 +13,7 @@ use tauri::Manager;
 use crate::android_mobile_plugin::AndroidRuntimePluginHandle;
 use crate::{
     build_xray_config, chrono_like_now, ensure_runtime_dir, CommandResult,
-    GeneratedRuntimeConfigDto,
+    GeneratedRuntimeConfigDto, CONNECTION_GENERATION,
 };
 
 pub struct AndroidRuntimeState {
@@ -259,9 +259,8 @@ pub fn start_android_runtime(
     config: GeneratedRuntimeConfigDto,
     state: State<'_, Mutex<AndroidRuntimeState>>,
 ) -> Result<CommandResult, String> {
-    let mut state = state
-        .lock()
-        .map_err(|_| "Android 运行时状态异常".to_string())?;
+    let generation = CONNECTION_GENERATION.capture();
+    let mut state = CONNECTION_GENERATION.lock_current(generation, &state)?;
 
     let runtime_dir = ensure_runtime_dir(&app)?;
     let geoip_path = runtime_dir.join("bin").join("geoip.dat");
@@ -311,6 +310,7 @@ pub fn start_android_runtime(
         serde_json::to_string_pretty(&xray_config).map_err(|error| error.to_string())?;
     fs::write(&config_path, xray_serialized).map_err(|error| error.to_string())?;
 
+    CONNECTION_GENERATION.ensure_current(generation)?;
     state.status = "starting".into();
     state.active_session_id = Some(config.session_id.clone());
     state.active_node_id = Some(config.node.id.clone());
@@ -394,10 +394,12 @@ pub fn stop_android_runtime(
     app: AppHandle,
     state: State<'_, Mutex<AndroidRuntimeState>>,
 ) -> Result<CommandResult, String> {
+    CONNECTION_GENERATION.invalidate();
     let mut state = state
         .lock()
         .map_err(|_| "Android 运行时状态异常".to_string())?;
 
+    CONNECTION_GENERATION.invalidate();
     state.status = "disconnecting".into();
     let mut native_error: Option<String> = None;
     if let Err(error) = stop_android_native_bridge(&app) {

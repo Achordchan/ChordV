@@ -8,6 +8,7 @@ async function scenario(signOut: boolean, conflict = false, rotation: "config" |
   let identity: string | null = "login-1:user";
   let token: string | null = "token";
   let sessionCalls = 0, nativeCalls = 0, saves = 0, preflightCalls = 0, assetCalls = 0;
+  let revoked=0;
   let shownGuidance: any = null;
   let resolveConfig!: (config: unknown) => void;
   const configTask = new Promise(resolve=> { resolveConfig = resolve; });
@@ -17,7 +18,7 @@ async function scenario(signOut: boolean, conflict = false, rotation: "config" |
   }).outputText;
   vm.runInNewContext(code, { exports, require: (id: string) => {
     if (id === "react") return { useCallback: (fn: unknown)=>fn, useRef: (current: unknown)=>({current}), useState: ()=>[null,()=>undefined] };
-    if (id === "../api/client") return { connectSession: ()=>{sessionCalls++; return configTask;}, disconnectSession: async()=>undefined };
+    if (id === "../api/client") return { connectSession: ()=>{sessionCalls++; return configTask;}, disconnectSession: async()=>{revoked++;} };
     if (id === "../lib/runtime") return {
       checkRuntimeNetworkConflict: async()=>{preflightCalls++;if(conflict)throw new Error("external_proxy_conflict: 系统代理已由其他应用占用");},
       connectRuntime: async()=>{nativeCalls++;if(rotation==="native")token="rotated";if(signOutNative)identity=null;}, focusDesktopWindow: async()=>undefined
@@ -52,6 +53,7 @@ async function scenario(signOut: boolean, conflict = false, rotation: "config" |
   await Promise.all([first, second]);
   assert.equal(nativeCalls, signOut || conflict || relogin ? 0 : 1);
   assert.equal(saves, signOut || conflict || signOutNative || relogin ? 0 : 1, "late connection results must not restore a signed-out account");
+  if(signOutNative) assert.equal(revoked,1,"stale completed starts must revoke their server lease");
   if(conflict) assert.equal(shownGuidance?.code,"desktop_external_proxy_conflict");
 }
 await scenario(false);
