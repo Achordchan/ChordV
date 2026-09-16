@@ -15,7 +15,7 @@ import {
   TextInput,
   UnstyledButton
 } from "@mantine/core";
-import { notifications } from "@mantine/notifications";
+import { notifications } from "../lib/notifications";
 import {
   IconChevronDown,
   IconChevronRight,

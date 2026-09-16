@@ -25,7 +25,10 @@ console.log("failed native reads and stops never masquerade as a successful disc
  }:{createIdleRuntimeStatus:()=>({status:"idle"}),disconnectRuntime:async()=>({ok:true}),
  loadRuntimeStatus:()=>new Promise(resolve=>reads.push(resolve))}});
  const hook=exports.useRuntimeStatus({setRuntime:()=>{},leaseHeartbeatFailedAtRef:{current:null}});
+ const initialEpoch=hook.getRuntimeSyncEpoch();
  const stopping=hook.forceStopLocalRuntime();
+ assert.equal(hook.getRuntimeSyncEpoch(),initialEpoch+1,"stop invalidates network reads synchronously");
+ assert.equal(hook.isRuntimeStopping(),true);
  for(let turn=0;turn<20&&reads.length===0;turn++)await Promise.resolve();
  assert.equal(reads.length,1);
  const ui=hook.refreshRuntime();assert.equal(reads.length,2);
@@ -35,4 +38,6 @@ console.log("failed native reads and stops never masquerade as a successful disc
  assert.equal(reads.length,3);let finished=false;void stopping.then(()=>{finished=true;});
  await Promise.resolve();assert.equal(finished,false,"stop waits for post-stop UI refresh before reconnect");
  reads[2](idle);await stopping;
+ assert.equal(hook.isRuntimeStopping(),false);
+ assert.equal(hook.getRuntimeSyncEpoch(),initialEpoch+1,"completed stop keeps old reads invalid");
 }

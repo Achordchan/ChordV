@@ -5,7 +5,7 @@ import { shouldReportNodeAccessRevoked } from "./lib/startupReadiness";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { Alert, Button, Checkbox, LoadingOverlay, Modal, Stack, Text, ThemeIcon, UnstyledButton } from "@mantine/core";
-import { notifications } from "@mantine/notifications";
+import { notifications } from "./lib/notifications";
 import { IconHome2, IconStack2, IconUserCircle } from "@tabler/icons-react";
 import type {
   AuthSessionDto,
@@ -16,7 +16,6 @@ import type {
   SubscriptionStatusDto
 } from "@chordv/shared";
 import {
-  fetchClientRuntime,
   getApiErrorRawMessage,
   heartbeatSession,
   isAccessTokenExpiredApiError,
@@ -172,7 +171,7 @@ export function App() {
   const lastShellSummaryRef = useRef("");
   const pendingShellSummaryRef = useRef("");
   const shellSummaryRequestSeqRef = useRef(0);
-  const { desktopStatus, setDesktopStatus, runtimeLog, refreshRuntime, forceStopLocalRuntime } = useRuntimeStatus({
+  const { desktopStatus, setDesktopStatus, runtimeLog, refreshRuntime, forceStopLocalRuntime, getRuntimeSyncEpoch, isRuntimeStopping } = useRuntimeStatus({
     setRuntime,
     leaseHeartbeatFailedAtRef
   });
@@ -531,6 +530,8 @@ export function App() {
     loadTicketDetail: loadTicketDetailForActions,
     markTicketUnread,
     recoverSessionAfterUnauthorized,
+    getRuntimeSyncEpoch,
+    isRuntimeStopping,
     getCurrentAccessToken: () => sessionRef.current?.accessToken ?? null,
     getCurrentSessionIdentity: () => sessionRef.current ? `${sessionGenerationRef.current}:${sessionRef.current.user.id}` : null,
     clearSession,
@@ -1048,104 +1049,16 @@ export function App() {
     }
 
     let cancelled = false;
-
-    void (async () => {
-      const localRuntime = await loadActiveRuntimeConfig().catch(() => null);
-      if (!localRuntime || localRuntime.sessionId !== desktopStatus.activeSessionId || cancelled) {
-        return;
-      }
-
+    const epoch = getRuntimeSyncEpoch();
+    void loadActiveRuntimeConfig().then((localRuntime) => {
+      if (cancelled || isRuntimeStopping() || getRuntimeSyncEpoch() !== epoch ||
+          !localRuntime || localRuntime.sessionId !== desktopStatus.activeSessionId) return;
       setRuntime(localRuntime);
+    }).catch(() => null);
 
-      try {
-        let serverRuntime = await fetchClientRuntime(session.accessToken, desktopStatus.activeSessionId);
-        if (!serverRuntime || serverRuntime.sessionId !== desktopStatus.activeSessionId) {
-          await new Promise((resolve) => window.setTimeout(resolve, 800));
-          if (cancelled) {
-            return;
-          }
-          serverRuntime = await fetchClientRuntime(session.accessToken, desktopStatus.activeSessionId);
-        }
-        if (cancelled) {
-          return;
-        }
-        if (!serverRuntime || serverRuntime.sessionId !== desktopStatus.activeSessionId) {
-          const guidance =
-            deriveGuidanceFromMessage("当前连接已失效，请重新连接", {
-              fallbackNodeId: fallbackNode?.id ?? null
-            }) ??
-            deriveGuidanceFromMessage("当前连接已失效，请重新连接", {
-              fallbackNodeId: fallbackNode?.id ?? null
-            });
-          if (guidance) {
-            setConnectionGuidance(guidance);
-            notifications.show({
-              color: "yellow",
-              title: guidance.title,
-              message: "服务端连接状态暂时未同步，本地连接将继续保留，请稍后再试。"
-            });
-          }
-          return;
-        }
-        setRuntime((current) =>
-          current && current.sessionId === serverRuntime.sessionId
-            ? {
-                ...current,
-                leaseId: serverRuntime.leaseId,
-                leaseExpiresAt: serverRuntime.leaseExpiresAt,
-                leaseHeartbeatIntervalSeconds: serverRuntime.leaseHeartbeatIntervalSeconds,
-                leaseGraceSeconds: serverRuntime.leaseGraceSeconds
-              }
-            : current
-        );
-      } catch (reason) {
-        if (cancelled) {
-          return;
-        }
-        if (isAccessTokenExpiredApiError(reason)) {
-          await recoverSessionAfterUnauthorized();
-          return;
-        }
-        if (isForbiddenApiError(reason)) {
-          if (await handleProtectedLeaseAccessRevoked(reason)) {
-            return;
-          }
-          const guidance =
-            deriveGuidanceFromMessage(
-              reason instanceof Error ? readError(reason.message) : "当前连接已失效，请重新连接",
-              {
-                fallbackNodeId: fallbackNode?.id ?? null
-              }
-            ) ??
-            deriveGuidanceFromMessage("当前连接已失效，请重新连接", {
-              fallbackNodeId: fallbackNode?.id ?? null
-            });
-          if (guidance) {
-            setConnectionGuidance(guidance);
-            notifications.show({
-              color: "yellow",
-              title: guidance.title,
-              message: "服务端连接状态暂时未同步，本地连接将继续保留，请稍后再试。"
-            });
-          }
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    desktopStatus.activeSessionId,
-    desktopStatus.platformTarget,
-    fallbackNode?.id,
-    handleProtectedLeaseAccessRevoked,
-    notifications,
-    recoverSessionAfterUnauthorized,
-    runtime,
-    setConnectionGuidance,
-    session?.accessToken
-  ]);
+    return () => { cancelled = true; };
+  }, [desktopStatus.activeSessionId, desktopStatus.platformTarget, runtime,
+      session?.accessToken, getRuntimeSyncEpoch, isRuntimeStopping]);
 
   useEffect(() => {
     if (desktopStatus.platformTarget === "android" || desktopStatus.platformTarget === "web") {
@@ -1157,7 +1070,7 @@ export function App() {
     let unlistenSession: (() => void) | null = null;
 
     void subscribeNativeLeaseHeartbeat((event) => {
-      if (disposed || !event.sessionId) {
+      if (disposed || isRuntimeStopping() || !event.sessionId) {
         return;
       }
       if (event.status === "ok") {
@@ -1179,8 +1092,10 @@ export function App() {
       }
 
       if (event.reasonCode === "auth_invalid") {
+        const epoch = getRuntimeSyncEpoch();
         void (async () => {
           const recoveredSession = await recoverSessionAfterUnauthorized();
+          if (disposed || isRuntimeStopping() || getRuntimeSyncEpoch() !== epoch) return;
           if (recoveredSession) {
             leaseHeartbeatFailedAtRef.current = null;
             return;
