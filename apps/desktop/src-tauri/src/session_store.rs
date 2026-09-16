@@ -1,12 +1,18 @@
 //! Serialize credential files and reject writes from obsolete login operations.
+use sha2::{Digest,Sha256};
+use std::collections::BTreeMap;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{fs, io::Write, path::Path, sync::{atomic::{AtomicU64,Ordering},Mutex}};
 
 #[derive(Clone,Copy)]
 pub struct SaveTicket { epoch:u64, order:u64 }
-pub struct SessionStore { epoch: AtomicU64, next:AtomicU64, io: Mutex<u64> }
+struct Committed { order:u64, retired:BTreeMap<String,u64> }
+fn credential_hash(value:&serde_json::Value)->Result<String,String>{
+    Ok(hex::encode(Sha256::digest(serde_json::to_vec(value).map_err(|e|e.to_string())?)))
+}
+pub struct SessionStore { epoch: AtomicU64, next:AtomicU64, io: Mutex<Committed> }
 impl SessionStore {
-    pub const fn new() -> Self { Self{epoch:AtomicU64::new(0),next:AtomicU64::new(0),io:Mutex::new(0)} }
+    pub const fn new() -> Self { Self{epoch:AtomicU64::new(0),next:AtomicU64::new(0),io:Mutex::new(Committed{order:0,retired:BTreeMap::new()})} }
     pub fn generation(&self)->u64 {self.epoch.load(Ordering::SeqCst)}
     pub fn reserve_save(&self)->SaveTicket {
         SaveTicket{epoch:self.generation(),order:self.next.fetch_add(1,Ordering::SeqCst)+1}
@@ -39,12 +45,16 @@ impl SessionStore {
         let expected=self.generation();
         let same_login=expected==ticket.epoch || (ticket.epoch&1!=0 && expected==ticket.epoch.wrapping_add(1));
         if !same_login {return Err("登录状态已变化，忽略过期会话".into());}
-        let rotation=previous.is_some();
+        let incoming=serde_json::to_value(session).map_err(|e|e.to_string())?;
+        let retired=previous.as_ref().map(credential_hash).transpose()?;
         if let Some(previous)=previous {
             let bytes=fs::read(path).map_err(|e|e.to_string())?;
             let current:serde_json::Value=serde_json::from_slice(&bytes).map_err(|e|e.to_string())?;
             if current!=previous {return Err("登录凭据已更新，忽略过期刷新".into());}
-        } else if ticket.order<=*committed {return Err("登录状态已变化，忽略过期会话".into());}
+        } else {
+            let obsolete=committed.retired.get(&credential_hash(&incoming)?).is_some_and(|cutoff|ticket.order<=*cutoff);
+            if ticket.order<=committed.order || obsolete {return Err("登录状态已变化，忽略过期会话".into());}
+        }
         let parent=path.parent().ok_or("会话路径无效")?;
         fs::create_dir_all(parent).map_err(|e|e.to_string())?;
         let mut temp=tempfile::NamedTempFile::new_in(parent).map_err(|e|e.to_string())?;
@@ -55,7 +65,10 @@ impl SessionStore {
         // its tombstone intact; failed persistence never changes committed state.
         self.epoch.compare_exchange(expected,if expected&1==0 {expected}else{expected.wrapping_add(1)},Ordering::SeqCst,Ordering::SeqCst)
             .map_err(|_|"登录状态已变化，忽略过期会话".to_string())?;
-        *committed=if rotation {self.next.fetch_add(1,Ordering::SeqCst)+1}else{ticket.order};
+        committed.order=committed.order.max(ticket.order);
+        if let Some(hash)=retired {committed.retired.insert(hash,self.next.load(Ordering::SeqCst));}
+        let order=committed.order;
+        committed.retired.retain(|_,cutoff|*cutoff>order);
         Ok(())
     }
     #[cfg(test)]
@@ -76,6 +89,15 @@ impl SessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn queued_new_login_survives_old_login_rotation(){
+        let folder=tempfile::tempdir().unwrap();let path=folder.path().join("session.json");let store=SessionStore::new();
+        store.save(&path,&"old login",store.reserve_save()).unwrap();let (_,refresh)=store.read::<String>(&path).unwrap();
+        let replacement=store.reserve_save();
+        store.rotate(&path,&"old login rotated",refresh,&"old login").unwrap();
+        store.save(&path,&"new login",replacement).unwrap();
+        assert_eq!(store.read::<String>(&path).unwrap().0,Some("new login".into()));
+    }
     #[test]
     fn successful_rotation_survives_same_credentials_saved_during_network_request(){
         let folder=tempfile::tempdir().unwrap();let path=folder.path().join("session.json");let store=SessionStore::new();

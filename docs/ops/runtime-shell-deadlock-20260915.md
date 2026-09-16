@@ -137,3 +137,8 @@
 - android_runtime.rs：Android 启动命令改为工作线程执行，等待启动维护后再取得运行时锁并写入配置；保留命令入队前的取消代次。
 - runtime-shell-threading.regression.mjs：校验 Android 启动的工作线程与维护屏障顺序。
 - 本地 Rust 48 项及线程回归通过；未进行 Android 真机 VPN 操作。
+
+## PR #55 第十一轮修复
+
+- session_store.rs：令牌轮换只标记被替换凭据及其已排队顺序为过期，不越过内容不同的新登录请求。退役凭据仅保存 SHA256，按提交顺序安全回收标记。
+- 新增“新登录已排队、旧登录先轮换完成”的文件落盘回归；本地 Rust 49 项通过。
