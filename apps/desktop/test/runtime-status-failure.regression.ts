@@ -30,6 +30,9 @@ console.log("failed native reads and stops never masquerade as a successful disc
  assert.equal(reads.length,1);
  const ui=hook.refreshRuntime();assert.equal(reads.length,2);
  const idle={status:"idle",activePid:null,activeSessionId:null};reads[1](idle);await ui;
- reads[0](idle);await stopping;
- if(reads[2])reads[2](idle);
+ reads[0](idle);
+ for(let turn=0;turn<20&&reads.length<3;turn++)await Promise.resolve();
+ assert.equal(reads.length,3);let finished=false;void stopping.then(()=>{finished=true;});
+ await Promise.resolve();assert.equal(finished,false,"stop waits for post-stop UI refresh before reconnect");
+ reads[2](idle);await stopping;
 }

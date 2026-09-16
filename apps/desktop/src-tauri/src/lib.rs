@@ -1,6 +1,5 @@
 mod process_identity;
 mod exit_gate;
-#[cfg(any(target_os="macos",test))]
 mod proxy_cleanup;
 mod log_tail;
 mod startup_gate;
@@ -1598,7 +1597,7 @@ async fn download_desktop_installer_inner(
     input: DesktopInstallerDownloadInput,
     progress_channel: Channel<DesktopInstallerDownloadProgress>,
 ) -> Result<DesktopInstallerDownloadResult, String> {
-    STARTUP_READY.wait()?;
+    ensure_startup_ready(&app)?;
     #[cfg(target_os = "android")]
     {
         let _ = (app, input, progress_channel);
@@ -2138,7 +2137,7 @@ fn test_routing_rule_blocking(
     app: AppHandle,
     input: RoutingRuleTestInput,
 ) -> Result<RoutingRuleTestResultDto, String> {
-    STARTUP_READY.wait()?;
+    ensure_startup_ready(&app)?;
     let started_at = Instant::now();
     let target = normalize_routing_test_target(&input.value)?;
     let host = if target.match_type == "domain" {
@@ -2571,7 +2570,7 @@ fn get_runtime_component_local_info_blocking(
     app: AppHandle,
     component: RuntimeComponentKindInput,
 ) -> Result<RuntimeComponentLocalInfo, String> {
-    STARTUP_READY.wait()?;
+    ensure_startup_ready(&app)?;
     #[cfg(target_os = "android")]
     {
         let _ = (app, component);
@@ -2707,7 +2706,7 @@ fn check_runtime_component_file_blocking(
     app: AppHandle,
     component: RuntimeComponentDownloadItemInput,
 ) -> Result<RuntimeComponentFileStatus, String> {
-    STARTUP_READY.wait()?;
+    ensure_startup_ready(&app)?;
     #[cfg(target_os = "android")]
     {
         let _ = (app, component);
@@ -2792,7 +2791,7 @@ async fn ensure_bundled_runtime_components(
 fn ensure_bundled_runtime_components_blocking(
     app: AppHandle,
 ) -> Result<BundledRuntimeComponentsStatus, String> {
-    STARTUP_READY.wait()?;
+    ensure_startup_ready(&app)?;
     #[cfg(target_os = "android")]
     {
         let _ = app;
@@ -2864,7 +2863,7 @@ async fn download_runtime_component_inner(
     app: AppHandle,
     input: RuntimeComponentDownloadInput,
 ) -> Result<RuntimeComponentDownloadResult, String> {
-    STARTUP_READY.wait()?;
+    ensure_startup_ready(&app)?;
     #[cfg(target_os = "android")]
     {
         let _ = (app, input);
@@ -3461,7 +3460,7 @@ async fn connect_runtime(app: AppHandle, config: GeneratedRuntimeConfigDto) -> R
 }
 
 fn connect_runtime_blocking(app: &AppHandle, config: GeneratedRuntimeConfigDto, generation: u64) -> Result<CommandResult, String> {
-    STARTUP_READY.wait()?;
+    ensure_startup_ready(&app)?;
     let session_id = config.session_id.clone();
     static NEXT_ATTEMPT:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
     let attempt=NEXT_ATTEMPT.fetch_add(1,std::sync::atomic::Ordering::Relaxed)+1;
@@ -3470,11 +3469,10 @@ fn connect_runtime_blocking(app: &AppHandle, config: GeneratedRuntimeConfigDto, 
         let binding = app.state::<Mutex<RuntimeState>>();
         if let Ok(mut state) = binding.lock() {
             if owns_failed_connection(&state,attempt,&session_id) {
-                if let Err(stop_error)=stop_runtime_process(app, &mut state) {
+                if let Err(stop_error)=shutdown_runtime(app, &mut state) {
                     state.status="error".into();state.last_error=Some(stop_error.clone());
                     return Err(format!("{error}；{stop_error}"));
                 }
-                let _ = clear_system_proxy();
                 mark_failed_runtime_start(&mut state,error);
                 sync_shell_from_runtime(app, &state);
             }
@@ -3612,71 +3610,26 @@ fn connect_runtime_inner(app: &AppHandle, config: GeneratedRuntimeConfigDto, gen
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
 
-    let mut child = ChildGuard::new(command
-        .spawn()
-        .map_err(|error| format!("启动内核失败：{error}"))?);
-
-    if let Some(exit_status) = child.try_wait().map_err(|error| error.to_string())? {
-        let log = tail_log(&log_path, 40);
-        state.status = "error".into();
-        state.active_session_id = None;
-        state.active_config = None;
-        state.config_path = Some(config_path.clone());
-        state.log_path = Some(log_path.clone());
-        state.xray_binary_path = Some(xray_binary_path.clone());
-        state.active_pid = None;
-        state.local_http_port = None;
-        state.local_socks_port = None;
-        state.last_error = Some(format!("内核已退出：{exit_status}"));
-        sync_shell_from_runtime(&app, &state);
-
-        return Err(if log.is_empty() {
-            format!("内核启动失败：{exit_status}")
-        } else {
-            format!("内核启动失败：{exit_status}\n{log}")
-        });
+    let child=ChildGuard::new(command.spawn().map_err(|error|format!("启动内核失败：{error}"))?);
+    state.config_path=Some(config_path.clone());state.log_path=Some(log_path.clone());
+    state.xray_binary_path=Some(xray_binary_path.clone());state.active_pid=Some(child.id());
+    persist_runtime_pid(app,child.id(),&xray_binary_path);
+    state.child=Some(child.into_inner());
+    if let Some(exit_status)=state.child.as_mut().unwrap().try_wait().map_err(|error|error.to_string())? {
+        let log=tail_log(&log_path,40);
+        return Err(format!("内核启动失败：{exit_status}\n{log}"));
     }
-
-    if let Err(error) = verify_runtime_ready(&app, config.local_http_port, config.local_socks_port, generation)
-    {
-        rollback_connect_failure(&app, &mut state, &mut child, error.clone());
-        return Err(error);
-    }
-
-    if let Err(error) = set_system_proxy(config.local_http_port, config.local_socks_port) {
-        rollback_connect_failure(
-            &app,
-            &mut state,
-            &mut child,
-            format!("设置系统代理失败：{error}"),
-        );
-        return Err(format!("设置系统代理失败：{error}"));
-    }
-
+    verify_runtime_ready(app,config.local_http_port,config.local_socks_port,generation)?;
+    set_system_proxy(config.local_http_port,config.local_socks_port).map_err(|error|format!("设置系统代理失败：{error}"))?;
     #[cfg(windows)]
-    {
-        let runtime_bin_dir = match installed_runtime_bin_dir(&app) {
-            Ok(path) => path,
-            Err(error) => {
-                rollback_connect_failure(&app, &mut state, &mut child, error.clone());
-                return Err(error);
-            }
-        };
-        if let Err(error) = lock_runtime_component_files(&mut state, &runtime_bin_dir) {
-            rollback_connect_failure(&app, &mut state, &mut child, error.clone());
-            return Err(error);
-        }
-    }
-
+    {let runtime_bin_dir=installed_runtime_bin_dir(app)?;lock_runtime_component_files(&mut state,&runtime_bin_dir)?;}
     EXIT_CLEANUP.ensure_running()?;
-        CONNECTION_GENERATION.ensure_current(generation)?;
+    CONNECTION_GENERATION.ensure_current(generation)?;
     state.status = "connected".into();
     state.config_path = Some(config_path.clone());
     state.log_path = Some(log_path.clone());
     state.xray_binary_path = Some(xray_binary_path.clone());
-    state.active_pid = Some(child.id());
-    persist_runtime_pid(&app, child.id(), &xray_binary_path);
-    state.child = Some(child.into_inner());
+
     sync_shell_from_runtime(&app, &state);
     notify_native_lease_heartbeat(&app);
 
@@ -6440,14 +6393,11 @@ fn chrono_like_now() -> String {
 
 fn shutdown_runtime(app: &AppHandle, state: &mut RuntimeState) -> Result<(),String> {
     CONNECTION_GENERATION.invalidate();
-    if state.active_session_id.is_some() || state.active_pid.is_some() || state.child.is_some() || state.last_error.is_some() || load_runtime_pid_record(app).is_some() {
-        if let Err(error)=clear_system_proxy() {
-            let message=format!("系统代理清理失败，请重试退出：{error}");
-            state.last_error=Some(message.clone());
-            return Err(message); // Keep the listener alive while its proxy may still be enabled.
-        }
-    }
-    stop_runtime_process(app,state).map_err(|error|{state.last_error=Some(error.clone());error})?;
+    let restore=if state.active_session_id.is_some() || state.active_pid.is_some() || state.child.is_some() || state.last_error.is_some() || load_runtime_pid_record(app).is_some() {
+        clear_system_proxy().map_err(|error|format!("系统代理清理失败，请重试退出：{error}"))
+    } else {Ok(())};
+    proxy_cleanup::stop_after_restore(restore,||stop_runtime_process(app,state))
+        .map_err(|error|{state.last_error=Some(error.clone());error})?;
     state.status="idle".into();state.active_session_id=None;state.active_node_id=None;
     state.active_node_name=None;state.active_config=None;state.config_path=None;state.log_path=None;
     state.xray_binary_path=None;state.local_http_port=None;state.local_socks_port=None;state.last_error=None;
@@ -6487,32 +6437,6 @@ fn to_runtime_status_response(state: &RuntimeState) -> RuntimeStatusResponse {
         active_pid: state.active_pid,
         last_error: state.last_error.clone(),
     }
-}
-
-fn rollback_connect_failure(
-    app: &AppHandle,
-    state: &mut RuntimeState,
-    child: &mut Child,
-    message: String,
-) {
-    let _ = child.kill();
-    let _ = child.wait();
-    let _ = clear_system_proxy();
-    let stop_error=stop_runtime_process(app,state).err();
-    state.status = "error".into();
-    state.active_session_id = None;
-    state.active_node_id = None;
-    state.active_node_name = None;
-    state.active_config = None;
-    state.config_path = None;
-    state.log_path = None;
-    state.xray_binary_path = None;
-    state.active_pid = None;
-    state.local_http_port = None;
-    state.local_socks_port = None;
-    state.last_error=Some(stop_error.map_or(message.clone(),|error|format!("{message}；{error}")));
-    #[cfg(not(target_os = "android"))]
-    sync_shell_from_runtime(app, state);
 }
 
 fn verify_runtime_ready(_app: &AppHandle, http_port: u16, socks_port: u16, generation: u64) -> Result<(), String> {
@@ -7443,6 +7367,25 @@ try {{
         .bounded_status();
 }
 
+fn ensure_startup_ready(app:&AppHandle)->Result<(),String>{
+    EXIT_CLEANUP.ensure_running()?;
+    STARTUP_READY.ensure_ready(||perform_startup_maintenance(app))
+}
+
+fn perform_startup_maintenance(app:&AppHandle)->Result<(),String>{
+    with_command_budget(Duration::from_secs(20), || {
+                        cleanup_runtime_artifacts_on_startup(app)?;
+                        #[cfg(not(target_os = "android"))]
+                        {
+                            ensure_runtime_bin_dir(app)?;
+                            let _=cleanup_outdated_installer_packages(app);
+                        }
+                        #[cfg(target_os = "macos")]
+                        {let _=cleanup_mounted_installer_volumes(app);}
+                        Ok::<(),String>(())
+                    })
+}
+
 fn cleanup_runtime_artifacts_on_startup(app: &AppHandle) -> Result<(),String> {
     cleanup_stale_runtime(app)?;
     #[cfg(windows)]
@@ -8023,17 +7966,7 @@ pub fn run() {
             let startup_app=app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let result=tauri::async_runtime::spawn_blocking(move || {
-                    with_command_budget(Duration::from_secs(20), || {
-                        cleanup_runtime_artifacts_on_startup(&startup_app)?;
-                        #[cfg(not(target_os = "android"))]
-                        {
-                            ensure_runtime_bin_dir(&startup_app)?;
-                            let _=cleanup_outdated_installer_packages(&startup_app);
-                        }
-                        #[cfg(target_os = "macos")]
-                        {let _=cleanup_mounted_installer_volumes(&startup_app);}
-                        Ok::<(),String>(())
-                    })
+                    perform_startup_maintenance(&startup_app)
                 }).await.unwrap_or_else(|error|Err(error.to_string()));
                 STARTUP_READY.finish(result);
             });

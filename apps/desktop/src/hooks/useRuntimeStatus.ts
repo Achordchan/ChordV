@@ -104,7 +104,7 @@ export function useRuntimeStatus(options: UseRuntimeStatusOptions) {
       // may supersede rendering but cannot invalidate this operation's evidence.
       let status: RuntimeStatus | null = null;
       try { status=await loadRuntimeStatus(); } catch { /* Report lack of confirmation below. */ }
-      void refreshRuntime();
+      await refreshRuntime();
       if(failure) throw failure;
       if(!status) throw new Error("无法确认本机连接已停止，请重试。");
       if(status.activePid || status.activeSessionId || status.vpnActive || ["starting","connecting","connected","disconnecting"].includes(status.status)) {

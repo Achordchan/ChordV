@@ -112,3 +112,10 @@
 - process_identity.rs / lib.rs：进程查询改为 Result<Option<身份>>，Windows PowerShell 返回明确 JSON 存在标记；超时、无法读取身份、异常响应均为错误，不再转换成不存在。
 - 停止和启动残留清理传播查询/终止错误，保留 PID 记录供重试，不清空仍未确认的进程状态。
 - 本地 Rust 45 项、线程测试、diff 检查通过；测试覆盖超时、空身份、无效响应及明确不存在。
+
+## PR #55 第七轮修复
+
+- lib.rs / proxy_cleanup.rs：新启动内核在代理写入前交给 RuntimeState 持有；统一失败回滚先恢复代理，失败则保留内核供重试。删除先杀进程再吞掉代理错误的旧回滚函数。
+- useRuntimeStatus.ts：等待停止后的 UI 刷新完成再释放停止操作；测试确认它不能迟到覆盖下一次连接。
+- startup_gate.rs / lib.rs：维护失败可由下一次操作串行重试，其他请求等待，不重复运行成功维护。
+- 本地 Rust 47 项、desktop check、停止交错和菜单线程测试通过；2f92ce3 双平台门禁通过。

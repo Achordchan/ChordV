@@ -1,5 +1,8 @@
+#[cfg(any(target_os="macos",test))]
 use std::io;
+pub fn stop_after_restore(restore:Result<(),String>,stop:impl FnOnce()->Result<(),String>)->Result<(),String>{restore?;stop()}
 /// Disable each confirmed owned service before inspecting the next service.
+#[cfg(any(target_os="macos",test))]
 pub fn clear_owned_services(
     services:&[String], mut owned:impl FnMut(&str)->io::Result<bool>,
     mut clear:impl FnMut(&str)->io::Result<()>,
@@ -14,6 +17,13 @@ pub fn clear_owned_services(
 #[cfg(test)]
 mod tests {
     use super::*;use std::cell::RefCell;
+    #[test]
+    fn failed_proxy_restore_preserves_the_runtime_for_retry(){
+        let mut alive=true;
+        assert!(stop_after_restore(Err("proxy timeout".into()),||{alive=false;Ok(())}).is_err());
+        assert!(alive);
+        stop_after_restore(Ok(()),||{alive=false;Ok(())}).unwrap();assert!(!alive);
+    }
     #[test]
     fn later_inspection_failure_preserves_earlier_cleanup(){
         let events=RefCell::new(Vec::new());
