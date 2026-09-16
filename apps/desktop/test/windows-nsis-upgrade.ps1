@@ -31,11 +31,8 @@ try {
 
   Write-Host 'PHASE: creating legacy shortcut'
   $shortcutPath = Join-Path $root '自定义启动入口.lnk'
-  $shell = New-Object -ComObject WScript.Shell
-  $shortcut = $shell.CreateShortcut($shortcutPath)
-  $shortcut.TargetPath = [IO.Path]::GetFullPath([string]$oldExe)
-  $shortcut.WorkingDirectory = [IO.Path]::GetFullPath([string]$installDir)
-  $shortcut.Save()
+  . (Join-Path $PSScriptRoot 'windows-shell-link.ps1')
+  [ChordVShortcutFixture]::Create([string]$shortcutPath, [string]$oldExe, [string]$installDir)
 
   $oldReadyMarker = Join-Path $env:LOCALAPPDATA 'app.chordv.desktop\updater\startup-ready.marker'
   Remove-Item -LiteralPath $oldReadyMarker -Force -ErrorAction SilentlyContinue
@@ -80,7 +77,7 @@ try {
   if (!$ownedCore.HasExited) { throw 'Legacy orphaned ChordV core survived the upgrade' }
   if ($foreignCore.HasExited) { throw 'Upgrade stopped an unrelated same-name core' }
   if ((Get-ItemProperty $proxyKey).ProxyEnable -ne 0) { throw 'Upgrade left the ChordV-owned system proxy enabled' }
-  $legacyTarget = $shell.CreateShortcut($shortcutPath).TargetPath
+  $legacyTarget = [ChordVShortcutFixture]::ReadTarget([string]$shortcutPath)
   if (!(Test-Path $legacyTarget) -or !([Diagnostics.FileVersionInfo]::GetVersionInfo($legacyTarget).ProductVersion.StartsWith($ExpectedVersion))) { throw 'User-created legacy shortcut no longer points at the current version' }
   $exe = Join-Path $installDir 'ChordV.exe'
   if (!(Test-Path $exe)) { throw 'Upgrade did not preserve the custom installation directory' }

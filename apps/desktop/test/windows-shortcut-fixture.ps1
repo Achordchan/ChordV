@@ -6,13 +6,9 @@ try {
   $target = Join-Path $directory 'legacy.exe'
   [IO.File]::WriteAllText($target, 'Shortcut fixture only; this file is never executed.')
   $link = Join-Path $root '自定义入口.lnk'
-  $shell = New-Object -ComObject WScript.Shell
-  $shortcut = $shell.CreateShortcut([string]$link)
-  # Unwrap provider-decorated PowerShell strings before passing COM BSTR values.
-  $shortcut.TargetPath = [IO.Path]::GetFullPath([string]$target)
-  $shortcut.WorkingDirectory = [IO.Path]::GetFullPath([string]$directory)
-  $shortcut.Save()
-  if ($shell.CreateShortcut([string]$link).TargetPath -ne [IO.Path]::GetFullPath([string]$target)) { throw 'Shortcut target roundtrip failed' }
+  . (Join-Path $PSScriptRoot 'windows-shell-link.ps1')
+  [ChordVShortcutFixture]::Create([string]$link, [string]$target, [string]$directory)
+  if ([ChordVShortcutFixture]::ReadTarget([string]$link) -ne [IO.Path]::GetFullPath([string]$target)) { throw 'Shortcut target roundtrip failed' }
   Write-Output 'PASS: Unicode/custom-path shortcut fixture'
 } catch {
   Write-Host "target=$target type=$($target.GetType().FullName) length=$($target.Length)"
