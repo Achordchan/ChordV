@@ -16,3 +16,20 @@ async function scenario(readFails:boolean,stopFails:boolean,stillActive:boolean)
 }
 await scenario(true,false,true);await scenario(false,true,true);await scenario(false,false,true);await scenario(false,false,false);
 console.log("failed native reads and stops never masquerade as a successful disconnect");
+
+// A UI refresh can overtake the independent disconnect confirmation.
+{
+ const reads:Array<(value:unknown)=>void>=[];const exports:any={};
+ vm.runInNewContext(code,{exports,Error,require:(name:string)=>name==="react"?{
+  useCallback:(fn:unknown)=>fn,useRef:(current:unknown)=>({current}),useState:()=>[{},()=>{}]
+ }:{createIdleRuntimeStatus:()=>({status:"idle"}),disconnectRuntime:async()=>({ok:true}),
+ loadRuntimeStatus:()=>new Promise(resolve=>reads.push(resolve))}});
+ const hook=exports.useRuntimeStatus({setRuntime:()=>{},leaseHeartbeatFailedAtRef:{current:null}});
+ const stopping=hook.forceStopLocalRuntime();
+ for(let turn=0;turn<20&&reads.length===0;turn++)await Promise.resolve();
+ assert.equal(reads.length,1);
+ const ui=hook.refreshRuntime();assert.equal(reads.length,2);
+ const idle={status:"idle",activePid:null,activeSessionId:null};reads[1](idle);await ui;
+ reads[0](idle);await stopping;
+ if(reads[2])reads[2](idle);
+}

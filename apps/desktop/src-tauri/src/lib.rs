@@ -1124,6 +1124,7 @@ async fn refresh_access_session_inner(
     app: &AppHandle,
     refresh_token: &str,
     epoch: session_store::SaveTicket,
+    previous: &AuthSessionDto,
 ) -> Result<AuthSessionDto, String> {
     let url = format!("{}/api/auth/refresh", api_base_url().trim_end_matches('/'));
     let response = api_client()?
@@ -1143,7 +1144,9 @@ async fn refresh_access_session_inner(
     }
     let session = serde_json::from_str::<AuthSessionDto>(&body)
         .map_err(|error| format!("解析登录态失败：{error}"))?;
-    write_session_to_disk(app, &session, epoch)?;
+    let path=session_path(app)?;
+    NATIVE_SESSION_STORE.rotate(&path,&session,epoch,previous)?;
+    set_private_permissions(&path)?;
     let mut event=serde_json::to_value(&session).map_err(|error|error.to_string())?;
     event["previousRefreshToken"]=json!(refresh_token);
     let _ = app.emit("chordv://native-session-refreshed", &event);
@@ -1174,7 +1177,7 @@ async fn refresh_access_session(
         return Err("当前没有可用刷新令牌".into());
     }
 
-    refresh_access_session_inner(app, &stored_refresh_token, epoch).await
+    refresh_access_session_inner(app, &stored_refresh_token, epoch, &session).await
 }
 
 #[tauri::command]

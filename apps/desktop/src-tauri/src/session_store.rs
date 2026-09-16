@@ -29,10 +29,22 @@ impl SessionStore {
         }
     }
     pub fn save<T:Serialize>(&self,path:&Path,session:&T,ticket:SaveTicket)->Result<(),String> {
+        self.save_inner(path,session,ticket,None)
+    }
+    pub fn rotate<T:Serialize>(&self,path:&Path,session:&T,ticket:SaveTicket,previous:&T)->Result<(),String> {
+        self.save_inner(path,session,ticket,Some(serde_json::to_value(previous).map_err(|e|e.to_string())?))
+    }
+    fn save_inner<T:Serialize>(&self,path:&Path,session:&T,ticket:SaveTicket,previous:Option<serde_json::Value>)->Result<(),String> {
         let mut committed=self.io.lock().map_err(|_|"会话存储状态异常".to_string())?;
         let expected=self.generation();
         let same_login=expected==ticket.epoch || (ticket.epoch&1!=0 && expected==ticket.epoch.wrapping_add(1));
-        if !same_login || ticket.order<=*committed {return Err("登录状态已变化，忽略过期会话".into());}
+        if !same_login {return Err("登录状态已变化，忽略过期会话".into());}
+        let rotation=previous.is_some();
+        if let Some(previous)=previous {
+            let bytes=fs::read(path).map_err(|e|e.to_string())?;
+            let current:serde_json::Value=serde_json::from_slice(&bytes).map_err(|e|e.to_string())?;
+            if current!=previous {return Err("登录凭据已更新，忽略过期刷新".into());}
+        } else if ticket.order<=*committed {return Err("登录状态已变化，忽略过期会话".into());}
         let parent=path.parent().ok_or("会话路径无效")?;
         fs::create_dir_all(parent).map_err(|e|e.to_string())?;
         let mut temp=tempfile::NamedTempFile::new_in(parent).map_err(|e|e.to_string())?;
@@ -43,7 +55,7 @@ impl SessionStore {
         // its tombstone intact; failed persistence never changes committed state.
         self.epoch.compare_exchange(expected,if expected&1==0 {expected}else{expected.wrapping_add(1)},Ordering::SeqCst,Ordering::SeqCst)
             .map_err(|_|"登录状态已变化，忽略过期会话".to_string())?;
-        *committed=ticket.order;
+        *committed=if rotation {self.next.fetch_add(1,Ordering::SeqCst)+1}else{ticket.order};
         Ok(())
     }
     #[cfg(test)]
@@ -64,6 +76,23 @@ impl SessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn successful_rotation_survives_same_credentials_saved_during_network_request(){
+        let folder=tempfile::tempdir().unwrap();let path=folder.path().join("session.json");let store=SessionStore::new();
+        store.save(&path,&"old token",store.reserve_save()).unwrap();
+        let (_,refresh)=store.read::<String>(&path).unwrap();let redundant=store.reserve_save();
+        store.save(&path,&"old token",redundant).unwrap();let late_old=store.reserve_save();
+        store.rotate(&path,&"rotated token",refresh,&"old token").unwrap();
+        assert!(store.save(&path,&"old token",late_old).is_err());
+        assert_eq!(store.read::<String>(&path).unwrap().0,Some("rotated token".into()));
+    }
+    #[test]
+    fn rotation_cannot_replace_a_different_login(){
+        let folder=tempfile::tempdir().unwrap();let path=folder.path().join("session.json");let store=SessionStore::new();
+        store.save(&path,&"old",store.reserve_save()).unwrap();let (_,ticket)=store.read::<String>(&path).unwrap();
+        store.save(&path,&"new login",store.reserve_save()).unwrap();
+        assert!(store.rotate(&path,&"rotated",ticket,&"old").is_err());
+    }
     #[test]
     fn queued_saves_commit_the_newest_request_in_either_worker_order(){
         for reversed in [false,true] {

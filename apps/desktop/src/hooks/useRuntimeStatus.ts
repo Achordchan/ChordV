@@ -100,7 +100,11 @@ export function useRuntimeStatus(options: UseRuntimeStatusOptions) {
           throw new Error("本机连接停止失败，请重试。");
         }
       } catch (reason) { failure=reason instanceof Error?reason:new Error(String(reason||"本机连接停止失败，请重试。")); }
-      const status=await refreshRuntime();
+      // Confirmation is an independent native read; normal UI refresh sequencing
+      // may supersede rendering but cannot invalidate this operation's evidence.
+      let status: RuntimeStatus | null = null;
+      try { status=await loadRuntimeStatus(); } catch { /* Report lack of confirmation below. */ }
+      void refreshRuntime();
       if(failure) throw failure;
       if(!status) throw new Error("无法确认本机连接已停止，请重试。");
       if(status.activePid || status.activeSessionId || status.vpnActive || ["starting","connecting","connected","disconnecting"].includes(status.status)) {
