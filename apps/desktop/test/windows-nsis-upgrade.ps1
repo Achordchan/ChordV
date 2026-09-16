@@ -18,6 +18,17 @@ function Run-Installer([string]$Path, [string]$Arguments) {
   if (!$process.WaitForExit(180000)) { $process.Kill(); throw 'Installer timed out' }
   if ($process.ExitCode -ne 0) { throw "Installer failed: $($process.ExitCode)" }
 }
+function Wait-CoreListener($Process, [int]$Port) {
+  $deadline = (Get-Date).AddSeconds(15)
+  do {
+    $Process.Refresh()
+    if ($Process.HasExited) { throw "Core exited before listening on $Port" }
+    $listener = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -eq $Process.Id }
+    if ($listener) { return }
+    Start-Sleep -Milliseconds 100
+  } while ((Get-Date) -lt $deadline)
+  throw "Core did not bind $Port before the fixture deadline"
+}
 try {
   $oldInstaller = Join-Path $root 'old-1.1.7-setup.exe'
   Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/Achordchan/ChordV/releases/download/v1.1.7/ChordV_1.1.7_x64-setup.exe' -OutFile $oldInstaller
@@ -64,8 +75,20 @@ try {
   [IO.File]::WriteAllText($foreignConfig,'{"inbounds":[{"listen":"127.0.0.1","port":17899,"protocol":"http","settings":{}}],"outbounds":[{"protocol":"freedom","settings":{}}]}')
   $ownedCore = Start-Process (Join-Path $ownedBin 'xray.exe') -ArgumentList ('run -c "' + $ownedConfig + '"') -PassThru
   $foreignCore = Start-Process (Join-Path $foreignBin 'xray.exe') -ArgumentList ('run -c "' + $foreignConfig + '"') -PassThru
-  if ($ownedCore.WaitForExit(1000) -or $foreignCore.WaitForExit(1000)) { throw 'Core fixture failed to start' }
+  Wait-CoreListener $ownedCore 17890
+  Wait-CoreListener $foreignCore 17899
+  Set-ItemProperty $proxyKey ProxyOverride '<local>;retired.example'
   Set-ItemProperty $proxyKey ProxyEnable 1
+  Set-ItemProperty $proxyKey ProxyServer '127.0.0.1:17899'
+  $maintenanceExe = (Resolve-Path 'apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/ChordV.exe').Path
+  Run-Installer $maintenanceExe '--installer-maintenance'
+  $ownedCore.Refresh(); $foreignCore.Refresh()
+  if (!$ownedCore.HasExited -or $foreignCore.HasExited) { throw 'Maintenance did not scope core cleanup to the private runtime path' }
+  $foreignProxy = Get-ItemProperty $proxyKey
+  if ($foreignProxy.ProxyEnable -ne 1 -or $foreignProxy.ProxyServer -ne '127.0.0.1:17899') { throw 'Maintenance changed an unrelated system proxy' }
+  Write-Host 'PASS: maintenance preserves unrelated proxy and core'
+  $ownedCore = Start-Process (Join-Path $ownedBin 'xray.exe') -ArgumentList ('run -c "' + $ownedConfig + '"') -PassThru
+  Wait-CoreListener $ownedCore 17890
   Set-ItemProperty $proxyKey ProxyServer '127.0.0.1:17890'
 
   # These are the passive and restart flags used by the official Tauri updater.
@@ -125,6 +148,8 @@ try {
   else { Remove-ItemProperty $proxyKey ProxyEnable -ErrorAction SilentlyContinue }
   if ($null -ne $originalProxy.ProxyServer) { Set-ItemProperty $proxyKey ProxyServer $originalProxy.ProxyServer }
   else { Remove-ItemProperty $proxyKey ProxyServer -ErrorAction SilentlyContinue }
+  if ($null -ne $originalProxy.ProxyOverride) { Set-ItemProperty $proxyKey ProxyOverride $originalProxy.ProxyOverride }
+  else { Remove-ItemProperty $proxyKey ProxyOverride -ErrorAction SilentlyContinue }
   $uninstaller = Join-Path $installDir 'uninstall.exe'
   if (Test-Path $uninstaller) {
     Run-Installer $uninstaller '/S'
