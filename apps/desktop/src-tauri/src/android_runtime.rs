@@ -6,7 +6,6 @@ use std::{
 };
 use tauri::{AppHandle, State};
 
-#[cfg(target_os = "android")]
 use tauri::Manager;
 
 #[cfg(target_os = "android")]
@@ -254,13 +253,16 @@ pub fn android_runtime_status(
 }
 
 #[tauri::command]
-pub fn start_android_runtime(
-    app: AppHandle,
-    config: GeneratedRuntimeConfigDto,
-    state: State<'_, Mutex<AndroidRuntimeState>>,
-) -> Result<CommandResult, String> {
+pub async fn start_android_runtime(app:AppHandle,config:GeneratedRuntimeConfigDto)->Result<CommandResult,String>{
     crate::EXIT_CLEANUP.ensure_running()?;
-    let generation = CONNECTION_GENERATION.capture();
+    let generation=CONNECTION_GENERATION.capture();
+    tauri::async_runtime::spawn_blocking(move||start_android_runtime_blocking(app,config,generation))
+        .await.map_err(|error|error.to_string())?
+}
+
+fn start_android_runtime_blocking(app:AppHandle,config:GeneratedRuntimeConfigDto,generation:u64)->Result<CommandResult,String>{
+    crate::ensure_startup_ready(&app)?;
+    let state=app.state::<Mutex<AndroidRuntimeState>>();
     let mut state = CONNECTION_GENERATION.lock_current(generation, &state)?;
     crate::EXIT_CLEANUP.ensure_running()?;
 

@@ -21,6 +21,10 @@ const startup=rustFunction('cleanup_stale_runtime');
 assert.ok(startup.indexOf('clear_system_proxy()') < startup.indexOf('kill_pid('),'startup restores proxy before killing a stale listener');
 const preflight=rustFunction('check_network_conflict');
 assert.ok(preflight.indexOf('ensure_startup_ready')<preflight.indexOf('let check'),'startup barrier precedes the inspection timeout');
+const android=readFileSync(new URL('../src-tauri/src/android_runtime.rs',import.meta.url),'utf8');
+assert.match(android,/pub async fn start_android_runtime[\s\S]*?spawn_blocking/);
+const androidWorker=android.slice(android.indexOf('fn start_android_runtime_blocking'));
+assert.ok(androidWorker.indexOf('ensure_startup_ready')<androidWorker.indexOf('lock_current'),'Android must finish maintenance before locking and writing runtime files');
 const refresh=rustFunction('refresh_shell_ui');
 // Compile the actual dispatch function against a deterministic main-thread adapter.
 // The UI reader must acquire RuntimeState before it services the queued menu work.

@@ -131,3 +131,9 @@
 - lib.rs：check_network_conflict 在独立的启动等待后才开始 3 秒检测预算，避免启动残留代理被误报为外部占用。
 - network_services 成功但为空时返回空列表；清理无操作成功，仅 set_proxy 需要实际网络服务。
 - 新增空清理列表和预检启动屏障约束，本地 Rust 48 项、线程测试及 diff 检查通过。
+
+## PR #55 第十轮修复
+
+- android_runtime.rs：Android 启动命令改为工作线程执行，等待启动维护后再取得运行时锁并写入配置；保留命令入队前的取消代次。
+- runtime-shell-threading.regression.mjs：校验 Android 启动的工作线程与维护屏障顺序。
+- 本地 Rust 48 项及线程回归通过；未进行 Android 真机 VPN 操作。
