@@ -1182,7 +1182,11 @@ export class ReleaseCenterService {
       throw new BadRequestException("发布前请至少添加一个安装包。");
     }
     let lastArtifactError: unknown = null;
-    for (const artifact of release.artifacts) {
+    const publishArtifacts = release.platform === "windows"
+      ? release.artifacts.filter(artifact => fromPrismaReleaseArtifactType(artifact.type) === "setup.exe")
+      : release.artifacts;
+    if (!publishArtifacts.length) throw new BadRequestException("Windows 发布需要签名的 EXE 安装包，不能继续发布旧 ZIP。");
+    for (const artifact of publishArtifacts) {
       try {
         assertReleaseArtifactClientUsable(artifact, release.platform as PlatformTarget);
         await this.assertStoredReleaseArtifactReadable(artifact);
@@ -1191,8 +1195,11 @@ export class ReleaseCenterService {
           release.platform as PlatformTarget
         );
         lastArtifactError = null;
-        break;
+        if (release.platform !== "windows") break;
       } catch (error) {
+        // Every advertised Windows installer must be verified; a valid secondary
+        // package must not hide a broken primary signature.
+        if (release.platform === "windows") throw error;
         lastArtifactError = error;
       }
     }

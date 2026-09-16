@@ -351,7 +351,8 @@ export class ClientController {
       return response.status(204).send();
     }
     return response.json({ version: result.latestVersion, notes: result.changelog.join("\n"),
-      url: result.downloadUrl, signature: artifact.updaterSignature,
+      url: result.downloadUrl, originDownloadUrl: artifact.originDownloadUrl ?? result.downloadUrl,
+      signature: artifact.updaterSignature,
       fileSizeBytes: result.fileSizeBytes, fileHash: result.fileHash });
   }
 

@@ -22,14 +22,14 @@ struct PreparedUpdate { update: Update, bytes: Vec<u8>, path: PathBuf }
 #[derive(Default)]
 pub struct PreparedState(Mutex<Option<PreparedUpdate>>);
 
-pub async fn download(app: &AppHandle, channel: &Channel<DesktopInstallerDownloadProgress>, expected_version: Option<&str>) -> Result<DesktopInstallerDownloadResult, String> {
+pub async fn download(app: &AppHandle, channel: &Channel<DesktopInstallerDownloadProgress>, expected_version: Option<&str>, candidate: Option<&str>) -> Result<DesktopInstallerDownloadResult, String> {
     set_installer_operation_active(app, true)?;
-    let result = download_inner(app, channel, expected_version).await;
+    let result = download_inner(app, channel, expected_version, candidate).await;
     let _ = set_installer_operation_active(app, false);
     result
 }
 
-async fn download_inner(app: &AppHandle, channel: &Channel<DesktopInstallerDownloadProgress>, expected_version: Option<&str>) -> Result<DesktopInstallerDownloadResult, String> {
+async fn download_inner(app: &AppHandle, channel: &Channel<DesktopInstallerDownloadProgress>, expected_version: Option<&str>, candidate: Option<&str>) -> Result<DesktopInstallerDownloadResult, String> {
     let mut endpoint = api_base_url_parsed()?.join("/api/client/update/tauri").map_err(|e| e.to_string())?;
     endpoint.query_pairs_mut().append_pair("currentVersion", &app.package_info().version.to_string());
     if !cfg!(debug_assertions) && endpoint.scheme() != "https" { return Err("更新服务必须使用 HTTPS".into()); }
@@ -40,6 +40,7 @@ async fn download_inner(app: &AppHandle, channel: &Channel<DesktopInstallerDownl
     if expected_version.is_some_and(|version| version != update.version) {
         return Err("发布版本已变化，请重新检查更新后再下载".into());
     }
+    apply_download_candidate(&mut update, &api_base_url_parsed()?, candidate.unwrap_or("mirror"))?;
     update.timeout = Some(Duration::from_secs(DOWNLOAD_TOTAL_TIMEOUT_SECS));
     let expected_size = require_desktop_update_download_size(json_u64_field(&update.raw_json, &["fileSizeBytes"]))?;
     let file_name = format!("ChordV_{}_x64-setup.exe", update.version);
@@ -72,6 +73,13 @@ async fn download_inner(app: &AppHandle, channel: &Channel<DesktopInstallerDownl
     *app.state::<PreparedState>().0.lock().map_err(|_| "更新状态异常")? = Some(PreparedUpdate { update, bytes, path: path.clone() });
     progress("completed", expected_size, "安装包已验证，点击安装并重启。");
     Ok(DesktopInstallerDownloadResult { file_name, local_path: path.to_string_lossy().into_owned(), total_bytes: Some(expected_size) })
+}
+
+fn apply_download_candidate(update: &mut Update, api_base: &Url, candidate: &str) -> Result<(), String> {
+    let origin = json_string_field(&update.raw_json, &["originDownloadUrl"]);
+    update.download_url = resolve_trusted_desktop_update_url(api_base, update.download_url.as_str(), origin.as_deref(), candidate)?;
+    // The official Update retains the same signature and pinned public key.
+    Ok(())
 }
 
 pub fn install(app: &AppHandle) -> Result<CommandResult, String> {
@@ -119,14 +127,14 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let base = format!("http://{}", listener.local_addr().unwrap());
             let body = format!("{}{}", fixture["payload"].as_str().unwrap(), if tamper {"changed"} else {""});
-            let descriptor = json!({"version":"99.0.0", "url":format!("{base}/installer"), "signature":fixture["signature"]}).to_string();
+            let descriptor = json!({"version":"99.0.0", "url":format!("{base}/mirror"), "originDownloadUrl":format!("{base}/origin"), "signature":fixture["signature"]}).to_string();
             let worker = thread::spawn(move || {
-                // Exactly two scoped test requests (check, download), no external network.
-                for response in [descriptor, body] {
+                // Exactly three scoped requests (check, failed mirror, origin), no external network.
+                for (status, response) in [(200, descriptor), (503, String::new()), (200, body)] {
                     let (mut stream, _) = listener.accept().unwrap();
                     stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
                     let mut request = [0u8; 8192]; let _ = stream.read(&mut request).unwrap();
-                    write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
+                    write!(stream,"HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
                 }
             });
             let mut context = mock_context(noop_assets());
@@ -135,7 +143,11 @@ mod tests {
                 .build(context).unwrap();
             let updater = app.updater_builder().endpoints(vec![base.parse().unwrap()]).unwrap().no_proxy().timeout(Duration::from_secs(5)).build().unwrap();
             tauri::async_runtime::block_on(async {
-                let update = updater.check().await.unwrap().unwrap();
+                let mut update = updater.check().await.unwrap().unwrap();
+                assert!(update.download(|_,_| {}, || {}).await.is_err());
+                assert!(apply_download_candidate(&mut update, &base.parse().unwrap(), "invalid").is_err());
+                apply_download_candidate(&mut update, &base.parse().unwrap(), "origin").unwrap();
+                assert!(update.download_url.path().ends_with("/origin"));
                 let mut received = 0;
                 let result = update.download(|count,_| received += count, || {}).await;
                 assert_eq!(result.is_err(), tamper);

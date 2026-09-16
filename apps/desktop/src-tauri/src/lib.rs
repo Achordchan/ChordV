@@ -1582,7 +1582,7 @@ async fn download_desktop_installer_inner(
 ) -> Result<DesktopInstallerDownloadResult, String> {
     ensure_startup_ready(&app)?;
     #[cfg(windows)]
-    return windows_update::download(&app, &progress_channel, input.expected_version.as_deref()).await;
+    return windows_update::download(&app, &progress_channel, input.expected_version.as_deref(), input.preferred_candidate.as_deref()).await;
     #[cfg(target_os = "android")]
     {
         let _ = (app, input, progress_channel);

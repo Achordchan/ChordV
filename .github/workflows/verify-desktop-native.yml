@@ -50,6 +50,10 @@ jobs:
           pnpm --filter @chordv/desktop build
       - name: Compile and test native platform code
         run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --locked
+      - name: Diagnose Windows loader failures
+        if: failure() && runner.os == 'Windows'
+        shell: powershell
+        run: ./apps/desktop/test/diagnose-windows-loader.ps1
       - name: Check main-thread and runtime lock interaction
         run: node apps/desktop/test/runtime-shell-threading.regression.mjs
       - name: Verify session and failure-state behavior

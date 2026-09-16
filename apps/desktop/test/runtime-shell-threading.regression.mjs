@@ -11,7 +11,7 @@ function rustFunction(name) {
   for(;depth&&end<source.length;end++){if(source[end]==='{')depth++;else if(source[end]==='}')depth--;}
   return source.slice(start,end);
 }
-for(const name of ['runtime_status','runtime_logs','runtime_snapshot','clear_session','load_session','save_session','open_desktop_installer','open_external_url','test_routing_rule','consume_desktop_update_install_report','quit_for_update','apply_desktop_full_update','desktop_runtime_environment','get_runtime_component_local_info','check_runtime_component_file','ensure_bundled_runtime_components','download_runtime_component','download_desktop_installer','record_client_diagnostic']) {
+for(const name of ['runtime_status','runtime_logs','runtime_snapshot','clear_session','load_session','save_session','open_desktop_installer','open_external_url','test_routing_rule','consume_desktop_update_install_report','quit_for_update','install_windows_update','desktop_runtime_environment','get_runtime_component_local_info','check_runtime_component_file','ensure_bundled_runtime_components','download_runtime_component','download_desktop_installer','record_client_diagnostic']) {
   assert.match(source,new RegExp(`async fn ${name}\\(`),`${name} must not block the IPC main thread`);
   assert.match(rustFunction(name),/spawn_blocking/,`${name} must isolate mutex and filesystem waits`);
 }

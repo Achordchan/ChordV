@@ -42,6 +42,19 @@ async function main() {
   service.pickClientUsableArtifact = async () => null;
   const missing = await service.checkClientUpdate({ currentVersion: "1.1.7", platform: "windows", channel: "stable", artifactType: "zip" });
   assert.equal(missing.hasUpdate, false); assert.equal(missing.downloadUrl, null);
+  const publisher: any = Object.create(ReleaseCenterService.prototype);
+  publisher.assertReleaseRecordMutable = () => {};
+  publisher.assertStoredReleaseArtifactReadable = async () => {};
+  publisher.assertReleaseArtifactContentMatchesMetadata = async (candidate: any) => {
+    if (candidate.id === "broken") throw new Error("invalid installer signature");
+  };
+  const publication: any = { status: "draft", platform: "windows", version: "1.1.9", minimumVersion: "1.1.8", artifacts: [{...artifact, type:"zip", deliveryMode:"desktop_full_replace"}] };
+  publisher.prisma = { release: { findUnique: async () => publication } };
+  await assert.rejects(publisher.assertReleasePublishable("release"), /签名的 EXE/);
+  publication.artifacts = [{...artifact, id:"broken"}, artifact];
+  await assert.rejects(publisher.assertReleasePublishable("release"), /invalid installer signature/);
+  publication.artifacts = [artifact];
+  await publisher.assertReleasePublishable("release");
   console.log("Windows updater: official CLI signature interoperability, tamper rejection, key consistency and legacy installer bridge passed");
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
