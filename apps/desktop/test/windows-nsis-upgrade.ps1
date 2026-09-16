@@ -22,12 +22,14 @@ try {
   $oldInstaller = Join-Path $root 'old-1.1.7-setup.exe'
   Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/Achordchan/ChordV/releases/download/v1.1.7/ChordV_1.1.7_x64-setup.exe' -OutFile $oldInstaller
   if ((Get-FileHash $oldInstaller -Algorithm SHA256).Hash -ne 'c0f7a4c7914dcfdc600a20156d548230c369b205a77183e2ec390d73bacb8340') { throw 'Legacy installer digest mismatch' }
+  Write-Host 'PHASE: installing legacy baseline'
   Run-Installer $oldInstaller "/S /NS /D=$installDir"
   Stop-TestClient
   $oldExe = Join-Path $installDir 'chordv-desktop.exe'
   if (!(Test-Path $oldExe)) { $oldExe = Join-Path $installDir 'ChordV.exe' }
   if (!(Test-Path $oldExe) -or !([Diagnostics.FileVersionInfo]::GetVersionInfo($oldExe).ProductVersion.StartsWith('1.1.7'))) { throw 'Legacy baseline installation did not produce version 1.1.7' }
 
+  Write-Host 'PHASE: creating legacy shortcut'
   $shortcutPath = Join-Path $root '自定义启动入口.lnk'
   $shell = New-Object -ComObject WScript.Shell
   $shortcut = $shell.CreateShortcut($shortcutPath)
@@ -35,8 +37,23 @@ try {
   $shortcut.WorkingDirectory = $installDir
   $shortcut.Save()
 
+  $oldReadyMarker = Join-Path $env:LOCALAPPDATA 'app.chordv.desktop\updater\startup-ready.marker'
+  Remove-Item -LiteralPath $oldReadyMarker -Force -ErrorAction SilentlyContinue
+  Write-Host 'PHASE: starting legacy client'
+  $oldClient = Start-Process -FilePath $oldExe -PassThru
+  $deadline = (Get-Date).AddSeconds(30)
+  do {
+    if ($oldClient.HasExited) { throw 'Legacy client exited before upgrade process-guard test' }
+    $ready = Test-Path $oldReadyMarker
+    if ($ready) { $ready = (Get-Content -LiteralPath $oldReadyMarker -Raw) -match ('(?m)^pid=' + $oldClient.Id + '\r?$') }
+    if ($ready) { break }
+    Start-Sleep -Milliseconds 250
+  } while ((Get-Date) -lt $deadline)
+  if (!$ready) { throw 'Legacy baseline startup did not finish before seeding orphan core' }
+
   # Simulate a crashed legacy client: a private orphaned core without a PID file
   # and a ChordV-owned system proxy. An unrelated same-name core must survive.
+  Write-Host 'PHASE: seeding orphan and unrelated cores'
   $runtimeDir = Join-Path $env:LOCALAPPDATA 'app.chordv.desktop\runtime'
   $ownedBin = Join-Path $runtimeDir 'bin'
   $foreignBin = Join-Path $root 'foreign-core'
@@ -55,7 +72,10 @@ try {
   Set-ItemProperty $proxyKey ProxyServer '127.0.0.1:17890'
 
   # These are the passive and restart flags used by the official Tauri updater.
+  Write-Host 'PHASE: applying new installer'
   Run-Installer (Resolve-Path $Installer).Path '/P /UPDATE /R'
+  $oldClient.Refresh()
+  if (!$oldClient.HasExited) { throw 'Installer process guard failed to close the running legacy client' }
   $ownedCore.Refresh(); $foreignCore.Refresh()
   if (!$ownedCore.HasExited) { throw 'Legacy orphaned ChordV core survived the upgrade' }
   if ($foreignCore.HasExited) { throw 'Upgrade stopped an unrelated same-name core' }
@@ -95,6 +115,10 @@ try {
   $after = Start-Process -FilePath $exe -PassThru
   if ($after.WaitForExit(5000)) { throw 'Client could not start after installer lock was released' }
   Write-Output 'PASS: real 1.1.7 -> current NSIS upgrade, custom Chinese path, installed version/resources, automatic restart and launch gate'
+} catch {
+  Write-Host $_.Exception.ToString()
+  Write-Host $_.ScriptStackTrace
+  throw
 } finally {
   Stop-TestClient
   foreach ($core in @($ownedCore,$foreignCore)) {

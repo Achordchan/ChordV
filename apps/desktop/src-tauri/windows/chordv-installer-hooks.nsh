@@ -20,10 +20,11 @@ Var ChordVUpdateGate
 !macro NSIS_HOOK_PREINSTALL
   !insertmacro ChordVAcquireInstallGate
   ; Older installations used the crate name. Use Tauri's normal process guard
-  ; for both historical paths rather than killing unrelated processes by name.
-  !insertmacro CheckIfAppIsRunning "$INSTDIR\chordv-desktop.exe" "ChordV"
-  !insertmacro CheckIfAppIsRunning "$INSTDIR\chordv_desktop.exe" "ChordV"
-  !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "ChordV"
+  ; for both historical names. The locked Tauri CLI 2.10.1 macro expects a
+  ; basename and scopes lookup to the current user for currentUser installs.
+  !insertmacro CheckIfAppIsRunning "chordv-desktop.exe" "ChordV"
+  !insertmacro CheckIfAppIsRunning "chordv_desktop.exe" "ChordV"
+  !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "ChordV"
   InitPluginsDir
   File /oname=$PLUGINSDIR\ChordV-maintenance.exe "${MAINBINARYSRCPATH}"
   nsExec::ExecToStack /TIMEOUT=45000 '"$PLUGINSDIR\ChordV-maintenance.exe" --installer-maintenance'
@@ -62,9 +63,9 @@ Var ChordVUpdateGate
 
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro ChordVAcquireInstallGate
-  !insertmacro CheckIfAppIsRunning "$INSTDIR\chordv-desktop.exe" "ChordV"
-  !insertmacro CheckIfAppIsRunning "$INSTDIR\chordv_desktop.exe" "ChordV"
-  !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "ChordV"
+  !insertmacro CheckIfAppIsRunning "chordv-desktop.exe" "ChordV"
+  !insertmacro CheckIfAppIsRunning "chordv_desktop.exe" "ChordV"
+  !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "ChordV"
   IfFileExists "$INSTDIR\${MAINBINARYNAME}.exe" 0 chordv_uninstall_cleanup_done
   nsExec::ExecToStack /TIMEOUT=45000 '"$INSTDIR\${MAINBINARYNAME}.exe" --installer-maintenance'
   Pop $0
