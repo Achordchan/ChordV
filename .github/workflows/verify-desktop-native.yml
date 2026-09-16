@@ -42,6 +42,10 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
+      - name: Check Windows shortcut fixture before compilation
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./apps/desktop/test/windows-shortcut-fixture.ps1
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Build frontend for native context

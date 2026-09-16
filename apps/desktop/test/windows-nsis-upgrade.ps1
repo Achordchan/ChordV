@@ -33,8 +33,8 @@ try {
   $shortcutPath = Join-Path $root '自定义启动入口.lnk'
   $shell = New-Object -ComObject WScript.Shell
   $shortcut = $shell.CreateShortcut($shortcutPath)
-  $shortcut.TargetPath = $oldExe
-  $shortcut.WorkingDirectory = $installDir
+  $shortcut.TargetPath = [IO.Path]::GetFullPath([string]$oldExe)
+  $shortcut.WorkingDirectory = [IO.Path]::GetFullPath([string]$installDir)
   $shortcut.Save()
 
   $oldReadyMarker = Join-Path $env:LOCALAPPDATA 'app.chordv.desktop\updater\startup-ready.marker'
