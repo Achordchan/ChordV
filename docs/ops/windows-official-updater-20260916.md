@@ -49,7 +49,7 @@ PR 安装测试使用临时密钥，不读取生产私钥。更新签名不是 A
 - packages/shared/src/types.ts、windows-updater-key.ts、index.ts：共享签名字段和公钥。
 - apps/admin/src/api/client.ts、pages/ReleasesPage.tsx、features/releases/ArtifactEditorModal.tsx、ReleaseEditorModal.tsx、RemoteArtifactSourceFields.tsx、types.ts：发布表单与文件选择。
 - apps/desktop/scripts/build-tauri-platform.mjs、check-windows-bundle.mjs、platform-version.mjs：EXE+SIG 产物与检查，清理旧 ZIP。
-- scripts/verify-windows-updater-signature.ts、.github/workflows/release-desktop.yml、verify-desktop-native.yml：签名/版本与真实安装发布门禁。
+- apps/api/scripts/verify-windows-updater-signature.ts、.github/workflows/release-desktop.yml、verify-desktop-native.yml：签名/版本与真实安装发布门禁。
 - apps/api/test/windows-updater.regression.ts、fixtures/tauri-signature.json、apps/desktop/test/update-handoff.regression.mjs、windows-full-update-path.regression.ts、windows-update-protocol.regression.ts、windows-nsis-upgrade.ps1：签名、迁移、交接和安装回归。测试 fixture 不含私钥。
 
 ## 已执行验证

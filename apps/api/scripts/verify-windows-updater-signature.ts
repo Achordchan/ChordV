@@ -1,7 +1,7 @@
 import "reflect-metadata";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { verifyUpdaterSignature } from "../apps/api/src/modules/common/updater-signature";
+import { verifyUpdaterSignature } from "../src/modules/common/updater-signature";
 
 async function main() {
   const config = JSON.parse(await readFile("apps/desktop/src-tauri/tauri.conf.json", "utf8"));

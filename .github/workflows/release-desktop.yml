@@ -117,7 +117,7 @@ jobs:
         if: matrix.platform == 'windows'
         run: |
           pnpm --filter @chordv/desktop check:windows-bundle
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/api/tsconfig.json scripts/verify-windows-updater-signature.ts
+          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/api/tsconfig.json apps/api/scripts/verify-windows-updater-signature.ts
 
       - name: Verify legacy Windows upgrade before publishing
         if: matrix.platform == 'windows'

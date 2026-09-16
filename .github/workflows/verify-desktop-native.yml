@@ -90,7 +90,7 @@ jobs:
           export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=''
           TEST_UPDATER_KEY="$test_key.pub" node -e 'const fs=require("fs");const p="apps/desktop/src-tauri/tauri.conf.json";const c=JSON.parse(fs.readFileSync(p));c.plugins.updater.pubkey=fs.readFileSync(process.env.TEST_UPDATER_KEY,"utf8").trim();fs.writeFileSync(p,JSON.stringify(c));'
           pnpm --filter @chordv/desktop exec node scripts/build-tauri-platform.mjs windows --target x86_64-pc-windows-msvc
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/api/tsconfig.json scripts/verify-windows-updater-signature.ts
+          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/api/tsconfig.json apps/api/scripts/verify-windows-updater-signature.ts
       - name: Exercise real legacy Windows installation upgrade
         if: runner.os == 'Windows'
         shell: powershell
