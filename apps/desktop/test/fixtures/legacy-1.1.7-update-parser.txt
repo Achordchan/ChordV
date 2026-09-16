@@ -1,0 +1,180 @@
+// Frozen production excerpt: 8ca086868821a1ac2c081aa6dd520de134f4bf9a
+// apps/desktop/src/api/client.ts; retained only as a compatibility test fixture.
+const API_BASE = "https://v.baymaxgroup.com";
+function normalizeUpdateCheckResult(
+  raw: ClientUpdateCheckResult | Record<string, unknown>,
+  fallback: {
+    currentVersion: string;
+    platform: PlatformTarget | "ios";
+    channel: ReleaseChannel;
+    artifactType: ReleaseArtifactType;
+  }
+): ClientUpdateCheckResult {
+  const record = raw as Record<string, unknown>;
+  const artifactSource = asRecord(record.artifact) ?? asRecord(record.recommendedArtifact);
+  const artifactRecord = artifactSource ?? (fallback.platform === "windows" ? null : record);
+  const artifact = artifactRecord
+    ? (() => {
+      const artifactUrl = resolvePublicUrl(
+          readString(artifactRecord.downloadUrl) ?? ""
+        );
+        if (!artifactUrl) {
+          return null;
+        }
+        return {
+          fileType:
+            readArtifactType(artifactRecord.fileType) ??
+            readArtifactType(artifactRecord.type) ??
+            fallback.artifactType,
+          downloadUrl: artifactUrl,
+          originDownloadUrl: resolvePublicUrl(
+            readString(artifactRecord.originDownloadUrl) ??
+              readString(artifactRecord.downloadUrl)
+          ),
+          defaultMirrorPrefix: readString(artifactRecord.defaultMirrorPrefix) ?? readString(record.defaultMirrorPrefix),
+          allowClientMirror: readBoolean(artifactRecord.allowClientMirror) ?? readBoolean(record.allowClientMirror) ?? true,
+          fileName: readString(artifactRecord.fileName) ?? readString(record.fileName),
+          fileSizeBytes: readNumber(artifactRecord.fileSizeBytes) ?? readNumber(record.fileSizeBytes),
+          fileHash: readString(artifactRecord.fileHash) ?? readString(record.fileHash),
+          isPrimary: readBoolean(artifactRecord.isPrimary) ?? readBoolean(record.isPrimary) ?? true,
+          isFullPackage: readBoolean(artifactRecord.isFullPackage) ?? readBoolean(record.isFullPackage) ?? true
+        };
+      })()
+    : null;
+  const deliveryMode = readDeliveryMode(record.deliveryMode) ?? inferDeliveryMode(fallback.platform, artifact?.fileType);
+  const latestVersion = readString(record.latestVersion) ?? readString(record.currentVersion) ?? fallback.currentVersion;
+  const minimumVersion = readString(record.minimumVersion) ?? fallback.currentVersion;
+  const forceUpgrade = readBoolean(record.forceUpgrade) ?? false;
+  const hasUpdate = readBoolean(record.hasUpdate) ?? latestVersion !== fallback.currentVersion;
+  const requiresDownloadArtifact = hasUpdate || forceUpgrade;
+  if (requiresDownloadArtifact && deliveryMode === "desktop_installer_download" && fallback.platform === "windows") {
+    throw new Error("Windows installer updates are disabled; use a ZIP full replacement artifact.");
+  }
+  if (requiresDownloadArtifact && deliveryMode === "desktop_full_replace" && fallback.platform === "windows") {
+    if (!artifact || artifact.fileType !== "zip" || !artifact.downloadUrl) {
+      throw new Error("Windows full replacement updates require a ZIP artifact.");
+    }
+  }
+  const downloadUrl =
+    deliveryMode === "desktop_full_replace" && fallback.platform === "windows"
+      ? artifact?.downloadUrl ?? null
+      : artifact?.downloadUrl ?? resolvePublicUrl(readString(record.downloadUrl)) ?? null;
+
+  return {
+    platform: readPlatform(record.platform) ?? fallback.platform,
+    channel: readChannel(record.channel) ?? fallback.channel,
+    currentVersion: fallback.currentVersion,
+    latestVersion,
+    minimumVersion,
+    hasUpdate,
+    forceUpgrade,
+    title: readString(record.title) ?? formatUpdateTitle(latestVersion),
+    changelog: readStringArray(record.changelog),
+    publishedAt: readString(record.publishedAt),
+    deliveryMode,
+    downloadUrl,
+    artifact: artifact && artifact.downloadUrl ? artifact : null
+  };
+}
+
+function inferDeliveryMode(platform: PlatformTarget | "ios", artifactType?: ReleaseArtifactType | null): UpdateDeliveryMode {
+  if (artifactType === "zip") {
+    return "desktop_full_replace";
+  }
+  if (artifactType === "setup.exe" || artifactType === "exe" || artifactType === "dmg" || artifactType === "app") {
+    return "desktop_installer_download";
+  }
+  if (platform === "android") {
+    return "apk_download";
+  }
+  if (platform === "ios") {
+    return "external_download";
+  }
+  if (platform === "windows") {
+    return "desktop_full_replace";
+  }
+  return "desktop_installer_download";
+}
+
+function formatUpdateTitle(version: string) {
+  return `发现新版本 ${version}`;
+}
+
+function resolvePublicUrl(value: string | null | undefined) {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return null;
+  }
+  if (/^https?:\/\//i.test(normalized)) {
+    return normalized;
+  }
+  return new URL(normalized, API_BASE).toString();
+}
+
+function asRecord(value: unknown) {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function readString(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function readNumber(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function normalizeElapsedMs(value: unknown) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return null;
+  }
+  return Math.round(value);
+}
+
+function readBoolean(value: unknown) {
+  return typeof value === "boolean" ? value : null;
+}
+
+function readStringArray(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function readChannel(value: unknown): ReleaseChannel | null {
+  return value === "stable" ? "stable" : null;
+}
+
+function readPlatform(value: unknown): PlatformTarget | "ios" | null {
+  return value === "macos" || value === "windows" || value === "android" || value === "ios" ? value : null;
+}
+
+function readDeliveryMode(value: unknown): UpdateDeliveryMode | null {
+  return value === "desktop_installer_download" ||
+    value === "desktop_full_replace" ||
+    value === "apk_download" ||
+    value === "external_download" ||
+    value === "none"
+    ? value
+    : null;
+}
+
+function readArtifactType(value: unknown): ReleaseArtifactType | null {
+  return value === "dmg" ||
+    value === "app" ||
+    value === "exe" ||
+    value === "setup.exe" ||
+    value === "zip" ||
+    value === "apk" ||
+    value === "ipa" ||
+    value === "external"
+    ? value
+    : null;
+}

@@ -26,6 +26,8 @@ NSIS PREINSTALL/POSTINSTALL hook 持有 Local\ChordV.Update.InProgress 内核互
 
 ## 旧版本过渡
 
+2026-09-16 后续调查确认：1.1.7 的外链按钮存在缺陷，以下 external_download 协议设计不能视为可用的旧版升级闭环；旧用户需要浏览器直接下载安装。详见 [更新入口故障调查](windows-update-entry-incident-20260916.md)。
+
 已安装的 1.1.7、旧 1.1.8 无法被新代码追溯修复。后台对旧 artifactType=zip 请求返回 EXE 的一次性 external_download 入口；新客户端用 setup.exe 请求官方模式。
 这一次需要下载 EXE、断开并退出旧程序后覆盖安装。后续升级才走应用内官方流程。历史 ZIP 可管理，但不再用于新上传、导入、复用或客户端下载；缺少签名安装器时不退回旧 ZIP。
 

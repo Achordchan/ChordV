@@ -80,6 +80,7 @@ jobs:
           pnpm --filter @chordv/api db:generate
           node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/api/tsconfig.json apps/api/test/windows-updater.regression.ts
           node apps/desktop/test/update-handoff.regression.mjs
+          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/external-update-link.regression.ts
           node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/windows-update-protocol.regression.ts
           node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/windows-full-update-path.regression.ts
       - name: Build isolated Windows installer for upgrade test
