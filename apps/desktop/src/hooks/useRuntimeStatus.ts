@@ -58,7 +58,7 @@ export function useRuntimeStatus(options: UseRuntimeStatusOptions) {
         }
         return status;
       });
-      if (!status.activeSessionId && status.status !== "connecting" && status.status !== "disconnecting") {
+      if (!status.activeSessionId && status.status !== "starting" && status.status !== "connecting" && status.status !== "disconnecting") {
         setRuntimeRef.current(null);
       }
       const shouldLoadLogs =
@@ -80,11 +80,9 @@ export function useRuntimeStatus(options: UseRuntimeStatusOptions) {
       if (runtimeRefreshRequestSeqRef.current !== requestId) {
         return null;
       }
-      const idleStatus = createIdleRuntimeStatus();
-      setDesktopStatus(idleStatus);
-      setRuntimeRef.current(null);
-      setRuntimeLog("");
-      return idleStatus;
+      // A failed status read does not prove that the native proxy has stopped.
+      setDesktopStatus(current=>({...current,lastError:"暂时无法读取本机运行状态，请重试。"}));
+      return null;
     }
   }, []);
 
@@ -95,18 +93,25 @@ export function useRuntimeStatus(options: UseRuntimeStatusOptions) {
     }
 
     const task = (async () => {
+      let failure: Error | null = null;
       try {
-        await disconnectRuntime();
-      } catch {
-        // Best-effort local disconnect must not block later cleanup.
-      } finally {
-        leaseFailedAtRef.current.current = null;
-        setRuntimeRef.current(null);
-        await refreshRuntime().catch(() => {
-          setDesktopStatus(createIdleRuntimeStatus());
-          setRuntimeLog("");
-        });
+        const result=await disconnectRuntime();
+        if(result && typeof result === "object" && "ok" in result && result.ok === false) {
+          throw new Error("本机连接停止失败，请重试。");
+        }
+      } catch (reason) { failure=reason instanceof Error?reason:new Error(String(reason||"本机连接停止失败，请重试。")); }
+      // Confirmation is an independent native read; normal UI refresh sequencing
+      // may supersede rendering but cannot invalidate this operation's evidence.
+      let status: RuntimeStatus | null = null;
+      try { status=await loadRuntimeStatus(); } catch { /* Report lack of confirmation below. */ }
+      await refreshRuntime();
+      if(failure) throw failure;
+      if(!status) throw new Error("无法确认本机连接已停止，请重试。");
+      if(status.activePid || status.activeSessionId || status.vpnActive || ["starting","connecting","connected","disconnecting"].includes(status.status)) {
+        throw new Error("本机连接尚未停止，请重试。");
       }
+      leaseFailedAtRef.current.current = null;
+      setRuntimeRef.current(null);
     })();
 
     localStopInFlightRef.current = task;

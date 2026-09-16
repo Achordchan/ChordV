@@ -1,3 +1,4 @@
+import { canApplyNativeSessionRefresh } from "./lib/nativeSessionRefresh";
 import { ClientUpdateProgressPanel } from "./components/ClientUpdateProgressPanel";
 import { lazy, Suspense } from "react";
 import { shouldReportNodeAccessRevoked } from "./lib/startupReadiness";
@@ -42,6 +43,7 @@ import {
   subscribeDesktopShellActions,
   subscribeNativeLeaseHeartbeat,
   subscribeNativeSessionRefreshed,
+  subscribeNativeExitFailure,
   updateDesktopShellSummary,
   type RuntimeNodeProbeResult,
   type RuntimeStatus
@@ -558,6 +560,16 @@ export function App() {
     recoverSessionAfterUnauthorized,
     readError
   });
+
+  useEffect(() => {
+    let disposed=false;
+    let unlisten:(()=>void)|undefined;
+    void subscribeNativeExitFailure(message=>{
+      if(!disposed)notifications.show({id:"native-exit-failure",title:"退出未完成",color:"red",autoClose:false,
+        message:`${message}。请稍后再次选择“退出 ChordV”重试。`});
+    }).then(cleanup=>{if(disposed)cleanup();else unlisten=cleanup;}).catch(()=>null);
+    return ()=>{disposed=true;unlisten?.();};
+  }, []);
 
   useEffect(() => {
     const refreshDelayMs = resolveProactiveAccessTokenRefreshDelay(session);
@@ -1225,7 +1237,7 @@ export function App() {
       .catch(() => null);
 
     void subscribeNativeSessionRefreshed((nextSession) => {
-      if (disposed) {
+      if (disposed || !canApplyNativeSessionRefresh(sessionRef.current,nextSession)) {
         return;
       }
       setSession(nextSession);

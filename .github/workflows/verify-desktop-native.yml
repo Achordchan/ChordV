@@ -1,0 +1,58 @@
+name: Verify Desktop Native
+
+on:
+  pull_request:
+    paths:
+      - "apps/desktop/**"
+      - "packages/shared/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/verify-desktop-native.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Native checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-2022]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build frontend for native context
+        run: |
+          pnpm --filter @chordv/shared build
+          pnpm --filter @chordv/desktop build
+      - name: Compile and test native platform code
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --locked
+      - name: Check main-thread and runtime lock interaction
+        run: node apps/desktop/test/runtime-shell-threading.regression.mjs
+      - name: Verify session and failure-state behavior
+        run: |
+          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/native-session-refresh.regression.ts
+          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/runtime-status-failure.regression.ts
+          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/connection-race.regression.ts
+          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/logout-responsiveness.regression.ts
+          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/runtime-action-failure.regression.ts
+          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/exit-cleanup-notice.regression.ts

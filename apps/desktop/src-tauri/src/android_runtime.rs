@@ -6,7 +6,6 @@ use std::{
 };
 use tauri::{AppHandle, State};
 
-#[cfg(target_os = "android")]
 use tauri::Manager;
 
 #[cfg(target_os = "android")]
@@ -254,13 +253,18 @@ pub fn android_runtime_status(
 }
 
 #[tauri::command]
-pub fn start_android_runtime(
-    app: AppHandle,
-    config: GeneratedRuntimeConfigDto,
-    state: State<'_, Mutex<AndroidRuntimeState>>,
-) -> Result<CommandResult, String> {
-    let generation = CONNECTION_GENERATION.capture();
+pub async fn start_android_runtime(app:AppHandle,config:GeneratedRuntimeConfigDto)->Result<CommandResult,String>{
+    crate::EXIT_CLEANUP.ensure_running()?;
+    let generation=CONNECTION_GENERATION.capture();
+    tauri::async_runtime::spawn_blocking(move||start_android_runtime_blocking(app,config,generation))
+        .await.map_err(|error|error.to_string())?
+}
+
+fn start_android_runtime_blocking(app:AppHandle,config:GeneratedRuntimeConfigDto,generation:u64)->Result<CommandResult,String>{
+    crate::ensure_startup_ready(&app)?;
+    let state=app.state::<Mutex<AndroidRuntimeState>>();
     let mut state = CONNECTION_GENERATION.lock_current(generation, &state)?;
+    crate::EXIT_CLEANUP.ensure_running()?;
 
     let runtime_dir = ensure_runtime_dir(&app)?;
     let geoip_path = runtime_dir.join("bin").join("geoip.dat");
@@ -310,6 +314,7 @@ pub fn start_android_runtime(
         serde_json::to_string_pretty(&xray_config).map_err(|error| error.to_string())?;
     fs::write(&config_path, xray_serialized).map_err(|error| error.to_string())?;
 
+    crate::EXIT_CLEANUP.ensure_running()?;
     CONNECTION_GENERATION.ensure_current(generation)?;
     state.status = "starting".into();
     state.active_session_id = Some(config.session_id.clone());

@@ -1,0 +1,10 @@
+import assert from "node:assert/strict";
+import {canApplyNativeSessionRefresh} from "../src/lib/nativeSessionRefresh";
+const current={user:{id:"a"},accessToken:"a1",refreshToken:"r1"} as any;
+const refreshed={user:{id:"a"},accessToken:"a2",refreshToken:"r2",previousRefreshToken:"r1"} as any;
+assert.equal(canApplyNativeSessionRefresh(current,refreshed),true);
+assert.equal(canApplyNativeSessionRefresh(null,refreshed),false);
+assert.equal(canApplyNativeSessionRefresh({...current,user:{id:"b"}},refreshed),false);
+assert.equal(canApplyNativeSessionRefresh({...current,accessToken:"new-login",refreshToken:"new-refresh"},refreshed),false);
+assert.equal(canApplyNativeSessionRefresh(refreshed,refreshed),true);
+console.log("native refresh only updates its original login; logout/relogin events rejected");
