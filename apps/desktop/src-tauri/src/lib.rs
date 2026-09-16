@@ -1,3 +1,4 @@
+mod process_identity;
 mod exit_gate;
 #[cfg(any(target_os="macos",test))]
 mod proxy_cleanup;
@@ -6240,7 +6241,7 @@ fn stop_runtime_process(app: &AppHandle, state: &mut RuntimeState) -> Result<(),
     state.runtime_component_handles.clear();
 
     if let Some(record) = load_runtime_pid_record(app) {
-        if stopped_pid != Some(record.pid) && runtime_pid_belongs_to_chordv(app, &record) {
+        if stopped_pid != Some(record.pid) && runtime_pid_belongs_to_chordv(app, &record)? {
             kill_pid(record.pid)?;
         }
     }
@@ -6356,77 +6357,18 @@ fn load_runtime_pid_record(app: &AppHandle) -> Option<RuntimePidRecord> {
         })
 }
 
-fn runtime_pid_alive(pid: u32) -> bool {
+fn runtime_process_command(pid:u32)->Result<Option<String>,String>{
     #[cfg(unix)]
-    {
-        Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .bounded_status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-    }
-
+    {process_identity::unix_query(Command::new("ps").args(["-p",&pid.to_string(),"-o","command="]).bounded_output())}
     #[cfg(windows)]
     {
-        let mut command = Command::new("tasklist");
-        command.creation_flags(CREATE_NO_WINDOW);
-        command
-            .args(["/FI", &format!("PID eq {pid}")])
-            .bounded_output()
-            .map(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
-            .unwrap_or(false)
+        let mut command=Command::new("powershell");command.creation_flags(CREATE_NO_WINDOW);
+        let script=format!("$ErrorActionPreference='Stop'; $p=Get-CimInstance Win32_Process -Filter \"ProcessId = {pid}\"; if ($p) {{ @{{exists=$true;command=\"$($p.ExecutablePath)`n$($p.CommandLine)\"}} | ConvertTo-Json -Compress }} else {{ @{{exists=$false}} | ConvertTo-Json -Compress }}");
+        process_identity::windows_query(command.args(["-NoProfile","-NonInteractive","-Command",&script]).bounded_output())
     }
 }
 
-fn runtime_process_command(pid: u32) -> Option<String> {
-    #[cfg(unix)]
-    {
-        Command::new("ps")
-            .args(["-p", &pid.to_string(), "-o", "command="])
-            .bounded_output()
-            .ok()
-            .and_then(|output| {
-                if output.status.success() {
-                    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-                } else {
-                    None
-                }
-            })
-    }
-
-    #[cfg(windows)]
-    {
-        let mut command = Command::new("powershell");
-        command.creation_flags(CREATE_NO_WINDOW);
-        command
-            .args([
-                "-NoProfile",
-                "-Command",
-                &format!(
-                    "$p = Get-CimInstance Win32_Process -Filter \"ProcessId = {pid}\"; if ($p) {{ \"$($p.ExecutablePath)`n$($p.CommandLine)\" }}"
-                ),
-            ])
-            .bounded_output()
-            .ok()
-            .and_then(|output| {
-                if output.status.success() {
-                    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    if text.is_empty() {
-                        None
-                    } else {
-                        Some(text)
-                    }
-                } else {
-                    None
-                }
-            })
-    }
-}
-
-fn runtime_pid_belongs_to_chordv(app: &AppHandle, record: &RuntimePidRecord) -> bool {
-    if !runtime_pid_alive(record.pid) {
-        return false;
-    }
+fn runtime_pid_belongs_to_chordv(app: &AppHandle, record: &RuntimePidRecord) -> Result<bool,String> {
     let expected_binary = record
         .binary_path
         .as_deref()
@@ -6437,14 +6379,14 @@ fn runtime_pid_belongs_to_chordv(app: &AppHandle, record: &RuntimePidRecord) -> 
         .parent()
         .map(|path| path.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    runtime_process_command(record.pid)
+    Ok(runtime_process_command(record.pid)?
         .map(|command| {
             let normalized = command.to_lowercase();
             normalized.contains(&expected_binary_text)
                 || (!expected_runtime_dir_text.is_empty()
                     && normalized.contains(&expected_runtime_dir_text))
         })
-        .unwrap_or(false)
+        .unwrap_or(false))
 }
 
 fn clear_runtime_pid(app: &AppHandle) {
@@ -6498,7 +6440,7 @@ fn chrono_like_now() -> String {
 
 fn shutdown_runtime(app: &AppHandle, state: &mut RuntimeState) -> Result<(),String> {
     CONNECTION_GENERATION.invalidate();
-    if state.active_session_id.is_some() || state.active_pid.is_some() || state.child.is_some() || state.last_error.is_some() {
+    if state.active_session_id.is_some() || state.active_pid.is_some() || state.child.is_some() || state.last_error.is_some() || load_runtime_pid_record(app).is_some() {
         if let Err(error)=clear_system_proxy() {
             let message=format!("系统代理清理失败，请重试退出：{error}");
             state.last_error=Some(message.clone());
@@ -7349,7 +7291,7 @@ fn network_services() -> Result<Vec<String>, io::Error> {
     }
 }
 
-fn cleanup_stale_runtime(app: &AppHandle) {
+fn cleanup_stale_runtime(app: &AppHandle) -> Result<(),String> {
     let runtime_dir = app
         .path()
         .app_local_data_dir()
@@ -7357,8 +7299,8 @@ fn cleanup_stale_runtime(app: &AppHandle) {
         .join("runtime");
 
     if let Some(record) = load_runtime_pid_record(app) {
-        if runtime_pid_belongs_to_chordv(app, &record) {
-            let _ = kill_pid(record.pid);
+        if runtime_pid_belongs_to_chordv(app, &record)? {
+            kill_pid(record.pid)?;
         }
         clear_runtime_pid(app);
     }
@@ -7385,9 +7327,10 @@ fn cleanup_stale_runtime(app: &AppHandle) {
         }
     }
 
-    let _ = clear_system_proxy();
+    clear_system_proxy().map_err(|error|error.to_string())?;
     cleanup_legacy_runtime_component_copies(app);
     cleanup_legacy_installed_runtime_names(app);
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -7500,10 +7443,11 @@ try {{
         .bounded_status();
 }
 
-fn cleanup_runtime_artifacts_on_startup(app: &AppHandle) {
-    cleanup_stale_runtime(app);
+fn cleanup_runtime_artifacts_on_startup(app: &AppHandle) -> Result<(),String> {
+    cleanup_stale_runtime(app)?;
     #[cfg(windows)]
     migrate_windows_main_binary_on_startup();
+    Ok(())
 }
 
 #[cfg(not(target_os = "android"))]
@@ -8080,7 +8024,7 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let result=tauri::async_runtime::spawn_blocking(move || {
                     with_command_budget(Duration::from_secs(20), || {
-                        cleanup_runtime_artifacts_on_startup(&startup_app);
+                        cleanup_runtime_artifacts_on_startup(&startup_app)?;
                         #[cfg(not(target_os = "android"))]
                         {
                             ensure_runtime_bin_dir(&startup_app)?;

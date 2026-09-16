@@ -106,3 +106,9 @@
 - Cargo.lock 缺失意见不成立：初始提交已添加桌面包的 tempfile 直接依赖，原生 --locked 测试和多轮双平台门禁证明一致。
 
 本地 Rust 44 项、desktop check、线程及状态交错回归通过。
+
+## PR #55 第六轮修复
+
+- process_identity.rs / lib.rs：进程查询改为 Result<Option<身份>>，Windows PowerShell 返回明确 JSON 存在标记；超时、无法读取身份、异常响应均为错误，不再转换成不存在。
+- 停止和启动残留清理传播查询/终止错误，保留 PID 记录供重试，不清空仍未确认的进程状态。
+- 本地 Rust 45 项、线程测试、diff 检查通过；测试覆盖超时、空身份、无效响应及明确不存在。
