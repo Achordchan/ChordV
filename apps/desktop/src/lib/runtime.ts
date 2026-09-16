@@ -468,8 +468,9 @@ export async function subscribeDesktopUpdateDownloadProgress(
 }
 
 export async function downloadDesktopInstaller(input: {
+  expectedVersion?: string;
   fileName?: string | null;
-  packageKind?: "installer" | "full_update";
+  packageKind?: "installer";
   currentVersion?: string | null;
   channel?: string | null;
   preferredCandidate?: "mirror" | "origin";
@@ -481,6 +482,7 @@ export async function downloadDesktopInstaller(input: {
   }
   const commandInput: Record<string, unknown> = {
     fileName: input.fileName,
+    expectedVersion: input.expectedVersion,
     packageKind: input.packageKind,
     currentVersion: input.currentVersion,
     channel: input.channel,
@@ -496,18 +498,6 @@ export async function downloadDesktopInstaller(input: {
   });
 }
 
-export function downloadDesktopFullUpdatePackage(input: {
-  fileName?: string | null;
-  currentVersion?: string | null;
-  channel?: string | null;
-  preferredCandidate?: "mirror" | "origin";
-  onProgress?: (progress: DesktopUpdateDownloadProgress) => void;
-}) {
-  return downloadDesktopInstaller({
-    ...input,
-    packageKind: "full_update"
-  });
-}
 
 function normalizeDesktopUpdateDownloadProgress(
   payload: DesktopUpdateDownloadProgressPayload
@@ -558,7 +548,7 @@ export async function openExternalUrl(url: string) {
   return invoke("open_external_url", { url: normalizedUrl });
 }
 
-export async function applyDesktopFullUpdate(_input?: {
+export async function installWindowsUpdate(_input?: {
   path?: string;
   expectedTotalBytes?: number | null;
   expectedHash?: string | null;
@@ -568,7 +558,7 @@ export async function applyDesktopFullUpdate(_input?: {
     return { ok: false as const };
   }
   // Path/hash must come from native pending state created by a verified download.
-  return invoke("apply_desktop_full_update");
+  return invoke("install_windows_update");
 }
 
 export async function quitForUpdate() {

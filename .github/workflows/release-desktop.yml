@@ -54,7 +54,7 @@ jobs:
             rust_targets: x86_64-pc-windows-msvc
             artifact_path: |
               output/release/windows/*.exe
-              output/release/windows/*.zip
+              output/release/windows/*.sig
     defaults:
       run:
         shell: bash
@@ -96,7 +96,16 @@ jobs:
       - name: Build shared package
         run: pnpm --filter @chordv/shared build
 
+      - name: Verify requested version matches platform configuration
+        env:
+          EXPECTED_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+        run: node -e 'const v=require("./apps/desktop/config/platform-versions.json")[process.env.RELEASE_PLATFORM];if(v!==process.env.EXPECTED_RELEASE_VERSION)throw new Error("Release version does not match platform configuration");'
+
       - name: Build desktop bundle
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: |
           if [ "${{ matrix.platform }}" = "windows" ]; then
             pnpm --filter @chordv/desktop exec node ./scripts/build-tauri-platform.mjs windows --target x86_64-pc-windows-msvc
@@ -106,7 +115,16 @@ jobs:
 
       - name: Verify Windows bundle
         if: matrix.platform == 'windows'
-        run: pnpm --filter @chordv/desktop check:windows-bundle
+        run: |
+          pnpm --filter @chordv/desktop check:windows-bundle
+          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/api/tsconfig.json apps/api/scripts/verify-windows-updater-signature.ts
+
+      - name: Verify legacy Windows upgrade before publishing
+        if: matrix.platform == 'windows'
+        shell: powershell
+        run: |
+          $version = (Get-Content apps/desktop/config/platform-versions.json | ConvertFrom-Json).windows
+          ./apps/desktop/test/windows-nsis-upgrade.ps1 -Installer "output/release/windows/ChordV_${version}_x64-setup.exe" -ExpectedVersion $version
 
       - name: Verify macOS bundle
         if: matrix.platform == 'macos'
@@ -142,4 +160,4 @@ jobs:
           files: |
             release-assets/**/*.dmg
             release-assets/**/*.exe
-            release-assets/**/*.zip
+            release-assets/**/*.sig

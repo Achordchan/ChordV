@@ -57,9 +57,11 @@ function testWindowsInstallerCleansStaleRuntime() {
 
   assert.match(config, /"installerHooks": "windows\/chordv-installer-hooks\.nsh"/);
   assert.match(hook, /NSIS_HOOK_PREINSTALL/);
-  assert.match(hook, /Get-Process chordv-desktop,ChordV/);
-  assert.match(hook, /app\.chordv\.desktop\*runtime\*bin\*xray\.exe/);
-  assert.match(hook, /127\.0\.0\.1:17890/);
+  assert.match(hook, /CheckIfAppIsRunning/);
+  assert.match(hook, /CreateMutexW/);
+  assert.doesNotMatch(hook, /Get-Process|Stop-Process|powershell/i);
+  const updater = read(join(desktopRoot, "src-tauri", "src", "windows_update.rs"));
+  assert.ok(updater.indexOf("shutdown_runtime_state(app)?") < updater.indexOf("pending.update.install"));
 }
 
 function testMacosUniversalBundleCarriesBothRuntimeBinaries() {

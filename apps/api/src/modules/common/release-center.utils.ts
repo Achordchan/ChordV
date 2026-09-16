@@ -53,6 +53,7 @@ const MAX_ZIP_VALIDATION_ENTRIES =
     : DEFAULT_MAX_ZIP_VALIDATION_ENTRIES;
 
 export type ReleaseArtifactRowLike = {
+  updaterSignature?: string | null;
   sourceUrl?: string | null;
   id: string;
   releaseId: string;
@@ -307,6 +308,8 @@ export function assertReleaseArtifactDeliveryAllowed(
   deliveryMode: UpdateDeliveryMode
 ) {
   if (platform === "windows") {
+    if (type === "setup.exe" && deliveryMode === "desktop_installer_download") return;
+    // Retain read compatibility for already-published legacy clients.
     if (type === "zip" && deliveryMode === "desktop_full_replace") {
       return;
     }
@@ -314,7 +317,7 @@ export function assertReleaseArtifactDeliveryAllowed(
       return;
     }
     throw new BadRequestException(
-      "Windows 安装包必须使用 zip + desktop_full_replace，或 external + external_download。"
+      "Windows 新版安装包应使用 setup.exe + desktop_installer_download；ZIP 仅用于旧版兼容。"
     );
   }
 
@@ -343,7 +346,9 @@ export function assertReleaseArtifactClientUsable(artifact: ReleaseArtifactRowLi
   const deliveryMode = artifact.deliveryMode as UpdateDeliveryMode;
   assertReleaseArtifactTypeAllowed(platform, type);
   assertReleaseArtifactDeliveryAllowed(platform, type, deliveryMode);
-
+  if (platform === "windows" && type === "setup.exe" && !artifact.updaterSignature?.trim()) {
+    throw new BadRequestException("Windows 安装包缺少更新签名，请同时提供对应的 .sig 文件。");
+  }
 
   if (artifact.fileSizeBytes === null || artifact.fileSizeBytes === undefined || artifact.fileSizeBytes <= 0n) {
     throw new BadRequestException("安装包必须提供正数文件大小元数据。");
@@ -369,7 +374,7 @@ export function assertReleaseArtifactTypeAllowed(platform: PlatformTarget, type:
     platform === "macos"
       ? ["dmg", "external"]
       : platform === "windows"
-        ? ["zip", "external"]
+        ? ["setup.exe", "zip", "external"]
         : platform === "android"
           ? ["apk", "external"]
           : ["ipa", "external"];
@@ -1116,6 +1121,7 @@ export function toAdminReleaseArtifactRecord(row: ReleaseArtifactRowLike, includ
     fileName: row.fileName,
     fileSizeBytes: row.fileSizeBytes?.toString() ?? null,
     fileHash: row.fileHash,
+    updaterSignature: row.updaterSignature ?? null,
     isPrimary: row.isPrimary,
     isFullPackage: row.isFullPackage,
     createdAt: row.createdAt.toISOString(),

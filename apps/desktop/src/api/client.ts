@@ -41,6 +41,7 @@ export type UpdateDeliveryMode = "desktop_installer_download" | "desktop_full_re
 export type ReleaseArtifactType = "dmg" | "app" | "exe" | "setup.exe" | "zip" | "apk" | "ipa" | "external";
 
 export type ClientUpdateArtifact = {
+  updaterSignature?: string | null;
   fileType: ReleaseArtifactType;
   downloadUrl: string;
   originDownloadUrl: string | null;
@@ -1234,7 +1235,7 @@ function detectUpdatePlatform(): PlatformTarget | "ios" {
 function inferPreferredArtifact(platform: PlatformTarget | "ios"): ReleaseArtifactType {
   switch (platform) {
     case "windows":
-      return "zip";
+      return "setup.exe";
     case "android":
       return "apk";
     case "ios":
@@ -1244,7 +1245,7 @@ function inferPreferredArtifact(platform: PlatformTarget | "ios"): ReleaseArtifa
   }
 }
 
-function normalizeUpdateCheckResult(
+export function normalizeUpdateCheckResult(
   raw: ClientUpdateCheckResult | Record<string, unknown>,
   fallback: {
     currentVersion: string;
@@ -1279,6 +1280,7 @@ function normalizeUpdateCheckResult(
           fileName: readString(artifactRecord.fileName) ?? readString(record.fileName),
           fileSizeBytes: readNumber(artifactRecord.fileSizeBytes) ?? readNumber(record.fileSizeBytes),
           fileHash: readString(artifactRecord.fileHash) ?? readString(record.fileHash),
+          updaterSignature: readString(artifactRecord.updaterSignature),
           isPrimary: readBoolean(artifactRecord.isPrimary) ?? readBoolean(record.isPrimary) ?? true,
           isFullPackage: readBoolean(artifactRecord.isFullPackage) ?? readBoolean(record.isFullPackage) ?? true
         };
@@ -1290,18 +1292,16 @@ function normalizeUpdateCheckResult(
   const forceUpgrade = readBoolean(record.forceUpgrade) ?? false;
   const hasUpdate = readBoolean(record.hasUpdate) ?? latestVersion !== fallback.currentVersion;
   const requiresDownloadArtifact = hasUpdate || forceUpgrade;
-  if (requiresDownloadArtifact && deliveryMode === "desktop_installer_download" && fallback.platform === "windows") {
-    throw new Error("Windows installer updates are disabled; use a ZIP full replacement artifact.");
-  }
-  if (requiresDownloadArtifact && deliveryMode === "desktop_full_replace" && fallback.platform === "windows") {
-    if (!artifact || artifact.fileType !== "zip" || !artifact.downloadUrl) {
-      throw new Error("Windows full replacement updates require a ZIP artifact.");
+  if (requiresDownloadArtifact && fallback.platform === "windows") {
+    if (deliveryMode === "desktop_full_replace") {
+      throw new Error("更新服务仍提供旧版 ZIP，请联系管理员发布签名的 EXE 安装包。");
+    }
+    if (deliveryMode === "desktop_installer_download" &&
+        (!artifact || artifact.fileType !== "setup.exe" || !artifact.updaterSignature)) {
+      throw new Error("Windows 更新缺少安装包或签名，请联系管理员检查发布配置。");
     }
   }
-  const downloadUrl =
-    deliveryMode === "desktop_full_replace" && fallback.platform === "windows"
-      ? artifact?.downloadUrl ?? null
-      : artifact?.downloadUrl ?? resolvePublicUrl(readString(record.downloadUrl)) ?? null;
+  const downloadUrl = artifact?.downloadUrl ?? resolvePublicUrl(readString(record.downloadUrl)) ?? null;
 
   return {
     platform: readPlatform(record.platform) ?? fallback.platform,
@@ -1429,7 +1429,7 @@ function inferDeliveryMode(platform: PlatformTarget | "ios", artifactType?: Rele
     return "external_download";
   }
   if (platform === "windows") {
-    return "desktop_full_replace";
+    return "desktop_installer_download";
   }
   return "desktop_installer_download";
 }

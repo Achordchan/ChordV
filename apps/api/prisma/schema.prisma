@@ -903,6 +903,7 @@ model Release {
 }
 
 model ReleaseArtifact {
+  updaterSignature String?
   sourceUrl     String?
   id            String             @id
   releaseId     String

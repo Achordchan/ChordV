@@ -224,6 +224,7 @@ export interface ClientVersionDto {
 }
 
 export interface AdminReleaseArtifactDto {
+  updaterSignature?: string | null;
   sourceUrl?: string | null;
   id: string;
   releaseId: string;
@@ -1211,6 +1212,7 @@ export interface UpdateReleaseInputDto {
 }
 
 export interface CreateReleaseArtifactInputDto {
+  updaterSignature?: string | null;
   source?: "external";
   type: ReleaseArtifactType;
   deliveryMode?: UpdateDeliveryMode;
@@ -1278,6 +1280,7 @@ export interface ClientRuntimeComponentFailureReportInputDto {
 }
 
 export interface UpdateReleaseArtifactInputDto {
+  updaterSignature?: string | null;
   source?: "uploaded" | "external";
   type?: ReleaseArtifactType;
   deliveryMode?: UpdateDeliveryMode;
@@ -1291,6 +1294,7 @@ export interface UpdateReleaseArtifactInputDto {
 }
 
 export interface UploadReleaseArtifactInputDto {
+  updaterSignature?: string | null;
   source?: "uploaded";
   type: ReleaseArtifactType;
   deliveryMode?: UpdateDeliveryMode;

@@ -17,25 +17,25 @@ export type ReleaseEditorFormState = {
   forceUpgrade: boolean;
   minimumVersion: string;
   artifactSource: "uploaded" | "external";
-  externalDeliveryMode: "external_download" | "windows_full_replace_zip";
   downloadUrl: string;
   fileSizeBytes: string;
   fileHash: string;
   fileName: string;
   selectedFile: File | null;
+  signatureFile?: File | null;
   changelog: string;
 };
 
 export type ArtifactEditorFormState = {
   source: "uploaded" | "external";
   type: AdminReleaseArtifactType;
-  externalDeliveryMode: "external_download" | "windows_full_replace_zip";
   downloadUrl: string;
   fileSizeBytes: string;
   fileHash: string;
   fileName: string;
   isPrimary: boolean;
   selectedFile: File | null;
+  signatureFile?: File | null;
 };
 
 export const releasePlatformOptions = [
@@ -54,7 +54,6 @@ export function emptyReleaseEditorForm(platform: AdminReleasePlatform = "macos")
     forceUpgrade: false,
     minimumVersion: "0.0.0",
     artifactSource: "external",
-    externalDeliveryMode: platform === "windows" ? "windows_full_replace_zip" : "external_download",
     downloadUrl: "",
     fileSizeBytes: "",
     fileHash: "",
@@ -73,12 +72,6 @@ export function toReleaseEditorForm(record: AdminReleaseRecordDto): ReleaseEdito
     forceUpgrade: record.forceUpgrade,
     minimumVersion: record.minimumVersion,
     artifactSource: record.artifacts.find((artifact) => artifact.isPrimary)?.source ?? "external",
-    externalDeliveryMode:
-      record.platform === "windows" &&
-      record.artifacts.find((artifact) => artifact.isPrimary)?.type === "zip" &&
-      record.artifacts.find((artifact) => artifact.isPrimary)?.deliveryMode === "desktop_full_replace"
-        ? "windows_full_replace_zip"
-        : "external_download",
     downloadUrl: record.artifacts.find((artifact) => artifact.isPrimary)?.originDownloadUrl ?? "",
     fileSizeBytes: record.artifacts.find((artifact) => artifact.isPrimary)?.fileSizeBytes ?? "",
     fileHash: record.artifacts.find((artifact) => artifact.isPrimary)?.fileHash ?? "",
@@ -128,7 +121,6 @@ export function emptyArtifactEditorForm(
   return {
     source,
     type,
-    externalDeliveryMode: type === "zip" ? "windows_full_replace_zip" : "external_download",
     downloadUrl: "",
     fileSizeBytes: "",
     fileHash: "",
@@ -142,10 +134,6 @@ export function toArtifactEditorForm(record: AdminReleaseArtifactRecordDto): Art
   return {
     source: record.source,
     type: record.type,
-    externalDeliveryMode:
-      record.source === "external" && record.type === "zip" && record.deliveryMode === "desktop_full_replace"
-        ? "windows_full_replace_zip"
-        : "external_download",
     downloadUrl: record.source === "external" ? record.originDownloadUrl ?? record.downloadUrl : "",
     fileSizeBytes: record.fileSizeBytes ?? "",
     fileHash: record.fileHash ?? "",

@@ -1,5 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { buildWindowsArtifactNames, desktopRoot, resolveDesktopPlatformVersion } from "./platform-version.mjs";
@@ -9,22 +8,17 @@ const windowsVersion = resolveDesktopPlatformVersion("windows");
 const windowsArtifactNames = buildWindowsArtifactNames(windowsVersion);
 const minimumArtifactBytes = 1024 * 1024;
 const minimumPeBytes = 1024 * 1024;
-const minimumGeoDataBytes = 64 * 1024;
 const windowsArtifacts = [
   {
     label: "Setup installer",
     path: path.join(outputDir, windowsArtifactNames.setup)
   },
-  {
-    label: "Full update ZIP",
-    path: path.join(outputDir, windowsArtifactNames.fullZip)
-  }
 ];
 
 const missingArtifacts = windowsArtifacts.filter((item) => !existsSync(item.path));
 const smallArtifacts = windowsArtifacts.filter((item) => existsSync(item.path) && statSync(item.path).size < minimumArtifactBytes);
 const foundArtifacts = windowsArtifacts.filter((item) => existsSync(item.path));
-const expectedArtifactNames = new Set([windowsArtifactNames.setup, windowsArtifactNames.fullZip]);
+const expectedArtifactNames = new Set([windowsArtifactNames.setup, windowsArtifactNames.signature]);
 const staleArtifacts = existsSync(outputDir)
   ? readdirSync(outputDir)
       .filter((name) => /^ChordV_.+_x64(?:-setup|-full)?\.(?:exe|zip)$/i.test(name))
@@ -47,52 +41,14 @@ if (missingArtifacts.length > 0 || smallArtifacts.length > 0 || staleArtifacts.l
   process.exit(1);
 }
 
-validateFullUpdateZip(path.join(outputDir, windowsArtifactNames.fullZip), windowsVersion);
+const signaturePath = path.join(outputDir, windowsArtifactNames.signature);
+if (!existsSync(signaturePath) || !readFileSync(signaturePath, "utf8").trim()) throw new Error("Missing Windows updater signature");
 validateExecutableProductVersion(path.join(outputDir, windowsArtifactNames.setup), windowsVersion, "Setup installer");
 
 console.log(`Windows ${windowsVersion} release artifacts:`);
 for (const item of foundArtifacts) {
   const size = statSync(item.path).size;
   console.log(`- ${item.label}: ${path.relative(process.cwd(), item.path)} (${formatSize(size)})`);
-}
-
-function validateFullUpdateZip(zipPath, version) {
-  const extractDir = mkdtempSync(path.join(tmpdir(), "chordv-full-zip-"));
-  try {
-    runPowerShell([
-      "Expand-Archive",
-      "-LiteralPath",
-      quotePowerShell(zipPath),
-      "-DestinationPath",
-      quotePowerShell(extractDir),
-      "-Force"
-    ].join(" "));
-    const required = ["bin/xray.exe", "bin/geoip.dat", "bin/geosite.dat"];
-    for (const relativePath of required) {
-      const fullPath = path.join(extractDir, ...relativePath.split("/"));
-      if (!existsSync(fullPath)) {
-        throw new Error(`Full update ZIP is missing ${relativePath}`);
-      }
-      if (relativePath === "bin/xray.exe") {
-        validateWindowsPeFile(fullPath, relativePath);
-      } else if (statSync(fullPath).size < minimumGeoDataBytes) {
-        throw new Error(`Full update ZIP contains invalid ${relativePath}`);
-      }
-    }
-    const mainExe = path.join(extractDir, "ChordV.exe");
-    if (!existsSync(mainExe)) {
-      throw new Error("Full update ZIP is missing root ChordV.exe");
-    }
-    if (existsSync(path.join(extractDir, "chordv-desktop.exe"))) {
-      throw new Error("Full update ZIP must not include legacy chordv-desktop.exe alias");
-    }
-    validateExecutableProductVersion(mainExe, version, "Full update ZIP executable");
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
-  } finally {
-    rmSync(extractDir, { recursive: true, force: true });
-  }
 }
 
 function validateWindowsPeFile(exePath, label) {

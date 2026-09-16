@@ -659,6 +659,16 @@ function makeReleaseCenterTestArtifact(overrides: Record<string, any> = {}) {
   };
 }
 
+// Generic storage/metadata behavior uses DMG fixtures. Windows signature and
+// legacy migration behavior has dedicated end-to-end protocol regressions.
+function makeMacRelease(overrides: Record<string, any> = {}) {
+  return makeReleaseCenterTestRelease({ platform: "macos", ...overrides });
+}
+function makeMacArtifact(overrides: Record<string, any> = {}) {
+  return makeReleaseCenterTestArtifact({ type: "dmg", deliveryMode: "desktop_installer_download",
+    downloadUrl: "https://example.com/ChordV_1.1.3.dmg", fileName: "ChordV_1.1.3.dmg", ...overrides });
+}
+
 function createInMemoryReleaseCenterHarness() {
   const releases: any[] = [];
   const artifacts: any[] = [];
@@ -4146,7 +4156,7 @@ async function testUnpublishReleaseRejectsArchivedReleaseBeforeDbWrite() {
   assert.equal(updates.length, 0);
 }
 
-async function testAssertReleasePublishableAllowsExternalWindowsZipWithoutOptionalMetadata() {
+async function testAssertReleasePublishableRejectsLegacyExternalWindowsZipWithoutOptionalMetadata() {
   const primaryArtifact = makeReleaseCenterTestArtifact({
     id: "artifact_primary",
     source: "external",
@@ -4190,10 +4200,10 @@ async function testAssertReleasePublishableAllowsExternalWindowsZipWithoutOption
     assertReleaseRecordMutable: () => undefined
   });
 
-  await service["assertReleasePublishable"]("release_1");
+  await assert.rejects(service["assertReleasePublishable"]("release_1"), /签名的 EXE/);
 }
 
-async function testPublishReleaseAllowsWindowsZipWithoutOptionalMetadata() {
+async function testPublishReleaseRejectsLegacyWindowsZipWithoutOptionalMetadata() {
   const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
   const tempDir = await mkdtemp(path.join(tmpdir(), "release-publish-valid-zip-"));
   const storedFilePath = path.join("release_1", "artifact_1", "ChordV_1.1.6_x64-full.zip");
@@ -4227,7 +4237,7 @@ async function testPublishReleaseAllowsWindowsZipWithoutOptionalMetadata() {
       assertReleaseRecordMutable: () => undefined
     });
 
-    await service["assertReleasePublishable"]("release_1");
+    await assert.rejects(service["assertReleasePublishable"]("release_1"), /签名的 EXE/);
   } finally {
     if (previousReleaseStorageRoot === undefined) {
       delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
@@ -4238,7 +4248,7 @@ async function testPublishReleaseAllowsWindowsZipWithoutOptionalMetadata() {
   }
 }
 
-async function testPublishReleaseAllowsReadableUploadedWindowsZipWithoutDeepInspection() {
+async function testPublishReleaseRejectsLegacyReadableUploadedWindowsZipWithoutDeepInspection() {
   const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
   const tempDir = await mkdtemp(path.join(tmpdir(), "release-publish-invalid-zip-"));
   const storedFilePath = path.join("release_1", "artifact_1", "ChordV_1.1.6_x64-full.zip");
@@ -4272,7 +4282,7 @@ async function testPublishReleaseAllowsReadableUploadedWindowsZipWithoutDeepInsp
       assertReleaseRecordMutable: () => undefined
     });
 
-    await service["assertReleasePublishable"]("release_1");
+    await assert.rejects(service["assertReleasePublishable"]("release_1"), /签名的 EXE/);
   } finally {
     if (previousReleaseStorageRoot === undefined) {
       delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
@@ -4284,13 +4294,13 @@ async function testPublishReleaseAllowsReadableUploadedWindowsZipWithoutDeepInsp
 }
 
 async function testPublishReleaseRejectsMissingUploadedArtifactFile() {
-  const release = makeReleaseCenterTestRelease({
+  const release = makeMacRelease({
     artifacts: [
-      makeReleaseCenterTestArtifact({
+      makeMacArtifact({
         source: "uploaded",
-        type: "zip",
-        deliveryMode: "desktop_full_replace",
-        fileName: "ChordV_1.1.6_x64-full.zip",
+        type: "dmg",
+        deliveryMode: "desktop_installer_download",
+        fileName: "ChordV_1.1.6_x64-full.dmg",
         downloadUrl: "/api/downloads/releases/artifact_1",
         storedFilePath: null,
         fileSizeBytes: 104857600n,
@@ -4316,22 +4326,22 @@ async function testPublishReleaseRejectsMissingUploadedArtifactFile() {
 }
 
 async function testPublishReleaseAllowsUsableExternalWhenSecondaryUploadIsMissing() {
-  const release = makeReleaseCenterTestRelease({
+  const release = makeMacRelease({
     artifacts: [
-      makeReleaseCenterTestArtifact({
+      makeMacArtifact({
         id: "artifact_external",
         source: "external",
-        type: "zip",
-        deliveryMode: "desktop_full_replace",
-        fileName: "ChordV_1.1.6_x64-full.zip",
-        downloadUrl: "https://cdn.example.com/ChordV_1.1.6_x64-full.zip",
+        type: "dmg",
+        deliveryMode: "desktop_installer_download",
+        fileName: "ChordV_1.1.6_x64-full.dmg",
+        downloadUrl: "https://cdn.example.com/ChordV_1.1.6_x64-full.dmg",
         storedFilePath: null,
         fileSizeBytes: 104857600n,
         fileHash: "a".repeat(64),
         allowClientMirror: false,
         isPrimary: true
       }),
-      makeReleaseCenterTestArtifact({
+      makeMacArtifact({
         id: "artifact_missing_upload",
         source: "uploaded",
         type: "setup.exe",
@@ -4358,7 +4368,7 @@ async function testPublishReleaseAllowsUsableExternalWhenSecondaryUploadIsMissin
   await service["assertReleasePublishable"]("release_1");
 }
 
-async function testPublishReleaseAllowsWindowsExternalZipWithoutOptionalMetadata() {
+async function testPublishReleaseRejectsLegacyWindowsExternalZipWithoutOptionalMetadata() {
   const release = makeReleaseCenterTestRelease({
     artifacts: [
       makeReleaseCenterTestArtifact({
@@ -4384,7 +4394,7 @@ async function testPublishReleaseAllowsWindowsExternalZipWithoutOptionalMetadata
     assertReleaseRecordMutable: () => undefined
   });
 
-  await service["assertReleasePublishable"]("release_1");
+  await assert.rejects(service["assertReleasePublishable"]("release_1"), /签名的 EXE/);
 }
 
 async function testCreateReleaseArtifactDelegatesToReleaseCenter() {
@@ -9953,7 +9963,7 @@ async function testRuntimeComponentDeleteMapsLocalSaveFailure() {
 async function testExternalReleaseFlowPublishesAndFeedsClientUpdateCheck() {
   const { service } = createInMemoryReleaseCenterHarness();
   const release = await service.createRelease({
-    platform: "windows",
+    platform: "macos",
     channel: "stable",
     version: "1.1.7",
     displayTitle: "",
@@ -9966,10 +9976,10 @@ async function testExternalReleaseFlowPublishesAndFeedsClientUpdateCheck() {
   const externalHash = "a".repeat(64);
   await service.createReleaseArtifact(release.id, {
     source: "external",
-    type: "zip",
-    deliveryMode: "desktop_full_replace",
-    downloadUrl: "https://cdn.example.com/ChordV_1.1.7_x64-full.zip",
-    fileName: "ChordV_1.1.7_x64-full.zip",
+    type: "dmg",
+    deliveryMode: "desktop_installer_download",
+    downloadUrl: "https://cdn.example.com/ChordV_1.1.7_x64-full.dmg",
+    fileName: "ChordV_1.1.7_x64-full.dmg",
     fileHash: externalHash,
     fileSizeBytes: "104857600",
     isPrimary: true
@@ -9978,14 +9988,14 @@ async function testExternalReleaseFlowPublishesAndFeedsClientUpdateCheck() {
 
   const result = await service.checkClientUpdate({
     currentVersion: "1.1.6",
-    platform: "windows",
+    platform: "macos",
     channel: "stable",
-    artifactType: "zip"
+    artifactType: "dmg"
   });
 
   assert.equal(result.hasUpdate, true);
   assert.equal(result.latestVersion, "1.1.7");
-  assert.equal(result.downloadUrl, "https://cdn.example.com/ChordV_1.1.7_x64-full.zip");
+  assert.equal(result.downloadUrl, "https://cdn.example.com/ChordV_1.1.7_x64-full.dmg");
   assert.equal(result.fileHash, externalHash);
   assert.equal(result.fileSizeBytes, "104857600");
   assert.equal(result.recommendedArtifact?.source, "external");
@@ -10004,7 +10014,7 @@ async function testUploadedReleaseFlowPublishesAndFeedsClientDownloadDescriptor(
   try {
     const { service } = createInMemoryReleaseCenterHarness();
     const release = await service.createRelease({
-      platform: "windows",
+      platform: "macos",
       channel: "stable",
       version: "1.1.8",
       displayTitle: "ChordV 1.1.8",
@@ -10017,14 +10027,14 @@ async function testUploadedReleaseFlowPublishesAndFeedsClientDownloadDescriptor(
     await service.uploadReleaseArtifact(
       release.id,
       {
-        type: "zip",
-        deliveryMode: "desktop_full_replace",
-        fileName: "ChordV_1.1.8_x64-full.zip",
+        type: "dmg",
+        deliveryMode: "desktop_installer_download",
+        fileName: "ChordV_1.1.8_x64-full.dmg",
         isPrimary: true
       },
       {
         path: uploadPath,
-        originalname: "ChordV_1.1.8_x64-full.zip",
+        originalname: "ChordV_1.1.8_x64-full.dmg",
         size: Buffer.byteLength(uploadBody)
       }
     );
@@ -10032,9 +10042,9 @@ async function testUploadedReleaseFlowPublishesAndFeedsClientDownloadDescriptor(
 
     const result = await service.checkClientUpdate({
       currentVersion: "1.1.7",
-      platform: "windows",
+      platform: "macos",
       channel: "stable",
-      artifactType: "zip"
+      artifactType: "dmg"
     });
 
     assert.equal(result.hasUpdate, true);
@@ -10047,7 +10057,7 @@ async function testUploadedReleaseFlowPublishesAndFeedsClientDownloadDescriptor(
     assert.equal(result.recommendedArtifact?.allowClientMirror, false);
 
     const descriptor = await service.getReleaseArtifactDownloadDescriptor(result.recommendedArtifact?.id ?? "");
-    assert.equal(descriptor.fileName, "ChordV_1.1.8_x64-full.zip");
+    assert.equal(descriptor.fileName, "ChordV_1.1.8_x64-full.dmg");
     assert.equal(existsSync(descriptor.absolutePath), true);
   } finally {
     if (previousReleaseStorageRoot === undefined) {
@@ -10060,8 +10070,8 @@ async function testUploadedReleaseFlowPublishesAndFeedsClientDownloadDescriptor(
 }
 
 async function testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails() {
-  const release = makeReleaseCenterTestRelease();
-  const createdArtifact = makeReleaseCenterTestArtifact({
+  const release = makeMacRelease();
+  const createdArtifact = makeMacArtifact({
     id: "artifact_created",
     isPrimary: true
   });
@@ -10106,8 +10116,8 @@ async function testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails() {
   });
 
   const result = await service.createReleaseArtifact("release_1", {
-    type: "zip",
-    deliveryMode: "desktop_full_replace",
+    type: "dmg",
+    deliveryMode: "desktop_installer_download",
     downloadUrl: createdArtifact.downloadUrl,
     defaultMirrorPrefix: "https://ghfast.top/",
     allowClientMirror: true,
@@ -10126,8 +10136,8 @@ async function testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails() {
 }
 
 async function testCreateReleaseArtifactPublishesAdminRefreshEvent() {
-  const release = makeReleaseCenterTestRelease();
-  const createdArtifact = makeReleaseCenterTestArtifact({
+  const release = makeMacRelease();
+  const createdArtifact = makeMacArtifact({
     id: "artifact_created",
     isPrimary: true
   });
@@ -10156,8 +10166,8 @@ async function testCreateReleaseArtifactPublishesAdminRefreshEvent() {
   });
 
   const result = await service.createReleaseArtifact("release_1", {
-    type: "zip",
-    deliveryMode: "desktop_full_replace",
+    type: "dmg",
+    deliveryMode: "desktop_installer_download",
     downloadUrl: createdArtifact.downloadUrl,
     fileName: createdArtifact.fileName,
     isPrimary: true
@@ -10168,8 +10178,8 @@ async function testCreateReleaseArtifactPublishesAdminRefreshEvent() {
 }
 
 async function testCreateReleaseArtifactReturnsFallbackWhenReleaseRefreshStalls() {
-  const release = makeReleaseCenterTestRelease();
-  const createdArtifact = makeReleaseCenterTestArtifact({
+  const release = makeMacRelease();
+  const createdArtifact = makeMacArtifact({
     id: "artifact_created",
     isPrimary: true
   });
@@ -10207,8 +10217,8 @@ async function testCreateReleaseArtifactReturnsFallbackWhenReleaseRefreshStalls(
 
   const result = await Promise.race([
     service.createReleaseArtifact("release_1", {
-      type: "zip",
-      deliveryMode: "desktop_full_replace",
+      type: "dmg",
+      deliveryMode: "desktop_installer_download",
       downloadUrl: createdArtifact.downloadUrl,
       fileName: createdArtifact.fileName,
       isPrimary: true
@@ -10284,7 +10294,7 @@ async function testCreateWindowsFullReplaceExternalArtifactAllowsNonZipUrlWhenEx
 }
 
 async function testCreateReleaseArtifactMapsLocalSaveFailure() {
-  const release = makeReleaseCenterTestRelease();
+  const release = makeMacRelease();
   const service = createReleaseCenterService({
     prisma: {
       release: {
@@ -10299,9 +10309,9 @@ async function testCreateReleaseArtifactMapsLocalSaveFailure() {
   await assert.rejects(
     () =>
       service.createReleaseArtifact("release_1", {
-        type: "zip",
-        deliveryMode: "desktop_full_replace",
-        downloadUrl: "https://example.com/ChordV_1.1.6_x64-full.zip"
+        type: "dmg",
+        deliveryMode: "desktop_installer_download",
+        downloadUrl: "https://example.com/ChordV_1.1.6_x64-full.dmg"
       }),
     (error) =>
       error instanceof ServiceUnavailableException &&
@@ -10312,11 +10322,11 @@ async function testCreateReleaseArtifactMapsLocalSaveFailure() {
 }
 
 async function testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBeforeSave() {
-  const release = makeReleaseCenterTestRelease();
-  const currentArtifact = makeReleaseCenterTestArtifact({
+  const release = makeMacRelease();
+  const currentArtifact = makeMacArtifact({
     id: "artifact_existing",
-    downloadUrl: "https://example.com/old.zip",
-    fileName: "old.zip",
+    downloadUrl: "https://example.com/old.dmg",
+    fileName: "old.dmg",
     fileSizeBytes: 1024n,
     fileHash: "a".repeat(64)
   });
@@ -10359,9 +10369,9 @@ async function testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBefore
 
   const result = await service.updateReleaseArtifact("release_1", "artifact_existing", {
     source: "external",
-    type: "zip",
-    deliveryMode: "desktop_full_replace",
-    downloadUrl: "https://example.com/new.zip",
+    type: "dmg",
+    deliveryMode: "desktop_installer_download",
+    downloadUrl: "https://example.com/new.dmg",
     defaultMirrorPrefix: "https://ghfast.top/",
     allowClientMirror: true,
     isPrimary: true
@@ -10369,7 +10379,7 @@ async function testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBefore
 
   assert.equal(metadataProbeCalled, false, "editing an external artifact must not probe or download the remote file");
   assert.equal(updates.length, 1);
-  assert.equal(updates[0].data.downloadUrl, "https://example.com/new.zip");
+  assert.equal(updates[0].data.downloadUrl, "https://example.com/new.dmg");
   assert.equal(updates[0].data.defaultMirrorPrefix, null);
   assert.equal(updates[0].data.allowClientMirror, false);
   assert.equal(updates[0].data.fileName, null);
@@ -10379,8 +10389,8 @@ async function testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBefore
 }
 
 async function testUpdateReleaseArtifactMapsLocalSaveFailure() {
-  const release = makeReleaseCenterTestRelease();
-  const currentArtifact = makeReleaseCenterTestArtifact({
+  const release = makeMacRelease();
+  const currentArtifact = makeMacArtifact({
     id: "artifact_existing"
   });
   const service = createReleaseCenterService({
@@ -10400,7 +10410,7 @@ async function testUpdateReleaseArtifactMapsLocalSaveFailure() {
   await assert.rejects(
     () =>
       service.updateReleaseArtifact("release_1", "artifact_existing", {
-        fileName: "ChordV_1.1.6_x64-full.zip"
+        fileName: "ChordV_1.1.6_x64-full.dmg"
       }),
     (error) =>
       error instanceof ServiceUnavailableException &&
@@ -10410,7 +10420,7 @@ async function testUpdateReleaseArtifactMapsLocalSaveFailure() {
   );
 }
 
-async function testUpdateWindowsExternalReleaseInfersExternalForExeUrl() {
+async function testUpdateWindowsExternalReleaseInfersInstallerForExeUrl() {
   const artifact = makeReleaseCenterTestArtifact({
     id: "artifact_existing",
     source: "external",
@@ -10461,8 +10471,8 @@ async function testUpdateWindowsExternalReleaseInfersExternalForExeUrl() {
 
   assert.equal(updates.length, 1);
   assert.equal(updates[0].data.downloadUrl, "https://example.com/ChordV-setup.exe");
-  assert.equal(updates[0].data.type, "external");
-  assert.equal(updates[0].data.deliveryMode, "external_download");
+  assert.equal(updates[0].data.type, "setup_exe");
+  assert.equal(updates[0].data.deliveryMode, "desktop_installer_download");
   assert.equal(result.id, "release_1");
 }
 
@@ -10582,10 +10592,10 @@ async function testUpdateWindowsFullReplaceExternalKeepsModeForNonZipUrl() {
 
 async function testUploadReleaseArtifactSavesWithoutHashAfterZipValidation() {
   const tempDir = await mkdtemp(path.join(tmpdir(), "release-upload-valid-zip-"));
-  const preparedPath = path.join(tempDir, "ChordV_1.1.6_x64-full.zip");
+  const preparedPath = path.join(tempDir, "ChordV_1.1.6_x64-full.dmg");
   const zip = createValidWindowsFullUpdateZip("1.1.6");
   await writeFile(preparedPath, zip);
-  const release = makeReleaseCenterTestRelease({
+  const release = makeMacRelease({
     version: "1.1.6"
   });
   let preparedCalled = false;
@@ -10598,8 +10608,8 @@ async function testUploadReleaseArtifactSavesWithoutHashAfterZipValidation() {
         preparedCalled = true;
         return {
           absolutePath: preparedPath,
-          storedFilePath: "release_1/artifact_created/ChordV_1.1.6_x64-full.zip",
-          fileName: "ChordV_1.1.6_x64-full.zip",
+          storedFilePath: "release_1/artifact_created/ChordV_1.1.6_x64-full.dmg",
+          fileName: "ChordV_1.1.6_x64-full.dmg",
           fileSizeBytes: BigInt(zip.byteLength),
           fileHash: null,
           downloadUrl: "/api/downloads/releases/artifact_created"
@@ -10612,7 +10622,7 @@ async function testUploadReleaseArtifactSavesWithoutHashAfterZipValidation() {
               updateMany: async () => ({ count: 0 }),
               create: async (payload: Record<string, any>) => {
                 createdData = payload.data;
-                return makeReleaseCenterTestArtifact({
+                return makeMacArtifact({
                   id: payload.data.id,
                   releaseId: payload.data.releaseId,
                   source: payload.data.source,
@@ -10641,13 +10651,13 @@ async function testUploadReleaseArtifactSavesWithoutHashAfterZipValidation() {
     const result = await service.uploadReleaseArtifact(
       "release_1",
       {
-        type: "zip",
-        deliveryMode: "desktop_full_replace",
+        type: "dmg",
+        deliveryMode: "desktop_installer_download",
         isPrimary: true
       },
       {
         path: "uploaded-valid-zip.tmp",
-        originalname: "ChordV_1.1.6_x64-full.zip",
+        originalname: "ChordV_1.1.6_x64-full.dmg",
         size: zip.byteLength
       }
     );
@@ -10655,14 +10665,14 @@ async function testUploadReleaseArtifactSavesWithoutHashAfterZipValidation() {
     assert.equal(preparedCalled, true);
     assert.equal(createdData?.fileHash, null, "uploaded release artifacts should not require SHA256 metadata");
     assert.equal(createdData?.fileSizeBytes, BigInt(zip.byteLength));
-    assert.equal(createdData?.deliveryMode, "desktop_full_replace");
+    assert.equal(createdData?.deliveryMode, "desktop_installer_download");
     assert.equal(result.id, "release_1");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
 }
 
-async function testUploadReleaseArtifactSavesReadableWindowsZipWithoutDeepInspection() {
+async function testUploadReleaseArtifactRejectsLegacyWindowsZip() {
   const tempDir = await mkdtemp(path.join(tmpdir(), "release-upload-invalid-zip-"));
   const preparedPath = path.join(tempDir, "ChordV_1.1.6_x64-full.zip");
   await writeFile(preparedPath, Buffer.from("not a zip"));
@@ -10710,7 +10720,7 @@ async function testUploadReleaseArtifactSavesReadableWindowsZipWithoutDeepInspec
       }
     });
 
-    const result = await service.uploadReleaseArtifact(
+    await assert.rejects(service.uploadReleaseArtifact(
       "release_1",
       {
         type: "zip",
@@ -10722,10 +10732,8 @@ async function testUploadReleaseArtifactSavesReadableWindowsZipWithoutDeepInspec
         originalname: "ChordV_1.1.6_x64-full.zip",
         size: 9
       }
-    );
-    assert.equal(createdData?.type, "zip");
-    assert.equal(createdData?.deliveryMode, "desktop_full_replace");
-    assert.equal(result.id, "release_1");
+    ), /EXE/);
+    assert.equal(createdData, null, "legacy ZIP must be rejected before record creation");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -10745,10 +10753,10 @@ async function testReleaseArtifactPrepareMissingTempFileReturnsBadRequest() {
           "artifact_1",
           {
             path: path.join(storageRoot, "missing-release-upload.tmp"),
-            originalname: "ChordV_1.1.6_x64-full.zip",
+            originalname: "ChordV_1.1.6_x64-full.dmg",
             size: 1
           },
-          "ChordV_1.1.6_x64-full.zip"
+          "ChordV_1.1.6_x64-full.dmg"
         ),
       BadRequestException,
       "missing release artifact temporary upload must return a controlled 400 instead of HTTP 500"
@@ -10816,22 +10824,22 @@ async function testWindowsExeUploadIsRejectedForFullReplacementUpdates() {
           size: 123
         }
       ),
-    /ZIP/i
+    /EXE/i
   );
   assert.equal(preparedCalled, false);
 }
 
 async function testUploadReleaseArtifactFailureUsesBestEffortCleanup() {
-  const release = makeReleaseCenterTestRelease();
+  const release = makeMacRelease();
   const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
   const service = createReleaseCenterService({
     ensureReleaseExists: async () => release,
     assertReleaseArtifactsMutable: () => undefined,
     assertUploadedReleaseArtifactValidForWindowsFullUpdate: async () => undefined,
     prepareUploadedReleaseArtifactFile: async () => ({
-      absolutePath: "missing-prepared-release.zip",
-      storedFilePath: "release_1/artifact_1/ChordV-full.zip",
-      fileName: "ChordV-full.zip",
+      absolutePath: "missing-prepared-release.dmg",
+      storedFilePath: "release_1/artifact_1/ChordV-full.dmg",
+      fileName: "ChordV-full.dmg",
       fileSizeBytes: 123n,
       fileHash: "a".repeat(64),
       downloadUrl: "/api/downloads/releases/artifact_1"
@@ -10851,13 +10859,13 @@ async function testUploadReleaseArtifactFailureUsesBestEffortCleanup() {
       service.uploadReleaseArtifact(
         "release_1",
         {
-          type: "zip",
-          deliveryMode: "desktop_full_replace",
+          type: "dmg",
+          deliveryMode: "desktop_installer_download",
           isPrimary: true
         },
         {
-          path: "missing-upload-release.zip",
-          originalname: "ChordV-full.zip",
+          path: "missing-upload-release.dmg",
+          originalname: "ChordV-full.dmg",
           size: 123
         }
       ),
@@ -10870,21 +10878,21 @@ async function testUploadReleaseArtifactFailureUsesBestEffortCleanup() {
     "release artifact local save failures must return a controlled 503 instead of HTTP 500"
   );
   assert.deepEqual(cleanupCalls, [
-    { absolutePath: "missing-prepared-release.zip", label: "failed release artifact upload" }
+    { absolutePath: "missing-prepared-release.dmg", label: "failed release artifact upload" }
   ]);
 }
 
 async function testUploadReleaseArtifactMapsTransientPrismaFailure() {
-  const release = makeReleaseCenterTestRelease();
+  const release = makeMacRelease();
   const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
   const service = createReleaseCenterService({
     ensureReleaseExists: async () => release,
     assertReleaseArtifactsMutable: () => undefined,
     assertUploadedReleaseArtifactValidForWindowsFullUpdate: async () => undefined,
     prepareUploadedReleaseArtifactFile: async () => ({
-      absolutePath: "missing-prepared-release-transient.zip",
-      storedFilePath: "release_1/artifact_1/ChordV-full.zip",
-      fileName: "ChordV-full.zip",
+      absolutePath: "missing-prepared-release-transient.dmg",
+      storedFilePath: "release_1/artifact_1/ChordV-full.dmg",
+      fileName: "ChordV-full.dmg",
       fileSizeBytes: 123n,
       fileHash: "a".repeat(64),
       downloadUrl: "/api/downloads/releases/artifact_1"
@@ -10904,13 +10912,13 @@ async function testUploadReleaseArtifactMapsTransientPrismaFailure() {
       service.uploadReleaseArtifact(
         "release_1",
         {
-          type: "zip",
-          deliveryMode: "desktop_full_replace",
+          type: "dmg",
+          deliveryMode: "desktop_installer_download",
           isPrimary: true
         },
         {
-          path: "missing-upload-release-transient.zip",
-          originalname: "ChordV-full.zip",
+          path: "missing-upload-release-transient.dmg",
+          originalname: "ChordV-full.dmg",
           size: 123
         }
       ),
@@ -10918,17 +10926,17 @@ async function testUploadReleaseArtifactMapsTransientPrismaFailure() {
     "release artifact transient Prisma failures must return a controlled 503 instead of HTTP 500"
   );
   assert.deepEqual(cleanupCalls, [
-    { absolutePath: "missing-prepared-release-transient.zip", label: "failed release artifact upload" }
+    { absolutePath: "missing-prepared-release-transient.dmg", label: "failed release artifact upload" }
   ]);
 }
 
 async function testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup() {
-  const release = makeReleaseCenterTestRelease();
-  const artifact = makeReleaseCenterTestArtifact({
+  const release = makeMacRelease();
+  const artifact = makeMacArtifact({
     id: "artifact_1",
-    type: "zip",
-    deliveryMode: "desktop_full_replace",
-    storedFilePath: "release_1/artifact_1/old.zip"
+    type: "dmg",
+    deliveryMode: "desktop_installer_download",
+    storedFilePath: "release_1/artifact_1/old.dmg"
   });
   const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
   const service = createReleaseCenterService({
@@ -10936,9 +10944,9 @@ async function testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup() {
     assertReleaseArtifactsMutable: () => undefined,
     assertUploadedReleaseArtifactValidForWindowsFullUpdate: async () => undefined,
     prepareUploadedReleaseArtifactFile: async () => ({
-      absolutePath: "missing-prepared-replacement-release.zip",
-      storedFilePath: "release_1/artifact_1/ChordV-full-new.zip",
-      fileName: "ChordV-full-new.zip",
+      absolutePath: "missing-prepared-replacement-release.dmg",
+      storedFilePath: "release_1/artifact_1/ChordV-full-new.dmg",
+      fileName: "ChordV-full-new.dmg",
       fileSizeBytes: 123n,
       fileHash: "a".repeat(64),
       downloadUrl: "/api/downloads/releases/artifact_1"
@@ -10962,13 +10970,13 @@ async function testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup() {
         "release_1",
         "artifact_1",
         {
-          type: "zip",
-          deliveryMode: "desktop_full_replace",
+          type: "dmg",
+          deliveryMode: "desktop_installer_download",
           isPrimary: true
         },
         {
-          path: "missing-upload-replacement-release.zip",
-          originalname: "ChordV-full-new.zip",
+          path: "missing-upload-replacement-release.dmg",
+          originalname: "ChordV-full-new.dmg",
           size: 123
         }
       ),
@@ -10981,17 +10989,17 @@ async function testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup() {
     "release artifact replacement local save failures must return a controlled 503 instead of HTTP 500"
   );
   assert.deepEqual(cleanupCalls, [
-    { absolutePath: "missing-prepared-replacement-release.zip", label: "failed release artifact replacement upload" }
+    { absolutePath: "missing-prepared-replacement-release.dmg", label: "failed release artifact replacement upload" }
   ]);
 }
 
 async function testReplaceReleaseArtifactUploadMapsTransientPrismaFailure() {
-  const release = makeReleaseCenterTestRelease();
-  const artifact = makeReleaseCenterTestArtifact({
+  const release = makeMacRelease();
+  const artifact = makeMacArtifact({
     id: "artifact_1",
-    type: "zip",
-    deliveryMode: "desktop_full_replace",
-    storedFilePath: "release_1/artifact_1/old.zip"
+    type: "dmg",
+    deliveryMode: "desktop_installer_download",
+    storedFilePath: "release_1/artifact_1/old.dmg"
   });
   const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
   const service = createReleaseCenterService({
@@ -10999,9 +11007,9 @@ async function testReplaceReleaseArtifactUploadMapsTransientPrismaFailure() {
     assertReleaseArtifactsMutable: () => undefined,
     assertUploadedReleaseArtifactValidForWindowsFullUpdate: async () => undefined,
     prepareUploadedReleaseArtifactFile: async () => ({
-      absolutePath: "missing-prepared-replacement-release-transient.zip",
-      storedFilePath: "release_1/artifact_1/ChordV-full-new.zip",
-      fileName: "ChordV-full-new.zip",
+      absolutePath: "missing-prepared-replacement-release-transient.dmg",
+      storedFilePath: "release_1/artifact_1/ChordV-full-new.dmg",
+      fileName: "ChordV-full-new.dmg",
       fileSizeBytes: 123n,
       fileHash: "a".repeat(64),
       downloadUrl: "/api/downloads/releases/artifact_1"
@@ -11025,13 +11033,13 @@ async function testReplaceReleaseArtifactUploadMapsTransientPrismaFailure() {
         "release_1",
         "artifact_1",
         {
-          type: "zip",
-          deliveryMode: "desktop_full_replace",
+          type: "dmg",
+          deliveryMode: "desktop_installer_download",
           isPrimary: true
         },
         {
-          path: "missing-upload-replacement-release-transient.zip",
-          originalname: "ChordV-full-new.zip",
+          path: "missing-upload-replacement-release-transient.dmg",
+          originalname: "ChordV-full-new.dmg",
           size: 123
         }
       ),
@@ -11039,7 +11047,7 @@ async function testReplaceReleaseArtifactUploadMapsTransientPrismaFailure() {
     "release artifact replacement transient Prisma failures must return a controlled 503 instead of HTTP 500"
   );
   assert.deepEqual(cleanupCalls, [
-    { absolutePath: "missing-prepared-replacement-release-transient.zip", label: "failed release artifact replacement upload" }
+    { absolutePath: "missing-prepared-replacement-release-transient.dmg", label: "failed release artifact replacement upload" }
   ]);
 }
 
@@ -11060,13 +11068,13 @@ async function testReplaceReleaseArtifactUploadMapsLocalReadFailure() {
         "release_1",
         "artifact_1",
         {
-          type: "zip",
-          deliveryMode: "desktop_full_replace",
+          type: "dmg",
+          deliveryMode: "desktop_installer_download",
           isPrimary: true
         },
         {
-          path: "missing-upload-replacement-read-failure.zip",
-          originalname: "ChordV-full-new.zip",
+          path: "missing-upload-replacement-read-failure.dmg",
+          originalname: "ChordV-full-new.dmg",
           size: 123
         }
       ),
@@ -11082,19 +11090,19 @@ async function testUpdateUploadedReleaseArtifactToExternalDeletesOldFile() {
   const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
   const tempDir = await mkdtemp(path.join(tmpdir(), "chordv-release-switch-"));
   process.env.CHORDV_RELEASE_STORAGE_ROOT = tempDir;
-  const oldStoredFilePath = path.join("release_1", "artifact_1", "old-upload.zip");
+  const oldStoredFilePath = path.join("release_1", "artifact_1", "old-upload.dmg");
   const oldAbsolutePath = path.resolve(tempDir, oldStoredFilePath);
   await mkdir(path.dirname(oldAbsolutePath), { recursive: true });
   await writeFile(oldAbsolutePath, Buffer.from("old-upload"));
-  const currentArtifact = makeReleaseCenterTestArtifact({
+  const currentArtifact = makeMacArtifact({
     id: "artifact_1",
     source: "uploaded",
     downloadUrl: "/api/downloads/releases/artifact_1",
     storedFilePath: oldStoredFilePath,
     allowClientMirror: false,
-    fileName: "old-upload.zip"
+    fileName: "old-upload.dmg"
   });
-  const release = makeReleaseCenterTestRelease({
+  const release = makeMacRelease({
     artifacts: [currentArtifact]
   });
   const updates: Array<Record<string, any>> = [];
@@ -11108,10 +11116,10 @@ async function testUpdateUploadedReleaseArtifactToExternalDeletesOldFile() {
           findUnique: async () => updates.length ? ({
             ...release,
             artifacts: [
-              makeReleaseCenterTestArtifact({
+              makeMacArtifact({
                 ...currentArtifact,
                 source: "external",
-                downloadUrl: "https://example.com/new.zip",
+                downloadUrl: "https://example.com/new.dmg",
                 storedFilePath: null,
                 fileName: null,
                 fileSizeBytes: 104857600n,
@@ -11138,9 +11146,9 @@ async function testUpdateUploadedReleaseArtifactToExternalDeletesOldFile() {
 
     const result = await service.updateReleaseArtifact("release_1", "artifact_1", {
       source: "external",
-      type: "zip",
-      deliveryMode: "desktop_full_replace",
-      downloadUrl: "https://example.com/new.zip",
+      type: "dmg",
+      deliveryMode: "desktop_installer_download",
+      downloadUrl: "https://example.com/new.dmg",
       isPrimary: true
     });
 
@@ -11167,22 +11175,22 @@ async function testReplaceReleaseArtifactUploadDeletesOldFileOnSuccess() {
   const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
   const tempDir = await mkdtemp(path.join(tmpdir(), "chordv-release-replace-"));
   process.env.CHORDV_RELEASE_STORAGE_ROOT = tempDir;
-  const oldStoredFilePath = path.join("release_1", "artifact_1", "old-upload.zip");
-  const newStoredFilePath = path.join("release_1", "artifact_1", "new-upload.zip");
+  const oldStoredFilePath = path.join("release_1", "artifact_1", "old-upload.dmg");
+  const newStoredFilePath = path.join("release_1", "artifact_1", "new-upload.dmg");
   const oldAbsolutePath = path.resolve(tempDir, oldStoredFilePath);
   const newAbsolutePath = path.resolve(tempDir, newStoredFilePath);
   await mkdir(path.dirname(oldAbsolutePath), { recursive: true });
   await writeFile(oldAbsolutePath, Buffer.from("old-upload"));
-  const currentArtifact = makeReleaseCenterTestArtifact({
+  const currentArtifact = makeMacArtifact({
     id: "artifact_1",
     source: "uploaded",
     downloadUrl: "/api/downloads/releases/artifact_1",
     storedFilePath: oldStoredFilePath,
     allowClientMirror: false,
-    fileName: "old-upload.zip",
+    fileName: "old-upload.dmg",
     isPrimary: false
   });
-  const release = makeReleaseCenterTestRelease({
+  const release = makeMacRelease({
     artifacts: [currentArtifact]
   });
   let primaryCleared = false;
@@ -11193,7 +11201,7 @@ async function testReplaceReleaseArtifactUploadDeletesOldFileOnSuccess() {
       prepareUploadedReleaseArtifactFile: async () => ({
         absolutePath: newAbsolutePath,
         storedFilePath: newStoredFilePath,
-        fileName: "new-upload.zip",
+        fileName: "new-upload.dmg",
         fileSizeBytes: 10n,
         fileHash: null,
         downloadUrl: "/api/downloads/releases/artifact_1"
@@ -11206,10 +11214,10 @@ async function testReplaceReleaseArtifactUploadDeletesOldFileOnSuccess() {
           findUnique: async () => ({
             ...release,
             artifacts: [
-              makeReleaseCenterTestArtifact({
+              makeMacArtifact({
                 ...currentArtifact,
                 storedFilePath: newStoredFilePath,
-                fileName: "new-upload.zip",
+                fileName: "new-upload.dmg",
                 fileSizeBytes: 10n,
                 fileHash: null,
                 isPrimary: true
@@ -11240,13 +11248,13 @@ async function testReplaceReleaseArtifactUploadDeletesOldFileOnSuccess() {
       "release_1",
       "artifact_1",
       {
-        type: "zip",
-        deliveryMode: "desktop_full_replace",
+        type: "dmg",
+        deliveryMode: "desktop_installer_download",
         isPrimary: true
       },
       {
         path: "new-upload.tmp",
-        originalname: "new-upload.zip",
+        originalname: "new-upload.dmg",
         size: 10
       }
     );
@@ -11255,7 +11263,7 @@ async function testReplaceReleaseArtifactUploadDeletesOldFileOnSuccess() {
     assert.equal(updates.length, 1);
     assert.equal(updates[0].data.source, "uploaded");
     assert.equal(updates[0].data.storedFilePath, newStoredFilePath);
-    assert.equal(updates[0].data.fileName, "new-upload.zip");
+    assert.equal(updates[0].data.fileName, "new-upload.dmg");
     assert.equal(updates[0].data.fileSizeBytes, 10n);
     assert.equal(updates[0].data.fileHash, null);
     assert.equal(updates[0].data.isPrimary, true);
@@ -11274,12 +11282,12 @@ async function testReplaceReleaseArtifactUploadDeletesOldFileOnSuccess() {
 }
 
 async function testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails() {
-  const artifact = makeReleaseCenterTestArtifact({
+  const artifact = makeMacArtifact({
     source: "uploaded",
-    storedFilePath: "missing-release/artifact_1/ChordV.zip",
+    storedFilePath: "missing-release/artifact_1/ChordV.dmg",
     allowClientMirror: false
   });
-  const release = makeReleaseCenterTestRelease({
+  const release = makeMacRelease({
     artifacts: [artifact]
   });
   let deleteCalled = false;
@@ -11321,11 +11329,11 @@ async function testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails() {
 }
 
 async function testDeleteReleaseArtifactMapsLocalSaveFailure() {
-  const artifact = makeReleaseCenterTestArtifact();
+  const artifact = makeMacArtifact();
   const service = createReleaseCenterService({
     prisma: {
       release: {
-        findUnique: async () => makeReleaseCenterTestRelease({ artifacts: [artifact] })
+        findUnique: async () => makeMacRelease({ artifacts: [artifact] })
       },
       releaseArtifact: {
         findFirst: async () => artifact,
@@ -11351,7 +11359,7 @@ async function testCreateReleaseArtifactRejectsBlankExternalDownloadUrl() {
   const service = createReleaseCenterService({
     prisma: {
       release: {
-        findUnique: async () => makeReleaseCenterTestRelease()
+        findUnique: async () => makeMacRelease()
       }
     }
   });
@@ -11360,8 +11368,8 @@ async function testCreateReleaseArtifactRejectsBlankExternalDownloadUrl() {
     () =>
       service.createReleaseArtifact("release_1", {
         source: "external",
-        type: "zip",
-        deliveryMode: "desktop_full_replace",
+        type: "dmg",
+        deliveryMode: "desktop_installer_download",
         downloadUrl: "   ",
         fileSizeBytes: "123",
         fileHash: "a".repeat(64)
@@ -11402,10 +11410,11 @@ async function testPublishWindowsReleaseRejectsClientUnusableArtifact() {
 async function testPublishWindowsReleaseAllowsClientUsableArtifact() {
   const fullZipArtifact = makeReleaseCenterTestArtifact({
     source: "external",
-    type: "zip",
-    deliveryMode: "desktop_full_replace",
-    downloadUrl: "https://example.com/ChordV_1.1.6_x64-full.zip",
-    fileName: "ChordV_1.1.6_x64-full.zip",
+    type: "setup_exe",
+    updaterSignature: "signature-fixture",
+    deliveryMode: "desktop_installer_download",
+    downloadUrl: "https://example.com/ChordV_1.1.6_x64-full.exe",
+    fileName: "ChordV_1.1.6_x64-full.exe",
     fileSizeBytes: 123n,
     fileHash: "a".repeat(64)
   });
@@ -11431,7 +11440,7 @@ async function testReleaseArtifactContentValidationMatchesDownloadedBytes() {
   const body = Buffer.from("verified external artifact");
   await writeFile(artifactPath, body);
   const actualHash = createHash("sha256").update(body).digest("hex");
-  const artifact = makeReleaseCenterTestArtifact({
+  const artifact = makeMacArtifact({
     source: "external",
     type: "dmg",
     deliveryMode: "desktop_installer_download",
@@ -11512,7 +11521,7 @@ async function testReleaseArtifactContentValidationRejectsInvalidWindowsZip() {
   }
 }
 
-async function testUploadWindowsReleaseRejectsExeFileName() {
+async function testUploadWindowsReleaseRejectsLegacyZipFileName() {
   const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
   let preparedCalled = false;
   const service = createReleaseCenterService({
@@ -11538,8 +11547,8 @@ async function testUploadWindowsReleaseRejectsExeFileName() {
       preparedCalled = true;
       return {
         absolutePath: "prepared-windows-setup.exe",
-        storedFilePath: "release_1/artifact_created/ChordV-setup.exe",
-        fileName: "ChordV-setup.exe",
+        storedFilePath: "release_1/artifact_created/ChordV-full.zip",
+        fileName: "ChordV-full.zip",
         fileSizeBytes: 123n,
         fileHash: null,
         downloadUrl: "/api/downloads/releases/artifact_created"
@@ -11560,11 +11569,11 @@ async function testUploadWindowsReleaseRejectsExeFileName() {
         },
         {
           path: "windows-setup-upload.tmp",
-          originalname: "ChordV-setup.exe",
+          originalname: "ChordV-full.zip",
           size: 123
         }
       ),
-    /ZIP/i
+    /EXE/i
   );
 
   assert.equal(preparedCalled, false);
@@ -11586,11 +11595,11 @@ async function testDeleteReleaseQueuesCleanupInTransaction() {
     prisma: {
       release: {
         findUnique: async () =>
-          makeReleaseCenterTestRelease({
+          makeMacRelease({
             artifacts: [
-              makeReleaseCenterTestArtifact({
+              makeMacArtifact({
                 id: "artifact_1",
-                storedFilePath: "release_1/artifact_1/file.zip"
+                storedFilePath: "release_1/artifact_1/file.dmg"
               })
             ]
           }),
@@ -11613,7 +11622,7 @@ async function testDeleteReleaseMapsLocalSaveFailure() {
   const service = createReleaseCenterService({
     prisma: {
       release: {
-        findUnique: async () => makeReleaseCenterTestRelease(),
+        findUnique: async () => makeMacRelease(),
         delete: async () => {
           throw new Error("release delete local save failed");
         }
@@ -11635,7 +11644,7 @@ async function testReleaseArtifactPatchCannotRewriteUploadedUrl() {
   const service = createReleaseCenterService({
     ensureReleaseExists: async () => ({
       id: "release_1",
-      platform: "windows",
+      platform: "macos",
       status: "draft",
       version: "1.1.3",
       minimumVersion: "1.1.0"
@@ -11647,13 +11656,13 @@ async function testReleaseArtifactPatchCannotRewriteUploadedUrl() {
           id: "artifact_1",
           releaseId: "release_1",
           source: "uploaded",
-          type: "zip",
-          deliveryMode: "desktop_full_replace",
+          type: "dmg",
+          deliveryMode: "desktop_installer_download",
           downloadUrl: "/api/downloads/releases/artifact_1",
           defaultMirrorPrefix: null,
           allowClientMirror: false,
-          fileName: "ChordV_1.1.3_x64-full.zip",
-          storedFilePath: "release_1/artifact_1/file.zip",
+          fileName: "ChordV_1.1.3_x64-full.dmg",
+          storedFilePath: "release_1/artifact_1/file.dmg",
           fileSizeBytes: 1n,
           fileHash: "a".repeat(64),
           isPrimary: true,
@@ -11668,7 +11677,7 @@ async function testReleaseArtifactPatchCannotRewriteUploadedUrl() {
 
   await assert.rejects(
     () => service.updateReleaseArtifact("release_1", "artifact_1", {
-      downloadUrl: "https://example.com/other.zip"
+      downloadUrl: "https://example.com/other.dmg"
     }),
     (error: unknown) => error instanceof BadRequestException,
     "uploaded release artifact download URLs must remain upload-managed"
@@ -11680,7 +11689,7 @@ async function testUpdateCheckSkipsUploadedArtifactMissingStoredFile() {
   const service = createReleaseCenterService({
     findLatestPublishedRelease: async () => ({
       id: "release_1",
-      platform: "windows",
+      platform: "macos",
       channel: "stable",
       version: "1.1.3",
       displayTitle: "ChordV 1.1.3",
@@ -11696,13 +11705,13 @@ async function testUpdateCheckSkipsUploadedArtifactMissingStoredFile() {
           id: "artifact_missing",
           releaseId: "release_1",
           source: "uploaded",
-          type: "zip",
-          deliveryMode: "desktop_full_replace",
+          type: "dmg",
+          deliveryMode: "desktop_installer_download",
           downloadUrl: "/api/downloads/releases/artifact_missing",
           defaultMirrorPrefix: null,
           allowClientMirror: false,
-          fileName: "ChordV_1.1.3_x64-full.zip",
-          storedFilePath: `missing-${Date.now()}/ChordV_1.1.3_x64-full.zip`,
+          fileName: "ChordV_1.1.3_x64-full.dmg",
+          storedFilePath: `missing-${Date.now()}/ChordV_1.1.3_x64-full.dmg`,
           fileSizeBytes: 1024n,
           fileHash: "a".repeat(64),
           isPrimary: true,
@@ -11716,9 +11725,9 @@ async function testUpdateCheckSkipsUploadedArtifactMissingStoredFile() {
 
   const result = await service.checkClientUpdate({
     currentVersion: "1.1.2",
-    platform: "windows",
+    platform: "macos",
     channel: "stable",
-    artifactType: "zip"
+    artifactType: "dmg"
   });
 
   assert.equal(result.hasUpdate, false, "client update check must not announce an update whose uploaded file is missing");
@@ -11728,37 +11737,37 @@ async function testUpdateCheckSkipsUploadedArtifactMissingStoredFile() {
 
 async function testUpdateCheckFallsBackToOlderUsableReleaseWhenLatestArtifactMissing() {
   const now = new Date("2026-01-01T00:00:00.000Z");
-  const newerRelease = makeReleaseCenterTestRelease({
+  const newerRelease = makeMacRelease({
     id: "release_newer",
     version: "1.1.7",
     displayTitle: "ChordV 1.1.7",
     status: "published",
     publishedAt: now,
     artifacts: [
-      makeReleaseCenterTestArtifact({
+      makeMacArtifact({
         id: "artifact_missing",
         releaseId: "release_newer",
         source: "uploaded",
         downloadUrl: "/api/downloads/releases/artifact_missing",
-        storedFilePath: `missing-${Date.now()}/ChordV_1.1.7_x64-full.zip`,
-        fileName: "ChordV_1.1.7_x64-full.zip",
+        storedFilePath: `missing-${Date.now()}/ChordV_1.1.7_x64-full.dmg`,
+        fileName: "ChordV_1.1.7_x64-full.dmg",
         isPrimary: true
       })
     ]
   });
-  const olderRelease = makeReleaseCenterTestRelease({
+  const olderRelease = makeMacRelease({
     id: "release_older",
     version: "1.1.6",
     displayTitle: "ChordV 1.1.6",
     status: "published",
     publishedAt: new Date("2025-12-31T00:00:00.000Z"),
     artifacts: [
-      makeReleaseCenterTestArtifact({
+      makeMacArtifact({
         id: "artifact_older",
         releaseId: "release_older",
         source: "external",
-        downloadUrl: "https://cdn.example.com/ChordV_1.1.6_x64-full.zip",
-        fileName: "ChordV_1.1.6_x64-full.zip",
+        downloadUrl: "https://cdn.example.com/ChordV_1.1.6_x64-full.dmg",
+        fileName: "ChordV_1.1.6_x64-full.dmg",
         isPrimary: true
       })
     ]
@@ -11769,46 +11778,46 @@ async function testUpdateCheckFallsBackToOlderUsableReleaseWhenLatestArtifactMis
 
   const result = await service.checkClientUpdate({
     currentVersion: "1.1.5",
-    platform: "windows",
+    platform: "macos",
     channel: "stable",
-    artifactType: "zip"
+    artifactType: "dmg"
   });
 
   assert.equal(result.hasUpdate, true);
   assert.equal(result.latestVersion, "1.1.6");
   assert.equal(result.recommendedArtifact?.id, "artifact_older");
-  assert.equal(result.downloadUrl, "https://cdn.example.com/ChordV_1.1.6_x64-full.zip");
+  assert.equal(result.downloadUrl, "https://cdn.example.com/ChordV_1.1.6_x64-full.dmg");
 }
 
 async function testUpdateCheckIgnoresWithdrawnNewerRelease() {
   const now = new Date("2026-01-01T00:00:00.000Z");
-  const withdrawnNewerRelease = makeReleaseCenterTestRelease({
+  const withdrawnNewerRelease = makeMacRelease({
     id: "release_withdrawn",
     version: "1.1.7",
     displayTitle: "ChordV 1.1.7",
     status: "draft",
     publishedAt: null,
     artifacts: [
-      makeReleaseCenterTestArtifact({
+      makeMacArtifact({
         id: "artifact_withdrawn",
         releaseId: "release_withdrawn",
-        downloadUrl: "https://cdn.example.com/ChordV_1.1.7_x64-full.zip",
-        fileName: "ChordV_1.1.7_x64-full.zip"
+        downloadUrl: "https://cdn.example.com/ChordV_1.1.7_x64-full.dmg",
+        fileName: "ChordV_1.1.7_x64-full.dmg"
       })
     ]
   });
-  const olderPublishedRelease = makeReleaseCenterTestRelease({
+  const olderPublishedRelease = makeMacRelease({
     id: "release_older",
     version: "1.1.6",
     displayTitle: "ChordV 1.1.6",
     status: "published",
     publishedAt: now,
     artifacts: [
-      makeReleaseCenterTestArtifact({
+      makeMacArtifact({
         id: "artifact_older",
         releaseId: "release_older",
-        downloadUrl: "https://cdn.example.com/ChordV_1.1.6_x64-full.zip",
-        fileName: "ChordV_1.1.6_x64-full.zip"
+        downloadUrl: "https://cdn.example.com/ChordV_1.1.6_x64-full.dmg",
+        fileName: "ChordV_1.1.6_x64-full.dmg"
       })
     ]
   });
@@ -11826,9 +11835,9 @@ async function testUpdateCheckIgnoresWithdrawnNewerRelease() {
 
   const result = await service.checkClientUpdate({
     currentVersion: "1.1.5",
-    platform: "windows",
+    platform: "macos",
     channel: "stable",
-    artifactType: "zip"
+    artifactType: "dmg"
   });
 
   assert.equal(releaseQueries.length, 1);
@@ -11841,7 +11850,7 @@ async function testUpdateCheckIgnoresWithdrawnNewerRelease() {
 async function testUpdateCheckAllowsUploadedArtifactWithStaleMetadata() {
   const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
   const tempDir = await mkdtemp(path.join(tmpdir(), "chordv-release-storage-"));
-  const storedFilePath = path.join("release_1", "artifact_stale", "ChordV_1.1.3_x64-full.zip");
+  const storedFilePath = path.join("release_1", "artifact_stale", "ChordV_1.1.3_x64-full.dmg");
   process.env.CHORDV_RELEASE_STORAGE_ROOT = tempDir;
   const absolutePath = resolveReleaseArtifactAbsolutePath(storedFilePath);
   await mkdir(path.dirname(absolutePath), { recursive: true });
@@ -11851,7 +11860,7 @@ async function testUpdateCheckAllowsUploadedArtifactWithStaleMetadata() {
     const service = createReleaseCenterService({
       findLatestPublishedRelease: async () => ({
         id: "release_1",
-        platform: "windows",
+        platform: "macos",
         channel: "stable",
         version: "1.1.3",
         displayTitle: "ChordV 1.1.3",
@@ -11867,12 +11876,12 @@ async function testUpdateCheckAllowsUploadedArtifactWithStaleMetadata() {
             id: "artifact_stale",
             releaseId: "release_1",
             source: "uploaded",
-            type: "zip",
-            deliveryMode: "desktop_full_replace",
+            type: "dmg",
+            deliveryMode: "desktop_installer_download",
             downloadUrl: "/api/downloads/releases/artifact_stale",
             defaultMirrorPrefix: null,
             allowClientMirror: false,
-            fileName: "ChordV_1.1.3_x64-full.zip",
+            fileName: "ChordV_1.1.3_x64-full.dmg",
             storedFilePath,
             fileSizeBytes: 1024n,
             fileHash: "a".repeat(64),
@@ -11887,9 +11896,9 @@ async function testUpdateCheckAllowsUploadedArtifactWithStaleMetadata() {
 
     const result = await service.checkClientUpdate({
       currentVersion: "1.1.2",
-      platform: "windows",
+      platform: "macos",
       channel: "stable",
-      artifactType: "zip"
+      artifactType: "dmg"
     });
 
     assert.equal(result.hasUpdate, true, "client update check should announce uploaded packages when the file still exists");
@@ -11908,7 +11917,7 @@ async function testUpdateCheckAllowsUploadedArtifactWithStaleMetadata() {
 async function testUpdateCheckAllowsUploadedArtifactWithoutMetadata() {
   const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
   const tempDir = await mkdtemp(path.join(tmpdir(), "chordv-release-storage-null-metadata-"));
-  const storedFilePath = path.join("release_1", "artifact_null_metadata", "ChordV_1.1.3_x64-full.zip");
+  const storedFilePath = path.join("release_1", "artifact_null_metadata", "ChordV_1.1.3_x64-full.dmg");
   process.env.CHORDV_RELEASE_STORAGE_ROOT = tempDir;
   const absolutePath = resolveReleaseArtifactAbsolutePath(storedFilePath);
   await mkdir(path.dirname(absolutePath), { recursive: true });
@@ -11918,7 +11927,7 @@ async function testUpdateCheckAllowsUploadedArtifactWithoutMetadata() {
     const service = createReleaseCenterService({
       findLatestPublishedRelease: async () => ({
         id: "release_1",
-        platform: "windows",
+        platform: "macos",
         channel: "stable",
         version: "1.1.3",
         displayTitle: "ChordV 1.1.3",
@@ -11934,12 +11943,12 @@ async function testUpdateCheckAllowsUploadedArtifactWithoutMetadata() {
             id: "artifact_null_metadata",
             releaseId: "release_1",
             source: "uploaded",
-            type: "zip",
-            deliveryMode: "desktop_full_replace",
+            type: "dmg",
+            deliveryMode: "desktop_installer_download",
             downloadUrl: "/api/downloads/releases/artifact_null_metadata",
             defaultMirrorPrefix: null,
             allowClientMirror: false,
-            fileName: "ChordV_1.1.3_x64-full.zip",
+            fileName: "ChordV_1.1.3_x64-full.dmg",
             storedFilePath,
             fileSizeBytes: null,
             fileHash: null,
@@ -11954,9 +11963,9 @@ async function testUpdateCheckAllowsUploadedArtifactWithoutMetadata() {
 
     const result = await service.checkClientUpdate({
       currentVersion: "1.1.2",
-      platform: "windows",
+      platform: "macos",
       channel: "stable",
-      artifactType: "zip"
+      artifactType: "dmg"
     });
 
     assert.equal(result.hasUpdate, false, "client update check must not announce uploaded packages without SHA-256 metadata");
@@ -11999,7 +12008,7 @@ async function testMoveUploadedFileCleansTargetWhenCrossDeviceUnlinkFails() {
   assert.deepEqual(calls, ["copy:upload.tmp:stored.bin", "unlink", "rm:stored.bin:true"]);
 }
 
-async function testWindowsUpdateCheckPrefersZipOverGenericExternalArtifact() {
+async function testWindowsUpdateCheckRejectsZipAndGenericExternalArtifacts() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const service = createReleaseCenterService({
     findLatestPublishedRelease: async () => ({
@@ -12063,11 +12072,9 @@ async function testWindowsUpdateCheckPrefersZipOverGenericExternalArtifact() {
     artifactType: "zip"
   });
 
-  assert.equal(result.hasUpdate, true);
-  assert.equal(result.deliveryMode, "desktop_full_replace");
-  assert.equal(result.recommendedArtifact?.type, "zip");
-  assert.equal(result.downloadUrl, "https://example.com/ChordV_1.1.3_x64-full.zip");
-  assert.equal(result.fileName, "ChordV_1.1.3_x64-full.zip");
+  assert.equal(result.hasUpdate, false, "legacy ZIP and generic links cannot be advertised as signed installers");
+  assert.equal(result.recommendedArtifact, null);
+  assert.equal(result.downloadUrl, null);
 }
 
 async function testWindowsUpdateCheckKeepsExternalZipWithoutHashMetadata() {
@@ -17465,12 +17472,12 @@ async function main() {
   await testUnpublishReleaseKeepsLocalSaveWhenVersionEventFails();
   await testUnpublishReleaseMapsLocalSaveFailure();
   await testUnpublishReleaseRejectsArchivedReleaseBeforeDbWrite();
-  await testAssertReleasePublishableAllowsExternalWindowsZipWithoutOptionalMetadata();
-  await testPublishReleaseAllowsWindowsZipWithoutOptionalMetadata();
-  await testPublishReleaseAllowsReadableUploadedWindowsZipWithoutDeepInspection();
+  await testAssertReleasePublishableRejectsLegacyExternalWindowsZipWithoutOptionalMetadata();
+  await testPublishReleaseRejectsLegacyWindowsZipWithoutOptionalMetadata();
+  await testPublishReleaseRejectsLegacyReadableUploadedWindowsZipWithoutDeepInspection();
   await testPublishReleaseRejectsMissingUploadedArtifactFile();
   await testPublishReleaseAllowsUsableExternalWhenSecondaryUploadIsMissing();
-  await testPublishReleaseAllowsWindowsExternalZipWithoutOptionalMetadata();
+  await testPublishReleaseRejectsLegacyWindowsExternalZipWithoutOptionalMetadata();
   await testCreateReleaseArtifactDelegatesToReleaseCenter();
   await testExternalReleaseFlowPublishesAndFeedsClientUpdateCheck();
   await testUploadedReleaseFlowPublishesAndFeedsClientDownloadDescriptor();
@@ -17595,11 +17602,11 @@ async function main() {
   await testCreateReleaseArtifactMapsLocalSaveFailure();
   await testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBeforeSave();
   await testUpdateReleaseArtifactMapsLocalSaveFailure();
-  await testUpdateWindowsExternalReleaseInfersExternalForExeUrl();
+  await testUpdateWindowsExternalReleaseInfersInstallerForExeUrl();
   await testUpdateWindowsExternalReleaseInfersFullReplaceForZipUrl();
   await testUpdateWindowsFullReplaceExternalKeepsModeForNonZipUrl();
   await testUploadReleaseArtifactSavesWithoutHashAfterZipValidation();
-  await testUploadReleaseArtifactSavesReadableWindowsZipWithoutDeepInspection();
+  await testUploadReleaseArtifactRejectsLegacyWindowsZip();
   await testReleaseArtifactPrepareMissingTempFileReturnsBadRequest();
   await testWindowsExeUploadIsRejectedForFullReplacementUpdates();
   await testUploadReleaseArtifactFailureUsesBestEffortCleanup();
@@ -17616,7 +17623,7 @@ async function main() {
   await testPublishWindowsReleaseAllowsClientUsableArtifact();
   await testReleaseArtifactContentValidationMatchesDownloadedBytes();
   await testReleaseArtifactContentValidationRejectsInvalidWindowsZip();
-  await testUploadWindowsReleaseRejectsExeFileName();
+  await testUploadWindowsReleaseRejectsLegacyZipFileName();
   await testDeleteReleaseQueuesCleanupInTransaction();
   await testDeleteReleaseMapsLocalSaveFailure();
   await testReleaseArtifactPatchCannotRewriteUploadedUrl();
@@ -17626,7 +17633,7 @@ async function main() {
   await testUpdateCheckAllowsUploadedArtifactWithStaleMetadata();
   await testUpdateCheckAllowsUploadedArtifactWithoutMetadata();
   await testMoveUploadedFileCleansTargetWhenCrossDeviceUnlinkFails();
-  await testWindowsUpdateCheckPrefersZipOverGenericExternalArtifact();
+  await testWindowsUpdateCheckRejectsZipAndGenericExternalArtifacts();
   await testWindowsUpdateCheckKeepsExternalZipWithoutHashMetadata();
   await testWindowsUpdateCheckSkipsClientUnusablePublishedArtifact();
   await testWindowsUpdateCheckSkipsInstallerOnlyRelease();

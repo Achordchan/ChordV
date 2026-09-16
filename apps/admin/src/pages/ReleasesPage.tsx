@@ -244,7 +244,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
               record = await importAdminReleaseArtifact(record.id, { sourceUrl: releaseForm.downloadUrl.trim(), isPrimary: true }, setImportProgress);
             } else {
               setReleaseSaveStep("uploading");
-              record = await uploadAdminReleaseArtifact(record.id, buildUploadedArtifactPayload(releaseForm.platform, releaseForm.selectedFile!, releaseForm.fileName, true), releaseForm.selectedFile!);
+              record = await uploadAdminReleaseArtifact(record.id, buildUploadedArtifactPayload(releaseForm.platform, releaseForm.selectedFile!, releaseForm.fileName, true, undefined, await releaseForm.signatureFile?.text()), releaseForm.selectedFile!);
             }
           } catch (uploadError) {
             const message = readError(uploadError, "安装包保存失败");
@@ -445,6 +445,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
       return `安装包不能超过 ${formatUploadBytes(uploadMaxBytes)}。`;
     }
     if (artifactForm.selectedFile) {
+      if (artifactEditor.platform === "windows" && (!artifactForm.signatureFile || artifactForm.signatureFile.size > 8192)) return "请选择对应的 .sig 签名文件（不超过 8 KB）。";
       const fileMessage = validateReleaseArtifactFile(artifactEditor.platform, artifactForm.selectedFile);
       if (fileMessage) return fileMessage;
     }
@@ -518,7 +519,8 @@ export function ReleasesPage(props: ReleasesPageProps) {
             artifactForm.selectedFile,
             artifactForm.fileName,
             artifactForm.isPrimary,
-            artifactForm.type
+            artifactForm.type,
+            await artifactForm.signatureFile?.text()
           );
           record = artifactEditor.artifactId
             ? await replaceAdminReleaseArtifactUpload(releaseId!, artifactEditor.artifactId, uploadPayload, artifactForm.selectedFile)
@@ -628,7 +630,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
       <ArtifactEditorModal
         mode={artifactMode} onModeChange={mode=>{setArtifactMode(mode);if(mode!=="existing")setArtifactForm(current=>({...current,source:mode,downloadUrl:mode==="external"?(getEditingArtifact()?.sourceUrl||current.downloadUrl):current.downloadUrl}));}}
         reuseId={reuseId} onReuseChange={setReuseId} currentFile={getEditingArtifact()}
-        existingFiles={releases.filter(item=>item.platform===artifactEditor?.platform).flatMap(item=>item.artifacts.filter(file=>file.source==="uploaded"&&file.id!==artifactEditor?.artifactId).map(file=>({value:file.id,label:`${item.version} · ${file.fileName||file.type} · ${file.fileSizeBytes?(Number(file.fileSizeBytes)/1048576).toFixed(1)+" MB":""}`})))}
+        existingFiles={releases.filter(item=>item.platform===artifactEditor?.platform).flatMap(item=>item.artifacts.filter(file=>file.source==="uploaded"&&file.id!==artifactEditor?.artifactId&&(artifactEditor?.platform!=="windows"||file.type==="setup.exe")).map(file=>({value:file.id,label:`${item.version} · ${file.fileName||file.type} · ${file.fileSizeBytes?(Number(file.fileSizeBytes)/1048576).toFixed(1)+" MB":""}`})))}
         opened={artifactEditor !== null}
         saving={saving?.startsWith("artifact:") ?? false}
         importProgress={importProgress}
@@ -673,6 +675,7 @@ function validateReleaseEditorInput(
   }
   if (form.artifactSource === "uploaded") {
     if (!form.selectedFile) return null;
+    if (platform === "windows" && (!form.signatureFile || form.signatureFile.size > 8192)) return "请选择对应的 .sig 更新签名（不超过 8 KB）。";
     const fileMessage = validateReleaseArtifactFile(platform, form.selectedFile);
     if (fileMessage) return fileMessage;
     if (form.selectedFile.size > uploadMaxBytes) {
@@ -739,7 +742,7 @@ function formatUploadBytes(value: number) {
 
 function defaultArtifactTypeForPlatform(platform: AdminReleasePlatform): AdminReleaseArtifactType {
   if (platform === "windows") {
-    return "zip";
+    return "setup.exe";
   }
   if (platform === "android") {
     return "apk";
@@ -755,13 +758,15 @@ function buildUploadedArtifactPayload(
   file: File,
   fileName: string,
   isPrimary: boolean,
-  fallbackType: AdminReleaseArtifactType = defaultArtifactTypeForPlatform(platform)
+  fallbackType: AdminReleaseArtifactType = defaultArtifactTypeForPlatform(platform),
+  updaterSignature?: string
 ): UploadAdminReleaseArtifactInputDto {
   const type = inferUploadedArtifactType(platform, file.name, fallbackType);
   return {
     source: "uploaded",
     type,
     deliveryMode: deliveryModeForUploadedArtifact(platform, type),
+    updaterSignature,
     fileName: fileName.trim() || file.name,
     isPrimary
   };
@@ -774,7 +779,7 @@ function inferUploadedArtifactType(
 ): AdminReleaseArtifactType {
   const normalized = fileName.trim().toLowerCase();
   if (platform === "windows") {
-    return "zip";
+    return "setup.exe";
   }
   return fallbackType;
 }
@@ -826,8 +831,8 @@ function buildReleaseEditorSavingMessage(
 }
 
 function validateReleaseArtifactFile(platform: AdminReleasePlatform | undefined, file: File) {
-  if (platform === "windows" && !file.name.trim().toLowerCase().endsWith(".zip")) {
-    return "Windows 静默全量更新只支持 ZIP 安装包，请上传 ChordV_x64-full.zip。";
+  if (platform === "windows" && !file.name.trim().toLowerCase().endsWith(".exe")) {
+    return "Windows 请上传 ChordV_x64-setup.exe 及对应的 .sig 签名。";
   }
   return null;
 }

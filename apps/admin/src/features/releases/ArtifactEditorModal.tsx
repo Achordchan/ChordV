@@ -88,6 +88,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
                 source: "uploaded",
                 type: defaultArtifactTypeForPlatform(props.platform),
                 selectedFile: file,
+                signatureFile: null,
                 fileName: file?.name ?? props.form.fileName
               })
             }
@@ -99,6 +100,10 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
 
         <ArtifactImportProgress value={props.saving ? props.importProgress : null} />
         </Stack></div>
+        {props.platform === "windows" && props.mode === "uploaded" && props.form.selectedFile && (
+          <FileInput label="更新签名文件" description="选择此安装包对应的 .sig 文件。" accept=".sig" value={props.form.signatureFile ?? null}
+            disabled={props.saving} onChange={signatureFile => props.onChange({ ...props.form, signatureFile })} />
+        )}
         <Group justify="flex-end" className={styles.footer}>
           <Button radius="sm" variant="default" onClick={close} disabled={props.saving}>
             取消
@@ -114,7 +119,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
 
 function defaultArtifactTypeForPlatform(platform: AdminReleasePlatform): ArtifactEditorFormState["type"] {
   if (platform === "windows") {
-    return "zip";
+    return "setup.exe";
   }
   if (platform === "android") {
     return "apk";
@@ -127,7 +132,7 @@ function defaultArtifactTypeForPlatform(platform: AdminReleasePlatform): Artifac
 
 function acceptedArtifactExtensionForPlatform(platform: AdminReleasePlatform) {
   if (platform === "windows") {
-    return ".zip";
+    return ".exe";
   }
   if (platform === "android") {
     return ".apk";
