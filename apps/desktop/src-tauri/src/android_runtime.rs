@@ -259,8 +259,10 @@ pub fn start_android_runtime(
     config: GeneratedRuntimeConfigDto,
     state: State<'_, Mutex<AndroidRuntimeState>>,
 ) -> Result<CommandResult, String> {
+    crate::EXIT_CLEANUP.ensure_running()?;
     let generation = CONNECTION_GENERATION.capture();
     let mut state = CONNECTION_GENERATION.lock_current(generation, &state)?;
+    crate::EXIT_CLEANUP.ensure_running()?;
 
     let runtime_dir = ensure_runtime_dir(&app)?;
     let geoip_path = runtime_dir.join("bin").join("geoip.dat");
@@ -310,6 +312,7 @@ pub fn start_android_runtime(
         serde_json::to_string_pretty(&xray_config).map_err(|error| error.to_string())?;
     fs::write(&config_path, xray_serialized).map_err(|error| error.to_string())?;
 
+    crate::EXIT_CLEANUP.ensure_running()?;
     CONNECTION_GENERATION.ensure_current(generation)?;
     state.status = "starting".into();
     state.active_session_id = Some(config.session_id.clone());

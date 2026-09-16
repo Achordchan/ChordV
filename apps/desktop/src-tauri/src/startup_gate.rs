@@ -4,11 +4,12 @@ pub struct StartupGate { result:Mutex<Option<Result<(),String>>>, changed:Condva
 impl StartupGate {
     pub const fn new()->Self {Self{result:Mutex::new(None),changed:Condvar::new()}}
     pub fn finish(&self,result:Result<(),String>){if let Ok(mut slot)=self.result.lock(){*slot=Some(result);self.changed.notify_all();}}
-    pub fn wait(&self)->Result<(),String>{self.wait_for(Duration::from_secs(30))}
-    fn wait_for(&self,budget:Duration)->Result<(),String>{
+    pub fn wait(&self)->Result<(),String>{self.wait_for(Duration::from_secs(30))?}
+    pub fn wait_finished(&self)->Result<(),String>{self.wait_for(Duration::from_secs(30)).map(|_|())}
+    fn wait_for(&self,budget:Duration)->Result<Result<(),String>,String>{
         let slot=self.result.lock().map_err(|_|"启动维护状态异常".to_string())?;
         let (slot,_)=self.changed.wait_timeout_while(slot,budget,|value|value.is_none()).map_err(|_|"启动维护状态异常".to_string())?;
-        slot.clone().unwrap_or_else(||Err("客户端启动维护尚未完成，请稍后重试".into()))
+        slot.clone().ok_or_else(||"客户端启动维护尚未完成，请稍后重试".into())
     }
 }
 #[cfg(test)]
@@ -18,6 +19,7 @@ mod tests {
     fn failed_or_pending_maintenance_never_releases_new_runtime_work(){
         let gate=StartupGate::new();assert!(gate.wait_for(Duration::ZERO).is_err());
         gate.finish(Err("disk failure".into()));assert_eq!(gate.wait(),Err("disk failure".into()));
+        assert!(gate.wait_finished().is_ok(),"failed initialization must still permit shutdown");
     }
     #[test]
     fn completed_maintenance_releases_waiters(){

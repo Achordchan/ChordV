@@ -3448,6 +3448,7 @@ async fn check_network_conflict(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 async fn connect_runtime(app: AppHandle, config: GeneratedRuntimeConfigDto) -> Result<CommandResult, String> {
+    EXIT_CLEANUP.ensure_running()?;
     let generation = CONNECTION_GENERATION.capture();
     tauri::async_runtime::spawn_blocking(move || connect_runtime_blocking(&app, config, generation))
         .await.map_err(|error| error.to_string())?
@@ -3490,6 +3491,7 @@ fn connect_runtime_inner(app: &AppHandle, config: GeneratedRuntimeConfigDto, gen
     let state = app.state::<Mutex<RuntimeState>>();
     {
         let mut state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
+        EXIT_CLEANUP.ensure_running()?;
         CONNECTION_GENERATION.ensure_current(generation)?;
         if state.status == "starting" || state.status == "connecting" {
             return Err("连接正在进行中".into());
@@ -3521,6 +3523,7 @@ fn connect_runtime_inner(app: &AppHandle, config: GeneratedRuntimeConfigDto, gen
             return Err(error);
         }
 
+        EXIT_CLEANUP.ensure_running()?;
         CONNECTION_GENERATION.ensure_current(generation)?;
         state.status = "starting".into();
         state.active_session_id = Some(config.session_id.clone());
@@ -3542,7 +3545,8 @@ fn connect_runtime_inner(app: &AppHandle, config: GeneratedRuntimeConfigDto, gen
         Ok(path) => path,
         Err(error) => {
             let mut state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
-            CONNECTION_GENERATION.ensure_current(generation)?;
+            EXIT_CLEANUP.ensure_running()?;
+        CONNECTION_GENERATION.ensure_current(generation)?;
             if state.active_session_id.as_deref() != Some(config.session_id.as_str()) {
                 return Err("连接已取消".into());
             }
@@ -3561,7 +3565,8 @@ fn connect_runtime_inner(app: &AppHandle, config: GeneratedRuntimeConfigDto, gen
     };
 
     let mut state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
-    CONNECTION_GENERATION.ensure_current(generation)?;
+    EXIT_CLEANUP.ensure_running()?;
+        CONNECTION_GENERATION.ensure_current(generation)?;
     if state.status != "starting" || state.active_session_id.as_deref() != Some(config.session_id.as_str()) {
         return Err("连接已取消".into());
     }
@@ -3650,7 +3655,8 @@ fn connect_runtime_inner(app: &AppHandle, config: GeneratedRuntimeConfigDto, gen
         }
     }
 
-    CONNECTION_GENERATION.ensure_current(generation)?;
+    EXIT_CLEANUP.ensure_running()?;
+        CONNECTION_GENERATION.ensure_current(generation)?;
     state.status = "connected".into();
     state.config_path = Some(config_path.clone());
     state.log_path = Some(log_path.clone());
@@ -8196,7 +8202,7 @@ pub fn run() {
                     tauri::async_runtime::spawn(async move {
                         let cleanup_app=shutdown_app.clone();
                         let result=tauri::async_runtime::spawn_blocking(move || {
-                            STARTUP_READY.wait()?;
+                            STARTUP_READY.wait_finished()?;
                             shutdown_runtime_state(&cleanup_app)
                         }).await.unwrap_or_else(|error|Err(error.to_string()));
                         match result {
