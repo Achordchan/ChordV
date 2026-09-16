@@ -81,6 +81,7 @@ jobs:
       - name: Build isolated Windows installer for upgrade test
         if: runner.os == 'Windows'
         env:
+          CHORDV_API_BASE_URL: https://v.achord.cn
           VITE_API_BASE_URL: https://127.0.0.1:9
         run: |
           test_key="$RUNNER_TEMP/chordv-ci-updater.key"

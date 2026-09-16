@@ -1,6 +1,8 @@
 mod update_report;
 #[cfg(any(windows, test))]
 mod windows_update;
+#[cfg(windows)]
+mod windows_installer;
 mod process_identity;
 mod exit_gate;
 mod proxy_cleanup;
@@ -5722,7 +5724,7 @@ fn runtime_process_command(pid:u32)->Result<Option<String>,String>{
     #[cfg(windows)]
     {
         let mut command=Command::new("powershell");command.creation_flags(CREATE_NO_WINDOW);
-        let script=format!("$ErrorActionPreference='Stop'; $p=Get-CimInstance Win32_Process -Filter \"ProcessId = {pid}\"; if ($p) {{ @{{exists=$true;command=\"$($p.ExecutablePath)`n$($p.CommandLine)\"}} | ConvertTo-Json -Compress }} else {{ @{{exists=$false}} | ConvertTo-Json -Compress }}");
+        let script=format!("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $p=Get-CimInstance Win32_Process -Filter \"ProcessId = {pid}\"; if ($p) {{ @{{exists=$true;command=\"$($p.ExecutablePath)`n$($p.CommandLine)\"}} | ConvertTo-Json -Compress }} else {{ @{{exists=$false}} | ConvertTo-Json -Compress }}");
         process_identity::windows_query(command.args(["-NoProfile","-NonInteractive","-Command",&script]).bounded_output())
     }
 }
@@ -6680,7 +6682,6 @@ fn migrate_windows_main_binary_on_startup() {
         return;
     };
     let main_exe = install_dir.join("ChordV.exe");
-    let legacy_exe = install_dir.join("chordv-desktop.exe");
 
     // If this process is the legacy binary and ChordV.exe is missing, seed the new name first.
     if current_name.eq_ignore_ascii_case("chordv-desktop.exe") && !main_exe.exists() {
@@ -6695,17 +6696,8 @@ fn migrate_windows_main_binary_on_startup() {
     };
     rewrite_windows_shortcuts_to_main_binary(&install_dir, &target_exe);
 
-    // Once ChordV.exe is the real entrypoint, drop the duplicate legacy binary to reclaim disk.
-    if main_exe.exists() && legacy_exe.exists() && current_name.eq_ignore_ascii_case("ChordV.exe") {
-        let same_file = fs::canonicalize(&main_exe)
-            .ok()
-            .zip(fs::canonicalize(&legacy_exe).ok())
-            .map(|(left, right)| left == right)
-            .unwrap_or(false);
-        if !same_file {
-            let _ = fs::remove_file(&legacy_exe);
-        }
-    }
+    // The installer maintains legacy names as links/copies of the current binary.
+    // Keep them: arbitrary pinned/user-created shortcuts may still reference them.
 }
 
 #[cfg(windows)]
@@ -7340,9 +7332,21 @@ fn setup_desktop_tray(app: &AppHandle) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[allow(unused_mut)]
+    let mut context = tauri::generate_context!();
+    #[cfg(windows)]
+    if std::env::args().any(|arg| arg == "--installer-maintenance") {
+        context.config_mut().app.windows.clear();
+        let result = tauri::Builder::default().build(context)
+            .map_err(|error| error.to_string())
+            .and_then(|app| windows_installer::cleanup_legacy_connection(app.handle()));
+        match result {
+            Ok(()) => std::process::exit(0),
+            Err(error) => { eprintln!("{error}"); std::process::exit(1); }
+        }
+    }
     #[cfg(windows)]
     if windows_update::installation_in_progress() { return; }
-    let context = tauri::generate_context!();
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
         .plugin(android_mobile_plugin::init())

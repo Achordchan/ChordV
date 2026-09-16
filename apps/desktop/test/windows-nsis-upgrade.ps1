@@ -5,6 +5,10 @@ $root = Join-Path $env:RUNNER_TEMP ('chordv-upgrade-' + [Guid]::NewGuid().ToStri
 $installDir = Join-Path $root '中文安装目录 with spaces'
 New-Item -ItemType Directory -Path $root | Out-Null
 $env:CHORDV_API_BASE_URL = 'https://127.0.0.1:9'
+$proxyKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+$originalProxy = Get-ItemProperty $proxyKey
+$ownedCore = $null
+$foreignCore = $null
 function Stop-TestClient {
   Get-Process -Name ChordV,chordv-desktop,chordv_desktop -ErrorAction SilentlyContinue |
     Where-Object { $_.Path -and $_.Path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force
@@ -24,8 +28,40 @@ try {
   if (!(Test-Path $oldExe)) { $oldExe = Join-Path $installDir 'ChordV.exe' }
   if (!(Test-Path $oldExe) -or !([Diagnostics.FileVersionInfo]::GetVersionInfo($oldExe).ProductVersion.StartsWith('1.1.7'))) { throw 'Legacy baseline installation did not produce version 1.1.7' }
 
+  $shortcutPath = Join-Path $root '自定义启动入口.lnk'
+  $shell = New-Object -ComObject WScript.Shell
+  $shortcut = $shell.CreateShortcut($shortcutPath)
+  $shortcut.TargetPath = $oldExe
+  $shortcut.WorkingDirectory = $installDir
+  $shortcut.Save()
+
+  # Simulate a crashed legacy client: a private orphaned core without a PID file
+  # and a ChordV-owned system proxy. An unrelated same-name core must survive.
+  $runtimeDir = Join-Path $env:LOCALAPPDATA 'app.chordv.desktop\runtime'
+  $ownedBin = Join-Path $runtimeDir 'bin'
+  $foreignBin = Join-Path $root 'foreign-core'
+  New-Item -ItemType Directory -Path $ownedBin,$foreignBin -Force | Out-Null
+  foreach ($bin in @($ownedBin,$foreignBin)) {
+    Copy-Item (Join-Path $installDir 'bin\xray.exe') (Join-Path $bin 'xray.exe') -Force
+  }
+  $ownedConfig = Join-Path $root 'owned.json'
+  $foreignConfig = Join-Path $root 'foreign.json'
+  [IO.File]::WriteAllText($ownedConfig,'{"inbounds":[{"listen":"127.0.0.1","port":17890,"protocol":"http","settings":{}}],"outbounds":[{"protocol":"freedom","settings":{}}]}')
+  [IO.File]::WriteAllText($foreignConfig,'{"inbounds":[{"listen":"127.0.0.1","port":17899,"protocol":"http","settings":{}}],"outbounds":[{"protocol":"freedom","settings":{}}]}')
+  $ownedCore = Start-Process (Join-Path $ownedBin 'xray.exe') -ArgumentList ('run -c "' + $ownedConfig + '"') -PassThru
+  $foreignCore = Start-Process (Join-Path $foreignBin 'xray.exe') -ArgumentList ('run -c "' + $foreignConfig + '"') -PassThru
+  if ($ownedCore.WaitForExit(1000) -or $foreignCore.WaitForExit(1000)) { throw 'Core fixture failed to start' }
+  Set-ItemProperty $proxyKey ProxyEnable 1
+  Set-ItemProperty $proxyKey ProxyServer '127.0.0.1:17890'
+
   # These are the passive and restart flags used by the official Tauri updater.
   Run-Installer (Resolve-Path $Installer).Path '/P /UPDATE /R'
+  $ownedCore.Refresh(); $foreignCore.Refresh()
+  if (!$ownedCore.HasExited) { throw 'Legacy orphaned ChordV core survived the upgrade' }
+  if ($foreignCore.HasExited) { throw 'Upgrade stopped an unrelated same-name core' }
+  if ((Get-ItemProperty $proxyKey).ProxyEnable -ne 0) { throw 'Upgrade left the ChordV-owned system proxy enabled' }
+  $legacyTarget = $shell.CreateShortcut($shortcutPath).TargetPath
+  if (!(Test-Path $legacyTarget) -or !([Diagnostics.FileVersionInfo]::GetVersionInfo($legacyTarget).ProductVersion.StartsWith($ExpectedVersion))) { throw 'User-created legacy shortcut no longer points at the current version' }
   $exe = Join-Path $installDir 'ChordV.exe'
   if (!(Test-Path $exe)) { throw 'Upgrade did not preserve the custom installation directory' }
   if (![Diagnostics.FileVersionInfo]::GetVersionInfo($exe).ProductVersion.StartsWith($ExpectedVersion)) { throw 'Upgrade left the old executable version installed' }
@@ -41,6 +77,15 @@ try {
   } while ((Get-Date) -lt $deadline)
   if (!$running) { throw 'Updated client did not restart with a visible main window' }
   Stop-TestClient
+  Start-Process -FilePath $shortcutPath | Out-Null
+  $deadline = (Get-Date).AddSeconds(30)
+  do {
+    $legacyRunning = Get-Process -Name ChordV,chordv-desktop,chordv_desktop -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($installDir,[StringComparison]::OrdinalIgnoreCase) -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+    if ($legacyRunning) { break }
+    Start-Sleep -Milliseconds 250
+  } while ((Get-Date) -lt $deadline)
+  if (!$legacyRunning) { throw 'Legacy shortcut could not launch the updated client' }
+  Stop-TestClient
 
   $gate = New-Object Threading.Mutex($false, 'Local\ChordV.Update.InProgress')
   try {
@@ -52,6 +97,13 @@ try {
   Write-Output 'PASS: real 1.1.7 -> current NSIS upgrade, custom Chinese path, installed version/resources, automatic restart and launch gate'
 } finally {
   Stop-TestClient
+  foreach ($core in @($ownedCore,$foreignCore)) {
+    if ($core) { $core.Refresh(); if (!$core.HasExited) { $core.Kill(); $core.WaitForExit(5000) | Out-Null } }
+  }
+  if ($null -ne $originalProxy.ProxyEnable) { Set-ItemProperty $proxyKey ProxyEnable $originalProxy.ProxyEnable }
+  else { Remove-ItemProperty $proxyKey ProxyEnable -ErrorAction SilentlyContinue }
+  if ($null -ne $originalProxy.ProxyServer) { Set-ItemProperty $proxyKey ProxyServer $originalProxy.ProxyServer }
+  else { Remove-ItemProperty $proxyKey ProxyServer -ErrorAction SilentlyContinue }
   $uninstaller = Join-Path $installDir 'uninstall.exe'
   if (Test-Path $uninstaller) { Run-Installer $uninstaller '/S' }
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
