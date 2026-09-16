@@ -4788,40 +4788,49 @@ fn powershell_quote(value: &str) -> String {
 
 #[cfg(windows)]
 fn open_external_url_with_system(url: &str) -> Result<(), String> {
-    let script = format!("Start-Process -FilePath {}", powershell_quote(url));
+    let script = format!("$ErrorActionPreference = 'Stop'; Start-Process -FilePath {}", powershell_quote(url));
     let mut command = Command::new("powershell");
     command.creation_flags(CREATE_NO_WINDOW);
-    command
+    let status = command
         .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
+        .bounded_status()
         .map_err(|error| format!("打开外部链接失败：{error}"))?;
+    if !status.success() {
+        return Err("系统浏览器未能打开链接，请检查默认浏览器设置。".into());
+    }
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
 fn open_external_url_with_system(url: &str) -> Result<(), String> {
-    Command::new("open")
+    let status = Command::new("open")
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
+        .bounded_status()
         .map_err(|error| format!("打开外部链接失败：{error}"))?;
+    if !status.success() {
+        return Err("系统浏览器未能打开链接，请检查默认浏览器设置。".into());
+    }
     Ok(())
 }
 
 #[cfg(all(not(target_os = "android"), not(target_os = "macos"), not(windows)))]
 fn open_external_url_with_system(url: &str) -> Result<(), String> {
-    Command::new("xdg-open")
+    let status = Command::new("xdg-open")
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
+        .bounded_status()
         .map_err(|error| format!("打开外部链接失败：{error}"))?;
+    if !status.success() {
+        return Err("系统浏览器未能打开链接，请检查默认浏览器设置。".into());
+    }
     Ok(())
 }
 

@@ -13,7 +13,7 @@ import {
   downloadDesktopInstaller,
   focusDesktopWindow,
   openDesktopInstaller,
-  openExternalLink,
+  openExternalUrl,
   quitForUpdate,
   consumeDesktopUpdateInstallReport,
   subscribeDesktopUpdateDownloadProgress,
@@ -259,7 +259,17 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
 
 
     if (!isDesktopManagedUpdate(effectiveUpdate.deliveryMode, updatePlatform) || updatePlatform === "android") {
-      await openExternalLink(resolvedDownloadUrl);
+      try {
+        const result = await openExternalUrl(resolvedDownloadUrl);
+        if (!result.ok) throw new Error("无法打开系统浏览器，请检查默认浏览器设置后重试。");
+      } catch (reason) {
+        options.notify?.({
+          color: "red",
+          title: "无法打开下载链接",
+          message: reason instanceof Error ? reason.message : "请检查默认浏览器设置后重试。"
+        });
+        return false;
+      }
       options.notify?.({
         color: "blue",
         title: effectiveUpdate.deliveryMode === "apk_download" ? "已打开 APK 下载链接" : "已打开更新下载链接",

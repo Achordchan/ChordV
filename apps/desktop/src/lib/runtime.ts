@@ -536,16 +536,23 @@ export async function openExternalUrl(url: string) {
   }
 
   if (!isTauriApp() || isAndroidPlatform()) {
-    const opened = window.open(normalizedUrl, "_blank", "noopener,noreferrer");
-    return { ok: Boolean(opened) };
+    // Open a blank page first so popup rejection is observable. Passing noopener
+    // to window.open returns null even when a browser successfully opens it.
+    const opened = window.open("about:blank", "_blank");
+    if (!opened) return { ok: false as const };
+    try {
+      opened.opener = null;
+      opened.location.replace(normalizedUrl);
+      return { ok: true as const };
+    } catch (error) {
+      opened.close();
+      throw error;
+    }
   }
 
   const invoke = await loadInvoke();
-  if (!invoke) {
-    const opened = window.open(normalizedUrl, "_blank", "noopener,noreferrer");
-    return { ok: Boolean(opened) };
-  }
-  return invoke("open_external_url", { url: normalizedUrl });
+  if (!invoke) return { ok: false as const };
+  return invoke<{ ok: boolean }>("open_external_url", { url: normalizedUrl });
 }
 
 export async function installWindowsUpdate(_input?: {
@@ -774,19 +781,6 @@ export async function subscribeNativeSessionRefreshed(handler: (session: NativeS
   return () => {
     unlisten();
   };
-}
-
-export async function openExternalLink(url: string) {
-  if (!url) {
-    return { ok: false as const };
-  }
-
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.target = "_blank";
-  anchor.rel = "noopener noreferrer";
-  anchor.click();
-  return { ok: true as const, method: "browser" as const };
 }
 
 export async function loadStoredSession(): Promise<AuthSessionDto | null> {
