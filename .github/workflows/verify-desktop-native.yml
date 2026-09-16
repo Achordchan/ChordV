@@ -47,9 +47,15 @@ jobs:
       - name: Build frontend for native context
         run: |
           pnpm --filter @chordv/shared build
+          pnpm --filter @chordv/api db:generate
           pnpm --filter @chordv/desktop build
       - name: Compile and test native platform code
+        if: runner.os != 'Windows'
         run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --locked
+      - name: Compile and test Windows native code with application manifest
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./apps/desktop/test/run-windows-native-tests.ps1
       - name: Diagnose Windows loader failures
         if: failure() && runner.os == 'Windows'
         shell: powershell

@@ -1,7 +1,8 @@
-import type { Response } from "express";
+import { publicSiteOrigin } from "../common/site-address.context";
+import type { Request, Response } from "express";
 import { ReportNodeProbesDto } from "./report-node-probes.dto";
 import { ClientAccessService } from "../common/client-access.service";
-import { Body, Res, Controller, Delete, Get, Headers, Param, Patch, Post, Query, Sse, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import { Body, Req, Res, Controller, Delete, Get, Headers, Param, Patch, Post, Query, Sse, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
 import { Type } from "class-transformer";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsNotEmpty, IsOptional, IsString, Matches, MaxLength, ValidateNested } from "class-validator";
@@ -343,15 +344,18 @@ export class ClientController {
   }
 
   @Get("update/tauri")
-  async tauriUpdate(@Query() query: TauriUpdateQueryDto, @Res() response: Response) {
+  async tauriUpdate(@Query() query: TauriUpdateQueryDto, @Req() request: Request, @Res() response: Response) {
     const result = await this.clientService.checkUpdate({ currentVersion: query.currentVersion, platform: "windows", channel: "stable", artifactType: "setup.exe" });
     const artifact = result.recommendedArtifact;
     response.setHeader("Cache-Control", "no-store");
     if (!result.hasUpdate || !artifact?.updaterSignature || !result.downloadUrl) {
       return response.status(204).send();
     }
+    const origin = publicSiteOrigin() || `${request.protocol}://${request.get("host")}`;
+    const downloadUrl = new URL(result.downloadUrl, origin).toString();
+    const originDownloadUrl = new URL(artifact.originDownloadUrl ?? result.downloadUrl, origin).toString();
     return response.json({ version: result.latestVersion, notes: result.changelog.join("\n"),
-      url: result.downloadUrl, originDownloadUrl: artifact.originDownloadUrl ?? result.downloadUrl,
+      url: downloadUrl, originDownloadUrl,
       signature: artifact.updaterSignature,
       fileSizeBytes: result.fileSizeBytes, fileHash: result.fileHash });
   }

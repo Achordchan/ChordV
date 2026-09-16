@@ -156,6 +156,32 @@ mod tests {
             worker.join().unwrap();
         }
     }
+    #[test]
+    fn official_plugin_downloads_from_actual_hosted_endpoint() {
+        use std::io::{BufRead, BufReader};
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let fixture: Value = serde_json::from_str(include_str!("../../../api/test/fixtures/tauri-signature.json")).unwrap();
+        let mut child = ChildGuard::new(Command::new("node").current_dir(root)
+            .args(["--import", "./apps/api/node_modules/tsx/dist/loader.mjs", "apps/api/test/serve-updater-fixture.ts"])
+            .env("TSX_TSCONFIG_PATH", "apps/api/tsconfig.json")
+            .env_remove("CHORDV_PUBLIC_BASE_URL").stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap());
+        let stdout = child.stdout.take().unwrap();
+        let (sender,receiver) = mpsc::sync_channel(1);
+        thread::spawn(move || { let mut line=String::new(); BufReader::new(stdout).read_line(&mut line).unwrap(); let _=sender.send(line); });
+        let endpoint=receiver.recv_timeout(Duration::from_secs(20)).unwrap();
+        let mut context=mock_context(noop_assets());
+        context.config_mut().plugins.0.insert("updater".into(),json!({"pubkey":fixture["publicKey"],"dangerousInsecureTransportProtocol":true}));
+        let app=mock_builder().plugin(tauri_plugin_updater::Builder::new().build()).build(context).unwrap();
+        let updater=app.updater_builder().endpoints(vec![endpoint.trim().parse().unwrap()]).unwrap().no_proxy().timeout(Duration::from_secs(10)).build().unwrap();
+        tauri::async_runtime::block_on(async {
+            let update=updater.check().await.unwrap().unwrap();
+            assert_eq!(update.download_url.path(),"/api/downloads/releases/fixture");
+            assert_eq!(update.download_url.host_str(),Some("127.0.0.1"));
+            let bytes=update.download(|_,_|{},||{}).await.unwrap();
+            assert_eq!(bytes,fixture["payload"].as_str().unwrap().as_bytes());
+        });
+    }
+
     #[cfg(windows)]
     #[test]
     fn installer_gate_follows_kernel_handle_lifetime() {
