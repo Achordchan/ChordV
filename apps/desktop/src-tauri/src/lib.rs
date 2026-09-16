@@ -8101,6 +8101,7 @@ pub fn run() {
                         match result {
                             Ok(())=>{EXIT_CLEANUP.complete();shutdown_app.exit(0);},
                             Err(error)=>{
+                                let _=shutdown_app.emit("chordv://exit-cleanup-failed",&error);
                                 EXIT_CLEANUP.failed();
                                 append_download_diagnostic_log(&shutdown_app,"runtime-exit",error);
                                 let ui_app=shutdown_app.clone();

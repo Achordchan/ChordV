@@ -55,3 +55,4 @@ jobs:
           node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/connection-race.regression.ts
           node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/logout-responsiveness.regression.ts
           node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/runtime-action-failure.regression.ts
+          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/exit-cleanup-notice.regression.ts

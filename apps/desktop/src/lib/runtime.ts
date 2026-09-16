@@ -761,6 +761,14 @@ export async function subscribeNativeLeaseHeartbeat(handler: (event: NativeLease
   };
 }
 
+export async function subscribeNativeExitFailure(handler:(message:string)=>void) {
+  if(!isTauriApp())return ()=>{};
+  const {listen}=await import("@tauri-apps/api/event");
+  return listen<string>("chordv://exit-cleanup-failed",event=>{
+    if(typeof event.payload==="string")handler(event.payload);
+  });
+}
+
 export type NativeSessionRefreshEvent = AuthSessionDto & { previousRefreshToken: string };
 
 export async function subscribeNativeSessionRefreshed(handler: (session: NativeSessionRefreshEvent) => void) {
