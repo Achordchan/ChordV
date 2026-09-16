@@ -3,7 +3,12 @@ $ErrorActionPreference = 'Stop'
 # lib-test executables are separate targets. The updater's mock-app tests also
 # link Wry's TaskDialogIndirect import, which requires Common Controls v6.
 $output = & cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --locked --no-run --message-format=json
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$compileExit = $LASTEXITCODE
+foreach ($line in $output) {
+  try { $diagnostic = $line | ConvertFrom-Json } catch { continue }
+  if ($diagnostic.reason -eq 'compiler-message' -and $diagnostic.message.rendered) { Write-Host $diagnostic.message.rendered }
+}
+if ($compileExit -ne 0) { exit $compileExit }
 $binaries = @($output | ForEach-Object {
   try { $entry = $_ | ConvertFrom-Json } catch { return }
   if ($entry.reason -eq 'compiler-artifact' -and $entry.profile.test -and $entry.executable) { $entry.executable }

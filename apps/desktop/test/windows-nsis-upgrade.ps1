@@ -105,6 +105,16 @@ try {
   if ($null -ne $originalProxy.ProxyServer) { Set-ItemProperty $proxyKey ProxyServer $originalProxy.ProxyServer }
   else { Remove-ItemProperty $proxyKey ProxyServer -ErrorAction SilentlyContinue }
   $uninstaller = Join-Path $installDir 'uninstall.exe'
-  if (Test-Path $uninstaller) { Run-Installer $uninstaller '/S' }
+  if (Test-Path $uninstaller) {
+    Run-Installer $uninstaller '/S'
+    # NSIS may relaunch its uninstaller from TEMP so it can delete itself.
+    $deadline = (Get-Date).AddSeconds(60)
+    while ((Test-Path $installDir) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
+    foreach ($name in @('ChordV.exe','chordv-desktop.exe','chordv_desktop.exe')) {
+      if (Test-Path (Join-Path $installDir $name)) { throw "Uninstall left executable entry point: $name" }
+    }
+    if (Test-Path $installDir) { throw 'Uninstall left the installation directory behind' }
+    Write-Output 'PASS: uninstall removes generated compatibility entries and installation directory'
+  }
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }

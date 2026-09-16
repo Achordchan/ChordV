@@ -3,7 +3,7 @@
 use super::*;
 
 pub fn cleanup_legacy_connection(app: &AppHandle) -> Result<(), String> {
-    let result = with_command_budget(Duration::from_secs(20), || {
+    let result: Result<(), String> = with_command_budget(Duration::from_secs(20), || {
         // Restore routing first: never remove a listener while Windows still
         // points its system proxy at that listener.
         clear_system_proxy().map_err(|error| error.to_string())?;
