@@ -119,6 +119,7 @@ fn max_desktop_update_download_bytes() -> u64 {
 struct RuntimeState {
     status: String,
     active_session_id: Option<String>,
+    active_attempt: Option<u64>,
     active_node_id: Option<String>,
     active_node_name: Option<String>,
     active_config: Option<GeneratedRuntimeConfigDto>,
@@ -254,6 +255,7 @@ impl Default for RuntimeState {
         Self {
             status: "idle".into(),
             active_session_id: None,
+            active_attempt: None,
             active_node_id: None,
             active_node_name: None,
             active_config: None,
@@ -664,12 +666,12 @@ fn load_session_blocking(app: AppHandle) -> Result<Option<AuthSessionDto>, Strin
 
 #[tauri::command]
 async fn save_session(app: AppHandle, session: AuthSessionDto) -> Result<CommandResult, String> {
-    let epoch=NATIVE_SESSION_STORE.generation();
+    let epoch=NATIVE_SESSION_STORE.reserve_save();
     tauri::async_runtime::spawn_blocking(move || save_session_blocking(app, session, epoch))
         .await.map_err(|error| error.to_string())?
 }
 
-fn save_session_blocking(app: AppHandle, session: AuthSessionDto, epoch:u64) -> Result<CommandResult, String> {
+fn save_session_blocking(app: AppHandle, session: AuthSessionDto, epoch:session_store::SaveTicket) -> Result<CommandResult, String> {
     write_session_to_disk(&app, &session, epoch)?;
 
     Ok(CommandResult {
@@ -703,7 +705,7 @@ fn read_session_from_disk(app: &AppHandle) -> Result<Option<AuthSessionDto>, Str
     NATIVE_SESSION_STORE.read(&session_path(app)?).map(|(session,_)|session)
 }
 
-fn write_session_to_disk(app: &AppHandle, session: &AuthSessionDto, epoch:u64) -> Result<(), String> {
+fn write_session_to_disk(app: &AppHandle, session: &AuthSessionDto, epoch:session_store::SaveTicket) -> Result<(), String> {
     let path=session_path(app)?;
     NATIVE_SESSION_STORE.save(&path,session,epoch)?;
     set_private_permissions(&path)
@@ -1121,7 +1123,7 @@ fn parse_api_error_message(body: &str) -> String {
 async fn refresh_access_session_inner(
     app: &AppHandle,
     refresh_token: &str,
-    epoch: u64,
+    epoch: session_store::SaveTicket,
 ) -> Result<AuthSessionDto, String> {
     let url = format!("{}/api/auth/refresh", api_base_url().trim_end_matches('/'));
     let response = api_client()?
@@ -3457,11 +3459,13 @@ async fn connect_runtime(app: AppHandle, config: GeneratedRuntimeConfigDto) -> R
 fn connect_runtime_blocking(app: &AppHandle, config: GeneratedRuntimeConfigDto, generation: u64) -> Result<CommandResult, String> {
     STARTUP_READY.wait()?;
     let session_id = config.session_id.clone();
-    let result = connect_runtime_inner(app, config, generation);
+    static NEXT_ATTEMPT:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
+    let attempt=NEXT_ATTEMPT.fetch_add(1,std::sync::atomic::Ordering::Relaxed)+1;
+    let result = connect_runtime_inner(app, config, generation, attempt);
     if let Err(error) = &result {
         let binding = app.state::<Mutex<RuntimeState>>();
         if let Ok(mut state) = binding.lock() {
-            if state.active_session_id.as_deref() == Some(session_id.as_str()) && state.status != "connected" {
+            if owns_failed_connection(&state,attempt,&session_id) {
                 if let Err(stop_error)=stop_runtime_process(app, &mut state) {
                     state.status="error".into();state.last_error=Some(stop_error.clone());
                     return Err(format!("{error}；{stop_error}"));
@@ -3487,7 +3491,11 @@ fn mark_failed_runtime_start(state: &mut RuntimeState, error:&str) {
     state.last_error=Some(error.into());
 }
 
-fn connect_runtime_inner(app: &AppHandle, config: GeneratedRuntimeConfigDto, generation: u64) -> Result<CommandResult, String> {
+fn owns_failed_connection(state:&RuntimeState,attempt:u64,session:&str)->bool {
+    state.active_attempt==Some(attempt) && state.active_session_id.as_deref()==Some(session) && state.status!="connected"
+}
+
+fn connect_runtime_inner(app: &AppHandle, config: GeneratedRuntimeConfigDto, generation: u64, attempt:u64) -> Result<CommandResult, String> {
     let state = app.state::<Mutex<RuntimeState>>();
     {
         let mut state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
@@ -3525,6 +3533,7 @@ fn connect_runtime_inner(app: &AppHandle, config: GeneratedRuntimeConfigDto, gen
 
         EXIT_CLEANUP.ensure_running()?;
         CONNECTION_GENERATION.ensure_current(generation)?;
+        state.active_attempt=Some(attempt);
         state.status = "starting".into();
         state.active_session_id = Some(config.session_id.clone());
         state.active_node_id = Some(config.node.id.clone());
@@ -8393,6 +8402,12 @@ mod update_trust_tests {
 #[cfg(test)]
 mod runtime_failure_tests {
     use super::*;
+    #[test]
+    fn rejected_duplicate_does_not_own_the_original_start(){
+        let mut state=RuntimeState::default();state.status="starting".into();state.active_session_id=Some("same-session".into());state.active_attempt=Some(1);
+        assert!(!owns_failed_connection(&state,2,"same-session"));
+        assert!(owns_failed_connection(&state,1,"same-session"));
+    }
     #[test]
     fn startup_errors_do_not_leave_a_connecting_session() {
         for phase in ["starting","connecting"] {
