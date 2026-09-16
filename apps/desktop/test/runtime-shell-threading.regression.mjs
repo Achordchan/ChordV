@@ -15,6 +15,10 @@ for(const name of ['runtime_status','runtime_logs','runtime_snapshot','clear_ses
   assert.match(source,new RegExp(`async fn ${name}\\(`),`${name} must not block the IPC main thread`);
   assert.match(rustFunction(name),/spawn_blocking/,`${name} must isolate mutex and filesystem waits`);
 }
+const shutdown=rustFunction('shutdown_runtime');
+assert.match(shutdown,/let restore=clear_system_proxy\(\)/,'empty runtime state must still reconcile OS proxy ownership');
+const startup=rustFunction('cleanup_stale_runtime');
+assert.ok(startup.indexOf('clear_system_proxy()') < startup.indexOf('kill_pid('),'startup restores proxy before killing a stale listener');
 const refresh=rustFunction('refresh_shell_ui');
 // Compile the actual dispatch function against a deterministic main-thread adapter.
 // The UI reader must acquire RuntimeState before it services the queued menu work.

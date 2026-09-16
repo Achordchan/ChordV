@@ -6393,9 +6393,9 @@ fn chrono_like_now() -> String {
 
 fn shutdown_runtime(app: &AppHandle, state: &mut RuntimeState) -> Result<(),String> {
     CONNECTION_GENERATION.invalidate();
-    let restore=if state.active_session_id.is_some() || state.active_pid.is_some() || state.child.is_some() || state.last_error.is_some() || load_runtime_pid_record(app).is_some() {
-        clear_system_proxy().map_err(|error|format!("系统代理清理失败，请重试退出：{error}"))
-    } else {Ok(())};
+    // Runtime state may be empty after failed startup maintenance. Proxy
+    // ownership is an OS fact, so always reconcile it before permitting exit.
+    let restore=clear_system_proxy().map_err(|error|format!("系统代理清理失败，请重试退出：{error}"));
     proxy_cleanup::stop_after_restore(restore,||stop_runtime_process(app,state))
         .map_err(|error|{state.last_error=Some(error.clone());error})?;
     state.status="idle".into();state.active_session_id=None;state.active_node_id=None;
@@ -7222,6 +7222,8 @@ fn cleanup_stale_runtime(app: &AppHandle) -> Result<(),String> {
         .unwrap_or_else(|_| std::env::temp_dir().join("chordv-desktop"))
         .join("runtime");
 
+    clear_system_proxy().map_err(|error|error.to_string())?;
+
     if let Some(record) = load_runtime_pid_record(app) {
         if runtime_pid_belongs_to_chordv(app, &record)? {
             kill_pid(record.pid)?;
@@ -7251,7 +7253,6 @@ fn cleanup_stale_runtime(app: &AppHandle) -> Result<(),String> {
         }
     }
 
-    clear_system_proxy().map_err(|error|error.to_string())?;
     cleanup_legacy_runtime_component_copies(app);
     cleanup_legacy_installed_runtime_names(app);
     Ok(())
