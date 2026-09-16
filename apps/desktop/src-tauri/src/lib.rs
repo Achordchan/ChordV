@@ -1,3 +1,6 @@
+mod update_report;
+#[cfg(any(windows, test))]
+mod windows_update;
 mod process_identity;
 mod exit_gate;
 mod proxy_cleanup;
@@ -520,6 +523,7 @@ struct NativeClientEventErrorPayload {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DesktopInstallerDownloadInput {
+    expected_version: Option<String>,
     file_name: Option<String>,
     package_kind: Option<String>,
     current_version: Option<String>,
@@ -1443,7 +1447,6 @@ async fn fetch_trusted_desktop_update_package(
         .filter(|value| !value.trim().is_empty());
 
     let artifact_type = match package_kind {
-        "full_update" => "zip",
         _ => {
             if cfg!(target_os = "macos") {
                 "dmg"
@@ -1499,11 +1502,7 @@ async fn fetch_trusted_desktop_update_package(
 
     let delivery_mode = json_string_field(&payload, &["deliveryMode", "delivery_mode"])
         .unwrap_or_else(|| "none".into());
-    let expected_delivery = if package_kind == "full_update" {
-        "desktop_full_replace"
-    } else {
-        "desktop_installer_download"
-    };
+    let expected_delivery = "desktop_installer_download";
     if delivery_mode != expected_delivery {
         return Err(format!(
             "服务端更新清单不匹配：expected deliveryMode={expected_delivery}, got={delivery_mode}"
@@ -1550,22 +1549,6 @@ async fn fetch_trusted_desktop_update_package(
     })
 }
 
-async fn fetch_trusted_desktop_full_update_package(
-    app: &AppHandle,
-    current_version: &str,
-    channel: &str,
-    preferred_candidate: &str,
-) -> Result<TrustedDesktopUpdatePackage, String> {
-    fetch_trusted_desktop_update_package(
-        app,
-        current_version,
-        channel,
-        "full_update",
-        preferred_candidate,
-    )
-    .await
-}
-
 async fn fetch_trusted_desktop_installer_package(
     app: &AppHandle,
     current_version: &str,
@@ -1598,17 +1581,18 @@ async fn download_desktop_installer_inner(
     progress_channel: Channel<DesktopInstallerDownloadProgress>,
 ) -> Result<DesktopInstallerDownloadResult, String> {
     ensure_startup_ready(&app)?;
+    #[cfg(windows)]
+    return windows_update::download(&app, &progress_channel, input.expected_version.as_deref()).await;
     #[cfg(target_os = "android")]
     {
         let _ = (app, input, progress_channel);
         return Err("安卓端不支持桌面安装器下载".into());
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", windows)))]
     {
         set_installer_operation_active(&app, true)?;
         let result = async {
-            let requested_full_update = input.package_kind.as_deref() == Some("full_update");
             let preferred_candidate = match input
                 .preferred_candidate
                 .as_deref()
@@ -1621,31 +1605,7 @@ async fn download_desktop_installer_inner(
                 _ => return Err("更新下载候选仅支持 mirror 或 origin".into()),
             };
             let (url, file_name_hint, expected_total_bytes, expected_hash, package_kind) =
-                if requested_full_update {
-                    let current_version = input
-                        .current_version
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| app.package_info().version.to_string());
-                    let channel = input
-                        .channel
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .unwrap_or("stable");
-                    let trusted =
-                        fetch_trusted_desktop_full_update_package(&app, &current_version, channel, preferred_candidate)
-                            .await?;
-                    (
-                        trusted.url,
-                        trusted.file_name.or(input.file_name.clone()),
-                        trusted.expected_total_bytes,
-                        trusted.expected_hash,
-                        Some(trusted.package_kind),
-                    )
-                } else {
+                {
                     let current_version = input
                         .current_version
                         .as_deref()
@@ -2028,30 +1988,6 @@ fn remember_pending_installer_package(
     Ok(())
 }
 
-fn take_pending_full_update_package(
-    app: &AppHandle,
-) -> Result<(PathBuf, Option<String>, u64), String> {
-    let state: State<'_, Mutex<PendingInstallerState>> = app.state();
-    let pending = state
-        .lock()
-        .map_err(|_| "installer pending state lock failed".to_string())?;
-    if pending.package_kind.as_deref() != Some("full_update") {
-        return Err("no verified full update package is pending".into());
-    }
-    let path = pending
-        .path
-        .clone()
-        .ok_or_else(|| "no verified full update package is pending".to_string())?;
-    let expected_hash = pending.expected_hash.clone();
-    let expected_total_bytes = pending
-        .expected_total_bytes
-        .filter(|value| *value > 0)
-        .ok_or_else(|| "pending full update package is missing verified size".to_string())?;
-    // Keep pending until apply succeeds far enough to exit process; clear on explicit failure path only.
-    let _ = (&pending.package_kind,);
-    Ok((path, expected_hash, expected_total_bytes))
-}
-
 #[tauri::command]
 async fn open_desktop_installer(app: AppHandle, path: String) -> Result<CommandResult, String> {
     tauri::async_runtime::spawn_blocking(move || open_desktop_installer_blocking(app, path))
@@ -2306,15 +2242,19 @@ async fn consume_desktop_update_install_report(
 fn consume_desktop_update_install_report_blocking(
     app: AppHandle,
 ) -> Result<Option<DesktopUpdateInstallReportDto>, String> {
+    #[cfg(windows)]
+    windows_update::reconcile_install_result(&app)?;
     let path = desktop_update_report_path(&app)?;
     if !path.exists() {
         return Ok(None);
     }
     let raw = fs::read_to_string(&path)
         .map_err(|error| format!("failed to read update install report: {error}"))?;
-    let _ = fs::remove_file(&path);
-    let value: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|error| format!("failed to parse update install report: {error}"))?;
+    // Windows PowerShell 5.1 reports may contain a UTF-8 BOM. Preserve the
+    // report if parsing fails so diagnostics are not destroyed on first launch.
+    let value = update_report::parse(&raw)?;
+    fs::remove_file(&path)
+        .map_err(|error| format!("failed to consume update install report: {error}"))?;
     Ok(Some(DesktopUpdateInstallReportDto {
         ok: value
             .get("ok")
@@ -2376,9 +2316,6 @@ fn quit_for_update_blocking(app: AppHandle) -> Result<CommandResult, String> {
             let package_kind = pending.package_kind.clone();
             (path, expected_hash, expected_total_bytes, package_kind)
         };
-        if package_kind.as_deref() == Some("full_update") {
-            return Err("完整替换更新请使用 apply_desktop_full_update".into());
-        }
         if !installer_path.exists() {
             return Err("安装器文件不存在，请重新下载".into());
         }
@@ -2423,114 +2360,12 @@ fn quit_for_update_blocking(app: AppHandle) -> Result<CommandResult, String> {
 }
 
 #[tauri::command]
-async fn apply_desktop_full_update(app: AppHandle) -> Result<CommandResult, String> {
-    tauri::async_runtime::spawn_blocking(move || apply_desktop_full_update_blocking(app))
-        .await.map_err(|error| error.to_string())?
-}
-
-fn apply_desktop_full_update_blocking(app: AppHandle) -> Result<CommandResult, String> {
-    #[cfg(not(windows))]
-    {
-        let _ = app;
-        return Err("full replacement updates are only supported on Windows".into());
-    }
-
+async fn install_windows_update(app: AppHandle) -> Result<CommandResult, String> {
     #[cfg(windows)]
-    {
-        set_installer_operation_active(&app, true)?;
-        let result = (|| {
-            let (package_path, expected_hash, expected_total_bytes) =
-                take_pending_full_update_package(&app)?;
-            if !package_path.exists() {
-                return Err("update package file does not exist".to_string());
-            }
-            let source_metadata = fs::metadata(&package_path)
-                .map_err(|error| format!("failed to read update package metadata: {error}"))?;
-            let effective_total_bytes = expected_total_bytes;
-            if source_metadata.len() != effective_total_bytes {
-                return Err(format!(
-                    "full update package size mismatch: expected {effective_total_bytes}, got {}",
-                    source_metadata.len()
-                ));
-            }
-            if let Some(expected_hash) = expected_hash.as_deref() {
-                verify_file_sha256(&package_path, expected_hash, "full update package")?;
-            }
-
-            let current_exe = std::env::current_exe()
-                .map_err(|error| format!("failed to resolve current executable path: {error}"))?;
-            let install_dir = current_exe
-                .parent()
-                .ok_or_else(|| "current executable has no install directory".to_string())?
-                .to_path_buf();
-            let exe_name = current_exe
-                .file_name()
-                .and_then(|value| value.to_str())
-                .ok_or_else(|| "current executable name is invalid".to_string())?
-                .to_string();
-            assert_windows_install_dir_writable(&install_dir)?;
-
-            validate_desktop_full_update_package(&package_path, &exe_name)?;
-
-            let updater_dir = app
-                .path()
-                .app_local_data_dir()
-                .unwrap_or_else(|_| std::env::temp_dir().join("chordv-desktop"))
-                .join("updater");
-            fs::create_dir_all(&updater_dir)
-                .map_err(|error| format!("failed to create updater directory: {error}"))?;
-            let private_package_path = updater_dir.join(format!(
-                "full-update-package-{}.zip",
-                chrono::Utc::now().timestamp_millis()
-            ));
-            fs::copy(&package_path, &private_package_path)
-                .map_err(|error| format!("failed to stage update package: {error}"))?;
-            let staged_metadata = fs::metadata(&private_package_path).map_err(|error| {
-                format!("failed to read staged update package metadata: {error}")
-            })?;
-            if staged_metadata.len() != effective_total_bytes {
-                let _ = fs::remove_file(&private_package_path);
-                return Err("staged update package size mismatch".into());
-            }
-            validate_desktop_full_update_package(&private_package_path, &exe_name)?;
-            let script_path = updater_dir.join(format!(
-                "apply-full-update-{}.ps1",
-                chrono::Utc::now().timestamp_millis()
-            ));
-            let log_path = updater_dir.join("full-update.log");
-            let ready_marker_path = updater_dir.join("startup-ready.marker");
-
-            write_full_update_script(&script_path)?;
-            shutdown_runtime_state(&app)?;
-            spawn_deferred_full_update_apply(
-                &script_path,
-                &private_package_path,
-                effective_total_bytes,
-                &install_dir,
-                &exe_name,
-                std::process::id(),
-                &log_path,
-                &ready_marker_path,
-            )?;
-
-            let exit_handle = app.clone();
-            thread::spawn(move || {
-                thread::sleep(Duration::from_millis(150));
-                exit_handle.exit(0);
-            });
-
-            Ok(CommandResult {
-                ok: true,
-                config_path: Some(private_package_path.to_string_lossy().into_owned()),
-                log_path: Some(log_path.to_string_lossy().into_owned()),
-                active_pid: None,
-            })
-        })();
-        if result.is_err() {
-            let _ = set_installer_operation_active(&app, false);
-        }
-        result
-    }
+    return tauri::async_runtime::spawn_blocking(move || windows_update::install(&app))
+        .await.map_err(|error| error.to_string())?;
+    #[cfg(not(windows))]
+    { let _ = app; Err("此安装方式仅支持 Windows".into()) }
 }
 
 #[tauri::command]
@@ -4578,127 +4413,6 @@ fn extract_zip_entry(
     Ok(())
 }
 
-fn validate_desktop_full_update_package(package_path: &Path, exe_name: &str) -> Result<(), String> {
-    let file = File::open(package_path)
-        .map_err(|error| format!("failed to open full update package: {error}"))?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|error| format!("full update package is not a valid ZIP: {error}"))?;
-    let mut has_main_exe = false;
-    let mut has_xray = false;
-    let mut has_geoip = false;
-    let mut has_geosite = false;
-
-    for idx in 0..archive.len() {
-        let mut entry = archive
-            .by_index(idx)
-            .map_err(|error| format!("failed to read full update ZIP entry: {error}"))?;
-        let entry_name = entry.name().replace('\\', "/");
-        if !desktop_update_zip_entry_path_is_safe(&entry_name) {
-            return Err(format!(
-                "full update ZIP contains unsafe path: {entry_name}"
-            ));
-        }
-        let normalized = entry_name.trim_end_matches('/').to_ascii_lowercase();
-        // Future full updates only ship ChordV.exe.
-        if entry_name == exe_name || normalized == "chordv.exe" {
-            if entry.size() == 0 {
-                return Err(format!("full update ZIP executable is empty: {entry_name}"));
-            }
-            if entry.size() < MIN_WINDOWS_PE_BYTES {
-                return Err(format!(
-                    "full update ZIP executable is too small: {entry_name}"
-                ));
-            }
-            let mut magic = [0_u8; 2];
-            entry
-                .read_exact(&mut magic)
-                .map_err(|error| format!("failed to read full update executable: {error}"))?;
-            if magic != *b"MZ" {
-                return Err(format!(
-                    "full update ZIP executable is not a Windows PE file: {entry_name}"
-                ));
-            }
-            has_main_exe = true;
-        }
-        match normalized.as_str() {
-            "bin/xray.exe" => {
-                if entry.size() < MIN_WINDOWS_PE_BYTES {
-                    return Err("full update ZIP contains invalid bin/xray.exe".into());
-                }
-                let mut magic = [0_u8; 2];
-                entry
-                    .read_exact(&mut magic)
-                    .map_err(|error| format!("failed to read full update xray.exe: {error}"))?;
-                if magic != *b"MZ" {
-                    return Err("full update ZIP bin/xray.exe is not a Windows PE file".into());
-                }
-                has_xray = true;
-            }
-            "bin/geoip.dat" => {
-                if entry.size() < MIN_GEO_DATA_BYTES {
-                    return Err("full update ZIP contains invalid bin/geoip.dat".into());
-                }
-                has_geoip = true;
-            }
-            "bin/geosite.dat" => {
-                if entry.size() < MIN_GEO_DATA_BYTES {
-                    return Err("full update ZIP contains invalid bin/geosite.dat".into());
-                }
-                has_geosite = true;
-            }
-            _ => {}
-        }
-    }
-
-    if !has_main_exe {
-        return Err(format!(
-            "full update ZIP must contain {exe_name} or ChordV.exe at the package root"
-        ));
-    }
-    if !has_xray || !has_geoip || !has_geosite {
-        return Err(
-            "full update ZIP must contain bin/xray.exe, bin/geoip.dat, and bin/geosite.dat".into(),
-        );
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn assert_windows_install_dir_writable(install_dir: &Path) -> Result<(), String> {
-    if !install_dir.is_dir() {
-        return Err("install directory does not exist".into());
-    }
-    assert_directory_writable(install_dir, "install directory")?;
-    let bin_dir = install_dir.join("bin");
-    fs::create_dir_all(&bin_dir)
-        .map_err(|error| format!("install runtime bin directory is not writable: {error}"))?;
-    assert_directory_writable(&bin_dir, "install runtime bin directory")?;
-    Ok(())
-}
-
-#[cfg(windows)]
-fn assert_directory_writable(dir: &Path, label: &str) -> Result<(), String> {
-    let probe_path = dir.join(format!(
-        ".chordv-write-test-{}-{}",
-        std::process::id(),
-        chrono::Utc::now().timestamp_millis()
-    ));
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&probe_path)
-            .map_err(|error| format!("{label} is not writable: {error}"))?;
-        file.write_all(b"probe")
-            .map_err(|error| format!("{label} write probe failed: {error}"))?;
-        file.flush()
-            .map_err(|error| format!("{label} write probe flush failed: {error}"))?;
-        Ok(())
-    })();
-    let _ = fs::remove_file(&probe_path);
-    result
-}
-
 fn desktop_update_zip_entry_path_is_safe(entry_name: &str) -> bool {
     let normalized = entry_name.replace('\\', "/");
     if normalized.trim().is_empty()
@@ -5000,11 +4714,8 @@ fn compare_version_parts(left: &[u32], right: &[u32]) -> std::cmp::Ordering {
 }
 
 fn desktop_update_package_label(package_kind: Option<&str>) -> &'static str {
-    if package_kind == Some("full_update") {
-        "update package"
-    } else {
-        "installer"
-    }
+    let _ = package_kind;
+    "installer"
 }
 
 fn resolve_installer_file_name(
@@ -5036,9 +4747,6 @@ fn resolve_installer_file_name(
 
     #[cfg(windows)]
     {
-        if package_kind == Some("full_update") {
-            return "ChordV-full-update.zip".into();
-        }
         return "ChordV-setup.exe".into();
     }
 
@@ -5118,313 +4826,6 @@ fn open_external_url_with_system(url: &str) -> Result<(), String> {
 #[cfg(target_os = "android")]
 fn open_external_url_with_system(_url: &str) -> Result<(), String> {
     Err("安卓端暂不支持打开外部链接".into())
-}
-
-#[cfg(windows)]
-fn full_update_startup_ready_marker_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let updater_dir = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|error| format!("failed to resolve app data directory: {error}"))?
-        .join("updater");
-    Ok(updater_dir.join("startup-ready.marker"))
-}
-
-#[cfg(windows)]
-fn write_full_update_startup_ready_marker(app: &AppHandle) -> Result<(), String> {
-    let marker_path = full_update_startup_ready_marker_path(app)?;
-    if let Some(parent) = marker_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("failed to create updater directory: {error}"))?;
-    }
-    let marker = format!(
-        "pid={}\ntimestamp={}\n",
-        std::process::id(),
-        chrono::Utc::now().to_rfc3339()
-    );
-    fs::write(&marker_path, marker)
-        .map_err(|error| format!("failed to write startup ready marker: {error}"))
-}
-
-#[cfg(windows)]
-fn write_full_update_script(script_path: &Path) -> Result<(), String> {
-    let script = r#"
-param(
-  [Parameter(Mandatory=$true)][string]$PackagePath,
-  [Parameter(Mandatory=$true)][Int64]$ExpectedSizeBytes,
-  [Parameter(Mandatory=$true)][string]$InstallDir,
-  [Parameter(Mandatory=$true)][string]$ExeName,
-  [Parameter(Mandatory=$true)][int]$PidToWait,
-  [Parameter(Mandatory=$true)][string]$LogPath,
-  [Parameter(Mandatory=$true)][string]$ReadyMarkerPath
-)
-$ErrorActionPreference = 'Stop'
-function Write-UpdateLog([string]$Message) {
-  $parent = Split-Path -Parent $LogPath
-  if ($parent) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-  Add-Content -LiteralPath $LogPath -Value ("{0:o} {1}" -f [DateTimeOffset]::UtcNow, $Message)
-}
-function Test-MinimumFileLength([string]$Path, [string]$Label, [Int64]$MinBytes) {
-  if (!(Test-Path -LiteralPath $Path)) {
-    throw "$Label missing"
-  }
-  $length = (Get-Item -LiteralPath $Path).Length
-  if ($length -lt $MinBytes) {
-    throw "$Label is too small: expected at least $MinBytes bytes, got $length"
-  }
-}
-function Test-MzHeader([string]$Path, [string]$Label) {
-  $stream = [System.IO.File]::OpenRead($Path)
-  try {
-    $buffer = New-Object byte[] 2
-    $read = $stream.Read($buffer, 0, 2)
-    if ($read -ne 2 -or $buffer[0] -ne 0x4D -or $buffer[1] -ne 0x5A) {
-      throw "$Label is not a Windows PE file"
-    }
-  } finally {
-    $stream.Dispose()
-  }
-}
-try {
-  Write-UpdateLog "waiting for process $PidToWait"
-  while (Get-Process -Id $PidToWait -ErrorAction SilentlyContinue) {
-    Start-Sleep -Milliseconds 200
-  }
-  Start-Sleep -Milliseconds 250
-  $actualSize = (Get-Item -LiteralPath $PackagePath).Length
-  if ($actualSize -ne $ExpectedSizeBytes) {
-    throw "update package size mismatch before extraction"
-  }
-  $updaterDir = Split-Path -Parent $LogPath
-  $staging = Join-Path $updaterDir ("full-update-staging-" + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
-  if (Test-Path -LiteralPath $staging) {
-    Remove-Item -LiteralPath $staging -Recurse -Force
-  }
-  New-Item -ItemType Directory -Path $staging -Force | Out-Null
-  Write-UpdateLog "extracting $PackagePath"
-  Expand-Archive -LiteralPath $PackagePath -DestinationPath $staging -Force
-  $stagingRoot = [System.IO.Path]::GetFullPath($staging + [System.IO.Path]::DirectorySeparatorChar)
-  Get-ChildItem -LiteralPath $staging -Recurse -Force | ForEach-Object {
-    $fullPath = [System.IO.Path]::GetFullPath($_.FullName)
-    if (!$fullPath.StartsWith($stagingRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
-      throw "unsafe extracted path: $fullPath"
-    }
-  }
-  # Future packages only ship ChordV.exe as the main binary.
-  $stagedExe = Join-Path $staging "ChordV.exe"
-  if (!(Test-Path -LiteralPath $stagedExe)) {
-    throw "staged executable not found: ChordV.exe"
-  }
-  Test-MinimumFileLength $stagedExe "staged executable" 1048576
-  Test-MzHeader $stagedExe "staged executable"
-  foreach ($required in @("bin\xray.exe", "bin\geoip.dat", "bin\geosite.dat")) {
-    $requiredPath = Join-Path $staging $required
-    if (!(Test-Path -LiteralPath $requiredPath)) {
-      throw "staged runtime file missing: $required"
-    }
-    if ($required -eq "bin\xray.exe") {
-      Test-MinimumFileLength $requiredPath $required 1048576
-      Test-MzHeader $requiredPath $required
-    } else {
-      Test-MinimumFileLength $requiredPath $required 65536
-    }
-  }
-  $backup = Join-Path $updaterDir ("full-update-backup-" + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
-  New-Item -ItemType Directory -Path $backup -Force | Out-Null
-  Write-UpdateLog "backing up $InstallDir to $backup"
-  try {
-    Get-ChildItem -LiteralPath $InstallDir -Force | ForEach-Object {
-      Copy-Item -LiteralPath $_.FullName -Destination $backup -Recurse -Force
-    }
-  } catch {
-    Write-UpdateLog ("backup failed, aborting before modifying install dir: " + $_.Exception.Message)
-    throw
-  }
-  Write-UpdateLog "mirroring staged payload files to $InstallDir"
-  try {
-    Get-ChildItem -LiteralPath $InstallDir -Force | ForEach-Object {
-      Remove-Item -LiteralPath $_.FullName -Recurse -Force
-    }
-    Get-ChildItem -LiteralPath $staging -Force | ForEach-Object {
-      Copy-Item -LiteralPath $_.FullName -Destination $InstallDir -Recurse -Force
-    }
-    $exePath = Join-Path $InstallDir "ChordV.exe"
-    if (!(Test-Path -LiteralPath $exePath)) {
-      throw "updated executable not found: ChordV.exe"
-    }
-    Test-MinimumFileLength $exePath "updated executable" 1048576
-    Test-MzHeader $exePath "updated executable"
-    # Rewrite desktop/start-menu shortcuts that still point at the legacy crate binary.
-    try {
-      $shell = New-Object -ComObject WScript.Shell
-      $legacyNames = @("chordv-desktop.exe", "chordv_desktop.exe")
-      $searchRoots = @(
-        [Environment]::GetFolderPath("Desktop"),
-        [Environment]::GetFolderPath("StartMenu"),
-        [Environment]::GetFolderPath("Programs"),
-        (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"),
-        (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs")
-      ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
-      foreach ($root in $searchRoots) {
-        Get-ChildItem -LiteralPath $root -Filter "*.lnk" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
-          try {
-            $shortcut = $shell.CreateShortcut($_.FullName)
-            $targetPath = [string]$shortcut.TargetPath
-            if (-not $targetPath) { return }
-            $targetLeaf = [System.IO.Path]::GetFileName($targetPath)
-            $sameDir = [string]::Equals(
-              [System.IO.Path]::GetFullPath([System.IO.Path]::GetDirectoryName($targetPath)),
-              [System.IO.Path]::GetFullPath($InstallDir),
-              [System.StringComparison]::OrdinalIgnoreCase
-            )
-            if ($sameDir -and ($legacyNames -contains $targetLeaf.ToLowerInvariant())) {
-              $shortcut.TargetPath = $exePath
-              $shortcut.WorkingDirectory = $InstallDir
-              $shortcut.Save()
-              Write-UpdateLog ("rewrote shortcut " + $_.FullName + " -> ChordV.exe")
-            }
-          } catch {
-            Write-UpdateLog ("shortcut rewrite skipped for " + $_.FullName + ": " + $_.Exception.Message)
-          }
-        }
-      }
-    } catch {
-      Write-UpdateLog ("shortcut rewrite failed: " + $_.Exception.Message)
-    }
-    $startedProcess = $null
-    if (Test-Path -LiteralPath $ReadyMarkerPath) {
-      Remove-Item -LiteralPath $ReadyMarkerPath -Force -ErrorAction SilentlyContinue
-    }
-    $readyMarkerParent = Split-Path -Parent $ReadyMarkerPath
-    if ($readyMarkerParent) {
-      New-Item -ItemType Directory -Path $readyMarkerParent -Force | Out-Null
-    }
-    Write-UpdateLog "starting $exePath"
-    $startedProcess = Start-Process -FilePath $exePath -WorkingDirectory $InstallDir -PassThru
-    $ready = $false
-    $deadline = (Get-Date).AddSeconds(30)
-    while ((Get-Date) -lt $deadline) {
-      $startedProcess.Refresh()
-      if ($startedProcess.HasExited) {
-        throw ("updated executable exited during startup readiness check, exit code " + $startedProcess.ExitCode)
-      }
-      if (Test-Path -LiteralPath $ReadyMarkerPath) {
-        $ready = $true
-        break
-      }
-      Start-Sleep -Milliseconds 250
-    }
-    if (!$ready) {
-      throw "updated executable did not report startup readiness within 30 seconds"
-    }
-    $startedProcess.Refresh()
-    if ($startedProcess.HasExited) {
-      throw ("updated executable exited during startup health check, exit code " + $startedProcess.ExitCode)
-    }
-    Write-UpdateLog "startup ready marker observed"
-  } catch {
-    Write-UpdateLog ("mirror failed, rolling back from complete backup: " + $_.Exception.Message)
-    if ($null -ne $startedProcess) {
-      try {
-        $startedProcess.Refresh()
-        if (!$startedProcess.HasExited) {
-          Stop-Process -Id $startedProcess.Id -Force -ErrorAction SilentlyContinue
-          Wait-Process -Id $startedProcess.Id -Timeout 5 -ErrorAction SilentlyContinue
-        }
-      } catch {
-      }
-    }
-    Get-ChildItem -LiteralPath $InstallDir -Force -ErrorAction SilentlyContinue | ForEach-Object {
-      Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    Get-ChildItem -LiteralPath $backup -Force | ForEach-Object {
-      Copy-Item -LiteralPath $_.FullName -Destination $InstallDir -Recurse -Force
-    }
-    throw
-  }
-  Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
-  Write-UpdateLog "full update complete"
-  try {
-    $reportPath = Join-Path (Split-Path -Parent $LogPath) "last-install-report.json"
-    $payload = @{
-      ok = $true
-      platform = "windows"
-      mode = "desktop_full_replace"
-      summary = "更新安装完成"
-      detail = $null
-      logPath = $LogPath
-      createdAt = [DateTimeOffset]::UtcNow.ToString("o")
-    } | ConvertTo-Json -Compress
-    Set-Content -LiteralPath $reportPath -Value $payload -Encoding UTF8
-  } catch {
-  }
-} catch {
-  Write-UpdateLog ("full update failed: " + $_.Exception.Message)
-  try {
-    $reportPath = Join-Path (Split-Path -Parent $LogPath) "last-install-report.json"
-    $payload = @{
-      ok = $false
-      platform = "windows"
-      mode = "desktop_full_replace"
-      summary = "自动更新失败，已回滚到旧版本。"
-      detail = $_.Exception.Message
-      logPath = $LogPath
-      createdAt = [DateTimeOffset]::UtcNow.ToString("o")
-    } | ConvertTo-Json -Compress
-    Set-Content -LiteralPath $reportPath -Value $payload -Encoding UTF8
-  } catch {
-  }
-  throw
-}
-"#;
-    fs::write(script_path, script)
-        .map_err(|error| format!("failed to write update script: {error}"))
-}
-
-#[cfg(windows)]
-fn spawn_deferred_full_update_apply(
-    script_path: &Path,
-    package_path: &Path,
-    expected_size_bytes: u64,
-    install_dir: &Path,
-    exe_name: &str,
-    current_pid: u32,
-    log_path: &Path,
-    ready_marker_path: &Path,
-) -> Result<(), String> {
-    let mut command = Command::new("powershell");
-    command.creation_flags(CREATE_NO_WINDOW);
-    command
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-WindowStyle",
-            "Hidden",
-            "-File",
-        ])
-        .arg(script_path)
-        .arg("-PackagePath")
-        .arg(package_path)
-        .arg("-ExpectedSizeBytes")
-        .arg(expected_size_bytes.to_string())
-        .arg("-InstallDir")
-        .arg(install_dir)
-        .arg("-ExeName")
-        .arg(exe_name)
-        .arg("-PidToWait")
-        .arg(current_pid.to_string())
-        .arg("-LogPath")
-        .arg(log_path)
-        .arg("-ReadyMarkerPath")
-        .arg(ready_marker_path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| format!("failed to start full update helper: {error}"))?;
-    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -7939,6 +7340,9 @@ fn setup_desktop_tray(app: &AppHandle) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(windows)]
+    if windows_update::installation_in_progress() { return; }
+    let context = tauri::generate_context!();
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
         .plugin(android_mobile_plugin::init())
@@ -7957,6 +7361,12 @@ pub fn run() {
         .manage(Mutex::new(NativeClientEventStreamState::default()))
         .manage(AsyncMutex::new(NativeSessionRefreshState::default()))
         .manage(Mutex::new(android_runtime::AndroidRuntimeState::default()));
+
+    #[cfg(windows)]
+    {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build())
+            .manage(windows_update::PreparedState::default());
+    }
 
     #[cfg(not(target_os = "android"))]
     {
@@ -7979,8 +7389,6 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = set_main_window_title(&window, &app.handle());
             }
-            #[cfg(windows)]
-            {let _ = write_full_update_startup_ready_marker(&app.handle());}
             #[cfg(not(target_os = "android"))]
             {
                 refresh_shell_ui(&app.handle())?;
@@ -8015,7 +7423,7 @@ pub fn run() {
             open_desktop_installer,
             open_external_url,
             test_routing_rule,
-            apply_desktop_full_update,
+            install_windows_update,
             quit_for_update,
             consume_desktop_update_install_report,
             desktop_runtime_environment,
@@ -8036,7 +7444,7 @@ pub fn run() {
             android_runtime::start_android_runtime,
             android_runtime::stop_android_runtime
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application");
 
     app.run(|app_handle, event| match event {

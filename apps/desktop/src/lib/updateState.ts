@@ -102,7 +102,7 @@ export function resolveUpdatePlatform(platformTarget: RuntimeStatus["platformTar
 
 export function preferredArtifactType(platformTarget: ResolvedUpdatePlatform): ReleaseArtifactType {
   if (platformTarget === "windows") {
-    return "zip";
+    return "setup.exe";
   }
   if (platformTarget === "android") {
     return "apk";

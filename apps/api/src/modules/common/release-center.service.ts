@@ -1,3 +1,4 @@
+import { normalizeUpdaterSignature, fetchUpdaterSignature, verifyUpdaterSignature } from "./updater-signature";
 import type { Prisma } from "@prisma/client";
 import { FileMaintenanceService } from "./file-maintenance.service";
 import { downloadHostedArtifact, type ArtifactImportInput, type ArtifactImportProgress } from "./release-artifact-import";
@@ -525,6 +526,7 @@ export class ReleaseCenterService {
             storedFilePath: null,
             fileSizeBytes: normalizeOptionalReleaseFileSizeBytes((input as { fileSizeBytes?: string | number | null }).fileSizeBytes),
             fileHash: normalizeReleaseArtifactFileHash((input as { fileHash?: string | null }).fileHash),
+            updaterSignature: normalizeUpdaterSignature(input.updaterSignature),
             isPrimary: isPrimary ?? false,
             isFullPackage: true
           }
@@ -609,6 +611,9 @@ export class ReleaseCenterService {
       (input.fileName !== undefined ? normalizeNullableText(input.fileName) : metadataIdentityChanged ? null : current.fileName);
     const isPrimary = normalizeOptionalBoolean(input.isPrimary);
     if (nextSource === "uploaded") {
+      if (platform === "windows" && nextType === "setup.exe") {
+        await verifyUpdaterSignature(resolveReleaseArtifactAbsolutePath(current.storedFilePath), input.updaterSignature === undefined ? current.updaterSignature : input.updaterSignature);
+      }
       const nextUploadedFileName = input.fileName !== undefined ? normalizeNullableText(input.fileName) : current.fileName;
       await this.assertUploadedReleaseArtifactValidForWindowsFullUpdate({
         platform,
@@ -642,6 +647,11 @@ export class ReleaseCenterService {
               ? { deliveryMode: nextDeliveryMode }
               : {}),
             ...(input.downloadUrl !== undefined ? { downloadUrl: input.downloadUrl.trim() } : {}),
+            ...(input.updaterSignature !== undefined ? { updaterSignature: normalizeUpdaterSignature(input.updaterSignature) }
+              : (input.downloadUrl !== undefined && input.downloadUrl.trim() !== current.downloadUrl) ||
+                (input.source !== undefined && input.source !== current.source) ||
+                (input.type !== undefined && toPrismaReleaseArtifactType(input.type) !== current.type)
+                ? { updaterSignature: null } : {}),
             ...(nextSource === "external" ? { defaultMirrorPrefix: null, allowClientMirror: false } : {}),
             ...(nextSource !== "external" ? { defaultMirrorPrefix: null } : {}),
             ...(nextSource === "external"
@@ -689,9 +699,11 @@ export class ReleaseCenterService {
       const file = await downloadHostedArtifact(input.sourceUrl, signal, progress);
       try {
         signal.throwIfAborted();
-        const extension = release.platform === "windows" ? "zip" : release.platform === "macos" ? "dmg" : release.platform === "android" ? "apk" : "ipa";
+        const extension = release.platform === "windows" ? "setup.exe" : release.platform === "macos" ? "dmg" : release.platform === "android" ? "apk" : "ipa";
         const name = file.originalname.includes(".") ? file.originalname : `ChordV_${release.version}.${extension}`;
-        const upload = { type: extension as ReleaseArtifactType, isPrimary: input.isPrimary, fileName: name };
+        if (release.platform === "windows" && !name.toLowerCase().endsWith(".exe")) throw new BadRequestException("Windows 新发布请使用 EXE 安装包及对应 .sig 签名。");
+        const updaterSignature = release.platform === "windows" ? await fetchUpdaterSignature(input.sourceUrl, signal) : null;
+        const upload = { type: extension as ReleaseArtifactType, isPrimary: input.isPrimary, fileName: name, updaterSignature };
         const stored = { path: file.path, size: file.size, originalname: name, sourceUrl: input.sourceUrl };
         return input.artifactId
           ? await this.replaceReleaseArtifactUpload(releaseId, input.artifactId, upload, stored)
@@ -709,7 +721,7 @@ export class ReleaseCenterService {
     try {
       const stat = await (await import("node:fs/promises")).stat(staged);
       const file = { path: staged, originalname: source.fileName || "package.bin", size: stat.size, sourceUrl: source.sourceUrl };
-      const input = { type: fromPrismaReleaseArtifactType(source.type), fileName: source.fileName || undefined, ...(isPrimary!==undefined?{isPrimary}:artifactId?{}:{isPrimary:true}) };
+      const input = { updaterSignature: source.updaterSignature, type: fromPrismaReleaseArtifactType(source.type), fileName: source.fileName || undefined, ...(isPrimary!==undefined?{isPrimary}:artifactId?{}:{isPrimary:true}) };
       return artifactId ? await this.replaceReleaseArtifactUpload(releaseId, artifactId, input, file) : await this.uploadReleaseArtifact(releaseId, input, file);
     } finally { await this.files.removeOrQueue(staged, "复用安装包临时文件"); }
   }
@@ -743,6 +755,7 @@ export class ReleaseCenterService {
     try {
       prepared = await this.prepareUploadedReleaseArtifactFile(releaseId, artifactId, file, input.fileName);
       const preparedFile = prepared;
+      if (platform === "windows" && uploadType === "setup.exe") await verifyUpdaterSignature(preparedFile.absolutePath, input.updaterSignature);
       await this.assertUploadedReleaseArtifactValidForWindowsFullUpdate({
         platform,
         type: uploadType,
@@ -769,6 +782,7 @@ export class ReleaseCenterService {
           return tx.releaseArtifact.update({ where: { id: duplicate.id }, data: {
             storedFilePath:preparedFile.storedFilePath, fileName:preparedFile.fileName, downloadUrl:buildReleaseArtifactDownloadUrl(duplicate.id),
             deliveryMode, isFullPackage:true, defaultMirrorPrefix:null, allowClientMirror:false,
+            updaterSignature: normalizeUpdaterSignature(input.updaterSignature),
             isPrimary: isPrimary ?? duplicate.isPrimary, sourceUrl: file.sourceUrl ?? null
           } });
         }
@@ -787,6 +801,7 @@ export class ReleaseCenterService {
             storedFilePath: preparedFile.storedFilePath,
             fileSizeBytes: preparedFile.fileSizeBytes,
             fileHash: preparedFile.fileHash,
+            updaterSignature: normalizeUpdaterSignature(input.updaterSignature),
             isPrimary: isPrimary ?? false,
             isFullPackage: true
           }
@@ -841,6 +856,7 @@ export class ReleaseCenterService {
     try {
       prepared = await this.prepareUploadedReleaseArtifactFile(releaseId, artifactId, file, input.fileName);
       const preparedFile = prepared;
+      if (platform === "windows" && uploadType === "setup.exe") await verifyUpdaterSignature(preparedFile.absolutePath, input.updaterSignature);
       await this.assertUploadedReleaseArtifactValidForWindowsFullUpdate({
         platform,
         type: uploadType,
@@ -877,6 +893,7 @@ export class ReleaseCenterService {
             storedFilePath: preparedFile.storedFilePath,
             fileSizeBytes: preparedFile.fileSizeBytes,
             fileHash: preparedFile.fileHash,
+            updaterSignature: normalizeUpdaterSignature(input.updaterSignature),
             isPrimary: isPrimary ?? lockedArtifact.isPrimary,
             isFullPackage: true
           }
@@ -1008,7 +1025,7 @@ export class ReleaseCenterService {
       };
     }
 
-    const preferredArtifactType = input.platform === "windows" ? "zip" : input.artifactType ?? null;
+    const preferredArtifactType = input.platform === "windows" ? "setup.exe" : input.artifactType ?? null;
     const fallbackDeliveryMode = preferredArtifactType
       ? defaultDeliveryModeForArtifact(preferredArtifactType)
       : defaultDeliveryModeForPlatform(input.platform);
@@ -1018,7 +1035,7 @@ export class ReleaseCenterService {
         continue;
       }
 
-      const resolvedArtifact = await this.pickClientUsableArtifact(
+      let resolvedArtifact = await this.pickClientUsableArtifact(
         release.artifacts,
         input.platform,
         preferredArtifactType,
@@ -1028,6 +1045,11 @@ export class ReleaseCenterService {
         continue;
       }
 
+      // Old clients cannot acquire the new updater retroactively. Hand them the
+      // signed installer as a one-time external upgrade, never another ZIP job.
+      if (input.platform === "windows" && input.artifactType !== "setup.exe") {
+        resolvedArtifact = { ...resolvedArtifact, type: "external", deliveryMode: "external_download" };
+      }
       const latestVersionComparison = compareSemver(release.version, input.currentVersion);
       const mustUpgrade = compareSemver(input.currentVersion, release.minimumVersion) < 0;
       const forcedByRelease = release.forceUpgrade;
@@ -1225,6 +1247,9 @@ export class ReleaseCenterService {
         throw new BadRequestException("安装包实际 SHA-256 与填写值不一致。");
       }
 
+      if (platform === "windows" && fromPrismaReleaseArtifactType(artifact.type) === "setup.exe") {
+        await verifyUpdaterSignature(absolutePath, artifact.updaterSignature);
+      }
       if (
         platform === "windows" &&
         fromPrismaReleaseArtifactType(artifact.type) === "zip" &&
@@ -1257,7 +1282,7 @@ export class ReleaseCenterService {
     const scopedArtifacts = preferredType
       ? artifacts.filter((item) => {
           const artifactType = fromPrismaReleaseArtifactType(item.type);
-          return artifactType === preferredType || artifactType === "external";
+          return artifactType === preferredType || (preferredType !== "setup.exe" && artifactType === "external");
         })
       : artifacts;
     const preferred = pickPrimaryReleaseArtifact(scopedArtifacts, preferredType);
@@ -1364,6 +1389,7 @@ export class ReleaseCenterService {
       storedFilePath: null,
       fileSizeBytes: normalizeOptionalReleaseFileSizeBytes((input as { fileSizeBytes?: string | number | null }).fileSizeBytes),
       fileHash: normalizeReleaseArtifactFileHash((input as { fileHash?: string | null }).fileHash),
+            updaterSignature: normalizeUpdaterSignature(input.updaterSignature),
       isPrimary: true,
       isFullPackage: true
     };
@@ -1544,6 +1570,7 @@ function inferUploadedReleaseArtifactType(
     return fallbackType;
   }
   const normalized = fileName?.trim().toLowerCase() ?? "";
+  if (normalized.endsWith(".exe")) return "setup.exe";
   if (normalized.endsWith(".zip")) {
     return "zip";
   }
@@ -1557,6 +1584,7 @@ function inferExternalReleaseArtifactType(
 ): ReleaseArtifactType {
   const pathname = inferUrlPathname(downloadUrl);
   if (platform === "windows") {
+    if (pathname.endsWith(".exe")) return "setup.exe";
     if (pathname.endsWith(".zip")) {
       return "zip";
     }
@@ -1581,8 +1609,8 @@ function assertUploadedReleaseArtifactFileAllowed(platform: PlatformTarget, file
     return;
   }
   const normalized = fileName?.trim().toLowerCase() ?? "";
-  if (!normalized.endsWith(".zip")) {
-    throw new BadRequestException("Windows 静默全量更新只支持 ZIP。");
+  if (!normalized.endsWith(".exe")) {
+    throw new BadRequestException("Windows 新发布请上传签名的 EXE 安装包。");
   }
 }
 

@@ -25,8 +25,6 @@ if (platform !== "macos" && platform !== "windows") {
 const version = resolveDesktopPlatformVersion(platform);
 const extraArgs = process.argv.slice(3);
 const projectRoot = path.resolve(desktopRoot, "..", "..");
-const minimumPeBytes = 1024 * 1024;
-const minimumGeoDataBytes = 64 * 1024;
 const baseConfigPath = path.join(desktopRoot, "src-tauri", "tauri.conf.json");
 const tempConfigPath = path.join(desktopRoot, "src-tauri", `.tauri.${platform}.platform.conf.json`);
 const baseConfig = JSON.parse(fs.readFileSync(baseConfigPath, "utf8"));
@@ -41,8 +39,12 @@ const macosGuideImageConfigPath = "../public/yindao.png";
 const macosGuideImageBundlePath = "yindao.png";
 const bundleConfig = {
   ...baseConfig.bundle,
-  resources: bundledResources
+  resources: bundledResources,
+  ...(platform === "windows" ? { targets: ["nsis"], createUpdaterArtifacts: true } : {})
 };
+if (platform === "windows" && !process.env.TAURI_SIGNING_PRIVATE_KEY) {
+  throw new Error("Windows 发布必须配置 TAURI_SIGNING_PRIVATE_KEY，禁止生成无签名更新包。");
+}
 
 if (platform === "macos" && fs.existsSync(macosGuideImagePath)) {
   bundleConfig.resources = {
@@ -176,7 +178,9 @@ function curateReleaseArtifacts(platform, version, projectRoot, buildStartedAt) 
   }
   const targetPath = path.join(outputDir, buildWindowsArtifactNames(version).setup);
   fs.copyFileSync(artifact, targetPath);
-  createWindowsFullUpdateZip(version, outputDir, buildStartedAt);
+  const signaturePath = `${artifact}.sig`;
+  if (!fs.existsSync(signaturePath)) throw new Error("Windows 构建缺少 .sig 更新签名");
+  fs.copyFileSync(signaturePath, `${targetPath}.sig`);
 }
 
 function cleanupCuratedArtifacts(outputDir, platform) {
@@ -186,7 +190,7 @@ function cleanupCuratedArtifacts(outputDir, platform) {
   const patterns =
     platform === "macos"
       ? [/^ChordV_.+\.dmg$/]
-      : [/^ChordV_.+_x64\.exe$/, /^ChordV_.+_x64-setup\.exe$/, /^ChordV_.+_x64-full\.zip$/];
+      : [/^ChordV_.+_x64\.exe$/, /^ChordV_.+_x64-setup\.exe$/, /^ChordV_.+_x64-full\.zip$/, /^ChordV_.+_x64-setup\.exe\.sig$/];
   for (const entry of fs.readdirSync(outputDir, { withFileTypes: true })) {
     if (!entry.isFile()) {
       continue;
@@ -194,116 +198,6 @@ function cleanupCuratedArtifacts(outputDir, platform) {
     if (patterns.some((pattern) => pattern.test(entry.name))) {
       fs.rmSync(path.join(outputDir, entry.name), { force: true });
     }
-  }
-}
-
-function createWindowsFullUpdateZip(version, outputDir, buildStartedAt) {
-  const artifactNames = buildWindowsArtifactNames(version);
-  const releaseDir = path.join(desktopRoot, "src-tauri", "target", "x86_64-pc-windows-msvc", "release");
-  const sourceExe = findWindowsReleaseExecutable(releaseDir, buildStartedAt);
-  if (!sourceExe) {
-    throw new Error("未找到 Windows release 可执行文件，无法生成全量更新 ZIP。");
-  }
-
-  const stagingDir = path.join(outputDir, `.${artifactNames.fullZip}.staging`);
-  const fullZipPath = path.join(outputDir, artifactNames.fullZip);
-  fs.rmSync(stagingDir, { recursive: true, force: true });
-  fs.rmSync(fullZipPath, { force: true });
-  fs.mkdirSync(stagingDir, { recursive: true });
-
-  try {
-    // Future Windows full updates only ship one main executable name.
-    fs.copyFileSync(sourceExe, path.join(stagingDir, "ChordV.exe"));
-
-    const sourceBinDir = path.join(desktopRoot, "src-tauri", "bin");
-    const stagingBinDir = path.join(stagingDir, "bin");
-    fs.mkdirSync(stagingBinDir, { recursive: true });
-    for (const resource of buildBundledRuntimeResources("windows")) {
-      const sourcePath = path.join(desktopRoot, "src-tauri", resource);
-      if (!fs.existsSync(sourcePath)) {
-        throw new Error(`缺少 Windows 全量更新资源：${resource}`);
-      }
-      const sourceStat = fs.statSync(sourcePath);
-      if (!sourceStat.isFile()) {
-        throw new Error(`Windows full update resource is empty or invalid: ${resource}`);
-      }
-      validateWindowsFullUpdateResource(sourcePath, resource);
-      const relativePath = path.relative(sourceBinDir, sourcePath);
-      const targetPath = path.join(stagingBinDir, relativePath);
-      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-      fs.copyFileSync(sourcePath, targetPath);
-    }
-
-    createZipFromDirectory(stagingDir, fullZipPath);
-  } finally {
-    fs.rmSync(stagingDir, { recursive: true, force: true });
-  }
-}
-
-function validateWindowsFullUpdateResource(sourcePath, resource) {
-  const size = fs.statSync(sourcePath).size;
-  if (resource === "bin/xray.exe") {
-    if (size < minimumPeBytes) {
-      throw new Error(`Windows full update resource is too small: ${resource}`);
-    }
-    const header = fs.readFileSync(sourcePath).subarray(0, 2).toString("ascii");
-    if (header !== "MZ") {
-      throw new Error(`Windows full update resource is not a PE executable: ${resource}`);
-    }
-    return;
-  }
-  if ((resource === "bin/geoip.dat" || resource === "bin/geosite.dat") && size < minimumGeoDataBytes) {
-    throw new Error(`Windows full update resource is too small: ${resource}`);
-  }
-}
-
-function findWindowsReleaseExecutable(releaseDir, buildStartedAt) {
-  // Prefer mainBinaryName output; keep crate-name fallback for local/dev builds.
-  const preferred = ["ChordV.exe", "chordv-desktop.exe"].map((name) => path.join(releaseDir, name));
-  for (const candidate of preferred) {
-    if (fs.existsSync(candidate) && fs.statSync(candidate).mtimeMs >= buildStartedAt) {
-      return candidate;
-    }
-  }
-  if (!fs.existsSync(releaseDir)) {
-    return null;
-  }
-  const candidates = fs
-    .readdirSync(releaseDir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".exe"))
-    .map((entry) => path.join(releaseDir, entry.name))
-    .filter((filePath) => fs.statSync(filePath).mtimeMs >= buildStartedAt)
-    .sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs);
-  return candidates[0] ?? null;
-}
-
-function createZipFromDirectory(sourceDir, targetZipPath) {
-  if (process.platform === "win32") {
-    runCommand("powershell", [
-      "-NoProfile",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-Command",
-      "$sourceDir = $env:CHORDV_ZIP_SOURCE; $targetZipPath = $env:CHORDV_ZIP_TARGET; if (-not $sourceDir -or -not $targetZipPath) { throw 'missing ZIP source or target path' }; Compress-Archive -Path (Join-Path $sourceDir '*') -DestinationPath $targetZipPath -Force"
-    ], {
-      env: {
-        ...process.env,
-        CHORDV_ZIP_SOURCE: sourceDir,
-        CHORDV_ZIP_TARGET: targetZipPath
-      }
-    });
-    return;
-  }
-
-  const zipResult = spawnSync("zip", ["-r", targetZipPath, "."], {
-    cwd: sourceDir,
-    stdio: "inherit"
-  });
-  if (zipResult.error) {
-    throw zipResult.error;
-  }
-  if ((zipResult.status ?? 1) !== 0) {
-    throw new Error("zip 执行失败，无法生成 Windows 全量更新 ZIP。");
   }
 }
 

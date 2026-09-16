@@ -4,6 +4,10 @@ on:
   pull_request:
     paths:
       - "apps/desktop/**"
+      - "apps/api/src/modules/common/updater-signature.ts"
+      - "apps/api/src/modules/common/release-center*"
+      - "apps/api/src/modules/client/client.controller.ts"
+      - "apps/api/test/windows-updater.regression.ts"
       - "packages/shared/**"
       - "pnpm-lock.yaml"
       - ".github/workflows/verify-desktop-native.yml"
@@ -20,7 +24,7 @@ jobs:
   verify:
     name: Native checks (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -57,3 +61,28 @@ jobs:
           node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/notification-races.regression.ts
           node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/runtime-action-failure.regression.ts
           node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/exit-cleanup-notice.regression.ts
+      - name: Verify updater API and signatures
+        run: |
+          pnpm --filter @chordv/api db:generate
+          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/api/tsconfig.json apps/api/test/windows-updater.regression.ts
+          node apps/desktop/test/update-handoff.regression.mjs
+          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/windows-update-protocol.regression.ts
+          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/windows-full-update-path.regression.ts
+      - name: Build isolated Windows installer for upgrade test
+        if: runner.os == 'Windows'
+        env:
+          VITE_API_BASE_URL: https://127.0.0.1:9
+        run: |
+          test_key="$RUNNER_TEMP/chordv-ci-updater.key"
+          pnpm --filter @chordv/desktop exec tauri signer generate --ci --password '' --write-keys "$test_key" > /dev/null
+          export TAURI_SIGNING_PRIVATE_KEY="$(cat "$test_key")"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=''
+          TEST_UPDATER_KEY="$test_key.pub" node -e 'const fs=require("fs");const p="apps/desktop/src-tauri/tauri.conf.json";const c=JSON.parse(fs.readFileSync(p));c.plugins.updater.pubkey=fs.readFileSync(process.env.TEST_UPDATER_KEY,"utf8").trim();fs.writeFileSync(p,JSON.stringify(c));'
+          pnpm --filter @chordv/desktop exec node scripts/build-tauri-platform.mjs windows --target x86_64-pc-windows-msvc
+          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/api/tsconfig.json scripts/verify-windows-updater-signature.ts
+      - name: Exercise real legacy Windows installation upgrade
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $version = (Get-Content apps/desktop/config/platform-versions.json | ConvertFrom-Json).windows
+          ./apps/desktop/test/windows-nsis-upgrade.ps1 -Installer "output/release/windows/ChordV_${version}_x64-setup.exe" -ExpectedVersion $version

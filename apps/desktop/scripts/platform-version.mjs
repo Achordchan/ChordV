@@ -45,7 +45,7 @@ export function buildWindowsArtifactNames(version) {
   return {
     exe: `${baseName}.exe`,
     setup: `${baseName}-setup.exe`,
-    fullZip: `${baseName}-full.zip`
+    signature: `${baseName}-setup.exe.sig`
   };
 }
 

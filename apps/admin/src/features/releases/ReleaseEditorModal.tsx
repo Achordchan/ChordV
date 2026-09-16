@@ -39,7 +39,7 @@ export function ReleaseEditorModal(p: ReleaseEditorModalProps) {
       <h3 ref={heading} tabIndex={-1} className={styles.stepHeading}>{step===0 ? "版本信息" : final ? "确认版本信息" : "设置下载来源"}</h3>
       <Stack gap="lg">
       {step===0?<>
-        <Select label="平台" data={releasePlatformOptions.map(x=>({...x}))} value={p.form.platform} disabled={p.editing||p.saving} onChange={value=>value&&p.onChange({...p.form,platform:value as ReleaseEditorFormState["platform"],selectedFile:null,fileName:"",externalDeliveryMode:value==="windows"?"windows_full_replace_zip":"external_download"})}/>
+        <Select label="平台" data={releasePlatformOptions.map(x=>({...x}))} value={p.form.platform} disabled={p.editing||p.saving} onChange={value=>value&&p.onChange({...p.form,platform:value as ReleaseEditorFormState["platform"],selectedFile:null,fileName:"",signatureFile:null})}/>
         <Group grow><TextInput label="版本号" placeholder="例如 1.2.0" value={p.form.version} disabled={p.editing||p.saving} onChange={e=>p.onChange({...p.form,version:e.currentTarget.value})}/><TextInput label="发布标题" value={p.form.title} disabled={p.saving} onChange={e=>p.onChange({...p.form,title:e.currentTarget.value})}/></Group>
         <Textarea label="更新说明" description="每行一条，展示给客户端用户" autosize minRows={5} value={p.form.changelog} disabled={p.saving} onChange={e=>p.onChange({...p.form,changelog:e.currentTarget.value})}/>
         <Checkbox label="强制更新" description="开启后，旧版客户端必须更新才能继续使用。" checked={p.form.forceUpgrade} disabled={p.saving} onChange={e=>p.onChange({...p.form,forceUpgrade:e.currentTarget.checked})}/>
@@ -97,12 +97,18 @@ export function NewReleaseArtifactFields(props: NewReleaseArtifactFieldsProps) {
               ...props.form,
               artifactSource: "uploaded",
               selectedFile: file,
+                signatureFile: null,
               fileName: file?.name ?? props.form.fileName
             })
           }
           clearable
           disabled={props.saving}
         />
+      )}
+
+      {props.form.platform === "windows" && props.form.artifactSource === "uploaded" && props.form.selectedFile && (
+        <FileInput label="更新签名文件" description="选择构建产物中与安装包同名的 .sig 文件。" accept=".sig" value={props.form.signatureFile ?? null}
+          disabled={props.saving} onChange={signatureFile => props.onChange({ ...props.form, signatureFile })} />
       )}
 
       <Text size="sm" c="dimmed">
@@ -115,7 +121,7 @@ export function NewReleaseArtifactFields(props: NewReleaseArtifactFieldsProps) {
 }
 function acceptedArtifactExtensionForPlatform(platform: ReleaseEditorFormState["platform"]) {
   if (platform === "windows") {
-    return ".zip";
+    return ".exe";
   }
   if (platform === "android") {
     return ".apk";

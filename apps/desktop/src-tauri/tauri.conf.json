@@ -38,15 +38,23 @@
     ],
     "windows": {
       "nsis": {
-        "installerHooks": "windows/chordv-installer-hooks.nsh",
         "languages": [
           "SimpChinese"
-        ]
+        ],
+        "installerHooks": "windows/chordv-installer-hooks.nsh"
       }
     },
     "macOS": {
       "minimumSystemVersion": "13.0",
       "signingIdentity": null
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNBOUE5QTRERkQ1NUZDMDkKUldRSi9GWDlUWnFhT3VnQjFQOEJ4WWdZMUVDYU02MXRGbkpUbXg2Mkh4dG9KSnAyNkZUL05HcE0K",
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

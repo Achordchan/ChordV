@@ -1,0 +1,15 @@
+import assert from "node:assert/strict";
+import { normalizeUpdateCheckResult } from "../src/api/client";
+import { preferredArtifactType } from "../src/lib/updateState";
+const fallback = { currentVersion: "1.1.8", platform: "windows" as const, channel: "stable" as const, artifactType: "setup.exe" as const };
+const artifact = { type: "setup.exe", downloadUrl: "https://example.com/ChordV-setup.exe", updaterSignature: "signed-package", fileSizeBytes: "1234" };
+const response = { hasUpdate: true, latestVersion: "1.1.9", deliveryMode: "desktop_installer_download", recommendedArtifact: artifact };
+assert.equal(preferredArtifactType("windows"), "setup.exe");
+const accepted = normalizeUpdateCheckResult(response, fallback);
+assert.equal(accepted.artifact?.fileType, "setup.exe");
+assert.equal(accepted.artifact?.updaterSignature, "signed-package");
+assert.equal(accepted.artifact?.fileSizeBytes, 1234);
+assert.throws(() => normalizeUpdateCheckResult({ ...response, recommendedArtifact: { ...artifact, updaterSignature: null } }, fallback), /签名/);
+assert.throws(() => normalizeUpdateCheckResult({ ...response, deliveryMode: "desktop_full_replace", recommendedArtifact: { ...artifact, type: "zip" } }, fallback), /旧版 ZIP/);
+assert.equal(normalizeUpdateCheckResult({ hasUpdate: false, deliveryMode: "none" }, fallback).hasUpdate, false);
+console.log("Windows update protocol accepts signed EXE metadata and rejects obsolete ZIP/unsigned responses");

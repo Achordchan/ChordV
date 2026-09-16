@@ -714,6 +714,11 @@ export class ListReleasesDto {
 }
 
 export class CreateReleaseArtifactDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(8192)
+  updaterSignature?: string | null;
+
   @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["external"])
   source?: "external";
@@ -766,6 +771,11 @@ export class CreateReleaseArtifactDto {
 }
 
 export class UpdateReleaseArtifactDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(8192)
+  updaterSignature?: string | null;
+
   @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["uploaded", "external"])
   source?: "uploaded" | "external";
@@ -818,6 +828,11 @@ export class UpdateReleaseArtifactDto {
 }
 
 export class UploadReleaseArtifactDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(8192)
+  updaterSignature?: string | null;
+
   @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["uploaded"])
   source?: "uploaded";

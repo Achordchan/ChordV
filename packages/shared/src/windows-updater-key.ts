@@ -1,0 +1,2 @@
+// Public verification key; the private signing key is stored outside this repository.
+export const WINDOWS_UPDATER_PUBLIC_KEY = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNBOUE5QTRERkQ1NUZDMDkKUldRSi9GWDlUWnFhT3VnQjFQOEJ4WWdZMUVDYU02MXRGbkpUbXg2Mkh4dG9KSnAyNkZUL05HcE0K";

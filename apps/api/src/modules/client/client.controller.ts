@@ -1,9 +1,10 @@
+import type { Response } from "express";
 import { ReportNodeProbesDto } from "./report-node-probes.dto";
 import { ClientAccessService } from "../common/client-access.service";
-import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Query, Sse, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import { Body, Res, Controller, Delete, Get, Headers, Param, Patch, Post, Query, Sse, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
 import { Type } from "class-transformer";
 import { FileInterceptor } from "@nestjs/platform-express";
-import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsNotEmpty, IsOptional, IsString, MaxLength, ValidateNested } from "class-validator";
+import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsNotEmpty, IsOptional, IsString, Matches, MaxLength, ValidateNested } from "class-validator";
 import { diskStorage } from "multer";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -65,6 +66,13 @@ class ProbeNodesDto {
   @IsString({ each: true })
   @MaxLength(128, { each: true })
   nodeIds!: string[];
+}
+
+class TauriUpdateQueryDto {
+  @IsString()
+  @MaxLength(64)
+  @Matches(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/)
+  currentVersion!: string;
 }
 
 class UpdateCheckDto {
@@ -332,6 +340,19 @@ export class ClientController {
   @UseGuards(ClientAuthGuard)
   ping(@Headers("authorization") authorization?: string) {
     return this.clientService.ping(authorization);
+  }
+
+  @Get("update/tauri")
+  async tauriUpdate(@Query() query: TauriUpdateQueryDto, @Res() response: Response) {
+    const result = await this.clientService.checkUpdate({ currentVersion: query.currentVersion, platform: "windows", channel: "stable", artifactType: "setup.exe" });
+    const artifact = result.recommendedArtifact;
+    response.setHeader("Cache-Control", "no-store");
+    if (!result.hasUpdate || !artifact?.updaterSignature || !result.downloadUrl) {
+      return response.status(204).send();
+    }
+    return response.json({ version: result.latestVersion, notes: result.changelog.join("\n"),
+      url: result.downloadUrl, signature: artifact.updaterSignature,
+      fileSizeBytes: result.fileSizeBytes, fileHash: result.fileHash });
   }
 
   @Post("update/check")

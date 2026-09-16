@@ -9,8 +9,7 @@ import {
   type ReleaseChannel
 } from "../api/client";
 import {
-  applyDesktopFullUpdate,
-  downloadDesktopFullUpdatePackage,
+  installWindowsUpdate,
   downloadDesktopInstaller,
   focusDesktopWindow,
   openDesktopInstaller,
@@ -107,12 +106,9 @@ function defaultReadError(message: string) {
 }
 
 function isDesktopManagedUpdate(mode: ClientUpdateCheckResult["deliveryMode"], platform: ResolvedUpdatePlatform) {
-  return mode === "desktop_installer_download" || (mode === "desktop_full_replace" && platform === "windows");
+  return mode === "desktop_installer_download";
 }
 
-function isFullReplaceUpdate(update: ClientUpdateCheckResult, platform: ResolvedUpdatePlatform) {
-  return update.deliveryMode === "desktop_full_replace" && platform === "windows";
-}
 
 export function hasActionableUpdate(result: ClientUpdateCheckResult | null, appVersion: string) {
   if (!result) {
@@ -138,7 +134,8 @@ function buildUpdateArtifactIdentity(update: ClientUpdateCheckResult | null) {
     artifact?.fileName ?? "",
     artifact?.fileType ?? "",
     artifact?.fileSizeBytes ?? "",
-    artifact?.fileHash ?? ""
+    artifact?.fileHash ?? "",
+    artifact?.updaterSignature ?? ""
   ].join("|");
 }
 
@@ -260,7 +257,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       return false;
     }
 
-    const fullReplaceUpdate = isFullReplaceUpdate(effectiveUpdate, updatePlatform);
+
     if (!isDesktopManagedUpdate(effectiveUpdate.deliveryMode, updatePlatform) || updatePlatform === "android") {
       await openExternalLink(resolvedDownloadUrl);
       options.notify?.({
@@ -284,9 +281,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       completedDownloadIdentityRef.current === updateArtifactIdentity
     ) {
       try {
-        if (fullReplaceUpdate) {
-          await applyDesktopFullUpdate();
-        } else {
+        if (updatePlatform !== "windows") {
           await openDesktopInstaller(updateDownload.localPath);
         }
         options.notify?.({
@@ -323,10 +318,11 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       let usedFallback = false;
       let result;
       try {
-        const downloadPackage = fullReplaceUpdate ? downloadDesktopFullUpdatePackage : downloadDesktopInstaller;
+        const downloadPackage = downloadDesktopInstaller;
         result = await downloadPackage({
           preferredCandidate: "mirror",
           fileName: preferredFileName,
+          expectedVersion: effectiveUpdate.latestVersion,
           currentVersion: options.appVersion,
           channel: "stable",
           onProgress: (progress) => {
@@ -343,10 +339,11 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           phase: "preparing",
           message: "加速下载失败，正在回退到原始下载地址…"
         }));
-        const downloadPackage = fullReplaceUpdate ? downloadDesktopFullUpdatePackage : downloadDesktopInstaller;
+        const downloadPackage = downloadDesktopInstaller;
         result = await downloadPackage({
           preferredCandidate: "origin",
           fileName: preferredFileName,
+          expectedVersion: effectiveUpdate.latestVersion,
           currentVersion: options.appVersion,
           channel: "stable",
           onProgress: (progress) => {
@@ -369,10 +366,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       });
 
       completedDownloadIdentityRef.current = updateArtifactIdentity;
-      if (fullReplaceUpdate) {
-        await applyDesktopFullUpdate();
-        return true;
-      }
+      if (updatePlatform === "windows") return true;
 
       // Mac/DMG 与安装器路径：先登记待安装文件，由用户点击“安装并重启”再退出安装。
       await openDesktopInstaller(result.localPath);
@@ -455,6 +449,9 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           clientMirrorPrefix: options.runtimeMirrorPrefix,
           accessToken: runOptions.accessToken ?? options.accessToken ?? undefined
         });
+        if (updatePlatform === "windows" && checkedUpdate?.hasUpdate && checkedUpdate.deliveryMode === "desktop_full_replace") {
+          throw new Error("更新服务尚未提供签名安装包，请联系管理员更新发布配置。");
+        }
         const result =
           checkedUpdate ??
           (updatePlatform === "windows"
@@ -731,8 +728,8 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       return false;
     }
     try {
-      if (effectiveUpdate && isFullReplaceUpdate(effectiveUpdate, updatePlatform)) {
-        await applyDesktopFullUpdate();
+      if (updatePlatform === "windows") {
+        await installWindowsUpdate();
       } else {
         await openDesktopInstaller(updateDownload.localPath);
         await quitForUpdate();
@@ -761,6 +758,11 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       });
       return report;
     } catch {
+      options.notify?.({
+        color: "yellow",
+        title: "无法读取更新结果",
+        message: "更新结果报告读取失败，报告已保留，请联系支持人员检查。"
+      });
       return null;
     }
   }, [options]);

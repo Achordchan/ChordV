@@ -22,7 +22,7 @@ function scenario(platform, failAt, waitForApply) {
     effectiveUpdate: mandatory,
     updatePlatform: platform,
     isFullReplaceUpdate: () => platform === 'windows',
-    applyDesktopFullUpdate: native('apply'),
+    installWindowsUpdate: native('apply'),
     openDesktopInstaller: native('installer'),
     quitForUpdate: native('quit'),
     defaultReadError: value => value,
@@ -51,3 +51,17 @@ const mac = scenario('macos');
 assert.equal(await mac.run(), true);
 assert.deepEqual(mac.calls, ['installer', 'quit', 'reset']);
 console.log('update handoff regression checks passed (3 failures and 2 successes)');
+
+const reportCallback = source.match(/const consumeUpdateInstallReport = useCallback\((async \(\) => \{[\s\S]*?\n  \}), \[/)?.[1];
+assert.ok(reportCallback);
+for (const input of ['read-error', { ok: false, summary: '自动更新失败，已恢复旧版本。' }, { ok: true }, null]) {
+  const notices = [];
+  const run = new Function('consumeDesktopUpdateInstallReport', 'options', `return (${reportCallback});`)(
+    async () => { if (input === 'read-error') throw new Error('invalid report'); return input; },
+    { notify: notice => notices.push(notice) }
+  );
+  await run();
+  assert.equal(notices.length, input === 'read-error' || input?.ok === false ? 1 : 0);
+  if (input === 'read-error') assert.equal(notices[0].title, '无法读取更新结果');
+}
+console.log('installation report failures are visible; successful and absent reports stay silent');

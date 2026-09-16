@@ -155,6 +155,7 @@ export type UpdateAdminReleaseInputDto = {
 };
 
 export type UploadAdminReleaseArtifactInputDto = {
+  updaterSignature?: string | null;
   source?: "uploaded";
   type: AdminReleaseArtifactType;
   deliveryMode?: UpdateDeliveryMode;
@@ -347,6 +348,7 @@ export async function uploadAdminReleaseArtifact(
 ) {
   const body = new FormData();
   body.set("type", input.type);
+  if ("updaterSignature" in input && input.updaterSignature) body.set("updaterSignature", input.updaterSignature);
   if (input.source) body.set("source", input.source);
   if (input.deliveryMode) body.set("deliveryMode", input.deliveryMode);
   if (input.fileName) body.set("fileName", input.fileName);
@@ -368,6 +370,7 @@ export async function replaceAdminReleaseArtifactUpload(
 ) {
   const body = new FormData();
   body.set("type", input.type);
+  if ("updaterSignature" in input && input.updaterSignature) body.set("updaterSignature", input.updaterSignature);
   if (input.source) body.set("source", input.source);
   if (input.deliveryMode) body.set("deliveryMode", input.deliveryMode);
   if (input.fileName) body.set("fileName", input.fileName);
