@@ -3436,6 +3436,11 @@ async fn runtime_snapshot(app: AppHandle) -> Result<RuntimeSnapshotResponse, Str
 
 #[tauri::command]
 async fn check_network_conflict(app: AppHandle) -> Result<(), String> {
+    // Startup cleanup has its own bounded wait; do not spend the inspection's
+    // three-second budget while waiting for our stale proxy to be restored.
+    let startup_app=app.clone();
+    tauri::async_runtime::spawn_blocking(move||ensure_startup_ready(&startup_app))
+        .await.map_err(|error|error.to_string())??;
     let check = tauri::async_runtime::spawn_blocking(move || {
         let runtime = app.state::<Mutex<RuntimeState>>();
         let (http, socks) = {
@@ -6763,7 +6768,9 @@ fn detect_windows_proxy_conflict(expected_proxy_server: &str) -> Result<Option<S
 #[cfg(target_os = "macos")]
 fn set_proxy(http_port: u16, socks_port: u16) -> Result<(), std::io::Error> {
     let bypass_hosts = api_proxy_bypass_hosts();
-    for service in network_services()? {
+    let services=network_services()?;
+    if services.is_empty(){return Err(io::Error::new(io::ErrorKind::NotFound,"未找到可配置的网络服务"));}
+    for service in services {
         let mut bypass_command = Command::new("networksetup");
         bypass_command.arg("-setproxybypassdomains").arg(&service);
         for host in &bypass_hosts {
@@ -7208,11 +7215,7 @@ fn network_services() -> Result<Vec<String>, io::Error> {
         }
     }
 
-    if services.is_empty() {
-        Err(io::Error::new(io::ErrorKind::NotFound,"未找到可配置的网络服务"))
-    } else {
-        Ok(services)
-    }
+    Ok(services)
 }
 
 fn cleanup_stale_runtime(app: &AppHandle) -> Result<(),String> {

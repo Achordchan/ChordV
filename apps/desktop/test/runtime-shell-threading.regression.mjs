@@ -19,6 +19,8 @@ const shutdown=rustFunction('shutdown_runtime');
 assert.match(shutdown,/let restore=clear_system_proxy\(\)/,'empty runtime state must still reconcile OS proxy ownership');
 const startup=rustFunction('cleanup_stale_runtime');
 assert.ok(startup.indexOf('clear_system_proxy()') < startup.indexOf('kill_pid('),'startup restores proxy before killing a stale listener');
+const preflight=rustFunction('check_network_conflict');
+assert.ok(preflight.indexOf('ensure_startup_ready')<preflight.indexOf('let check'),'startup barrier precedes the inspection timeout');
 const refresh=rustFunction('refresh_shell_ui');
 // Compile the actual dispatch function against a deterministic main-thread adapter.
 // The UI reader must acquire RuntimeState before it services the queued menu work.

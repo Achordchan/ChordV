@@ -18,6 +18,10 @@ pub fn clear_owned_services(
 mod tests {
     use super::*;use std::cell::RefCell;
     #[test]
+    fn successful_empty_enumeration_needs_no_cleanup(){
+        assert!(clear_owned_services(&[],|_|panic!("no service"),|_|panic!("no service")).is_ok());
+    }
+    #[test]
     fn failed_proxy_restore_preserves_the_runtime_for_retry(){
         let mut alive=true;
         assert!(stop_after_restore(Err("proxy timeout".into()),||{alive=false;Ok(())}).is_err());
