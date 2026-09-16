@@ -1,6 +1,6 @@
 # Windows 官方更新器迁移（2026-09-16）
 
-## 当前结果
+## 实施阶段记录（最终状态以 PR #57 与发布工作流为准）
 
 Windows 已接入 tauri-plugin-updater 2.11.0 + NSIS passive 模式。保留更新中心、真实下载进度、强制更新策略。旧的 PowerShell 覆盖目录流程、ZIP 构建及临时修复工具已退役；用户原始诊断文件未修改。
 后台目标版本为 0.0.20，客户端保留 1.1.8 重构建；生产数据库未迁移。macOS 原生测试不等于 Windows 安装验证。
@@ -72,3 +72,10 @@ CI 将核对真实 1.1.7 安装器哈希，在带中文/空格的目录安装并
 
 先通过 PR 审查和 Windows CI并准备签名包；部署含新迁移的后台，再导入发布 EXE/SIG，引导旧用户覆盖升级。新发布版本应高于已安装版本，同版本重打包不能自动触发更新。
 本次未执行合并、生产迁移或发布。
+
+## Windows 验证补充
+
+2026-09-16 的 CI 已确认 Windows 原生测试 54 项通过、macOS 原生测试 53 项通过。Windows 测试程序需额外嵌入 Common Controls v6 清单，否则官方插件的 mock-app 测试引用 Wry 的 TaskDialogIndirect 时会在加载阶段失败；应用发布程序的 Tauri 清单不受此测试处理影响。
+`run-windows-native-tests.ps1` 使用 Cargo 返回的精确测试可执行文件及 Windows SDK mt.exe，不跳过测试。`diagnose-windows-loader.ps1` 在失败时定位 DLL/入口缺失。
+`serve-updater-fixture.ts` 将实际 ClientController/ReleaseCenterService 暴露在本机端口，由官方插件直接验证托管地址、下载及签名；测试子进程直接加载 TS 以便可靠清理。
+后台完整发布验证已通过 73 条测试命令。真实 NSIS 升级步骤在本记录写入时仍待后续 CI，发布前必须通过。

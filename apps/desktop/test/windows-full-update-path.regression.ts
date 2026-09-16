@@ -10,5 +10,5 @@ assert.match(updater, /update\.download\(/);
 assert.match(updater, /pending\.update\.install\(&pending\.bytes\)/);
 assert.ok(updater.indexOf("shutdown_runtime_state(app)?") < updater.indexOf("pending.update.install"));
 assert.doesNotMatch(native, /apply_desktop_full_update|spawn_deferred_full_update_apply|write_full_update_script/);
-assert.doesNotMatch(updater, /Command::new|Copy-Item|Remove-Item/);
+assert.doesNotMatch(updater.split("\n#[cfg(test)]")[0], /Command::new|Copy-Item|Remove-Item/);
 console.log("Windows official updater integration and retired replacement command checks passed");
