@@ -14,6 +14,7 @@ async function actions(reconnect:boolean){
   canAttemptConnect:true,runtimeAssetsReady:true,runtimeAssets:{phase:"ready"},forceUpdateRequired:false,
   getCurrentSessionIdentity:()=>"login",getCurrentAccessToken:()=>"token",readError:(value:string)=>value,
   forceStopLocalRuntime:async()=>{throw Error("cleanup failed");},showErrorToast:(value:string)=>notices.push(value),
+  runtimeRef:{current:null},isRuntimeStopping:()=>false,getRuntimeSyncEpoch:()=>0,
   runtime:reconnect?{sessionId:"old",node}:null,
  } as Record<string,unknown>,{get:(target,key:string)=>key in target?target[key]:()=>{}});
  const {useRuntimeActions}=load("useRuntimeActions",{

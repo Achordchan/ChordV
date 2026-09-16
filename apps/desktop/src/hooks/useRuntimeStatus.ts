@@ -19,6 +19,9 @@ export function useRuntimeStatus(options: UseRuntimeStatusOptions) {
   const [runtimeLog, setRuntimeLog] = useState("");
   const localStopInFlightRef = useRef<Promise<void> | null>(null);
   const runtimeRefreshRequestSeqRef = useRef(0);
+  const runtimeSyncEpochRef = useRef(0);
+  const getRuntimeSyncEpoch = useCallback(() => runtimeSyncEpochRef.current, []);
+  const isRuntimeStopping = useCallback(() => localStopInFlightRef.current !== null, []);
   const setRuntimeRef = useRef(options.setRuntime);
   const leaseFailedAtRef = useRef(options.leaseHeartbeatFailedAtRef);
 
@@ -92,6 +95,8 @@ export function useRuntimeStatus(options: UseRuntimeStatusOptions) {
       return;
     }
 
+    // Invalidate server reads before the first native await, including logout stops.
+    runtimeSyncEpochRef.current += 1;
     const task = (async () => {
       let failure: Error | null = null;
       try {
@@ -127,6 +132,8 @@ export function useRuntimeStatus(options: UseRuntimeStatusOptions) {
     setDesktopStatus,
     runtimeLog,
     refreshRuntime,
-    forceStopLocalRuntime
+    forceStopLocalRuntime,
+    getRuntimeSyncEpoch,
+    isRuntimeStopping
   };
 }

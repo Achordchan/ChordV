@@ -1,5 +1,5 @@
 import type { ClientBootstrapDto, NodeSummaryDto, SubscriptionStatusDto } from "@chordv/shared";
-import { notifications } from "@mantine/notifications";
+import { notifications } from "./notifications";
 import type { SubscriptionServerProbe } from "../components/SubscriptionPanel";
 import type { GuidanceTone, ConnectionGuidance } from "./connectionGuidance";
 import type { RuntimeNodeProbeResult, RuntimePlatform } from "./runtime";

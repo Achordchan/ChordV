@@ -133,6 +133,8 @@ type UseRuntimeActionsOptions = {
   loadTicketDetail: (ticketId: string, options?: LoadTicketDetailOptions) => Promise<void>;
   markTicketUnread: (ticketId: string) => void;
   recoverSessionAfterUnauthorized: () => Promise<AuthSessionDto | null> | AuthSessionDto | null;
+  getRuntimeSyncEpoch: () => number;
+  isRuntimeStopping: () => boolean;
   getCurrentAccessToken: () => string | null;
   getCurrentSessionIdentity: () => string | null;
   clearSession: (stopRuntime?: boolean) => Promise<void>;
@@ -148,6 +150,10 @@ type UseRuntimeActionsOptions = {
 
 export function useRuntimeActions(options: UseRuntimeActionsOptions) {
   const connectInFlight = useRef(false);
+  const disconnectInFlight = useRef(false);
+  const latestOptions = useRef(options);
+  latestOptions.current = options;
+  const foregroundTask = useRef<{ key: string; task: Promise<void> } | null>(null);
   const [actionBusy, setActionBusy] = useState<"connect" | "disconnect" | null>(null);
 
   const handleProtectedAccessRevoked = useCallback(
@@ -212,7 +218,9 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
 
   const disconnectCurrentRuntime = useCallback(
     async (disconnectOptions?: { notifyServer?: boolean; guidance?: ConnectionGuidance | null }) => {
-      const sessionId = options.runtime?.sessionId ?? options.desktopStatus.activeSessionId;
+      if (disconnectInFlight.current) return false;
+      disconnectInFlight.current = true;
+      const sessionId = options.runtimeRef.current?.sessionId ?? options.desktopStatus.activeSessionId;
       const accessToken = options.session?.accessToken ?? null;
 
       try {
@@ -231,6 +239,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         options.showErrorToast(reason instanceof Error ? options.readError(reason.message) : "断开失败");
         return false;
       } finally {
+        disconnectInFlight.current = false;
         setActionBusy(null);
       }
     },
@@ -239,21 +248,28 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
 
   const handleForcedGuidance = useCallback(
     async (guidance: ConnectionGuidance) => {
-      applyGuidance(guidance, true, true);
-      if (actionBusy === "disconnect") {
+      if (disconnectInFlight.current || options.isRuntimeStopping() || actionBusy === "disconnect") {
         return;
       }
+      applyGuidance(guidance, true, true);
       await disconnectCurrentRuntime({ notifyServer: false, guidance });
     },
-    [actionBusy, applyGuidance, disconnectCurrentRuntime]
+    [actionBusy, applyGuidance, disconnectCurrentRuntime, options]
   );
 
   const syncSubscriptionState = useCallback(
     async (accessToken: string) => {
+      const identity = options.getCurrentSessionIdentity();
+      const isCurrent = () => identity !== null &&
+        latestOptions.current.getCurrentSessionIdentity() === identity &&
+        latestOptions.current.getCurrentAccessToken() === accessToken;
+      if (!isCurrent()) return;
       try {
         const subscription = await fetchSubscription(accessToken);
+        if (!isCurrent()) return;
         options.mergeSubscriptionState(subscription);
       } catch (reason) {
+        if (!isCurrent()) return;
         if (isUnauthorizedApiError(reason)) {
           await options.recoverSessionAfterUnauthorized();
           return;
@@ -279,10 +295,17 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
 
   const syncAnnouncementsState = useCallback(
     async (accessToken: string) => {
+      const identity = options.getCurrentSessionIdentity();
+      const isCurrent = () => identity !== null &&
+        latestOptions.current.getCurrentSessionIdentity() === identity &&
+        latestOptions.current.getCurrentAccessToken() === accessToken;
+      if (!isCurrent()) return;
       try {
         const announcements = await fetchAnnouncements(accessToken);
+        if (!isCurrent()) return;
         options.setBootstrap((current) => (current ? { ...current, announcements } : current));
       } catch (reason) {
+        if (!isCurrent()) return;
         if (isUnauthorizedApiError(reason)) {
           await options.recoverSessionAfterUnauthorized();
         }
@@ -293,8 +316,14 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
 
   const syncBootstrapState = useCallback(
     async (accessToken: string) => {
+      const identity = options.getCurrentSessionIdentity();
+      const isCurrent = () => identity !== null &&
+        latestOptions.current.getCurrentSessionIdentity() === identity &&
+        latestOptions.current.getCurrentAccessToken() === accessToken;
+      if (!isCurrent()) return;
       try {
         const nextBootstrap = await fetchBootstrap(accessToken);
+        if (!isCurrent()) return;
         options.setBootstrap(nextBootstrap);
         const nextMode = nextBootstrap.policies.modes.includes(options.mode)
           ? options.mode
@@ -303,6 +332,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           options.setMode(nextMode);
         }
       } catch (reason) {
+        if (!isCurrent()) return;
         if (isUnauthorizedApiError(reason)) {
           await options.recoverSessionAfterUnauthorized();
           return;
@@ -326,12 +356,24 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
     [handleProtectedAccessRevoked, options]
   );
 
-  const syncForegroundState = useCallback(
+  const performForegroundSync = useCallback(
     async (accessToken: string) => {
-      await options.refreshRuntime().catch(() => null);
-
+      const identity = options.getCurrentSessionIdentity();
+      const epoch = options.getRuntimeSyncEpoch();
+      const isCurrent = () => identity !== null &&
+        latestOptions.current.getCurrentSessionIdentity() === identity &&
+        latestOptions.current.getCurrentAccessToken() === accessToken &&
+        latestOptions.current.getRuntimeSyncEpoch() === epoch &&
+        !latestOptions.current.isRuntimeStopping() && !disconnectInFlight.current;
+      if (!isCurrent()) return;
+      const status = await options.refreshRuntime().catch(() => null);
+      if (!isCurrent()) return;
       const activeRuntime = options.runtimeRef.current;
-      const activeSessionId = activeRuntime?.sessionId ?? options.desktopStatus.activeSessionId;
+      // Use the fresh native read, never a pre-disconnect React snapshot.
+      const activeSessionId = status?.activeSessionId ??
+        (options.desktopStatus.platformTarget === "web" ? activeRuntime?.sessionId ?? null : null);
+      const isCurrentConnection = () => isCurrent() &&
+        latestOptions.current.runtimeRef.current?.sessionId === activeSessionId;
       const [bootstrapResult, subscriptionResult, nodesResult, announcementsResult, runtimeResult] =
         await Promise.allSettled([
           fetchBootstrap(accessToken),
@@ -340,6 +382,8 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           fetchAnnouncements(accessToken),
           activeSessionId ? fetchClientRuntime(accessToken, activeSessionId) : Promise.resolve(null)
         ]);
+
+      if (!isCurrent()) return;
 
       if (bootstrapResult.status === "fulfilled") {
         options.setBootstrap(bootstrapResult.value);
@@ -412,7 +456,6 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       if (subscriptionResult.status === "fulfilled") {
         nextSubscription = subscriptionResult.value;
         options.mergeSubscriptionState(subscriptionResult.value);
-        options.lastForegroundSyncErrorRef.current = null;
       }
 
       if (nodesResult.status === "fulfilled") {
@@ -421,11 +464,13 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         options.setSelectedNodeId((current) =>
           options.pickNode(nextNodes, current, options.probeResultsRef.current)?.id ?? null
         );
-        options.lastForegroundSyncErrorRef.current = null;
       }
 
       if (announcementsResult.status === "fulfilled") {
         options.setBootstrap((current) => (current ? { ...current, announcements: announcementsResult.value } : current));
+      }
+
+      if (subscriptionResult.status === "fulfilled" && nodesResult.status === "fulfilled") {
         options.lastForegroundSyncErrorRef.current = null;
       }
 
@@ -435,7 +480,19 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         }
       }
 
-      if (activeRuntime && activeSessionId && runtimeResult.status === "fulfilled") {
+      if (runtimeResult.status === "fulfilled" && runtimeResult.value &&
+          runtimeResult.value.sessionId === activeSessionId && isCurrentConnection()) {
+        const lease = runtimeResult.value;
+        options.setRuntime((current) => current?.sessionId === activeSessionId ? {
+          ...current,
+          leaseId: lease.leaseId,
+          leaseExpiresAt: lease.leaseExpiresAt,
+          leaseHeartbeatIntervalSeconds: lease.leaseHeartbeatIntervalSeconds,
+          leaseGraceSeconds: lease.leaseGraceSeconds
+        } : current);
+      }
+
+      if (activeRuntime && activeSessionId && isCurrentConnection() && runtimeResult.status === "fulfilled") {
         let serverRuntime = runtimeResult.value;
         const fallbackNodeId =
           pickAlternativeNode(
@@ -447,8 +504,10 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         if (!serverRuntime || serverRuntime.sessionId !== activeSessionId) {
           try {
             await new Promise((resolve) => window.setTimeout(resolve, 800));
+            if (!isCurrentConnection()) return;
             serverRuntime = await fetchClientRuntime(accessToken, activeSessionId);
           } catch (confirmReason) {
+            if (!isCurrentConnection()) return;
             if (isUnauthorizedApiError(confirmReason)) {
               await options.recoverSessionAfterUnauthorized();
               return;
@@ -458,8 +517,11 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
                 return;
               }
             }
+            // Failed confirmation is not evidence that the lease is invalid.
+            return;
           }
         }
+        if (!isCurrentConnection()) return;
 
         if (!serverRuntime || serverRuntime.sessionId !== activeSessionId) {
           const guidance =
@@ -468,15 +530,9 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           if (guidance) {
             if (options.desktopStatus.platformTarget === "android" || options.desktopStatus.platformTarget === "web") {
               await handleForcedGuidance(guidance);
-            } else {
-              options.setConnectionGuidance(guidance);
-              options.notify({
-                color: "yellow",
-                title: guidance.title,
-                message: "服务端连接状态暂时未同步，本地连接将继续保留，请稍后再试。",
-                autoClose: 4000
-              });
             }
+            // Desktop leases are owned by the native heartbeat. An empty
+            // snapshot cannot revoke a live local connection or justify a toast.
             return;
           }
         }
@@ -493,7 +549,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         options.lastForegroundSyncErrorRef.current = message;
         options.notify({
           color: "yellow",
-          title: "网络连接已中断",
+          title: "暂时无法同步服务端状态",
           message,
           autoClose: 4000
         });
@@ -502,12 +558,35 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
     [handleForcedGuidance, options]
   );
 
+  const syncForegroundState = useCallback((accessToken: string) => {
+    const current = latestOptions.current;
+    const key = JSON.stringify([current.getCurrentSessionIdentity(), accessToken,
+      current.getRuntimeSyncEpoch(), current.runtimeRef.current?.sessionId ?? current.desktopStatus.activeSessionId]);
+    if (foregroundTask.current?.key === key) return foregroundTask.current.task;
+    const task = performForegroundSync(accessToken).finally(() => {
+      if (foregroundTask.current?.task === task) foregroundTask.current = null;
+    });
+    foregroundTask.current = { key, task };
+    return task;
+  }, [performForegroundSync]);
+
   const handleRuntimeEvent = useCallback(
     async (event: ClientRuntimeEventDto, accessToken: string) => {
       if (!event) {
         return;
       }
 
+      const current = latestOptions.current;
+      if (current.getCurrentAccessToken() !== accessToken) return;
+      if (event.sessionId && (current.isRuntimeStopping() || disconnectInFlight.current ||
+          event.sessionId !== (current.runtimeRef.current?.sessionId ?? current.desktopStatus.activeSessionId))) return;
+      const identity = current.getCurrentSessionIdentity();
+      const epoch = current.getRuntimeSyncEpoch();
+      const isCurrentEvent = () => identity !== null &&
+        latestOptions.current.getCurrentSessionIdentity() === identity &&
+        (!event.sessionId || (latestOptions.current.getRuntimeSyncEpoch() === epoch &&
+          !latestOptions.current.isRuntimeStopping() &&
+          event.sessionId === (latestOptions.current.runtimeRef.current?.sessionId ?? latestOptions.current.desktopStatus.activeSessionId)));
       const eventType = event.type as string;
       const runtimeEvent = event as ClientRuntimeEventDto & {
         ticketId?: string | null;
@@ -532,6 +611,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
 
       if (isAuthInvalidEvent) {
         const recoveredSession = await options.recoverSessionAfterUnauthorized();
+        if (!isCurrentEvent()) return;
         const recoveredAccessToken = recoveredSession?.accessToken ?? options.getCurrentAccessToken();
         if (recoveredAccessToken) {
           await syncForegroundState(recoveredAccessToken);
@@ -592,6 +672,8 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       } else if (eventType === "policy_updated") {
         await syncBootstrapState(accessToken);
       }
+
+      if (!isCurrentEvent()) return;
 
       if (eventType === "version_updated") {
         const isSyntheticRefresh = Boolean((event as ClientRuntimeEventDto & { synthetic?: boolean }).synthetic);
@@ -655,6 +737,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       ) {
         try {
           const nextNodes = await fetchNodes(accessToken);
+          if (!isCurrentEvent()) return;
           options.setNodes(nextNodes);
           options.setSelectedNodeId((current) =>
             options.pickNode(nextNodes, current, options.probeResultsRef.current)?.id ?? null
@@ -668,6 +751,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         }
       }
 
+      if (!isCurrentEvent()) return;
       const activeRuntime = options.runtimeRef.current;
       const activeSessionId = activeRuntime?.sessionId ?? options.desktopStatus.activeSessionId;
       if (!activeSessionId) {
