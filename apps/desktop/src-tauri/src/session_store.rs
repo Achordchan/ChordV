@@ -1,18 +1,21 @@
 //! Serialize credential files and reject writes from obsolete login operations.
 use sha2::{Digest,Sha256};
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{fs, io::Write, path::Path, sync::{atomic::{AtomicU64,Ordering},Mutex}};
 
 #[derive(Clone,Copy)]
 pub struct SaveTicket { epoch:u64, order:u64 }
-struct Committed { order:u64, retired:BTreeMap<String,u64> }
+struct Committed { order:u64, retired:BTreeSet<String> }
 fn credential_hash(value:&serde_json::Value)->Result<String,String>{
-    Ok(hex::encode(Sha256::digest(serde_json::to_vec(value).map_err(|e|e.to_string())?)))
+    // Session metadata may change while the refresh token remains retired.
+    // Hash the token identity rather than expiration/display fields.
+    let identity=value.get("refreshToken").unwrap_or(value);
+    Ok(hex::encode(Sha256::digest(serde_json::to_vec(identity).map_err(|e|e.to_string())?)))
 }
 pub struct SessionStore { epoch: AtomicU64, next:AtomicU64, io: Mutex<Committed> }
 impl SessionStore {
-    pub const fn new() -> Self { Self{epoch:AtomicU64::new(0),next:AtomicU64::new(0),io:Mutex::new(Committed{order:0,retired:BTreeMap::new()})} }
+    pub const fn new() -> Self { Self{epoch:AtomicU64::new(0),next:AtomicU64::new(0),io:Mutex::new(Committed{order:0,retired:BTreeSet::new()})} }
     pub fn generation(&self)->u64 {self.epoch.load(Ordering::SeqCst)}
     pub fn reserve_save(&self)->SaveTicket {
         SaveTicket{epoch:self.generation(),order:self.next.fetch_add(1,Ordering::SeqCst)+1}
@@ -52,7 +55,7 @@ impl SessionStore {
             let current:serde_json::Value=serde_json::from_slice(&bytes).map_err(|e|e.to_string())?;
             if current!=previous {return Err("登录凭据已更新，忽略过期刷新".into());}
         } else {
-            let obsolete=committed.retired.get(&credential_hash(&incoming)?).is_some_and(|cutoff|ticket.order<=*cutoff);
+            let obsolete=committed.retired.contains(&credential_hash(&incoming)?);
             if ticket.order<=committed.order || obsolete {return Err("登录状态已变化，忽略过期会话".into());}
         }
         let parent=path.parent().ok_or("会话路径无效")?;
@@ -66,9 +69,9 @@ impl SessionStore {
         self.epoch.compare_exchange(expected,if expected&1==0 {expected}else{expected.wrapping_add(1)},Ordering::SeqCst,Ordering::SeqCst)
             .map_err(|_|"登录状态已变化，忽略过期会话".to_string())?;
         committed.order=committed.order.max(ticket.order);
-        if let Some(hash)=retired {committed.retired.insert(hash,self.next.load(Ordering::SeqCst));}
-        let order=committed.order;
-        committed.retired.retain(|_,cutoff|*cutoff>order);
+        // Retired token identities remain invalid for this process lifetime:
+        // an old frontend continuation can reach IPC after any number of saves.
+        if let Some(hash)=retired {committed.retired.insert(hash);}
         Ok(())
     }
     #[cfg(test)]
@@ -89,6 +92,16 @@ impl SessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn late_ipc_save_cannot_restore_a_retired_token(){
+        let folder=tempfile::tempdir().unwrap();let path=folder.path().join("session.json");let store=SessionStore::new();
+        let old=serde_json::json!({"refreshToken":"A","expires":1});let new=serde_json::json!({"refreshToken":"B","expires":2});
+        store.save(&path,&old,store.reserve_save()).unwrap();let (_,refresh)=store.read::<serde_json::Value>(&path).unwrap();
+        store.rotate(&path,&new,refresh,&old).unwrap();
+        store.save(&path,&new,store.reserve_save()).unwrap();
+        assert!(store.save(&path,&serde_json::json!({"refreshToken":"A","expires":99}),store.reserve_save()).is_err());
+        assert_eq!(store.read::<serde_json::Value>(&path).unwrap().0,Some(new));
+    }
     #[test]
     fn queued_new_login_survives_old_login_rotation(){
         let folder=tempfile::tempdir().unwrap();let path=folder.path().join("session.json");let store=SessionStore::new();
