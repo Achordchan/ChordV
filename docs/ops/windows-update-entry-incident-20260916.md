@@ -19,7 +19,7 @@ GitHub v1.1.8 中的 `ChordV_1.1.8_x64-setup.exe` 直链重定向后返回 200�
 
 ## 本次代码修复
 
-删除重复 openExternalLink，更新入口统一调用 openExternalUrl。原生浏览器命令等待系统调用退出状态，复用最长 5 秒的受限命令执行器；Windows 将 PowerShell 错误转为失败退出。失败提示只发送一次，不再宣布成功。浏览器预览打开空白页后先解除 opener，再跳转目标，避免 noopener 导致成功打开仍返回 null 的误判。
+删除重复 openExternalLink，更新入口统一调用 openExternalUrl。Windows/macOS 浏览器命令等待系统调用退出状态，复用最长 5 秒的受限命令执行器；Linux 的 xdg-open 可能与前台浏览器同寿命，因此只确认启动交接，由后台线程回收进程，不因 5 秒未退出而杀死启动器；Windows 将 PowerShell 错误转为失败退出。失败提示只发送一次，不再宣布成功。浏览器预览打开空白页后先解除 opener，再跳转目标，避免 noopener 导致成功打开仍返回 null 的误判。
 
 新增执行真实适配器/更新回调的回归测试，并保留旧版本实际解析函数作为只读测试 fixture，证明 EXE 模式在旧版中被拒绝。fixture 不参与客户端生产构建。
 

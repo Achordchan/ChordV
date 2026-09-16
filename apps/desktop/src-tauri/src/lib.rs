@@ -4821,16 +4821,16 @@ fn open_external_url_with_system(url: &str) -> Result<(), String> {
 
 #[cfg(all(not(target_os = "android"), not(target_os = "macos"), not(windows)))]
 fn open_external_url_with_system(url: &str) -> Result<(), String> {
-    let status = Command::new("xdg-open")
+    // xdg-open may own a foreground browser for its entire lifetime. A successful
+    // spawn acknowledges dispatch; do not time out and kill an active launcher.
+    let mut child = Command::new("xdg-open")
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .bounded_status()
+        .spawn()
         .map_err(|error| format!("打开外部链接失败：{error}"))?;
-    if !status.success() {
-        return Err("系统浏览器未能打开链接，请检查默认浏览器设置。".into());
-    }
+    thread::spawn(move || { let _ = child.wait(); });
     Ok(())
 }
 
