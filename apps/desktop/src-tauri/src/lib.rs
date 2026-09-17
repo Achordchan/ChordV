@@ -1,3 +1,4 @@
+mod download_cleanup;
 mod update_report;
 #[cfg(any(windows, test))]
 mod windows_update;
@@ -1668,6 +1669,7 @@ async fn download_desktop_installer_inner(
             let download_dir = ensure_installer_download_dir(&app)?;
             let final_path = download_dir.join(&file_name);
             let temp_path = installer_temp_path(&final_path);
+            let _temporary_files = temporary_download_files(&app, vec![temp_path.clone()]);
             if final_path.exists() {
                 if installer_file_matches_expectation(
                     &final_path,
@@ -1706,6 +1708,7 @@ async fn download_desktop_installer_inner(
                         Some(metadata.len()),
                         package_kind.clone(),
                     )?;
+                    prune_installer_cache_after_download(&app, &final_path);
                     return Ok(DesktopInstallerDownloadResult {
                         file_name,
                         local_path,
@@ -1936,6 +1939,7 @@ async fn download_desktop_installer_inner(
                 package_kind.clone(),
             )?;
 
+            prune_installer_cache_after_download(&app, &final_path);
             Ok(DesktopInstallerDownloadResult {
                 file_name,
                 local_path,
@@ -1950,23 +1954,6 @@ async fn download_desktop_installer_inner(
                 "update-download",
                 format!("failed error={error}"),
             );
-        }
-        if result.is_err() {
-            if let Ok(download_dir) = ensure_installer_download_dir(&app) {
-                if let Ok(entries) = fs::read_dir(&download_dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path
-                            .extension()
-                            .and_then(|value| value.to_str())
-                            .map(|value| value.ends_with("part"))
-                            .unwrap_or(false)
-                        {
-                            let _ = fs::remove_file(path);
-                        }
-                    }
-                }
-            }
         }
         result
     }
@@ -2764,6 +2751,7 @@ async fn download_runtime_component_inner(
             ));
             let target_path = runtime_component_target_path(&app, component)?;
             let temp_target_path = target_path.with_extension("part");
+            let _temporary_files = temporary_download_files(&app, vec![archive_path.clone(), temp_target_path.clone()]);
 
             emit_runtime_component_progress(
                 &app,
@@ -2884,7 +2872,6 @@ async fn download_runtime_component_inner(
                     if downloaded_bytes > max_download_bytes
                         || total_bytes.is_some_and(|expected| downloaded_bytes > expected)
                     {
-                        let _ = fs::remove_file(&archive_path);
                         return Err(runtime_component_error(
                             "metadata_mismatch",
                             format!(
@@ -2921,7 +2908,6 @@ async fn download_runtime_component_inner(
                 .flush()
                 .map_err(|error| runtime_component_error("write_failed", format!("写入组件文件失败：{error}")))?;
             if downloaded_bytes == 0 {
-                let _ = fs::remove_file(&archive_path);
                 return Err(runtime_component_error(
                     "download_failed",
                     format!(
@@ -2932,7 +2918,6 @@ async fn download_runtime_component_inner(
             }
             if let Some(expected) = expected_total_bytes {
                 if downloaded_bytes != expected {
-                    let _ = fs::remove_file(&archive_path);
                     return Err(runtime_component_error(
                         "metadata_mismatch",
                         format!(
@@ -2943,7 +2928,6 @@ async fn download_runtime_component_inner(
                 }
             } else if let Some(content_length) = response_content_length {
                 if downloaded_bytes != content_length {
-                    let _ = fs::remove_file(&archive_path);
                     return Err(runtime_component_error(
                         "metadata_mismatch",
                         format!(
@@ -3046,8 +3030,11 @@ async fn download_runtime_component_inner(
                 }
                 return Err(runtime_component_error("write_failed", format!("保存 {} 失败：{error}", runtime_component_display_name(component))));
             }
-            if had_previous { let _ = fs::remove_file(&previous_path); }
-            let _ = fs::remove_file(&archive_path);
+            if had_previous {
+                if let Err(error) = fs::remove_file(&previous_path) {
+                    append_download_diagnostic_log(&app, "download-cleanup", format!("清理组件备份失败，将在启动时重试：{error}"));
+                }
+            }
 
             let local_path = target_path.to_string_lossy().into_owned();
             append_download_diagnostic_log(
@@ -4634,85 +4621,25 @@ fn installer_temp_path(path: &Path) -> PathBuf {
 }
 
 fn cleanup_outdated_installer_packages(app: &AppHandle) -> Result<(), String> {
-    let download_dir = ensure_installer_download_dir(app)?;
-    let current_version = app.package_info().version.to_string();
-    let current_version = parse_installer_version(&current_version)
-        .ok_or_else(|| "当前应用版本号无效".to_string())?;
-    let entries =
-        fs::read_dir(&download_dir).map_err(|error| format!("读取安装包目录失败：{error}"))?;
-
-    for entry in entries {
-        let entry = match entry {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
-            continue;
-        };
-        let Some(version) = installer_package_version(file_name) else {
-            continue;
-        };
-        if compare_version_parts(&version, &current_version).is_lt() {
-            let _ = fs::remove_file(&path);
-        }
-    }
-
-    Ok(())
+    cleanup_installer_cache(app, None)
 }
 
-fn installer_package_version(file_name: &str) -> Option<Vec<u32>> {
-    let prefix = "ChordV_";
-    let rest = file_name.strip_prefix(prefix)?;
-
-    if let Some(version) = rest.strip_suffix(".dmg") {
-        return parse_installer_version(version);
-    }
-
-    if let Some(version) = rest.strip_suffix(".exe") {
-        let version = version.split('_').next().unwrap_or(version);
-        return parse_installer_version(version);
-    }
-
-    if let Some(version) = rest.strip_suffix(".zip") {
-        let version = version.split('_').next().unwrap_or(version);
-        return parse_installer_version(version);
-    }
-
-    None
+fn cleanup_installer_cache(app: &AppHandle, keep: Option<&Path>) -> Result<(), String> {
+    download_cleanup::cleanup_installers(&ensure_installer_download_dir(app)?, &app.package_info().version.to_string(), keep)
+        .map_err(|error| error.to_string())
 }
 
-fn parse_installer_version(raw: &str) -> Option<Vec<u32>> {
-    let trimmed = raw.trim().trim_start_matches('v');
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    trimmed
-        .split('.')
-        .map(|part| {
-            if part.is_empty() {
-                return None;
-            }
-            part.parse::<u32>().ok()
-        })
-        .collect()
+fn temporary_download_files(app: &AppHandle, paths: Vec<PathBuf>) -> download_cleanup::TemporaryFiles {
+    let app = app.clone();
+    download_cleanup::TemporaryFiles::new(paths, move |message| {
+        append_download_diagnostic_log(&app, "download-cleanup", message);
+    })
 }
 
-fn compare_version_parts(left: &[u32], right: &[u32]) -> std::cmp::Ordering {
-    let max_len = left.len().max(right.len());
-    for index in 0..max_len {
-        let left_part = *left.get(index).unwrap_or(&0);
-        let right_part = *right.get(index).unwrap_or(&0);
-        match left_part.cmp(&right_part) {
-            std::cmp::Ordering::Equal => continue,
-            ordering => return ordering,
-        }
+fn prune_installer_cache_after_download(app: &AppHandle, path: &Path) {
+    if let Err(error) = cleanup_installer_cache(app, Some(path)) {
+        append_download_diagnostic_log(app, "download-cleanup", error);
     }
-    std::cmp::Ordering::Equal
 }
 
 fn desktop_update_package_label(package_kind: Option<&str>) -> &'static str {
@@ -6784,7 +6711,19 @@ fn perform_startup_maintenance(app:&AppHandle)->Result<(),String>{
                         #[cfg(not(target_os = "android"))]
                         {
                             ensure_runtime_bin_dir(app)?;
-                            let _=cleanup_outdated_installer_packages(app);
+                            if let Err(error) = cleanup_outdated_installer_packages(app) {
+                                append_download_diagnostic_log(app, "download-cleanup", error);
+                            }
+                            if let Err(error) = download_cleanup::cleanup_components(&ensure_runtime_dir(app)?, runtime_binary_name()) {
+                                append_download_diagnostic_log(app, "download-cleanup", error.to_string());
+                            }
+                            #[cfg(windows)]
+                            if !windows_update::installation_in_progress() {
+                                let cutoff = std::time::SystemTime::now() - Duration::from_secs(24 * 60 * 60);
+                                if let Err(error) = download_cleanup::cleanup_official_updater(&std::env::temp_dir(), cutoff) {
+                                    append_download_diagnostic_log(app, "download-cleanup", error.to_string());
+                                }
+                            }
                         }
                         #[cfg(target_os = "macos")]
                         {let _=cleanup_mounted_installer_volumes(app);}

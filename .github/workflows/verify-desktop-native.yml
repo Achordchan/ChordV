@@ -84,7 +84,7 @@ jobs:
           node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/windows-update-protocol.regression.ts
           node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/windows-full-update-path.regression.ts
       - name: Build isolated Windows installer for upgrade test
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && !github.event.pull_request.draft && !contains(github.event.pull_request.labels.*.name, 'skip-desktop-packaging')
         env:
           CHORDV_API_BASE_URL: https://v.achord.cn
           VITE_API_BASE_URL: https://127.0.0.1:9
@@ -97,7 +97,7 @@ jobs:
           pnpm --filter @chordv/desktop exec node scripts/build-tauri-platform.mjs windows --target x86_64-pc-windows-msvc
           node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/api/tsconfig.json apps/api/scripts/verify-windows-updater-signature.ts
       - name: Exercise real legacy Windows installation upgrade
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && !github.event.pull_request.draft && !contains(github.event.pull_request.labels.*.name, 'skip-desktop-packaging')
         shell: powershell
         run: |
           $version = (Get-Content apps/desktop/config/platform-versions.json | ConvertFrom-Json).windows
