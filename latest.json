@@ -1,0 +1,15 @@
+{
+  "version": "0.0.21",
+  "channel": "stable",
+  "tag": "backend-v0.0.21",
+  "publishedAt": "2026-09-17T02:29:34Z",
+  "htmlUrl": "https://github.com/Achordchan/ChordV/releases/tag/backend-v0.0.21",
+  "changelog": [
+    "后台发布版本推进至 0.0.21；客户端缓存与异常下载清理修复已合入源码，客户端暂不打包。后台 GEO 历史兼容保留策略保持不变。"
+  ],
+  "artifact": {
+    "url": "https://github.com/Achordchan/ChordV/releases/download/backend-v0.0.21/chordv-backend-0.0.21.tar.gz",
+    "sha256": "2c61d8d9c61e0204e3d2b9f2f2c07ad4d19b34275004f445db5fab8977422be2",
+    "sizeBytes": 103880884
+  }
+}
