@@ -66,10 +66,16 @@ async fn download_inner(app: &AppHandle, channel: &Channel<DesktopInstallerDownl
     };
     if bytes.len() as u64 != expected_size { return Err("安装包大小与发布清单不一致".into()); }
     progress("verifying", expected_size, "签名已验证，正在保存安装包…");
-    fs::write(&path, &bytes).map_err(|e| format!("保存安装包失败：{e}"))?;
+    let temp_path = installer_temp_path(&path);
+    let _temporary_files = temporary_download_files(app, vec![temp_path.clone()]);
+    fs::write(&temp_path, &bytes).map_err(|e| format!("保存安装包失败：{e}"))?;
     if let Some(hash) = json_string_field(&update.raw_json, &["fileHash"]) {
-        verify_file_sha256(&path, &hash, "Windows installer")?;
+        verify_file_sha256(&temp_path, &hash, "Windows installer")?;
     }
+    // Windows rename cannot overwrite an existing cache entry.
+    if path.exists() { fs::remove_file(&path).map_err(|e| e.to_string())?; }
+    fs::rename(&temp_path, &path).map_err(|e| format!("保存安装包失败：{e}"))?;
+    prune_installer_cache_after_download(app, &path);
     *app.state::<PreparedState>().0.lock().map_err(|_| "更新状态异常")? = Some(PreparedUpdate { update, bytes, path: path.clone() });
     progress("completed", expected_size, "安装包已验证，点击安装并重启。");
     Ok(DesktopInstallerDownloadResult { file_name, local_path: path.to_string_lossy().into_owned(), total_bytes: Some(expected_size) })
