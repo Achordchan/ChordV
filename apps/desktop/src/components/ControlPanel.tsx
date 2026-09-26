@@ -1,8 +1,16 @@
 import { Badge, Button, Divider, Group, Paper, SegmentedControl, SimpleGrid, Stack, Text, ThemeIcon, Title } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
+import { useEffect, useState } from "react";
 import type { ConnectionMode, GeneratedRuntimeConfigDto } from "@chordv/shared";
 import { IconChartBar, IconPlugConnected, IconRoute, IconShieldCheckered } from "@tabler/icons-react";
 import type { RuntimeStatus } from "../lib/runtime";
+import {
+  PRIMARY_FILL_COMPLETE_MS,
+  resolvePrimaryFillPhase,
+  shouldCompleteFill,
+  type PrimaryBusyAction,
+  type PrimaryFillPhase
+} from "../lib/primaryActionFill";
 
 type ControlPanelProps = {
   modes: ConnectionMode[];
@@ -10,6 +18,7 @@ type ControlPanelProps = {
   canConnect: boolean;
   modeLocked: boolean;
   primaryBusy: boolean;
+  busyAction?: PrimaryBusyAction;
   primaryLabel: string;
   desktopStatus: RuntimeStatus;
   runtime: GeneratedRuntimeConfigDto | null;
@@ -23,6 +32,42 @@ type ControlPanelProps = {
 
 export function ControlPanel(props: ControlPanelProps) {
   const isMobile = useMediaQuery("(max-width: 760px)");
+  const fillPhase = usePrimaryFillPhase(props.desktopStatus.status, props.busyAction ?? null);
+  const filling = fillPhase !== "idle";
+  const primaryLabel =
+    fillPhase === "connecting"
+      ? props.runtimeAssetsPhase === "checking" || props.runtimeAssetsPhase === "downloading"
+        ? props.primaryLabel
+        : "正在连接…"
+      : fillPhase === "disconnecting"
+        ? "正在断开…"
+        : fillPhase === "completing"
+          ? "已连接"
+          : props.primaryLabel;
+  const renderPrimaryButton = (size: "lg" | "xl") => (
+    <Button
+      size={size}
+      className="primary-action control-primary-action"
+      data-fill={filling ? fillPhase : undefined}
+      data-disabled={filling || undefined}
+      aria-disabled={filling || undefined}
+      aria-busy={filling || props.primaryBusy || undefined}
+      leftSection={<IconPlugConnected size={20} />}
+      onClick={filling ? undefined : props.onPrimaryAction}
+      loading={props.primaryBusy && !filling}
+      color={props.desktopStatus.status === "connected" ? "green" : "cyan"}
+      fullWidth
+      disabled={
+        !filling &&
+        !props.canConnect &&
+        props.runtimeAssetsPhase !== "failed" &&
+        props.desktopStatus.status !== "connected" &&
+        props.desktopStatus.status !== "error"
+      }
+    >
+      {primaryLabel}
+    </Button>
+  );
 
   if (isMobile) {
     return (
@@ -57,7 +102,6 @@ export function ControlPanel(props: ControlPanelProps) {
             fullWidth
             size="md"
             className="control-panel__mode-switch"
-            color="cyan"
             value={props.mode}
             onChange={(value) => props.onModeChange(value as ConnectionMode)}
             disabled={props.modeLocked}
@@ -67,23 +111,7 @@ export function ControlPanel(props: ControlPanelProps) {
             }))}
           />
 
-          <Button
-            size="xl"
-            className="primary-action control-primary-action"
-            leftSection={<IconPlugConnected size={20} />}
-            onClick={props.onPrimaryAction}
-            loading={props.primaryBusy}
-            color={props.desktopStatus.status === "connected" ? "green" : "cyan"}
-            fullWidth
-            disabled={
-              !props.canConnect &&
-              props.runtimeAssetsPhase !== "failed" &&
-              props.desktopStatus.status !== "connected" &&
-              props.desktopStatus.status !== "error"
-            }
-          >
-            {props.primaryLabel}
-          </Button>
+          {renderPrimaryButton("xl")}
 
           <SimpleGrid cols={2} spacing="sm" verticalSpacing="sm" className="control-panel__ports">
             <MetricBlock label="HTTP 端口" value={props.runtime ? `${props.runtime.localHttpPort}` : "--"} />
@@ -141,7 +169,6 @@ export function ControlPanel(props: ControlPanelProps) {
           <SegmentedControl
             fullWidth
             className="control-panel__mode-switch"
-            color="cyan"
             value={props.mode}
             onChange={(value) => props.onModeChange(value as ConnectionMode)}
             disabled={props.modeLocked}
@@ -151,23 +178,7 @@ export function ControlPanel(props: ControlPanelProps) {
             }))}
           />
 
-          <Button
-            size="lg"
-            className="primary-action control-primary-action"
-            leftSection={<IconPlugConnected size={20} />}
-            onClick={props.onPrimaryAction}
-            loading={props.primaryBusy}
-            color={props.desktopStatus.status === "connected" ? "green" : "cyan"}
-            fullWidth
-            disabled={
-              !props.canConnect &&
-              props.runtimeAssetsPhase !== "failed" &&
-              props.desktopStatus.status !== "connected" &&
-              props.desktopStatus.status !== "error"
-            }
-          >
-            {props.primaryLabel}
-          </Button>
+          {renderPrimaryButton("lg")}
 
           <Group grow wrap="nowrap" className="control-metrics">
             <MetricBlock label="HTTP 端口" value={props.runtime ? `${props.runtime.localHttpPort}` : "--"} />
@@ -209,6 +220,23 @@ export function ControlPanel(props: ControlPanelProps) {
       </Stack>
     </Paper>
   );
+}
+
+function usePrimaryFillPhase(status: string, busyAction: PrimaryBusyAction): PrimaryFillPhase {
+  const phase = resolvePrimaryFillPhase(status, busyAction);
+  const [trackedPhase, setTrackedPhase] = useState(phase);
+  const [completing, setCompleting] = useState(false);
+  if (trackedPhase !== phase) {
+    // Adjusted during render so the green idle button never flashes before the sweep.
+    setTrackedPhase(phase);
+    setCompleting(shouldCompleteFill(trackedPhase, phase, status));
+  }
+  useEffect(() => {
+    if (!completing) return;
+    const timer = window.setTimeout(() => setCompleting(false), PRIMARY_FILL_COMPLETE_MS);
+    return () => window.clearTimeout(timer);
+  }, [completing]);
+  return completing && phase === "idle" && status === "connected" ? "completing" : phase;
 }
 
 function readRuntimeInstallLabel(

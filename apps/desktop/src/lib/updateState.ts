@@ -122,6 +122,19 @@ export function formatVersionLabel(version: string) {
   return version;
 }
 
+// A release can be forced while minimumVersion stays at 0.0.0; only claim
+// "below the supported version" when that is actually true.
+export function describeRequiredUpdate(
+  update: Pick<ClientUpdateCheckResult, "latestVersion" | "minimumVersion">,
+  appVersion: string
+) {
+  const target = formatVersionLabel(update.latestVersion);
+  if (compareVersion(update.minimumVersion, appVersion) > 0) {
+    return `当前版本 ${formatVersionLabel(appVersion)} 已低于最低支持版本，请更新到 ${target} 后继续使用。`;
+  }
+  return `这是一次必要更新，请更新到 ${target} 后继续使用。`;
+}
+
 export function resolveUpdateDownloadUrl(downloadUrl: string | null) {
   if (!downloadUrl) {
     return null;

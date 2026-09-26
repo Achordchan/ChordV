@@ -16,3 +16,8 @@ console.log("Windows official updater integration and retired replacement comman
 const hooks = readFileSync(resolve(import.meta.dirname, "../src-tauri/windows/chordv-installer-hooks.nsh"), "utf8");
 assert.doesNotMatch(hooks, /CheckIfAppIsRunning "\$INSTDIR/);
 assert.match(hooks, /CheckIfAppIsRunning "chordv-desktop\.exe"/);
+// An exiting client still maps its image; File must not race it (无法打开要写入的文件).
+const preinstall = hooks.slice(hooks.indexOf("!macro NSIS_HOOK_PREINSTALL"), hooks.indexOf("!macro NSIS_HOOK_POSTINSTALL"));
+assert.ok(preinstall.indexOf("--installer-maintenance") < preinstall.indexOf('ChordVWaitUntilWritable "${MAINBINARYNAME}.exe"'));
+assert.match(hooks, /!macro ChordVWaitUntilWritable[\s\S]*FileOpen \$R9 "\$INSTDIR\\\$\{NAME\}" a[\s\S]*Sleep 250[\s\S]*\$\{LoopUntil\} \$R8 >= 60/);
+console.log("Windows installer waits for the old binary to be writable");

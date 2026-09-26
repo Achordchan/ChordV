@@ -98,6 +98,7 @@ import { useRuntimeAssets } from "./hooks/useRuntimeAssets";
 import { useRuntimeStatus } from "./hooks/useRuntimeStatus";
 import { useSupportTickets } from "./hooks/useSupportTickets";
 import { buildUpdatePromptKey, hasActionableUpdate, useUpdateFlow } from "./hooks/useUpdateFlow";
+import { describeRequiredUpdate } from "./lib/updateState";
 const REMEMBER_CREDENTIALS_KEY = "chordv_remember_credentials";
 const DESKTOP_CLOSE_HINT_KEY = "chordv_desktop_close_hint_ack";
 const RUNTIME_COMPONENT_MIRROR_PREFIX_KEY = "chordv_runtime_component_mirror_prefix";
@@ -1676,32 +1677,18 @@ export function App() {
   const updateStatusDescription = updateCheckStatus === "failed"
     ? "暂时无法获取版本信息，点击检查更新重试。"
     : componentVersionSync.syncError ?? (componentVersionSync.deferred ? "组件待同步，将在断开连接后自动更新。" : undefined);
-  const forceUpdateBanner =
+  // Desktop keeps no inline banner: the window is fixed-size, and the orange
+  // "必须更新" button plus the floating progress card already cover this.
+  const forceUpdateNotice =
     forceUpdateRequired && effectiveUpdateActionable && effectiveUpdate && !updateDialogOpened ? (
-      <Alert color={forceUpdateRequired ? "red" : "blue"}>
-        <Stack gap={8}>
-          <Text size="sm">
-            {`当前版本 ${formatVersionLabel(appVersion)} 已低于最低支持版本，请先升级到 ${formatVersionLabel(
-              effectiveUpdate.latestVersion
-            )} 后再继续使用。`}
-          </Text>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <Button size="xs" variant="white" onClick={() => setUpdateDialogOpened(true)}>
-              查看更新说明
-            </Button>
-            {effectiveUpdate.downloadUrl ? (
-              <Button
-                size="xs"
-                variant={forceUpdateRequired ? "filled" : "light"}
-                loading={updateDownload.phase === "preparing" || updateDownload.phase === "downloading" || updateDownload.phase === "verifying"}
-                onClick={() => setUpdateDialogOpened(true)}
-              >
-                查看下载进度
-              </Button>
-            ) : null}
-          </div>
-        </Stack>
-      </Alert>
+      <div className="force-update-strip" role="status">
+        <Text size="xs" className="force-update-strip__text" lineClamp={2}>
+          {describeRequiredUpdate(effectiveUpdate, appVersion)}
+        </Text>
+        <Button size="compact-xs" variant="light" color="orange" className="force-update-strip__action" onClick={() => setUpdateDialogOpened(true)}>
+          {updateDownload.phase === "idle" ? "立即更新" : "查看进度"}
+        </Button>
+      </div>
     ) : null;
 
   return (
@@ -1758,7 +1745,7 @@ export function App() {
         />
       ) : mobileHomeMode ? (
         <div className="desktop-main desktop-main--mobile-home">
-          {forceUpdateBanner ? <div className="desktop-mobile-home__notice">{forceUpdateBanner}</div> : null}
+          {forceUpdateNotice ? <div className="desktop-mobile-home__notice">{forceUpdateNotice}</div> : null}
 
           <div className="desktop-mobile-home__screen">
             {mobileTab === "home" ? (
@@ -1769,6 +1756,7 @@ export function App() {
                   canConnect={canConnect}
                   modeLocked={modeLocked}
                   primaryBusy={actionBusy !== null}
+                  busyAction={actionBusy}
                   primaryLabel={primaryButtonLabel(
                     desktopStatus.status,
                     bootstrap.subscription,
@@ -1898,7 +1886,6 @@ export function App() {
               onCheckUpdate={() => void handleManualUpdateCheck()}
               onLogout={() => void handleLogout()}
             />
-            {forceUpdateBanner}
           </Stack>
 
           <div className="desktop-content">
@@ -1918,6 +1905,7 @@ export function App() {
               canConnect={canConnect}
               modeLocked={modeLocked}
               primaryBusy={actionBusy !== null}
+              busyAction={actionBusy}
               primaryLabel={primaryButtonLabel(
                 desktopStatus.status,
                 bootstrap.subscription,

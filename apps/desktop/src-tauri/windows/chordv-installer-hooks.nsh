@@ -35,6 +35,38 @@ Var ChordVUpdateGate
     SetErrorLevel 2
     Abort
   ${EndIf}
+  !insertmacro ChordVWaitUntilWritable "${MAINBINARYNAME}.exe"
+  !insertmacro ChordVWaitUntilWritable "chordv-desktop.exe"
+  !insertmacro ChordVWaitUntilWritable "chordv_desktop.exe"
+!macroend
+
+; The updater launches this installer and exits at the same moment, and the
+; process guard returns right after TerminateProcess. A client that is still
+; tearing down keeps its image mapped, so File fails with "无法打开要写入的文件".
+; An "a" open needs write access and fails exactly while the image is mapped;
+; poll it (at most ~15s) and then let File report anything that remains.
+!macro ChordVWaitUntilWritable NAME
+  Push $R8
+  Push $R9
+  ${If} ${FileExists} "$INSTDIR\${NAME}"
+    StrCpy $R8 0
+    ${Do}
+      ClearErrors
+      FileOpen $R9 "$INSTDIR\${NAME}" a
+      ${If} ${Errors}
+        ${If} $R8 = 0
+          DetailPrint "正在等待旧版 ChordV 完全退出…"
+        ${EndIf}
+        IntOp $R8 $R8 + 1
+        Sleep 250
+      ${Else}
+        FileClose $R9
+        StrCpy $R8 60
+      ${EndIf}
+    ${LoopUntil} $R8 >= 60
+  ${EndIf}
+  Pop $R9
+  Pop $R8
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
