@@ -7,7 +7,7 @@ use tokio::{net::{lookup_host, TcpStream}, task::JoinSet, time::timeout};
 async fn tcp_latency(host: &str, port: u16) -> Result<u32, String> {
     let started = Instant::now();
     timeout(Duration::from_secs(4), async {
-        let addresses = lookup_host((host, port)).await.map_err(|error| error.to_string())?;
+        let addresses = lookup_host((host, port)).await.map_err(|_| "节点地址无法解析".to_string())?;
         let mut attempts = JoinSet::new();
         for address in addresses.take(8) {
             attempts.spawn(async move { TcpStream::connect(address).await });
@@ -16,12 +16,24 @@ async fn tcp_latency(host: &str, port: u16) -> Result<u32, String> {
         while let Some(attempt) = attempts.join_next().await {
             match attempt {
                 Ok(Ok(_)) => return Ok(started.elapsed().as_millis().clamp(1, 60000) as u32),
-                Ok(Err(reason)) => error = reason.to_string(),
-                Err(reason) => error = reason.to_string(),
+                Ok(Err(reason)) => error = describe_probe_io_error(&reason),
+                Err(_) => error = "本机检测中断，请重新测速".to_string(),
             }
         }
         Err(error)
-    }).await.map_err(|_| "本机连接节点超时（4 秒）".to_string())?
+    }).await.map_err(|_| "连接节点超时，请稍后重新测速".to_string())?
+}
+
+/// 节点测速结果会直接显示在节点列表里，只给出客户看得懂的中文原因，不透出系统原始错误。
+fn describe_probe_io_error(error: &std::io::Error) -> String {
+    use std::io::ErrorKind;
+    match error.kind() {
+        ErrorKind::ConnectionRefused => "节点拒绝连接，可能暂时不可用".into(),
+        ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted => "节点连接被中断，请稍后重新测速".into(),
+        ErrorKind::TimedOut => "连接节点超时，请稍后重新测速".into(),
+        ErrorKind::PermissionDenied => "系统阻止了本机检测，请检查安全软件设置".into(),
+        _ => "当前网络无法连接到该节点".into(),
+    }
 }
 
 async fn probe_node(node: NodeSummaryDto) -> NodeProbeResultDto {
@@ -29,7 +41,7 @@ async fn probe_node(node: NodeSummaryDto) -> NodeProbeResultDto {
         (Some(host), Some(port)) if !host.trim().is_empty() && port > 0 => tcp_latency(host, port).await,
         _ => return NodeProbeResultDto {
             node_id:node.id,status:"unknown".into(),latency_ms:None,
-            checked_at:chrono_like_now(),error:Some("后台尚未提供本机检测信息".into()),
+            checked_at:chrono_like_now(),error:Some("该节点暂不支持本机测速".into()),
         },
     };
     NodeProbeResultDto {
@@ -48,7 +60,7 @@ pub(super) async fn probe_nodes(nodes: Vec<NodeSummaryDto>) -> Result<Vec<NodePr
     let mut pending = JoinSet::new();
     for node in nodes.by_ref().take(6) { pending.spawn(probe_node(node)); }
     while let Some(result) = pending.join_next().await {
-        results.push(result.map_err(|error| error.to_string())?);
+        results.push(result.map_err(|_| "节点测速中断，请重新测速".to_string())?);
         if let Some(node) = nodes.next() { pending.spawn(probe_node(node)); }
     }
     Ok(results)

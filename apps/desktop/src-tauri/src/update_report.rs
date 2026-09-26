@@ -1,7 +1,7 @@
 /// Accept both native UTF-8 reports and Windows PowerShell 5.1 UTF-8 BOM reports.
 pub fn parse(raw: &str) -> Result<serde_json::Value, String> {
     serde_json::from_str(raw.trim_start_matches('\u{feff}'))
-        .map_err(|error| format!("failed to parse update install report: {error}"))
+        .map_err(|error| format!("无法解析更新结果：{error}"))
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ActionIcon, Badge, Button, Collapse, Group, Switch, Text, TextInput, UnstyledButton } from "@mantine/core";
 import { notifications } from "../lib/notifications";
+import { toUserMessage } from "../lib/userFacingErrors";
 import {
   IconChevronDown,
   IconChevronRight,
@@ -24,7 +25,6 @@ import {
   createRoutingRule,
   deleteRoutingRule,
   fetchRoutingRules,
-  getApiErrorRawMessage,
   testRoutingRule,
   updateRoutingRule
 } from "../api/client";
@@ -67,7 +67,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
     try {
       setRules(await fetchRoutingRules(props.accessToken));
     } catch (reason) {
-      setError(getApiErrorRawMessage(reason));
+      setError(toUserMessage(reason));
     } finally {
       setLoading(false);
     }
@@ -98,7 +98,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
         });
       }
     } catch (reason) {
-      setError(getApiErrorRawMessage(reason) || "自动重连失败，请手动重新连接。");
+      setError(toUserMessage(reason, { context: "connect" }));
       notifications.show({
         color: "red",
         title: "自动重连失败",
@@ -126,7 +126,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
       );
     } catch (reason) {
       setTestResult(null);
-      setError(getApiErrorRawMessage(reason));
+      setError(toUserMessage(reason));
     } finally {
       setBusy(null);
     }
@@ -156,7 +156,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
       await loadRules();
       await applyIfConnected("规则已保存");
     } catch (reason) {
-      setError(getApiErrorRawMessage(reason));
+      setError(toUserMessage(reason));
     } finally {
       setBusy(null);
     }
@@ -170,7 +170,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
       await loadRules();
       await applyIfConnected(enabled ? "规则已启用" : "规则已停用");
     } catch (reason) {
-      setError(getApiErrorRawMessage(reason));
+      setError(toUserMessage(reason));
     } finally {
       setBusy(null);
     }
@@ -187,7 +187,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
       await loadRules();
       await applyIfConnected("规则已删除");
     } catch (reason) {
-      setError(getApiErrorRawMessage(reason));
+      setError(toUserMessage(reason));
     } finally {
       setBusy(null);
     }

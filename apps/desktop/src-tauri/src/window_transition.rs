@@ -35,7 +35,7 @@ pub async fn transition_main_window(
     signed_in: bool,
     animate: bool,
 ) -> Result<(), String> {
-    if window.label() != "main" { return Err("Only the main window can change layout".into()); }
+    if window.label() != "main" { return Err("只有主窗口可以调整窗口布局".into()); }
     let _guard = state.0.lock().await;
     let size = if signed_in { MAIN_SIZE } else { LOGIN_SIZE };
     transition(window, size, animate).await

@@ -2217,10 +2217,10 @@ fn desktop_update_report_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_local_data_dir()
-        .map_err(|error| format!("failed to resolve app data directory: {error}"))?
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))?
         .join("updater");
     fs::create_dir_all(&dir)
-        .map_err(|error| format!("failed to create updater directory: {error}"))?;
+        .map_err(|error| format!("无法创建更新目录：{error}"))?;
     Ok(dir.join("last-install-report.json"))
 }
 
@@ -2244,7 +2244,7 @@ fn write_desktop_update_install_report(
         "createdAt": chrono::Utc::now().to_rfc3339(),
     });
     fs::write(&path, payload.to_string())
-        .map_err(|error| format!("failed to write update install report: {error}"))
+        .map_err(|error| format!("无法写入更新结果：{error}"))
 }
 
 #[tauri::command]
@@ -2265,12 +2265,12 @@ fn consume_desktop_update_install_report_blocking(
         return Ok(None);
     }
     let raw = fs::read_to_string(&path)
-        .map_err(|error| format!("failed to read update install report: {error}"))?;
+        .map_err(|error| format!("无法读取更新结果：{error}"))?;
     // Windows PowerShell 5.1 reports may contain a UTF-8 BOM. Preserve the
     // report if parsing fails so diagnostics are not destroyed on first launch.
     let value = update_report::parse(&raw)?;
     fs::remove_file(&path)
-        .map_err(|error| format!("failed to consume update install report: {error}"))?;
+        .map_err(|error| format!("无法清理更新结果：{error}"))?;
     Ok(Some(DesktopUpdateInstallReportDto {
         ok: value
             .get("ok")
@@ -3880,7 +3880,7 @@ fn verify_runtime_component_for_connect(
 
     if !target_path.exists() {
         return Err(format!(
-            "{} is missing after bundled runtime restore.",
+            "组件 {} 缺失，恢复内置组件后仍未找到。",
             runtime_component_key(component.component)
         ));
     }
@@ -3907,7 +3907,7 @@ fn verify_runtime_component_for_connect(
 async fn verify_runtime_components_for_connect(app: &AppHandle) -> Result<(), String> {
     let plan = fetch_runtime_components_plan_for_connect(app).await?;
     if plan.components.is_empty() {
-        return Err("runtime component plan is empty".into());
+        return Err("runtime_component_unavailable:服务端没有返回连接所需组件清单".into());
     }
 
     for required_component in [
@@ -3969,7 +3969,7 @@ async fn prepare_desktop_runtime_components(
             format!("connect-verify-unavailable error={repair_error}"),
         );
         return Err(format!(
-            "runtime component verification failed before connect: {repair_error}"
+            "runtime_component_unavailable:连接前组件校验未通过：{repair_error}"
         ));
     }
 
@@ -3986,7 +3986,7 @@ async fn prepare_desktop_runtime_components(
             );
             verify_runtime_components_for_connect(app)
                 .await
-                .map_err(|error| format!("runtime component verification failed: {error}"))?;
+                .map_err(|error| format!("runtime_component_unavailable:连接前组件校验未通过：{error}"))?;
             let xray_path = ensure_xray_binary(app, runtime_dir)?;
             ensure_geo_data(app, runtime_dir)?;
             Ok(xray_path)

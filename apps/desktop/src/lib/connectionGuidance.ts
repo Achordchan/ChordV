@@ -5,6 +5,7 @@ import type {
   SubscriptionStatusDto
 } from "@chordv/shared";
 import { loadRuntimeStatus, type RuntimeNodeProbeResult, type RuntimeStatus } from "./runtime";
+import { ERROR_CODE_LABEL, isCustomerSafeText, RUNTIME_REASON_CODES } from "./userFacingErrors";
 
 export type GuidanceTone = "danger" | "warning" | "info";
 
@@ -39,12 +40,15 @@ export type ConnectionGuidance = {
   message: string;
   actionLabel: string;
   recommendedNodeId?: string | null;
+  /** 稳定的机器错误码，只作为「错误编号」次要展示。 */
   errorCode?: string | null;
+  /** 原始失败文本，仅供复制诊断 / 日志使用，不作为主文案展示。 */
+  detail?: string | null;
 };
 
 export function readError(message: string) {
   if (message.includes("Panel client is queued but not confirmed yet")) {
-    return "节点开通同步中，面板暂时不可用或尚未确认客户端，请稍后重试。";
+    return "节点开通同步中，请稍后重试。";
   }
   try {
     const parsed = JSON.parse(message) as { message?: string[] | string };
@@ -99,7 +103,7 @@ export function deriveGuidanceFromSubscription(
       code: "subscription_expired",
       tone: "danger",
       title: "订阅已到期",
-      message: "当前订阅已到期，连接已停止，请联系服务商续期后再使用。",
+      message: "你的订阅已到期，连接已停止。续费后即可继续使用，如有疑问请联系客服。",
       actionLabel: "订阅已到期",
       recommendedNodeId: fallbackNodeId
     };
@@ -109,7 +113,7 @@ export function deriveGuidanceFromSubscription(
       code: "subscription_exhausted",
       tone: "danger",
       title: "流量已用尽",
-      message: "当前订阅流量已用尽，连接已停止，请重置或续费后再使用。",
+      message: "本期流量已用完，连接已停止。请续费或等待流量重置后再使用。",
       actionLabel: "流量已用尽",
       recommendedNodeId: fallbackNodeId
     };
@@ -119,7 +123,7 @@ export function deriveGuidanceFromSubscription(
       code: "subscription_paused",
       tone: "warning",
       title: "订阅已暂停",
-      message: "当前订阅已暂停，连接已停止，请联系服务商恢复后再使用。",
+      message: "你的订阅已暂停，连接已停止。请联系客服恢复后再使用。",
       actionLabel: "订阅已暂停",
       recommendedNodeId: fallbackNodeId
     };
@@ -135,8 +139,8 @@ export function deriveGuidanceFromMessage(
     return {
       code: "node_access_revoked",
       tone: "warning",
-      title: "当前节点已撤权",
-      message: "当前节点已被取消授权，请切换其他可用节点后重新连接。",
+      title: "节点已不可用",
+      message: "当前节点已不在你的订阅范围内，请切换其他节点后重新连接。",
       actionLabel: "切换节点后重连",
       recommendedNodeId: options.fallbackNodeId
     };
@@ -150,7 +154,7 @@ export function deriveGuidanceFromMessage(
       code: "admin_paused",
       tone: "danger",
       title: "连接已被管理员暂停",
-      message: "管理员已暂停你的当前连接，请联系服务商或稍后重试。",
+      message: "你的连接已被管理员暂停，请稍后重试或联系客服。",
       actionLabel: "重新连接",
       recommendedNodeId: options.fallbackNodeId
     };
@@ -159,8 +163,8 @@ export function deriveGuidanceFromMessage(
     return {
       code: "client_rotated",
       tone: "warning",
-      title: "连接凭据已更新",
-      message: "当前连接凭据已更新，请重新连接以恢复使用。",
+      title: "连接信息已更新",
+      message: "你的连接信息已更新，请重新连接。",
       actionLabel: "重新连接",
       recommendedNodeId: options.fallbackNodeId
     };
@@ -169,8 +173,8 @@ export function deriveGuidanceFromMessage(
     return {
       code: "session_replaced",
       tone: "warning",
-      title: "连接已被其他设备接管",
-      message: "当前连接已被其他设备接管，请在当前设备重新连接。",
+      title: "已在其他设备连接",
+      message: "你的账号已在其他设备上连接，本设备已断开。如需在本设备使用，请重新连接。",
       actionLabel: "重新连接",
       recommendedNodeId: options.fallbackNodeId
     };
@@ -180,7 +184,7 @@ export function deriveGuidanceFromMessage(
       code: "subscription_expired",
       tone: "danger",
       title: "订阅已到期",
-      message: "当前订阅已到期，连接已停止，请联系服务商续期后再使用。",
+      message: "你的订阅已到期，连接已停止。续费后即可继续使用，如有疑问请联系客服。",
       actionLabel: "订阅已到期",
       recommendedNodeId: options.fallbackNodeId
     };
@@ -190,7 +194,7 @@ export function deriveGuidanceFromMessage(
       code: "subscription_exhausted",
       tone: "danger",
       title: "流量已用尽",
-      message: "当前订阅流量已用尽，连接已停止，请重置或续费后再使用。",
+      message: "本期流量已用完，连接已停止。请续费或等待流量重置后再使用。",
       actionLabel: "流量已用尽",
       recommendedNodeId: options.fallbackNodeId
     };
@@ -200,7 +204,7 @@ export function deriveGuidanceFromMessage(
       code: "subscription_paused",
       tone: "warning",
       title: "订阅已暂停",
-      message: "当前订阅已暂停，连接已停止，请联系服务商恢复后再使用。",
+      message: "你的订阅已暂停，连接已停止。请联系客服恢复后再使用。",
       actionLabel: "订阅已暂停",
       recommendedNodeId: options.fallbackNodeId
     };
@@ -220,7 +224,7 @@ export function deriveGuidanceFromMessage(
       code: "account_disabled",
       tone: "danger",
       title: "账号已禁用",
-      message: "当前账号已被禁用，连接已停止，请联系服务商处理。",
+      message: "当前账号已被停用，连接已停止。如有疑问请联系客服。",
       actionLabel: "返回并刷新",
       recommendedNodeId: options.fallbackNodeId
     };
@@ -229,8 +233,8 @@ export function deriveGuidanceFromMessage(
     return {
       code: "session_expired",
       tone: "warning",
-      title: "连接已超时",
-      message: "当前连接已超时，请重新连接。",
+      title: "连接已过期",
+      message: "当前连接已过期，请重新连接。",
       actionLabel: "重新连接",
       recommendedNodeId: options.fallbackNodeId
     };
@@ -265,8 +269,8 @@ export function deriveGuidanceFromConnectFailure(
     return {
       code: "node_access_revoked",
       tone: "warning",
-      title: "当前节点未开通",
-      message: "当前节点未开通，请切换其他可用节点后重新连接。",
+      title: "节点未开通",
+      message: "你的订阅暂不包含此节点，请切换其他节点后重新连接。",
       actionLabel: "切换节点后重连",
       recommendedNodeId: fallbackNodeId
     };
@@ -276,7 +280,7 @@ export function deriveGuidanceFromConnectFailure(
       code: "node_provisioning_pending",
       tone: "warning",
       title: "节点开通同步中",
-      message: "本地授权已保存，远端面板客户端还在同步或面板暂时不可用，请稍后重试。",
+      message: "节点正在开通，通常很快就能完成，请稍后重试。",
       actionLabel: "稍后重试",
       recommendedNodeId: fallbackNodeId,
       errorCode: "node_provisioning_pending"
@@ -286,8 +290,8 @@ export function deriveGuidanceFromConnectFailure(
     return {
       code: "android_runtime_start_failed",
       tone: "danger",
-      title: "安卓运行时启动失败",
-      message: "安卓本地连接链没有成功建立，当前连接未生效。请重新连接，若仍失败请明天接真机后继续排查。",
+      title: "连接启动失败",
+      message: "连接没有成功建立，请重新连接；如仍失败，请联系客服并提供错误编号。",
       actionLabel: "重新连接",
       recommendedNodeId: fallbackNodeId,
       errorCode: extractRuntimeReasonCode(message) ?? "android_runtime_start_failed"
@@ -298,7 +302,7 @@ export function deriveGuidanceFromConnectFailure(
       code: "node_unavailable",
       tone: "warning",
       title: "节点暂不可用",
-      message: "当前节点连接失败，请切换其他可用节点后重试。",
+      message: "当前节点暂时无法连接，请切换其他节点后重试。",
       actionLabel: "切换节点后重连",
       recommendedNodeId: fallbackNodeId,
       errorCode: "node_unavailable"
@@ -308,8 +312,8 @@ export function deriveGuidanceFromConnectFailure(
     return {
       code: "android_runtime_start_failed",
       tone: "danger",
-      title: "安卓运行时启动失败",
-      message: "安卓本地连接链没有成功建立，当前连接未生效。请重新连接后再试。",
+      title: "连接启动失败",
+      message: "连接没有成功建立，请重新连接；如仍失败，请联系客服并提供错误编号。",
       actionLabel: "重新连接",
       recommendedNodeId: fallbackNodeId,
       errorCode: extractRuntimeReasonCode(message) ?? "android_runtime_start_failed"
@@ -345,6 +349,14 @@ export function deriveGuidanceFromRuntimeFailure(
   rawMessage: string,
   fallbackNodeId: string | null
 ): ConnectionGuidance | null {
+  const guidance = deriveGuidanceFromRuntimeFailureText(rawMessage, fallbackNodeId);
+  return guidance ? { ...guidance, detail: rawMessage.trim() || null } : null;
+}
+
+function deriveGuidanceFromRuntimeFailureText(
+  rawMessage: string,
+  fallbackNodeId: string | null
+): ConnectionGuidance | null {
   const message = readError(rawMessage);
   const runtimeReasonCode = extractRuntimeReasonCode(message);
   if (
@@ -355,8 +367,8 @@ export function deriveGuidanceFromRuntimeFailure(
     return {
       code: "desktop_external_vpn_conflict",
       tone: "warning",
-      title: "检测到其他 VPN 正在运行",
-      message: "系统里已经有其他 VPN 处于连接状态。请先断开那个 VPN，再连接 ChordV。",
+      title: "检测到其他 VPN",
+      message: "系统中已有其他 VPN 处于连接状态，请先断开它，再连接 ChordV。",
       actionLabel: "重试连接",
       recommendedNodeId: fallbackNodeId,
       errorCode: runtimeReasonCode ?? "external_vpn_conflict"
@@ -370,8 +382,8 @@ export function deriveGuidanceFromRuntimeFailure(
     return {
       code: "desktop_external_proxy_conflict",
       tone: "warning",
-      title: "检测到其他代理正在运行",
-      message: "系统代理已经被其他应用占用。请先关闭那个代理软件，再连接 ChordV。",
+      title: "检测到其他代理软件",
+      message: "系统代理正被其他应用占用，请先关闭该代理软件，再连接 ChordV。",
       actionLabel: "重试连接",
       recommendedNodeId: fallbackNodeId,
       errorCode: runtimeReasonCode ?? "external_proxy_conflict"
@@ -386,8 +398,8 @@ export function deriveGuidanceFromRuntimeFailure(
     return {
       code: "android_runtime_start_failed",
       tone: "danger",
-      title: "安卓运行配置不完整",
-      message: "安卓本地运行所需资源或配置不完整，当前连接未生效。请联系管理员检查安卓资源包。",
+      title: "连接组件不完整",
+      message: "连接所需的组件或配置不完整，请重新连接；如仍失败，请联系客服并提供错误编号。",
       actionLabel: "重试连接",
       recommendedNodeId: fallbackNodeId,
       errorCode: runtimeReasonCode ?? "config_missing"
@@ -406,8 +418,8 @@ export function deriveGuidanceFromRuntimeFailure(
       tone: "warning",
       title: permissionLost ? "VPN 权限已失效" : "需要 VPN 权限",
       message: permissionLost
-        ? "安卓系统已回收 VPN 权限，当前连接已失效。请重新连接，并在系统弹窗里重新允许。"
-        : "安卓需要系统 VPN 权限才能连接。请重新连接，并在系统弹窗里点击允许。",
+        ? "系统已收回 VPN 权限，连接已断开。请重新连接，并在系统弹窗中点击“允许”。"
+        : "连接前需要授予 VPN 权限。请重新连接，并在系统弹窗中点击“允许”。",
       actionLabel: "重新连接",
       recommendedNodeId: fallbackNodeId,
       errorCode: runtimeReasonCode ?? "vpn_permission_denied"
@@ -425,8 +437,8 @@ export function deriveGuidanceFromRuntimeFailure(
     return {
       code: "android_vpn_setup_failed",
       tone: "danger",
-      title: "VPN 接口建立失败",
-      message: "安卓未能建立系统 VPN 接口，当前连接未生效。请关闭同类 VPN 应用后重试。",
+      title: "VPN 启动失败",
+      message: "系统未能启动 VPN，连接未生效。请关闭其他 VPN 应用后重试。",
       actionLabel: "重新连接",
       recommendedNodeId: fallbackNodeId,
       errorCode: runtimeReasonCode ?? "vpn_interface_establish_failed"
@@ -445,8 +457,8 @@ export function deriveGuidanceFromRuntimeFailure(
     return {
       code: "android_runtime_start_failed",
       tone: "danger",
-      title: "安卓运行时启动失败",
-      message: "安卓本地运行时没有成功启动，当前连接未生效。请重新连接，若仍失败请联系管理员处理。",
+      title: "连接启动失败",
+      message: "连接服务没有成功启动，请重新连接；如仍失败，请联系客服并提供错误编号。",
       actionLabel: "重新连接",
       recommendedNodeId: fallbackNodeId,
       errorCode: runtimeReasonCode ?? "android_runtime_start_failed"
@@ -465,10 +477,10 @@ export function deriveGuidanceFromRuntimeFailure(
     return {
       code: "android_connectivity_failed",
       tone: "danger",
-      title: "连接未真正生效",
+      title: "连接未生效",
       message: message.includes("runtime_stopped") || message.includes("runtime_mismatch")
-        ? "安卓后台运行时已停止，当前连接已失效。请重新连接，若仍失败请更换节点。"
-        : "安卓虽然完成了启动，但当前连接没有通过自检。请重新连接，若仍失败请更换节点。",
+        ? "后台连接服务已停止，连接已失效。请重新连接；如仍失败，请更换节点。"
+        : "连接已建立，但网络检测没有通过。请重新连接；如仍失败，请更换节点。",
       actionLabel: "重新连接",
       recommendedNodeId: fallbackNodeId,
       errorCode: runtimeReasonCode ?? "android_connectivity_failed"
@@ -486,7 +498,7 @@ export function deriveGuidanceFromRuntimeFailure(
       code: "windows_proxy_failed",
       tone: "danger",
       title: "系统代理设置失败",
-      message: "Windows 未能接管系统代理，当前连接未生效。请关闭安全软件拦截后重试，或联系管理员处理。",
+      message: "ChordV 未能设置系统代理，连接未生效。请检查安全软件是否拦截后重新连接。",
       actionLabel: "重新连接",
       recommendedNodeId: fallbackNodeId,
       errorCode: runtimeReasonCode ?? "windows_proxy_failed"
@@ -504,7 +516,7 @@ export function deriveGuidanceFromRuntimeFailure(
       code: "windows_local_proxy_failed",
       tone: "danger",
       title: "本地代理启动失败",
-      message: "本地代理端口没有成功启动，当前连接未生效。请重新连接，若仍失败请联系管理员处理。",
+      message: "本地代理没有成功启动，连接未生效。请重新连接；如仍失败，请联系客服并提供错误编号。",
       actionLabel: "重新连接",
       recommendedNodeId: fallbackNodeId,
       errorCode: runtimeReasonCode ?? "windows_local_proxy_failed"
@@ -522,8 +534,8 @@ export function deriveGuidanceFromRuntimeFailure(
     return {
       code: "runtime_exited",
       tone: "danger",
-      title: "内核已退出",
-      message: "本地内核未能持续运行，连接已停止。请重新连接，若仍失败请联系管理员处理。",
+      title: "连接意外中断",
+      message: "连接服务意外停止，请重新连接；如仍失败，请联系客服并提供错误编号。",
       actionLabel: "重新连接",
       recommendedNodeId: fallbackNodeId,
       errorCode: runtimeReasonCode ?? "runtime_exited"
@@ -602,7 +614,7 @@ export function formatGuidanceMessage(guidance: ConnectionGuidance) {
   if (!guidance.errorCode) {
     return guidance.message;
   }
-  return `${guidance.message}\n错误代码：${guidance.errorCode}`;
+  return `${guidance.message}\n${ERROR_CODE_LABEL}：${guidance.errorCode}`;
 }
 
 export function isDialogOnlyGuidance(code: ConnectionGuidanceCode) {
@@ -610,30 +622,7 @@ export function isDialogOnlyGuidance(code: ConnectionGuidanceCode) {
 }
 
 export function extractRuntimeReasonCode(message: string) {
-  const knownCodes = [
-    "vpn_permission_denied",
-    "vpn_permission_lost",
-    "vpn_interface_establish_failed",
-    "vpn_interface_not_ready",
-    "libv2ray_start_failed",
-    "connectivity_check_failed",
-    "config_missing",
-    "geo_resource_missing",
-    "start_args_missing",
-    "service_start_failed",
-    "android_runtime_start_failed",
-    "service_stop_failed",
-    "android_runtime_stop_failed",
-    "runtime_stopped",
-    "runtime_mismatch",
-    "service_task_removed",
-    "external_vpn_conflict",
-    "external_proxy_conflict",
-    "windows_proxy_failed",
-    "windows_local_proxy_failed"
-  ];
-
-  return knownCodes.find((code) => message.includes(code)) ?? null;
+  return RUNTIME_REASON_CODES.find((code) => message.includes(code)) ?? null;
 }
 
 export function waitForRuntimeStatus(delayMs: number) {
@@ -646,7 +635,8 @@ export function deriveGuidanceFromRuntimeEvent(
   event: ClientRuntimeEventDto,
   fallbackNodeId: string | null
 ): ConnectionGuidance | null {
-  const message = event.reasonMessage;
+  // 服务端下发的说明只有在是客户可读的中文时才原样展示，否则使用本地文案。
+  const message = isCustomerSafeText(event.reasonMessage) ? event.reasonMessage : null;
 
   switch (event.reasonCode) {
     case "admin_paused_connection":
@@ -654,7 +644,7 @@ export function deriveGuidanceFromRuntimeEvent(
         code: "admin_paused",
         tone: "danger",
         title: "连接已被管理员暂停",
-        message: message ?? "管理员已暂停你的当前连接，请联系服务商或稍后重试。",
+        message: message ?? "你的连接已被管理员暂停，请稍后重试或联系客服。",
         actionLabel: "重新连接",
         recommendedNodeId: fallbackNodeId,
         errorCode: event.reasonCode ?? "admin_paused_connection"
@@ -663,8 +653,8 @@ export function deriveGuidanceFromRuntimeEvent(
       return {
         code: "node_access_revoked",
         tone: "warning",
-        title: "当前节点已撤权",
-        message: message ?? "当前节点已被取消授权，请切换其他可用节点后重新连接。",
+        title: "节点已不可用",
+        message: message ?? "当前节点已不在你的订阅范围内，请切换其他节点后重新连接。",
         actionLabel: "切换节点后重连",
         recommendedNodeId: fallbackNodeId,
         errorCode: event.reasonCode ?? "node_access_revoked"
@@ -674,7 +664,7 @@ export function deriveGuidanceFromRuntimeEvent(
         code: "subscription_expired",
         tone: "danger",
         title: "订阅已到期",
-        message: message ?? "当前订阅已到期，连接已停止，请联系服务商续期后再使用。",
+        message: message ?? "你的订阅已到期，连接已停止。续费后即可继续使用，如有疑问请联系客服。",
         actionLabel: "订阅已到期",
         recommendedNodeId: fallbackNodeId,
         errorCode: event.reasonCode ?? "subscription_expired"
@@ -684,7 +674,7 @@ export function deriveGuidanceFromRuntimeEvent(
         code: "subscription_exhausted",
         tone: "danger",
         title: "流量已用尽",
-        message: message ?? "当前订阅流量已用尽，连接已停止，请重置或续费后再使用。",
+        message: message ?? "本期流量已用完，连接已停止。请续费或等待流量重置后再使用。",
         actionLabel: "流量已用尽",
         recommendedNodeId: fallbackNodeId,
         errorCode: event.reasonCode ?? "subscription_exhausted"
@@ -694,7 +684,7 @@ export function deriveGuidanceFromRuntimeEvent(
         code: "subscription_paused",
         tone: "warning",
         title: "订阅已暂停",
-        message: message ?? "当前订阅已暂停，连接已停止，请联系服务商恢复后再使用。",
+        message: message ?? "你的订阅已暂停，连接已停止。请联系客服恢复后再使用。",
         actionLabel: "订阅已暂停",
         recommendedNodeId: fallbackNodeId,
         errorCode: event.reasonCode ?? "subscription_paused"
@@ -703,8 +693,8 @@ export function deriveGuidanceFromRuntimeEvent(
       return {
         code: "session_replaced",
         tone: "warning",
-        title: "连接已被其他设备接管",
-        message: message ?? "当前连接已被其他设备接管，请在当前设备重新连接。",
+        title: "已在其他设备连接",
+        message: message ?? "你的账号已在其他设备上连接，本设备已断开。如需在本设备使用，请重新连接。",
         actionLabel: "重新连接",
         recommendedNodeId: fallbackNodeId,
         errorCode: event.reasonCode ?? "connection_taken_over"
@@ -714,7 +704,7 @@ export function deriveGuidanceFromRuntimeEvent(
         code: "account_disabled",
         tone: "danger",
         title: "账号已禁用",
-        message: message ?? "当前账号已被禁用，连接已停止，请联系服务商处理。",
+        message: message ?? "当前账号已被停用，连接已停止。如有疑问请联系客服。",
         actionLabel: "返回并刷新",
         recommendedNodeId: fallbackNodeId,
         errorCode: event.reasonCode ?? "account_disabled"
@@ -733,8 +723,8 @@ export function deriveGuidanceFromRuntimeEvent(
       return {
         code: "client_rotated",
         tone: "warning",
-        title: "连接凭据已更新",
-        message: message ?? "当前连接凭据已更新，请重新连接以恢复使用。",
+        title: "连接信息已更新",
+        message: message ?? "你的连接信息已更新，请重新连接。",
         actionLabel: "重新连接",
         recommendedNodeId: fallbackNodeId,
         errorCode: event.reasonCode ?? "runtime_credentials_rotated"
@@ -743,7 +733,7 @@ export function deriveGuidanceFromRuntimeEvent(
       return {
         code: "session_expired",
         tone: "warning",
-        title: "连接已超时",
+        title: "连接已过期",
         message: message ?? "当前连接已过期，请重新连接。",
         actionLabel: "重新连接",
         recommendedNodeId: fallbackNodeId,

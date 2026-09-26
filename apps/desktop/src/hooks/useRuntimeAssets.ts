@@ -51,6 +51,7 @@ import {
   type RuntimeComponentDownloadItem,
   type RuntimeDownloadFailureReason
 } from "../lib/runtimeComponents";
+import { describeRuntimeAssetsFailure } from "../lib/userFacingErrors";
 
 type NoticeInput = {
   color: "green" | "yellow" | "red" | "blue";
@@ -258,7 +259,8 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
         totalBytes: null,
         message: null,
         errorCode: failure.code,
-        errorMessage: failure.message,
+        // 界面只展示错误码对应的客户说明；原始文本随失败报告上报，供客服排查。
+        errorMessage: describeRuntimeAssetsFailure(failure.code, failure.message).message,
         blocking: ensureOptions.blockConnection
       });
 
@@ -546,7 +548,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
               return failRuntimeAssets(
                 {
                   code: "plan_missing",
-                  message: "服务端尚未配置必要核心组件，当前暂时不能连接。",
+                  message: "暂时无法获取连接所需组件，当前暂时不能连接。",
                   component: "xray",
                   effectiveUrl: null,
                   platform,
@@ -685,13 +687,13 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
               if (sharedPlanFailed) {
                 summary.geo.current = localGeoReady;
                 summary.geo.available = false;
-                summary.geo.message = "GEO 后台配置检查失败";
+                summary.geo.message = "GEO 规则检查失败，请稍后重试";
               } else if (!remoteRevision) {
                 summary.geo.current = localGeoReady;
                 summary.geo.available = false;
-                summary.geo.message = localGeoReady ? "服务端未配置 GEO 组件" : "服务端未配置 GEO 组件，本地也缺少 GEO 数据";
+                summary.geo.message = localGeoReady ? "暂未提供 GEO 规则更新" : "暂未提供 GEO 规则，本地也缺少 GEO 数据";
               } else {
-                summary.geo.remoteVersion = remoteVersionLabel ?? "后台配置";
+                summary.geo.remoteVersion = remoteVersionLabel ?? "最新版本";
                 let geoCurrent = isGeoPlanCurrent(
                   { geoip: localInfos.geoip, geosite: localInfos.geosite },
                   geoItems,
@@ -716,15 +718,15 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                   if (remoteVersionLabel && storedGeoVersionLabel !== remoteVersionLabel) {
                     writeStoredGeoPlanRevision(remoteRevision, remoteVersionLabel);
                   }
-                  summary.geo.localVersion = remoteVersionLabel ?? storedGeoVersionLabel ?? "后台配置";
+                  summary.geo.localVersion = remoteVersionLabel ?? storedGeoVersionLabel ?? "最新版本";
                   summary.geo.current = true;
                   summary.geo.available = false;
-                  summary.geo.message = "GEO 已是后台最新配置。";
+                  summary.geo.message = "GEO 规则已是最新版本。";
                 } else if (inspectOnly) {
                   summary.geo.localVersion = localGeoReady ? (storedGeoVersionLabel ?? "已安装") : "未安装";
                   summary.geo.current = false;
                   summary.geo.available = true;
-                  summary.geo.message = localGeoReady ? "后台有新的 GEO 配置" : "后台已配置 GEO，可立即安装";
+                  summary.geo.message = localGeoReady ? "GEO 规则有新版本" : "GEO 规则可立即安装";
                   summary.current = false;
                 } else {
                   for (const component of geoItems) {
@@ -776,10 +778,10 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                   );
                   if (bothReady && summary.failed.length === 0) {
                     writeStoredGeoPlanRevision(remoteRevision, remoteVersionLabel);
-                    summary.geo.localVersion = remoteVersionLabel ?? "后台配置";
+                    summary.geo.localVersion = remoteVersionLabel ?? "最新版本";
                     summary.geo.current = true;
                     summary.geo.available = false;
-                    summary.geo.message = "GEO 已更新到后台最新配置。";
+                    summary.geo.message = "GEO 规则已更新到最新版本。";
                   } else {
                     summary.geo.localVersion = bothReady ? (storedGeoVersionLabel ?? "已安装") : "未完整安装";
                     summary.geo.current = false;
@@ -909,7 +911,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                     }
                   }
                 } else {
-                  summary.xray.message = localInfos.xray?.exists ? "服务端未配置 Xray 组件" : "本地缺少 Xray";
+                  summary.xray.message = localInfos.xray?.exists ? "暂未提供 Xray 内核更新" : "本地缺少 Xray";
                   summary.xray.current = Boolean(localInfos.xray?.exists);
                   summary.xray.available = false;
                 }

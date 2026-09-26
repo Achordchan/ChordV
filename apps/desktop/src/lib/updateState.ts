@@ -9,6 +9,8 @@ export type UpdateDownloadState = {
   totalBytes: number | null;
   localPath: string | null;
   message: string | null;
+  /** 失败时的稳定错误码，只作为「错误编号」次要展示。 */
+  errorCode?: string | null;
 };
 
 export type ResolvedUpdatePlatform = Extract<PlatformTarget, "macos" | "windows" | "android">;

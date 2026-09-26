@@ -1,5 +1,7 @@
 import type { ClientBootstrapDto, NodeSummaryDto, SubscriptionStatusDto } from "@chordv/shared";
 import { notifications } from "./notifications";
+import { describeUserError, formatUserError, type UserErrorContext } from "./userFacingErrors";
+import { recordClientDiagnosticLog } from "../api/client";
 import type { SubscriptionServerProbe } from "../components/SubscriptionPanel";
 import type { GuidanceTone, ConnectionGuidance } from "./connectionGuidance";
 import type { RuntimeNodeProbeResult, RuntimePlatform } from "./runtime";
@@ -127,7 +129,7 @@ export function toSubscriptionServerProbe(serverProbe: ServerProbeState): Subscr
       return {
         status: "failed",
         label: "无法连接服务器",
-        detail: serverProbe.errorMessage ?? "当前无法连接服务器，请检查网络或服务端状态"
+        detail: serverProbe.errorMessage ?? "当前无法连接服务器，请检查网络后重试。"
       };
     default:
       return {
@@ -138,11 +140,19 @@ export function toSubscriptionServerProbe(serverProbe: ServerProbeState): Subscr
   }
 }
 
-export function showErrorToast(message: string) {
+/**
+ * 所有错误通知的统一出口：先经过面向客户的错误映射，原始文本只写入诊断日志，
+ * 通知里只出现中文说明和可选的「错误编号」。
+ */
+export function showErrorToast(message: string | null | undefined, context: UserErrorContext = "general") {
+  const error = describeUserError(message ?? "", { context });
+  if (error.detail && (!error.known || error.detail !== error.message)) {
+    void recordClientDiagnosticLog("user-error", `[${context}] code=${error.code ?? "-"} detail=${error.detail}`);
+  }
   notifications.show({
     color: "red",
-    title: "操作失败",
-    message
+    title: error.title,
+    message: formatUserError(error)
   });
 }
 
