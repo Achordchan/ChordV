@@ -1053,8 +1053,28 @@ export class ReleaseCenterService {
       ? defaultDeliveryModeForArtifact(preferredArtifactType)
       : defaultDeliveryModeForPlatform(input.platform);
 
+    // Only the stable line can require an update. A beta build is always optional
+    // for testers, so its own force flag and minimum version never block anyone;
+    // testers are forced only when the stable line itself forces the update.
+    const stableLine = releases.find((release) =>
+      normalizeReleaseChannel(release.channel) === "stable" && compareSemver(release.minimumVersion, release.version) <= 0
+    ) ?? null;
+
     for (const release of releases) {
       if (compareSemver(release.minimumVersion, release.version) > 0) {
+        continue;
+      }
+      const releaseChannel = normalizeReleaseChannel(release.channel);
+      const requirementSource = releaseChannel === "stable" ? release : stableLine;
+      const minimumVersion = requirementSource?.minimumVersion ?? input.currentVersion;
+      const mustUpgrade = compareSemver(input.currentVersion, minimumVersion) < 0;
+      const forcedByRelease = Boolean(
+        requirementSource?.forceUpgrade && compareSemver(requirementSource.version, input.currentVersion) > 0
+      );
+      // A beta can inherit a stable requirement it cannot meet (e.g. the newest
+      // stable has no artifact for this client); installing it would loop forever.
+      const requiredVersion = forcedByRelease ? requirementSource!.version : mustUpgrade ? minimumVersion : null;
+      if (requiredVersion && compareSemver(release.version, requiredVersion) < 0) {
         continue;
       }
 
@@ -1074,8 +1094,6 @@ export class ReleaseCenterService {
         resolvedArtifact = { ...resolvedArtifact, type: "external", deliveryMode: "external_download" };
       }
       const latestVersionComparison = compareSemver(release.version, input.currentVersion);
-      const mustUpgrade = compareSemver(input.currentVersion, release.minimumVersion) < 0;
-      const forcedByRelease = release.forceUpgrade;
 
       if (latestVersionComparison <= 0 && !mustUpgrade) {
         return {
@@ -1086,9 +1104,10 @@ export class ReleaseCenterService {
           updateRequirement: "optional",
           currentVersion: input.currentVersion,
           latestVersion: input.currentVersion,
-          minimumVersion: release.minimumVersion,
+          minimumVersion,
           platform: input.platform,
           channel: effectiveChannel,
+          releaseChannel,
           changelog: release.changelog,
           deliveryMode: (resolvedArtifact?.deliveryMode as ClientUpdateCheckResultDto["deliveryMode"] | undefined)
             ?? fallbackDeliveryMode,
@@ -1109,9 +1128,10 @@ export class ReleaseCenterService {
         updateRequirement: mustUpgrade ? "required_minimum" : forcedByRelease ? "required_release" : "optional",
         currentVersion: input.currentVersion,
         latestVersion: release.version,
-        minimumVersion: release.minimumVersion,
+        minimumVersion,
         platform: input.platform,
         channel: effectiveChannel,
+        releaseChannel,
         changelog: release.changelog,
         deliveryMode: (resolvedArtifact?.deliveryMode as ClientUpdateCheckResultDto["deliveryMode"] | undefined)
           ?? fallbackDeliveryMode,

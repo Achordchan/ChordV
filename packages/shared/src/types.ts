@@ -371,7 +371,10 @@ export interface ClientUpdateCheckResultDto {
   latestVersion: string;
   minimumVersion: string;
   platform: PlatformTarget;
+  /** Channel the client subscribed to. */
   channel: ReleaseChannel;
+  /** Channel of the offered release; beta builds are never required updates. */
+  releaseChannel?: ReleaseChannel;
   changelog: string[];
   deliveryMode: UpdateDeliveryMode;
   downloadUrl?: string | null;

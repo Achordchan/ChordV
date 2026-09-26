@@ -110,6 +110,14 @@ export function preferredArtifactType(platformTarget: ResolvedUpdatePlatform): R
   return "dmg";
 }
 
+/** GitHub-generated notes end with "by @author in #123"; that tail is noise for end users. */
+export function cleanChangelogItem(item: string) {
+  return item
+    .trim()
+    .replace(/\s+by\s+@[\w-]+(?:\[bot\])?\s+in\s+(?:#\d+|https?:\/\/\S+)\s*$/i, "")
+    .trim();
+}
+
 export function formatVersionLabel(version: string) {
   return version;
 }

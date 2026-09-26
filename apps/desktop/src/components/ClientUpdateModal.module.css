@@ -1,0 +1,32 @@
+.title { font-size: 16px; font-weight: 600; }
+.header { padding: 14px 20px 8px; }
+.content { display: flex; flex-direction: column; }
+/* Only the changelog scrolls, so the actions stay visible in the small fixed-size window. */
+.body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0 20px 16px; }
+.hero, .notice, .progress, .footer { flex-shrink: 0; }
+.hero { display: flex; align-items: center; gap: 12px; padding: 4px 0 14px; }
+.logo { width: 48px; height: 48px; object-fit: contain; flex-shrink: 0; }
+.heroInfo { min-width: 0; flex: 1; }
+.nameRow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.name { font-size: 17px; font-weight: 600; color: var(--cv-text); }
+.versionRow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 4px; font-size: 13px; color: var(--cv-text-muted); font-variant-numeric: tabular-nums; }
+.arrow { flex-shrink: 0; color: var(--cv-text-muted); }
+.versionNext { color: var(--cv-accent-strong); font-weight: 500; }
+.published { margin-left: 6px; padding-left: 8px; border-left: 1px solid var(--cv-border-strong); }
+.notice { display: flex; align-items: flex-start; gap: 8px; padding: 9px 12px; border: 1px solid #f3d3d1; border-radius: var(--cv-radius-md); background: #fdf5f4; color: #9f3a35; font-size: 13px; line-height: 1.5; }
+.noticeIcon { flex-shrink: 0; margin-top: 2px; }
+.progress { margin-top: 12px; }
+.changelog { flex: 1 1 auto; min-height: 88px; display: flex; flex-direction: column; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--cv-border); }
+.sectionTitle { font-size: 14px; font-weight: 600; }
+.list { flex: 0 1 auto; min-height: 0; max-height: 208px; margin: 8px 0 0; padding: 0; list-style: none; overflow-y: auto; }
+.list li { position: relative; padding: 5px 0 5px 16px; font-size: 13px; line-height: 1.55; color: var(--cv-text); overflow-wrap: anywhere; }
+.list li::before { content: ""; position: absolute; left: 3px; top: 13px; width: 5px; height: 5px; border-radius: 50%; background: var(--cv-accent); }
+.footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--cv-border); }
+.hint { min-width: 0; flex: 1; line-height: 1.5; }
+.actions { display: flex; gap: 8px; flex-shrink: 0; }
+@media (max-width: 420px) {
+  .header { padding: 12px 16px 8px; }
+  .body { padding: 0 16px 14px; }
+  .footer { flex-wrap: wrap; }
+  .actions { margin-left: auto; }
+}
