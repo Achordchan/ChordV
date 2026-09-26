@@ -2,7 +2,7 @@ export type ConnectionMode = "global" | "rule" | "direct";
 export type SubscriptionState = "active" | "expired" | "exhausted" | "paused";
 export type RuntimeStatus = "idle" | "connecting" | "connected" | "disconnecting" | "error";
 export type PlatformTarget = "macos" | "windows" | "android" | "ios";
-export type ReleaseChannel = "stable";
+export type ReleaseChannel = "stable" | "beta";
 export type ReleaseStatus = "draft" | "published" | "archived";
 export type ReleaseArtifactType = "dmg" | "app" | "exe" | "setup.exe" | "zip" | "apk" | "ipa" | "external";
 export type UpdateDeliveryMode = "desktop_installer_download" | "desktop_full_replace" | "apk_download" | "external_download" | "none";
@@ -1203,6 +1203,7 @@ export interface CreateReleaseInputDto {
 }
 
 export interface UpdateReleaseInputDto {
+  channel?: ReleaseChannel;
   displayTitle?: string;
   changelog?: string[];
   minimumVersion?: string;

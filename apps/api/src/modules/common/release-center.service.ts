@@ -42,6 +42,7 @@ import {
   normalizeReleaseChannel,
   normalizeVersion,
   pickPrimaryReleaseArtifact,
+  releaseChannelsVisibleTo,
   type ReleaseRowLike,
   readZipEntryData,
   releaseArtifactStorageRoot,
@@ -254,8 +255,10 @@ export class ReleaseCenterService {
     this.assertReleaseRecordMutable(current);
     const nextMinimumVersion = input.minimumVersion !== undefined ? normalizeVersion(input.minimumVersion) : current.minimumVersion;
     assertMinimumVersionNotAboveRelease(current.version, nextMinimumVersion);
+    const nextChannel = input.channel !== undefined ? normalizeReleaseChannel(input.channel) : undefined;
 
     const baseData = {
+      ...(nextChannel !== undefined ? { channel: nextChannel } : {}),
       ...(input.displayTitle !== undefined ? { displayTitle: input.displayTitle.trim() || current.version } : {}),
       ...(input.changelog !== undefined ? { changelog: normalizeChangelog(input.changelog) } : {}),
       ...(input.minimumVersion !== undefined ? { minimumVersion: nextMinimumVersion } : {}),
@@ -269,18 +272,10 @@ export class ReleaseCenterService {
       await this.assertReleasePublishable(releaseId);
       let updated: ReleaseRowLike;
       try {
-        updated = await this.prisma.release.update({
-          where: { id: releaseId },
-          data: {
-            ...baseData,
-            status: "published",
-            publishedAt: normalizePublishedAt("published", input.publishedAt ?? undefined)
-          },
-          include: {
-            artifacts: {
-              orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
-            }
-          }
+        updated = await this.writeReleaseEdit(releaseId, nextChannel, {
+          ...baseData,
+          status: "published",
+          publishedAt: normalizePublishedAt("published", input.publishedAt ?? undefined)
         });
       } catch (error) {
         throwLocalSaveAsServiceUnavailable(error, "发布记录保存失败，请刷新发布中心后重试。");
@@ -296,18 +291,10 @@ export class ReleaseCenterService {
     if (input.status === "draft") {
       let updated: ReleaseRowLike;
       try {
-        updated = await this.prisma.release.update({
-          where: { id: releaseId },
-          data: {
-            ...baseData,
-            status: "draft",
-            publishedAt: null
-          },
-          include: {
-            artifacts: {
-              orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
-            }
-          }
+        updated = await this.writeReleaseEdit(releaseId, nextChannel, {
+          ...baseData,
+          status: "draft",
+          publishedAt: null
         });
       } catch (error) {
         throwLocalSaveAsServiceUnavailable(error, "发布记录保存失败，请刷新发布中心后重试。");
@@ -325,15 +312,7 @@ export class ReleaseCenterService {
     if (Object.keys(baseData).length > 0) {
       let updated: ReleaseRowLike;
       try {
-        updated = await this.prisma.release.update({
-          where: { id: releaseId },
-          data: baseData,
-          include: {
-            artifacts: {
-              orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
-            }
-          }
-        });
+        updated = await this.writeReleaseEdit(releaseId, nextChannel, baseData);
       } catch (error) {
         throwLocalSaveAsServiceUnavailable(error, "发布记录保存失败，请刷新发布中心后重试。");
       }
@@ -354,7 +333,7 @@ export class ReleaseCenterService {
     await this.assertReleasePublishable(releaseId);
     let updated: ReleaseRowLike;
     try {
-      updated = await this.prisma.release.update({
+      updated = await this.withReleaseLineLock(releaseId, tx => tx.release.update({
         where: { id: releaseId },
         data: {
           status: "published",
@@ -365,7 +344,7 @@ export class ReleaseCenterService {
             orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
           }
         }
-      });
+      }));
     } catch (error) {
       throwLocalSaveAsServiceUnavailable(error, "发布记录保存失败，请刷新发布中心后重试。");
     }
@@ -375,6 +354,50 @@ export class ReleaseCenterService {
     );
     this.publishReleaseCenterUpdatedBestEffort();
     return toAdminReleaseRecord(updated);
+  }
+
+  /** Ships the exact beta build that testers verified to stable users; no repackaging. */
+  async promoteRelease(releaseId: string): Promise<AdminReleaseRecordDto> {
+    const current = await this.ensureReleaseExists(releaseId);
+    this.assertReleaseRecordMutable(current);
+    if (current.channel !== "beta") {
+      throw new BadRequestException("只有测试版可以转为正式版。");
+    }
+    if (current.status !== "published") {
+      throw new BadRequestException("请先发布测试版并验证通过，再转为正式版。");
+    }
+    let promoted: number;
+    try {
+      promoted = await this.withReleaseLineLock(releaseId, async tx => {
+        // Re-read under the lock: a concurrent promotion or stable publish may
+        // have raised the stable line since the admin opened the dialog. Like
+        // the client update check (findPublishedReleaseCandidates), this counts
+        // every published stable release regardless of publishedAt: a
+        // future-dated stable is already offered to clients, so promoting a
+        // lower beta would never reach them.
+        const stable = await tx.release.findMany({
+          where: { platform: current.platform, channel: "stable", status: "published" },
+          select: { version: true }
+        });
+        const latestStable = stable.map(row => row.version).sort((left, right) => compareSemver(right, left))[0];
+        if (latestStable && compareSemver(latestStable, current.version) >= 0) {
+          throw new BadRequestException(`正式版已是 ${latestStable}，不低于此测试版，无需转正。`);
+        }
+        const { count } = await tx.release.updateMany({
+          where: { id: releaseId, channel: "beta", status: "published" },
+          data: { channel: "stable", publishedAt: new Date() }
+        });
+        return count;
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "转为正式版失败，请刷新发布中心后重试。");
+    }
+    if (promoted === 0) {
+      throw new ConflictException("发布记录已被修改，请刷新发布中心后重试。");
+    }
+    this.publishVersionUpdatedBestEffort(current.platform as PlatformTarget, "stable");
+    this.publishReleaseCenterUpdatedBestEffort();
+    return this.getAdminRelease(releaseId);
   }
 
   async unpublishRelease(releaseId: string): Promise<AdminReleaseRecordDto> {
@@ -1132,7 +1155,7 @@ export class ReleaseCenterService {
     try {
       rows = await this.prisma.release.findMany({
         where: {
-          channel,
+          channel: { in: releaseChannelsVisibleTo(channel) },
           status: "published",
           ...(platform ? { platform } : {})
         },
@@ -1357,6 +1380,42 @@ export class ReleaseCenterService {
     return release;
   }
 
+  /** Applies an edit under the release-line lock. Status only becomes
+   * "published" under this lock, so a channel change validated here against
+   * the persisted draft status cannot land on a release published meanwhile. */
+  private async writeReleaseEdit(releaseId: string, nextChannel: ReleaseChannel | undefined, data: Prisma.ReleaseUpdateInput) {
+    return this.withReleaseLineLock(releaseId, async tx => {
+      if (nextChannel !== undefined) {
+        const persisted = await tx.release.findUnique({ where: { id: releaseId }, select: { status: true, channel: true } });
+        if (persisted && persisted.channel !== nextChannel && persisted.status !== "draft") {
+          throw new BadRequestException("已发布版本不能直接切换通道；测试版验证通过后请使用“转为正式版”。");
+        }
+      }
+      return tx.release.update({
+        where: { id: releaseId },
+        data,
+        include: {
+          artifacts: {
+            orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+          }
+        }
+      });
+    });
+  }
+
+  /** Serializes every change that can raise a platform's published line
+   * (publishing, promotion) so promotion's "above current stable" rule is
+   * checked against committed state rather than a stale read. */
+  private async withReleaseLineLock<T>(releaseId: string, task: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    return this.prisma.$transaction(async tx => {
+      const release = await tx.release.findUnique({ where: { id: releaseId }, select: { platform: true } });
+      if (!release) throw new NotFoundException("发布记录不存在。");
+      const key = `chordv:release-line:${release.platform}`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
+      return task(tx);
+    });
+  }
+
   private assertReleaseArtifactsMutable(release: { status: string }) {
     if (release.status !== "draft") {
       throw new BadRequestException("请先撤回发布，再编辑安装包。");
@@ -1461,7 +1520,7 @@ export class ReleaseCenterService {
       return await task();
     } catch (error) {
       if (isPrismaUniqueConstraintError(error)) {
-        throw new ConflictException("相同平台和渠道下已存在这个版本号。");
+        throw new ConflictException("该平台已存在这个版本号；正式版和测试版的版本号不能重复。");
       }
       throwLocalSaveAsServiceUnavailable(error, "发布记录保存失败，请刷新发布中心后重试。");
     }

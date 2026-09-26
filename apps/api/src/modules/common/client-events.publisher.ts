@@ -2,7 +2,7 @@ import { Injectable } from "@nestjs/common";
 import type { PlatformTarget, ReleaseChannel, SubscriptionState, SupportTicketStatus } from "@chordv/shared";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { PrismaService } from "./prisma.service";
-import { compareSemver, normalizeReleaseChannel } from "./release-center.utils";
+import { compareSemver, normalizeReleaseChannel, releaseChannelsVisibleTo } from "./release-center.utils";
 
 @Injectable()
 export class ClientEventsPublisher {
@@ -177,7 +177,7 @@ export class ClientEventsPublisher {
   private async findLatestPublishedVersion(channel: ReleaseChannel, platform: PlatformTarget) {
     const rows = await this.prisma.release.findMany({
       where: {
-        channel: normalizeReleaseChannel(channel),
+        channel: { in: releaseChannelsVisibleTo(normalizeReleaseChannel(channel)) },
         status: "published",
         platform
       },

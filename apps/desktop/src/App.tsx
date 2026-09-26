@@ -21,7 +21,8 @@ import {
   isAccessTokenExpiredApiError,
   isForbiddenApiError,
   isUnauthorizedApiError,
-  probeClientServerLatency
+  probeClientServerLatency,
+  type ReleaseChannel
 } from "./api/client";
 import { AnnouncementDrawer } from "./components/AnnouncementDrawer";
 import { ControlPanel } from "./components/ControlPanel";
@@ -99,7 +100,7 @@ import { buildUpdatePromptKey, hasActionableUpdate, useUpdateFlow } from "./hook
 const REMEMBER_CREDENTIALS_KEY = "chordv_remember_credentials";
 const DESKTOP_CLOSE_HINT_KEY = "chordv_desktop_close_hint_ack";
 const RUNTIME_COMPONENT_MIRROR_PREFIX_KEY = "chordv_runtime_component_mirror_prefix";
-const UPDATE_CHANNEL = "stable";
+const UPDATE_CHANNEL_KEY = "chordv_update_channel";
 
 declare global {
   interface Window {
@@ -272,13 +273,20 @@ export function App() {
     setRuntimeMirrorPrefix("");
     notifications.show({message:"旧下载镜像已清除，请重新下载。",color:"teal"});
   };
+  const [updateChannel, setUpdateChannel] = useState<ReleaseChannel>(() => {
+    try { return localStorage.getItem(UPDATE_CHANNEL_KEY) === "beta" ? "beta" : "stable"; } catch { return "stable"; }
+  });
+  const changeUpdateChannel = (channel: ReleaseChannel) => {
+    try { localStorage.setItem(UPDATE_CHANNEL_KEY, channel); } catch { /* keep the in-memory choice */ }
+    setUpdateChannel(channel);
+  };
   const updateFlow = useUpdateFlow({
     runtimeMirrorPrefix,
     appVersion,
     platformTarget: desktopStatus.platformTarget,
     accessToken: session?.accessToken ?? null,
     bootstrapVersion: bootstrap?.version ?? null,
-    updateChannel: UPDATE_CHANNEL,
+    updateChannel,
     readError,
     notify: notifications.show,
     showError: showErrorToast,
@@ -316,6 +324,13 @@ export function App() {
     consumeUpdateInstallReport
   } = updateFlow;
   const effectiveUpdateActionable = hasActionableUpdate(effectiveUpdate, appVersion);
+  const updateChannelChecked = useRef(updateChannel);
+  useEffect(() => {
+    // Re-check once the new channel is in effect so the result matches the switch.
+    if (updateChannelChecked.current === updateChannel) return;
+    updateChannelChecked.current = updateChannel;
+    void handleUpdateCenterCheckOnly();
+  }, [handleUpdateCenterCheckOnly, updateChannel]);
   const runUpdateCheck = runUpdateCheckFromHook;
   const runUpdateCheckForAuth = async (input: import("./hooks/useAuthBootstrap").RunUpdateCheckInput) => {
     await runUpdateCheckFromHook(input);
@@ -2032,6 +2047,8 @@ export function App() {
         syncError={componentVersionSync.syncError}
         busy={updateCheckBusy || runtimeAssetsBusy || updateCenter.checking || Boolean(updateCenter.updatingKey)}
         onClose={closeUpdateCenter}
+        betaChannel={updateChannel === "beta"}
+        onBetaChannelChange={(enabled) => changeUpdateChannel(enabled ? "beta" : "stable")}
         onCheckOnly={() => void handleUpdateCenterCheckOnly()}
         onUpdateOne={(key) => void handleUpdateCenterUpdateOne(key)}
       />

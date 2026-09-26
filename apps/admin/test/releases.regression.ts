@@ -52,6 +52,7 @@ function testCreateReleasePayloadKeepsReleaseFieldsSimple() {
 
   assert.deepEqual(payload, {
     platform: "windows",
+    channel: "stable",
     status: "draft",
     version: "1.2.0",
     title: "Windows 1.2.0",
@@ -101,6 +102,7 @@ function testUpdateReleasePayloadDoesNotSendVersionOrPublishingFlags() {
   const payload = buildUpdateReleasePayload(form);
 
   assert.deepEqual(payload, {
+    channel: "stable",
     title: "Windows 1.1.7",
     changelog: ["Fix admin release", "Improve download"],
     forceUpgrade: false, minimumVersion: "0.0.0"
@@ -121,11 +123,20 @@ function testBlankUpdateReleaseTitleDoesNotFallbackToVersion() {
   const payload = buildUpdateReleasePayload(form);
 
   assert.deepEqual(payload, {
+    channel: "stable",
     title: "",
     changelog: [],
     forceUpgrade: false, minimumVersion: "0.0.0"
   });
   assert.equal("version" in payload, false, "blank title edits must not silently reuse version as display title");
+}
+
+function testReleaseChannelPayloads() {
+  const beta = { ...emptyReleaseEditorForm("macos"), channel: "beta" as const, version: "1.1.12" };
+  assert.equal(buildCreateReleasePayload(beta).channel, "beta", "new releases carry the chosen channel");
+  assert.equal(buildUpdateReleasePayload(beta).channel, "beta", "drafts may still switch channel");
+  const published = { ...beta, status: "published" as const };
+  assert.equal("channel" in buildUpdateReleasePayload(published), false, "published builds change channel only through promotion");
 }
 
 function testNewReleaseUsesHostedImportFields() {
@@ -210,6 +221,7 @@ testCreateReleasePayloadOmitsOptionalPublishingFlags();
 testCreateAdminReleaseRequestDoesNotForceDisplayTitle();
 testUpdateReleasePayloadDoesNotSendVersionOrPublishingFlags();
 testBlankUpdateReleaseTitleDoesNotFallbackToVersion();
+testReleaseChannelPayloads();
 testNewReleaseUsesHostedImportFields();
 testReleaseArtifactLongDownloadUrlDoesNotForceWideCards();
 testReleaseMutationsAlwaysReleaseSavingState();

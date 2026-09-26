@@ -178,7 +178,10 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
   );
   const [updateCheckBusy, setUpdateCheckBusy] = useState(false);
   const [updateCheck, dispatchUpdateCheck] = useReducer(reduceUpdateCheckState, initialUpdateCheckState);
-  const updateCheckResult = updateCheck.result;
+  const updateChannel = options.updateChannel ?? "stable";
+  // A result confirmed for another channel (e.g. a beta build after the user
+  // turned beta off, and the recheck failed) must never drive prompts or downloads.
+  const updateCheckResult = updateCheck.result?.channel === updateChannel ? updateCheck.result : null;
   const updateCheckStatus = updateCheck.status;
   const [updateDialogOpened, setUpdateDialogOpened] = useState(false);
   const [updateCenter, setUpdateCenter] = useState<UpdateCenterState>(createIdleUpdateCenterState);
@@ -334,7 +337,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           fileName: preferredFileName,
           expectedVersion: effectiveUpdate.latestVersion,
           currentVersion: options.appVersion,
-          channel: "stable",
+          channel: options.updateChannel ?? "stable",
           onProgress: (progress) => {
             setUpdateDownload((current) => normalizeUpdateDownloadProgress(current, progress));
           }
@@ -355,7 +358,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           fileName: preferredFileName,
           expectedVersion: effectiveUpdate.latestVersion,
           currentVersion: options.appVersion,
-          channel: "stable",
+          channel: options.updateChannel ?? "stable",
           onProgress: (progress) => {
             setUpdateDownload((current) => normalizeUpdateDownloadProgress(current, progress));
           }
