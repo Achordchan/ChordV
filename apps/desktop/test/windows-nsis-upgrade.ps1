@@ -128,6 +128,29 @@ try {
   if (!$legacyRunning) { throw 'Legacy shortcut could not launch the updated client' }
   Stop-TestClient
 
+  # A newer build of the same version is installed with the same updater flags
+  # while the client runs; it must replace the files and restart like an upgrade.
+  Write-Host 'PHASE: applying same-version build over a running client'
+  $sameVersionClient = Start-Process -FilePath $exe -PassThru
+  Start-Sleep -Seconds 3
+  $before = (Get-Item $exe).LastWriteTimeUtc
+  Start-Sleep -Seconds 2
+  Run-Installer (Resolve-Path $Installer).Path '/P /UPDATE /R'
+  $sameVersionClient.Refresh()
+  if (!$sameVersionClient.HasExited) { throw 'Same-version install did not close the running client' }
+  if (!((Get-Item $exe).LastWriteTimeUtc -gt $before)) { throw 'Same-version install did not replace the executable' }
+  if (![Diagnostics.FileVersionInfo]::GetVersionInfo($exe).ProductVersion.StartsWith($ExpectedVersion)) { throw 'Same-version install changed the installed version' }
+  $deadline = (Get-Date).AddSeconds(45)
+  $running = $null
+  do {
+    $running = Get-Process -Name ChordV -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+    if ($running) { break }
+    Start-Sleep -Milliseconds 250
+  } while ((Get-Date) -lt $deadline)
+  if (!$running) { throw 'Same-version install did not restart the client' }
+  Write-Output 'PASS: same-version build reinstall replaces files and restarts'
+  Stop-TestClient
+
   $gate = New-Object Threading.Mutex($false, 'Local\ChordV.Update.InProgress')
   try {
     $blocked = Start-Process -FilePath $exe -PassThru
