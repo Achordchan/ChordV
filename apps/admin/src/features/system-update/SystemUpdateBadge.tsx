@@ -4,13 +4,14 @@ import { Alert, Badge, Button, Collapse, Divider, Group, Loader, Modal, Popover,
 import { IconCheck, IconHistory, IconRefresh, IconSettings } from "@tabler/icons-react";
 import { useSystemUpdate, type BusyKind } from "./useSystemUpdate";
 import { kindLabel, statusColor, statusLabel } from "./operation-presentation";
-import { OperationProgress } from "./OperationProgress";
-import { completionWarning } from "./page-refresh";
+import { OperationProgress, RestartProgress } from "./OperationProgress";
+import { completionWarning, readRestartWait } from "./page-refresh";
 import styles from "./SystemUpdate.module.css";
 
 type Confirmation = { kind: BusyKind; version?: string; title: string; body: string };
 export function SystemUpdateBadge() {
-  const [opened, setOpened] = useState(false);
+  // Reopen the panel on a page loaded mid-restart so the countdown stays visible.
+  const [opened, setOpened] = useState(() => readRestartWait() !== null);
   const [history, setHistory] = useState(false), [maintenance, setMaintenance] = useState(false);
   const [confirm, setConfirm] = useState<Confirmation | null>(null), [submitting, setSubmitting] = useState(false);
   const state = useSystemUpdate(opened);
@@ -18,6 +19,8 @@ export function SystemUpdateBadge() {
   const version = state.runtime?.currentVersion ?? state.check?.currentVersion ?? '—';
   const enabled = Boolean(state.runtime?.enabled);
   const offer = state.check?.hasUpdate ? state.check.release : null;
+  const targetVersion = state.activeOp?.toVersion ?? state.restart?.toVersion;
+  const restarting = inProgress && state.restart && state.connection !== 'paused' && !state.finishing && !state.refreshRequired ? state.restart : null;
   const latestConfirmed = enabled && !inProgress && !state.checking && !state.error && Boolean(state.check && !state.check.hasUpdate && !state.check.cached && !state.check.warning);
   const ask = (value: Confirmation) => {
     if (inProgress || (value.kind === 'update' && !state.canUpdate)) return;
@@ -50,12 +53,12 @@ export function SystemUpdateBadge() {
           <Group justify="space-between" wrap="nowrap">
             <Stack gap={2} className={styles.grow}>
               <Text fw={600} size="sm">{inProgress ? `${kindLabel(state.busy!)}进行中` : latestConfirmed ? '您已经是最新版' : !state.runtime ? '正在读取更新状态' : !enabled ? '在线更新未开启' : state.checking ? '正在检查更新…' : offer ? '发现新版本' : '暂未确认更新状态'}</Text>
-              {inProgress && state.activeOp?.toVersion && <Text size="xs" c="dimmed">目标版本 v{state.activeOp.toVersion}</Text>}
+              {inProgress && targetVersion && <Text size="xs" c="dimmed">目标版本 v{targetVersion}</Text>}
             </Stack>
             {enabled && !inProgress && <Button size="compact-xs" variant="subtle" color="#1c4d37" loading={state.checking}
               leftSection={<IconRefresh size={14} />} onClick={() => void state.runCheck(true)}>检查更新</Button>}
           </Group>
-          {!enabled && <div className={styles.unavailable}>
+          {!enabled && !inProgress && <div className={styles.unavailable}>
             <Text size="xs" c="dimmed">{state.runtime ? '当前环境无法检查在线更新。' : state.error ? '暂时无法连接后台' : '请稍候…'}</Text>
             {!state.runtime && state.error && <Button size="compact-xs" variant="subtle" color="#1c4d37" px={0} mt="xs" onClick={state.reconnect}>重新连接</Button>}
           </div>}
@@ -67,8 +70,9 @@ export function SystemUpdateBadge() {
             <Text size="xs" c="dimmed">暂未确认新版页面资源，自动刷新已暂停。可以重新确认，或手动刷新页面。</Text>
             <Group gap="xs"><Button size="xs" variant="default" onClick={state.reconnect}>重新确认</Button><Button size="xs" color="#1c4d37" onClick={state.reloadPage}>刷新页面</Button></Group>
           </Stack> : state.finishing ? <Group wrap="nowrap" className={styles.progress}><Loader size={18} color="#1c4d37" /><Text size="sm">操作已结束，正在确认新版页面并刷新…</Text></Group>
+            : restarting ? <RestartProgress wait={restarting} onRetry={state.reconnect} onReload={state.reloadPage} />
             : inProgress && <OperationProgress operation={state.activeOp} kind={state.busy!}
-              connection={state.connection} onReconnect={state.reconnect} onPause={state.pause} />}
+              connection={state.connection} onReconnect={state.reconnect} />}
 
           {state.completion && completionWarning(state.completion) && <Alert color="orange" p="sm"><Text size="xs">{completionWarning(state.completion)}</Text></Alert>}
           {!inProgress && state.completion && <Alert color={state.completion.status === 'rolled_back' ? 'orange' : 'teal'} p="sm"

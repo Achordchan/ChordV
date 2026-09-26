@@ -1,4 +1,5 @@
 import type { SystemUpdateOperationDto } from "@chordv/shared";
+import type { RestartWait } from "./operation-presentation";
 
 const COMPLETION_KEY = "chordv:system-update:completion";
 export type UpdateCompletion = { operationId: string; kind: SystemUpdateOperationDto["kind"]; status: SystemUpdateOperationDto["status"]; version: string; migrationApplied: boolean; at: number };
@@ -12,8 +13,29 @@ export function readCompletion(): UpdateCompletion | null {
 export function clearCompletion() { try { sessionStorage.removeItem(COMPLETION_KEY); } catch { /* storage may be disabled */ } }
 export function saveCompletion(value: UpdateCompletion) { try { sessionStorage.setItem(COMPLETION_KEY, JSON.stringify(value)); } catch { /* reload remains safe */ } }
 
+// An expected restart survives a page reload (manual or otherwise): the new page
+// resumes observing the operation and keeps the waiting view instead of greeting
+// the operator with "cannot reach backend" while the API is still coming back.
+const RESTART_KEY = "chordv:system-update:restart";
+export function readRestartWait(now = Date.now()): RestartWait | null {
+  try {
+    const value = JSON.parse(sessionStorage.getItem(RESTART_KEY) ?? "null");
+    return value && typeof value.operationId === "string" && ["update", "rollback", "restart"].includes(value.kind) &&
+      (value.toVersion === null || typeof value.toVersion === "string") && typeof value.since === "number" &&
+      now - value.since >= 0 && now - value.since < 30 * 60_000 ? value : null;
+  } catch { return null; }
+}
+export function saveRestartWait(value: RestartWait) { try { sessionStorage.setItem(RESTART_KEY, JSON.stringify(value)); } catch { /* in-memory state still works */ } }
+export function clearRestartWait() { try { sessionStorage.removeItem(RESTART_KEY); } catch { /* storage may be disabled */ } }
+
 export function htmlVersion(html: string) {
   return new DOMParser().parseFromString(html, "text/html").querySelector<HTMLMetaElement>('meta[name="chordv-backend-version"]')?.content ?? null;
+}
+
+/** Build stamp of the document currently displayed (null when unstamped). */
+export function currentPageVersion() {
+  return typeof document === "undefined" ? null
+    : document.querySelector<HTMLMetaElement>('meta[name="chordv-backend-version"]')?.content ?? null;
 }
 
 /** The API can become ready before nginx observes its new webroot. Only reload

@@ -27,6 +27,10 @@ export function observeSystemOperation(operationId: string, options: {
   onConnection: (state: UpdateConnection) => void;
   onError?: (message: string) => void;
   initialDelay?: number;
+  /** Overrides the next retry wait (given the exponential backoff). An expected
+   * service restart retries at a short fixed cadence so the result is confirmed
+   * within seconds of the new process being approved, not up to 30s later. */
+  retryDelay?: (backoff: number) => number;
   timers?: { set: typeof setTimeout; clear: typeof clearTimeout };
 }) {
   const timers = options.timers ?? { set: globalThis.setTimeout.bind(globalThis), clear: globalThis.clearTimeout.bind(globalThis) };
@@ -84,7 +88,7 @@ export function observeSystemOperation(operationId: string, options: {
     } catch {
       if (!stopped) { options.onConnection("reconnecting"); delay = Math.min(delay * 2, 30_000); }
     } finally { timers.clear(watchdog); }
-    if (!stopped) schedule(delay);
+    if (!stopped) schedule(options.retryDelay?.(delay) ?? delay);
   };
   options.onConnection("connecting"); schedule(options.initialDelay ?? 0);
   return () => { stopped = true; timers.clear(timer); timers.clear(watchdog); controller?.abort(); };
