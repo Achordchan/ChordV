@@ -118,6 +118,24 @@ function testNewTicketMessageScrollsToLatestWithoutRefreshJitter() {
   assert.match(stylesSource, /\.desktop-runtime-overlay \{[\s\S]*?z-index: 320;/);
 }
 
+function testTicketCenterKeepsConversationFirst() {
+  const modalSource = readFileSync(resolve(import.meta.dirname, "../src/components/TicketCenterModal.tsx"), "utf8");
+  const modalStyles = readFileSync(resolve(import.meta.dirname, "../src/components/TicketCenterModal.module.css"), "utf8");
+
+  assert.match(modalStyles, /\.content \{[^}]*height: calc\(100dvh - 24px\);/, "the modal should use the window height");
+  assert.match(modalStyles, /\.messages \{[^}]*flex: 1 1 auto;[^}]*overflow-y: auto;/, "the thread should take the remaining height");
+  assert.match(modalSource, /role="log"/);
+  assert.match(modalSource, /autosize\s+minRows=\{1\}\s+maxRows=\{6\}/, "the composer should start as a single line");
+  assert.match(
+    modalSource,
+    /event\.key !== "Enter" \|\| event\.shiftKey \|\| event\.nativeEvent\.isComposing \|\| event\.keyCode === 229/,
+    "Enter sends, Shift+Enter and IME composition must not"
+  );
+  assert.match(modalSource, /if \(props\.createMode\) \{\s*return \(/, "the new-ticket form only renders in create mode");
+  assert.match(modalSource, /detail\?\.id === props\.selectedTicketId/, "a stale detail must not show under another ticket");
+  assert.match(modalSource, /new ResizeObserver\(/, "a growing composer keeps the latest message in view");
+}
+
 function main() {
   testUnreadPatchSurvivesUntilExplicitRead();
   testBackgroundDetailRefreshMarkerIsOneShot();
@@ -128,6 +146,7 @@ function main() {
   testJsonRequestsHaveTimeoutAndNetworkErrorNormalization();
   testVisibleTicketUpdateMarksDetailRead();
   testNewTicketMessageScrollsToLatestWithoutRefreshJitter();
+  testTicketCenterKeepsConversationFirst();
   console.log("desktop support tickets regression checks passed");
 }
 

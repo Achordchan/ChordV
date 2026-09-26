@@ -1,10 +1,38 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Badge, Button, FileButton, Group, Loader, Modal, Paper, Progress, SegmentedControl, Stack, Text, TextInput, Textarea } from "@mantine/core";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import {
+  ActionIcon,
+  Alert,
+  Badge,
+  Button,
+  CloseButton,
+  FileButton,
+  Loader,
+  Modal,
+  SegmentedControl,
+  Text,
+  TextInput,
+  Textarea,
+  Tooltip
+} from "@mantine/core";
 import type { ClientSupportTicketDetailDto, ClientSupportTicketSummaryDto } from "@chordv/shared";
-import { IconMessageCirclePlus, IconPaperclip, IconRefresh, IconSearch, IconSend, IconX } from "@tabler/icons-react";
+import {
+  IconAlertCircle,
+  IconArrowLeft,
+  IconFileText,
+  IconLock,
+  IconMessageCircle,
+  IconPaperclip,
+  IconPhoto,
+  IconPlus,
+  IconRefresh,
+  IconSearch,
+  IconSend2,
+  IconX
+} from "@tabler/icons-react";
 import type { TicketAttachmentUploadState } from "../hooks/useSupportTickets";
 import { openExternalUrl } from "../lib/runtime";
 import { isSupportTicketUnread } from "../lib/supportTickets";
+import styles from "./TicketCenterModal.module.css";
 
 type TicketCenterModalProps = {
   opened: boolean;
@@ -36,14 +64,32 @@ type TicketCenterModalProps = {
 };
 
 type TicketStatusFilter = "all" | "waiting_user" | "replied" | "closed";
-type TicketAttachmentPreview = ClientSupportTicketDetailDto["messages"][number]["attachments"][number];
+type TicketMessage = ClientSupportTicketDetailDto["messages"][number];
+type TicketAttachmentPreview = TicketMessage["attachments"][number];
+// Below the narrow breakpoint only one pane is shown at a time; this picks which.
+type PaneView = "list" | "thread";
+
+const IMAGE_ACCEPT = "image/png,image/jpeg,image/webp,image/gif";
+const GROUP_WINDOW_MS = 5 * 60 * 1000;
+// Touch keyboards expect Enter to insert a line break, so only hardware keyboards send on Enter.
+const enterSends = typeof window === "undefined" || !window.matchMedia?.("(pointer: coarse)").matches;
 
 export function TicketCenterModal(props: TicketCenterModalProps) {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<TicketStatusFilter>("all");
+  const [paneView, setPaneView] = useState<PaneView>("list");
   const [previewAttachment, setPreviewAttachment] = useState<TicketAttachmentPreview | null>(null);
   const [previewOpenError, setPreviewOpenError] = useState<string | null>(null);
   const messagesScrollRef = useRef<HTMLDivElement | null>(null);
+  // Mirrors the ref as state so effects re-run once the modal transition actually mounts the thread.
+  const [messagesElement, setMessagesElement] = useState<HTMLDivElement | null>(null);
+  const attachMessagesScroll = useCallback((node: HTMLDivElement | null) => {
+    messagesScrollRef.current = node;
+    setMessagesElement(node);
+  }, []);
+  const createTitleRef = useRef<HTMLInputElement | null>(null);
+  const detail = props.ticketDetail;
+  const ticketClosed = detail?.status === "closed";
   const replyingDisabled =
     props.submitting ||
     props.replyAttachmentUpload.phase === "uploading" ||
@@ -81,9 +127,12 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
     );
   }, [props.ticketDetail]);
   const latestMessageId = orderedMessages[orderedMessages.length - 1]?.id ?? null;
+  // A detail left over from the previously selected ticket is never shown under the new selection.
+  const threadReady = Boolean(detail) && (!props.selectedTicketId || detail?.id === props.selectedTicketId);
+  const threadVisible = props.opened && !props.createMode && threadReady;
 
   useEffect(() => {
-    if (!props.opened || props.createMode || !props.ticketDetail) {
+    if (!threadVisible) {
       return;
     }
     const frame = window.requestAnimationFrame(() => {
@@ -93,18 +142,80 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
       }
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [props.opened, props.createMode, props.ticketDetail?.id, latestMessageId]);
+  }, [props.opened, props.createMode, props.ticketDetail?.id, latestMessageId, threadVisible, paneView, messagesElement]);
+
+  // When the composer grows (multi-line text, attachment chip) keep the bottom of the thread in view.
+  useEffect(() => {
+    const scrollContainer = messagesElement;
+    if (!scrollContainer || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    let lastHeight = scrollContainer.clientHeight;
+    const observer = new ResizeObserver(() => {
+      const shrunkBy = lastHeight - scrollContainer.clientHeight;
+      lastHeight = scrollContainer.clientHeight;
+      if (shrunkBy > 0) {
+        scrollContainer.scrollTop += shrunkBy;
+      }
+    });
+    observer.observe(scrollContainer);
+    return () => observer.disconnect();
+  }, [messagesElement]);
 
   useEffect(() => {
     if (!props.opened) {
       setPreviewAttachment(null);
       setPreviewOpenError(null);
+      return;
     }
+    setPaneView(props.createMode ? "thread" : "list");
   }, [props.opened]);
 
-  const openAttachmentPreview = (attachment: TicketAttachmentPreview) => {
-    setPreviewAttachment(attachment);
-    setPreviewOpenError(null);
+  useEffect(() => {
+    if (!props.createMode) {
+      return;
+    }
+    setPaneView("thread");
+    const frame = window.requestAnimationFrame(() => createTitleRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [props.createMode]);
+
+  const selectTicket = (ticketId: string) => {
+    setPaneView("thread");
+    props.onSelectTicket(ticketId);
+  };
+
+  const cancelCreate = () => {
+    setPaneView("list");
+    props.onCancelCreate();
+  };
+
+  const handleReplyKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!enterSends || event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) {
+      return;
+    }
+    event.preventDefault();
+    if (!replyingDisabled) {
+      props.onSubmitReply();
+    }
+  };
+
+  const handleCreateKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
+      event.preventDefault();
+      if (!creatingDisabled) {
+        props.onSubmitCreate();
+      }
+    }
+  };
+
+  const openAttachment = (attachment: TicketAttachmentPreview) => {
+    if (isImageAttachment(attachment)) {
+      setPreviewAttachment(attachment);
+      setPreviewOpenError(null);
+      return;
+    }
+    void openExternalUrl(attachment.url).catch(() => undefined);
   };
 
   const handleOpenPreviewOriginal = async () => {
@@ -115,410 +226,569 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
       await openExternalUrl(previewAttachment.url);
       setPreviewOpenError(null);
     } catch (error) {
-      setPreviewOpenError(error instanceof Error ? error.message : "打开原图失败");
+      setPreviewOpenError(error instanceof Error ? error.message : String(error));
     }
+  };
+
+  const hasFilter = search.trim().length > 0 || statusFilter !== "all";
+  const refreshing = props.listBusy || props.detailBusy;
+
+  const paneActions = (
+    <div className={styles.paneActions}>
+      <Tooltip label="刷新" withArrow openDelay={300}>
+        <ActionIcon variant="subtle" color="gray" size={30} aria-label="刷新工单" loading={refreshing} onClick={props.onRefresh}>
+          <IconRefresh size={17} />
+        </ActionIcon>
+      </Tooltip>
+      <CloseButton size="md" aria-label="关闭工单窗口" onClick={props.onClose} />
+    </div>
+  );
+
+  const renderPane = () => {
+    if (props.createMode) {
+      return (
+        <section className={styles.pane} aria-labelledby="ticket-create-heading">
+          <header className={styles.threadHead}>
+            <BackButton onClick={cancelCreate} />
+            <h2 id="ticket-create-heading" className={styles.threadTitle}>新建工单</h2>
+            {paneActions}
+          </header>
+          <ErrorBar message={props.error} />
+          <div className={styles.createBody}>
+            <Text size="xs" c="dimmed">
+              写清楚遇到的问题、出现的时间和提示信息，客服会在这里回复你。
+            </Text>
+            <TextInput
+              ref={createTitleRef}
+              label="标题"
+              placeholder="例如：Windows 连接后无法打开网页"
+              size="sm"
+              maxLength={120}
+              value={props.createTitle}
+              onChange={(event) => props.onCreateTitleChange(event.currentTarget.value)}
+            />
+            <Textarea
+              label="问题描述"
+              placeholder="你做了什么、看到了什么提示、希望怎么解决。"
+              size="sm"
+              classNames={{ root: styles.createField, wrapper: styles.createFieldWrapper, input: styles.createFieldInput }}
+              value={props.createBody}
+              onChange={(event) => props.onCreateBodyChange(event.currentTarget.value)}
+              onKeyDown={handleCreateKeyDown}
+            />
+          </div>
+          <footer className={styles.createFoot}>
+            <Text size="xs" c="dimmed" className={styles.createHint}>
+              {creatingDisabled && !props.submitting ? "标题至少 2 个字，描述至少 5 个字" : "Ctrl/⌘ + Enter 提交"}
+            </Text>
+            <Button size="xs" variant="default" onClick={cancelCreate}>
+              取消
+            </Button>
+            <Button size="xs" onClick={props.onSubmitCreate} loading={props.submitting} disabled={creatingDisabled}>
+              提交工单
+            </Button>
+          </footer>
+        </section>
+      );
+    }
+
+    if (detail && threadReady) {
+      return (
+        <section className={styles.pane} aria-labelledby="ticket-thread-heading">
+          <header className={styles.threadHead}>
+            <BackButton onClick={() => setPaneView("list")} />
+            <div className={styles.threadHeading}>
+              <h2 id="ticket-thread-heading" className={styles.threadTitle} title={detail.title}>
+                {detail.title}
+              </h2>
+              <StatusBadge status={detail.status} />
+            </div>
+            {props.detailBusy ? <Loader size={14} aria-label="正在更新对话" /> : null}
+            {paneActions}
+          </header>
+          <ErrorBar message={props.error} />
+          <div
+            ref={attachMessagesScroll}
+            className={styles.messages}
+            role="log"
+            aria-live="polite"
+            aria-label="对话记录"
+            tabIndex={0}
+          >
+            <div className={styles.messagesStack}>
+              <p className={styles.threadIntro}>
+                工单编号 {ticketCode(detail)} · 创建于 {formatDateTime(detail.createdAt)}
+              </p>
+              {orderedMessages.length === 0 ? (
+                <Text size="xs" c="dimmed" ta="center">暂时还没有消息</Text>
+              ) : (
+                orderedMessages.map((message, index) => {
+                  const previous = orderedMessages[index - 1];
+                  const newDay = !previous || dayKey(previous.createdAt) !== dayKey(message.createdAt);
+                  const grouped = !newDay && previous !== undefined && isSameSpeakerBurst(previous, message);
+                  return (
+                    <MessageItem
+                      key={message.id}
+                      message={message}
+                      dayLabel={newDay ? formatDayLabel(message.createdAt) : null}
+                      grouped={grouped}
+                      onOpenAttachment={openAttachment}
+                    />
+                  );
+                })
+              )}
+            </div>
+          </div>
+          {ticketClosed ? (
+            <div className={styles.closedBar}>
+              <IconLock size={15} aria-hidden="true" />
+              <Text size="xs" className={styles.closedText}>
+                此工单已关闭。如果问题仍未解决，请新建一条工单。
+              </Text>
+              <Button size="compact-xs" variant="light" onClick={props.onOpenCreate}>
+                新建工单
+              </Button>
+            </div>
+          ) : (
+            <div className={styles.composer}>
+              {props.replyAttachment ? (
+                <PendingAttachment
+                  file={props.replyAttachment}
+                  upload={props.replyAttachmentUpload}
+                  onRemove={() => props.onReplyAttachmentChange(null)}
+                />
+              ) : null}
+              <div className={styles.composerBox}>
+                <FileButton onChange={props.onReplyAttachmentChange} accept={IMAGE_ACCEPT}>
+                  {(fileButtonProps) => (
+                    <Tooltip label="添加图片" withArrow openDelay={300}>
+                      <ActionIcon
+                        {...fileButtonProps}
+                        variant="subtle"
+                        color="gray"
+                        size={32}
+                        aria-label="添加图片附件"
+                        disabled={props.submitting || props.replyAttachmentUpload.phase === "uploading"}
+                      >
+                        <IconPaperclip size={18} />
+                      </ActionIcon>
+                    </Tooltip>
+                  )}
+                </FileButton>
+                <Textarea
+                  data-autofocus
+                  aria-label="回复内容"
+                  placeholder={enterSends ? "输入回复，Enter 发送，Shift + Enter 换行" : "输入回复内容"}
+                  variant="unstyled"
+                  autosize
+                  minRows={1}
+                  maxRows={6}
+                  className={styles.composerInputRoot}
+                  classNames={{ input: styles.composerInput }}
+                  value={props.replyBody}
+                  onChange={(event) => props.onReplyBodyChange(event.currentTarget.value)}
+                  onKeyDown={handleReplyKeyDown}
+                />
+                <Button
+                  size="xs"
+                  className={styles.sendButton}
+                  leftSection={<IconSend2 size={15} />}
+                  onClick={props.onSubmitReply}
+                  loading={props.submitting}
+                  disabled={replyingDisabled}
+                >
+                  发送
+                </Button>
+              </div>
+            </div>
+          )}
+        </section>
+      );
+    }
+
+    let body: ReactNode;
+    let tone: "error" | undefined;
+    if (props.detailBusy || props.listBusy) {
+      body = (
+        <>
+          <Loader size="sm" />
+          <Text size="sm" c="dimmed">{props.detailBusy ? "正在打开对话…" : "正在加载工单…"}</Text>
+        </>
+      );
+    } else if (props.error) {
+      tone = "error";
+      body = (
+        <>
+          <Text fw={600}>{props.tickets.length === 0 ? "工单暂时加载不出来" : "这条工单暂时打不开"}</Text>
+          <Text size="sm" c="dimmed">{props.error}</Text>
+          <Button size="xs" variant="default" mt={4} leftSection={<IconRefresh size={14} />} onClick={props.onRefresh}>
+            重试
+          </Button>
+        </>
+      );
+    } else if (props.tickets.length === 0) {
+      body = (
+        <>
+          <Text fw={600}>还没有工单</Text>
+          <Text size="sm" c="dimmed">遇到连接、账号或订阅问题时，可以在这里直接联系客服。</Text>
+          <Button size="xs" mt={4} leftSection={<IconPlus size={14} />} onClick={props.onOpenCreate}>
+            新建工单
+          </Button>
+        </>
+      );
+    } else {
+      body = (
+        <>
+          <Text fw={600}>选择一条工单</Text>
+          <Text size="sm" c="dimmed">打开左侧的工单，就能看到和客服的对话。</Text>
+        </>
+      );
+    }
+    const busy = props.detailBusy || props.listBusy;
+    return (
+      <section className={styles.pane} aria-label="工单对话">
+        <header className={styles.threadHead}>
+          <BackButton onClick={() => setPaneView("list")} />
+          {paneActions}
+        </header>
+        <div className={styles.empty} aria-live="polite">
+          {busy ? null : (
+            <span className={styles.emptyIcon} data-tone={tone} aria-hidden="true">
+              {tone === "error" ? <IconAlertCircle size={22} /> : <IconMessageCircle size={22} />}
+            </span>
+          )}
+          {body}
+        </div>
+      </section>
+    );
   };
 
   return (
     <>
-    <Modal
-      opened={props.opened}
-      onClose={props.onClose}
-      size="94%"
-      centered
-      withCloseButton={false}
-      classNames={{
-        content: "ticket-center__modal-content",
-        header: "ticket-center__modal-header",
-        body: "ticket-center__modal-body"
-      }}
-    >
-      <Stack gap="xs" className="ticket-center">
-        <div className="ticket-center__topbar">
-          <Text size="xs" c="dimmed" className="ticket-center__headline">
-            联系邮箱：{props.email}
-          </Text>
-          <Group gap="xs" align="center" wrap="nowrap" className="ticket-center__toolbar">
-            <Button
-              size="xs"
-              variant="default"
-              leftSection={<IconRefresh size={15} />}
-              className="ticket-center__toolbar-button"
-              onClick={props.onRefresh}
-              loading={props.listBusy || props.detailBusy}
-            >
-              刷新列表
-            </Button>
-            {props.createMode ? (
-              <Button size="xs" variant="default" className="ticket-center__toolbar-button" onClick={props.onCancelCreate}>
-                返回详情
-              </Button>
-            ) : null}
-            <Button
-              size="xs"
-              leftSection={<IconMessageCirclePlus size={15} />}
-              className="ticket-center__toolbar-button"
-              onClick={props.onOpenCreate}
-            >
-              新建工单
-            </Button>
-            <Button
-              size="xs"
-              variant="default"
-              leftSection={<IconX size={15} />}
-              className="ticket-center__toolbar-button"
-              onClick={props.onClose}
-            >
-              关闭窗口
-            </Button>
-          </Group>
-        </div>
-
-        <div className="ticket-center__layout">
-          <Paper withBorder radius="md" p="sm" className="ticket-center__sidebar">
-            <div className="ticket-center__sidebar-head">
-              <Text fw={700}>工单列表</Text>
-              <Badge variant="light" color="gray">
-                {filteredTickets.length}/{props.tickets.length}
-              </Badge>
-            </div>
-            <TextInput
-              value={search}
-              onChange={(event) => setSearch(event.currentTarget.value)}
-              placeholder="搜索工单标题或内容"
-              size="xs"
-              leftSection={<IconSearch size={15} />}
-              className="ticket-center__search"
-            />
-            <SegmentedControl
-              value={statusFilter}
-              onChange={(value) => setStatusFilter(value as TicketStatusFilter)}
-              size="xs"
-              fullWidth
-              className="ticket-center__status-filter"
-              data={[
-                { value: "all", label: "全部" },
-                { value: "waiting_user", label: "等待补充" },
-                { value: "replied", label: "已回复" },
-                { value: "closed", label: "已关闭" }
-              ]}
-            />
-            <div className="ticket-center__sidebar-scroll">
-              <Stack gap="xs">
-                {props.listBusy ? (
-                  <div className="ticket-center__empty">
-                    <Loader size="sm" />
-                    <Text size="sm" c="dimmed">
-                      正在加载工单列表…
-                    </Text>
-                  </div>
-                ) : filteredTickets.length > 0 ? (
-                  filteredTickets.map((ticket) => {
-                    const active = ticket.id === props.selectedTicketId && !props.createMode;
-                    return (
-                      <button
-                        key={ticket.id}
-                        type="button"
-                        className={active ? "ticket-center__ticket ticket-center__ticket--active" : "ticket-center__ticket"}
-                        onClick={() => props.onSelectTicket(ticket.id)}
-                      >
-                        <div className="ticket-center__ticket-head">
-                          <Text fw={700} lineClamp={1}>
-                            {ticket.title}
-                          </Text>
-                          <Badge size="sm" color={statusColor(ticket.status)} variant="light">
-                            {statusLabel(ticket.status)}
-                          </Badge>
-                        </div>
-                        <Text size="sm" c="dimmed" lineClamp={2}>
-                          {ticket.lastMessagePreview || "暂无最新消息"}
-                        </Text>
-                        <div className="ticket-center__ticket-foot">
-                          <Text size="xs" c="dimmed">
-                            最后更新：{formatDateTime(ticket.lastMessageAt)}
-                          </Text>
-                          {isSupportTicketUnread(ticket) ? <span className="ticket-center__unread-dot" /> : null}
-                        </div>
-                      </button>
-                    );
-                  })
-                ) : (
-                  <div className="ticket-center__empty">
-                    <Text fw={600}>{props.tickets.length > 0 ? "没有匹配的工单" : "还没有工单"}</Text>
-                    <Text size="sm" c="dimmed">
-                      {props.tickets.length > 0 ? "可以调整搜索内容或状态筛选。" : "你可以直接点击右上角“新建工单”发起问题。"}
-                    </Text>
-                  </div>
-                )}
-              </Stack>
-            </div>
-          </Paper>
-
-          <Paper withBorder radius="md" p="md" className="ticket-center__detail">
-            {props.error ? (
-              <Alert color="red" variant="light">
-                {props.error}
-              </Alert>
-            ) : null}
-
-            {props.createMode ? (
-              <Stack gap="md" className="ticket-center__composer">
-                <div>
-                  <Text fw={700}>新建工单</Text>
-                  <Text size="sm" c="dimmed">
-                    标题尽量直接说明问题，正文里把出错步骤、时间和现象写清楚。
-                  </Text>
-                </div>
-                <TextInput
-                  label="工单标题"
-                  placeholder="例如：Windows 连接后无法打开网页"
-                  size="sm"
-                  className="ticket-center__field"
-                  value={props.createTitle}
-                  onChange={(event) => props.onCreateTitleChange(event.currentTarget.value)}
-                  maxLength={120}
-                />
-                <Textarea
-                  label="问题描述"
-                  placeholder="请把你做了什么、看到什么提示、希望怎么解决写清楚。"
-                  size="sm"
-                  className="ticket-center__field"
-                  minRows={10}
-                  autosize
-                  value={props.createBody}
-                  onChange={(event) => props.onCreateBodyChange(event.currentTarget.value)}
-                />
-                <Group justify="flex-end">
-                  <Button size="sm" variant="default" className="ticket-center__action-button" onClick={props.onCancelCreate}>
-                    取消
+      <Modal.Root
+        opened={props.opened}
+        onClose={props.onClose}
+        size="min(calc(100vw - 24px), 1040px)"
+        centered
+        classNames={{ inner: styles.inner, content: styles.content, body: styles.body, title: styles.title }}
+      >
+        <Modal.Overlay />
+        <Modal.Content>
+          <Modal.Body>
+            <div className={styles.layout} data-view={paneView}>
+              <nav className={styles.rail} aria-label="工单列表">
+                <div className={styles.railHead}>
+                  <Modal.Title>我的工单</Modal.Title>
+                  <Button size="compact-sm" leftSection={<IconPlus size={14} />} onClick={props.onOpenCreate} disabled={props.createMode}>
+                    新建工单
                   </Button>
-                  <Button
-                    size="sm"
-                    className="ticket-center__action-button"
-                    onClick={props.onSubmitCreate}
-                    loading={props.submitting}
-                    disabled={creatingDisabled}
-                  >
-                    提交工单
-                  </Button>
-                </Group>
-              </Stack>
-            ) : props.detailBusy ? (
-              <div className="ticket-center__empty ticket-center__empty--detail">
-                <Loader size="sm" />
-                <Text size="sm" c="dimmed">
-                  正在加载工单详情…
-                </Text>
-              </div>
-            ) : props.ticketDetail ? (
-              <Stack gap="md" className="ticket-center__detail-shell">
-                <div className="ticket-center__detail-head">
-                  <Group gap="xs" wrap="nowrap" className="ticket-center__detail-meta">
-                    <Text size="xs" c="dimmed">
-                      创建时间：{formatDateTime(props.ticketDetail.createdAt)}
-                    </Text>
-                    <Text size="xs" c="dimmed">
-                      工单编号：{ticketCode(props.ticketDetail)}
-                    </Text>
-                  </Group>
+                  <CloseButton size="md" className={styles.railClose} aria-label="关闭工单窗口" onClick={props.onClose} />
                 </div>
-
-                <div
-                  ref={messagesScrollRef}
-                  className="ticket-center__messages"
-                >
-                  <Stack gap="sm" className="ticket-center__messages-stack">
-                    {orderedMessages.map((message) => (
-                      <div
-                        key={message.id}
-                        className={
-                          message.authorRole === "user"
-                            ? "ticket-center__message-row ticket-center__message-row--user"
-                            : "ticket-center__message-row ticket-center__message-row--admin"
-                        }
-                      >
-                        <div
-                          className={
-                            message.authorRole === "user"
-                              ? "ticket-center__message ticket-center__message--user"
-                              : "ticket-center__message ticket-center__message--admin"
-                          }
-                        >
-                          <div className="ticket-center__message-meta">
-                            <Text fw={700}>{message.authorDisplayName ?? authorLabel(message.authorRole)}</Text>
-                            <Text size="xs" c="dimmed">
-                              {formatDateTime(message.createdAt)}
-                            </Text>
-                          </div>
-                          <Text size="sm" className="ticket-center__message-body">
-                            {message.body}
-                          </Text>
-                          {(message.attachments ?? []).length > 0 ? (
-                            <div className="ticket-center__attachments">
-                              {(message.attachments ?? []).map((attachment) => (
-                                <button
-                                  key={attachment.id}
-                                  type="button"
-                                  className="ticket-center__attachment"
-                                  onClick={() => openAttachmentPreview(attachment)}
-                                >
-                                  <img src={attachment.url} alt={attachment.fileName} />
-                                  <span>{attachment.fileName}</span>
-                                </button>
-                              ))}
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-                    ))}
-                    <div className="ticket-center__messages-end" />
-                  </Stack>
-                </div>
-
-                <Stack gap="sm" className="ticket-center__reply-panel">
-                  {props.ticketDetail.status === "closed" ? (
-                    <Alert color="gray" variant="light">
-                      当前工单已经关闭，如需继续处理，请新建一条工单说明新情况。
-                    </Alert>
-                  ) : null}
-                  <Textarea
-                    label="继续补充"
-                    placeholder={props.ticketDetail.status === "closed" ? "当前工单已关闭" : "继续描述新的现象或补充截图说明。"}
-                    size="sm"
-                    className="ticket-center__field"
-                    minRows={3}
-                    disabled={props.ticketDetail.status === "closed"}
-                    value={props.replyBody}
-                    onChange={(event) => props.onReplyBodyChange(event.currentTarget.value)}
+                <div className={styles.railTools}>
+                  <TextInput
+                    value={search}
+                    onChange={(event) => setSearch(event.currentTarget.value)}
+                    placeholder="搜索工单"
+                    aria-label="搜索工单"
+                    size="xs"
+                    leftSection={<IconSearch size={14} />}
+                    rightSection={search ? <CloseButton size="xs" aria-label="清除搜索" onClick={() => setSearch("")} /> : null}
                   />
-                  {props.replyAttachment ? (
-                    <div className="ticket-center__attachment-upload">
-                      <div className="ticket-center__attachment-upload-head">
-                        <Text size="xs" fw={600} lineClamp={1}>
-                          {props.replyAttachment.name}
-                        </Text>
-                        <Text size="xs" c={attachmentUploadColor(props.replyAttachmentUpload.phase)}>
-                          {attachmentUploadLabel(props.replyAttachmentUpload.phase)}
-                        </Text>
-                      </div>
-                      <Progress
-                        value={props.replyAttachmentUpload.progress}
-                        size="sm"
-                        radius="xl"
-                        color={attachmentUploadColor(props.replyAttachmentUpload.phase)}
-                      />
-                      {props.replyAttachmentUpload.error ? (
-                        <Text size="xs" c="red">
-                          {props.replyAttachmentUpload.error}
-                        </Text>
-                      ) : null}
+                  <SegmentedControl
+                    value={statusFilter}
+                    onChange={(value) => setStatusFilter(value as TicketStatusFilter)}
+                    size="xs"
+                    fullWidth
+                    aria-label="按状态筛选"
+                    classNames={{ root: styles.filter, label: styles.filterLabel }}
+                    data={[
+                      { value: "all", label: "全部" },
+                      { value: "waiting_user", label: "待补充" },
+                      { value: "replied", label: "处理中" },
+                      { value: "closed", label: "已关闭" }
+                    ]}
+                  />
+                </div>
+                <div className={styles.railScroll}>
+                  {props.listBusy && props.tickets.length === 0 ? (
+                    <div className={styles.railEmpty}>
+                      <Loader size="xs" />
+                      <Text size="xs" c="dimmed">正在加载…</Text>
                     </div>
-                  ) : null}
-                  <Group justify="space-between" align="center" gap="xs" className="ticket-center__reply-actions">
-                    <Text size="xs" c="dimmed">
-                      {props.replyBody.length} 字
-                    </Text>
-                    <Group gap="xs" className="ticket-center__reply-buttons">
-                      {props.replyAttachment ? (
+                  ) : filteredTickets.length > 0 ? (
+                    <ul className={styles.ticketList}>
+                      {filteredTickets.map((ticket) => {
+                        const active = ticket.id === props.selectedTicketId && !props.createMode;
+                        const unread = isSupportTicketUnread(ticket);
+                        return (
+                          <li key={ticket.id}>
+                            <button
+                              type="button"
+                              className={styles.ticket}
+                              data-active={active || undefined}
+                              data-unread={unread || undefined}
+                              aria-current={active ? "true" : undefined}
+                              onClick={() => selectTicket(ticket.id)}
+                            >
+                              <span className={styles.ticketRow}>
+                                <span className={styles.ticketTitle}>{ticket.title}</span>
+                                <time className={styles.ticketTime} dateTime={ticket.lastMessageAt}>
+                                  {formatListTime(ticket.lastMessageAt)}
+                                </time>
+                              </span>
+                              <span className={styles.ticketRow}>
+                                <span className={styles.ticketStatus} data-status={ticket.status}>
+                                  {statusLabel(ticket.status)}
+                                </span>
+                                <span className={styles.ticketPreview}>{ticket.lastMessagePreview || "暂无消息"}</span>
+                                {unread ? <span className={styles.unreadDot} aria-label="有新回复" /> : null}
+                              </span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : (
+                    <div className={styles.railEmpty}>
+                      <Text size="xs" c="dimmed">{props.tickets.length > 0 ? "没有符合条件的工单" : "暂无工单"}</Text>
+                      {hasFilter && props.tickets.length > 0 ? (
                         <Button
-                          size="sm"
-                          variant="light"
-                          rightSection={<IconX size={14} />}
-                          className="ticket-center__action-button"
-                          onClick={() => props.onReplyAttachmentChange(null)}
+                          size="compact-xs"
+                          variant="subtle"
+                          onClick={() => {
+                            setSearch("");
+                            setStatusFilter("all");
+                          }}
                         >
-                          {props.replyAttachment.name}
+                          清除筛选
                         </Button>
                       ) : null}
-                      <FileButton onChange={props.onReplyAttachmentChange} accept="image/png,image/jpeg,image/webp,image/gif">
-                        {(fileButtonProps) => (
-                          <Button
-                            {...fileButtonProps}
-                            size="sm"
-                            variant="default"
-                            leftSection={<IconPaperclip size={15} />}
-                            className="ticket-center__action-button"
-                            disabled={
-                              props.submitting ||
-                              props.replyAttachmentUpload.phase === "uploading" ||
-                              props.ticketDetail?.status === "closed"
-                            }
-                          >
-                            添加附件
-                          </Button>
-                        )}
-                      </FileButton>
-                      <Button
-                        size="sm"
-                        leftSection={<IconSend size={15} />}
-                        className="ticket-center__action-button"
-                        onClick={props.onSubmitReply}
-                        loading={props.submitting}
-                        disabled={replyingDisabled}
-                      >
-                        发送回复
-                      </Button>
-                    </Group>
-                  </Group>
-                </Stack>
-              </Stack>
-            ) : (
-              <div className="ticket-center__empty ticket-center__empty--detail">
-                <Text fw={600}>请选择一条工单</Text>
-                <Text size="sm" c="dimmed">
-                  左侧可以查看历史工单，也可以直接新建新的问题单。
-                </Text>
-              </div>
-            )}
-          </Paper>
-        </div>
-      </Stack>
-    </Modal>
-    <Modal
-      opened={previewAttachment !== null}
-      onClose={() => {
-        setPreviewAttachment(null);
-        setPreviewOpenError(null);
-      }}
-      title={previewAttachment?.fileName ?? "附件预览"}
-      size="min(92vw, 980px)"
-      centered
-      classNames={{
-        content: "ticket-center__image-preview-content",
-        body: "ticket-center__image-preview-body"
-      }}
-    >
-      {previewAttachment ? (
-        <Stack gap="sm">
-          {previewOpenError ? (
-            <Alert color="red" variant="light">
-              {previewOpenError}
-            </Alert>
-          ) : null}
-          <div className="ticket-center__image-preview-frame">
-            <img src={previewAttachment.url} alt={previewAttachment.fileName} />
-          </div>
-          <Group justify="flex-end">
-            <Button variant="default" size="sm" onClick={() => void handleOpenPreviewOriginal()}>
-              打开原图
-            </Button>
-            <Button size="sm" onClick={() => setPreviewAttachment(null)}>
-              关闭
-            </Button>
-          </Group>
-        </Stack>
-      ) : null}
-    </Modal>
+                    </div>
+                  )}
+                </div>
+                {props.email ? (
+                  <div className={styles.railFoot} title={props.email}>
+                    联系邮箱 {props.email}
+                  </div>
+                ) : null}
+              </nav>
+              {renderPane()}
+            </div>
+          </Modal.Body>
+        </Modal.Content>
+      </Modal.Root>
+      <Modal
+        opened={previewAttachment !== null}
+        onClose={() => {
+          setPreviewAttachment(null);
+          setPreviewOpenError(null);
+        }}
+        title={previewAttachment?.fileName ?? "附件预览"}
+        size="min(92vw, 980px)"
+        centered
+        closeButtonProps={{ "aria-label": "关闭预览" }}
+        classNames={{ title: styles.previewTitle, header: styles.previewHeader, body: styles.previewBody }}
+      >
+        {previewAttachment ? (
+          <>
+            {previewOpenError ? (
+              <Alert color="red" variant="light" icon={<IconAlertCircle size={16} />} className={styles.previewError}>
+                <Text size="sm">无法打开原图，请稍后再试。</Text>
+                <details className={styles.errorDetails}>
+                  <summary>详细信息</summary>
+                  <code>{previewOpenError}</code>
+                </details>
+              </Alert>
+            ) : null}
+            <div className={styles.previewFrame}>
+              <img src={previewAttachment.url} alt={previewAttachment.fileName} />
+            </div>
+            <div className={styles.previewFoot}>
+              <Button variant="default" size="xs" onClick={() => void handleOpenPreviewOriginal()}>
+                打开原图
+              </Button>
+              <Button size="xs" onClick={() => setPreviewAttachment(null)}>
+                关闭
+              </Button>
+            </div>
+          </>
+        ) : null}
+      </Modal>
     </>
+  );
+}
+
+function BackButton({ onClick }: { onClick: () => void }) {
+  return (
+    <ActionIcon variant="subtle" color="gray" size={28} className={styles.back} aria-label="返回工单列表" onClick={onClick}>
+      <IconArrowLeft size={17} />
+    </ActionIcon>
+  );
+}
+
+function ErrorBar({ message }: { message: string | null }) {
+  if (!message) {
+    return null;
+  }
+  return (
+    <div className={styles.errorBar} role="alert">
+      <IconAlertCircle size={15} aria-hidden="true" className={styles.errorIcon} />
+      <span>{message}</span>
+    </div>
+  );
+}
+
+function StatusBadge({ status }: { status: ClientSupportTicketSummaryDto["status"] }) {
+  return (
+    <Badge size="sm" variant="light" color={statusColor(status)} className={styles.statusBadge}>
+      {statusLabel(status)}
+    </Badge>
+  );
+}
+
+function MessageItem(props: {
+  message: TicketMessage;
+  dayLabel: string | null;
+  grouped: boolean;
+  onOpenAttachment: (attachment: TicketAttachmentPreview) => void;
+}) {
+  const { message } = props;
+  const attachments = message.attachments ?? [];
+  const role = message.authorRole === "user" ? "user" : message.authorRole === "system" ? "system" : "admin";
+  const time = formatTime(message.createdAt);
+  return (
+    <>
+      {props.dayLabel ? (
+        <div className={styles.day} role="separator">
+          <span>{props.dayLabel}</span>
+        </div>
+      ) : null}
+      {role === "system" ? (
+        <div className={styles.systemRow}>
+          <span className={styles.systemText}>
+            {message.body}
+            <time dateTime={message.createdAt}> · {time}</time>
+          </span>
+        </div>
+      ) : (
+        <div className={styles.messageRow} data-role={role} data-grouped={props.grouped || undefined}>
+          {props.grouped ? null : (
+            <div className={styles.messageMeta}>
+              {role === "admin" ? <span className={styles.author}>{message.authorDisplayName ?? authorLabel(message.authorRole)}</span> : null}
+              <time dateTime={message.createdAt} title={formatDateTime(message.createdAt)}>{time}</time>
+            </div>
+          )}
+          <div
+            className={styles.bubble}
+            aria-label={`${role === "user" ? "我" : message.authorDisplayName ?? "客服"}，${formatDateTime(message.createdAt)}`}
+          >
+            {message.body ? <div className={styles.bubbleText}>{message.body}</div> : null}
+            {attachments.length > 0 ? (
+              <div className={styles.attachments} data-solo={!message.body || undefined}>
+                {attachments.map((attachment) =>
+                  isImageAttachment(attachment) ? (
+                    <button
+                      key={attachment.id}
+                      type="button"
+                      className={styles.thumb}
+                      title={attachment.fileName}
+                      aria-label={`查看图片 ${attachment.fileName}`}
+                      onClick={() => props.onOpenAttachment(attachment)}
+                    >
+                      <img src={attachment.url} alt="" loading="lazy" />
+                    </button>
+                  ) : (
+                    <button
+                      key={attachment.id}
+                      type="button"
+                      className={styles.fileChip}
+                      title={attachment.fileName}
+                      onClick={() => props.onOpenAttachment(attachment)}
+                    >
+                      <IconFileText size={14} aria-hidden="true" />
+                      <span>{attachment.fileName}</span>
+                    </button>
+                  )
+                )}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function PendingAttachment(props: { file: File; upload: TicketAttachmentUploadState; onRemove: () => void }) {
+  const previewUrl = useObjectUrl(props.file);
+  const [thumbFailed, setThumbFailed] = useState(false);
+  const { phase, progress, error } = props.upload;
+  useEffect(() => setThumbFailed(false), [previewUrl]);
+  return (
+    <div className={styles.pending} data-phase={phase}>
+      {previewUrl && !thumbFailed ? (
+        <img src={previewUrl} alt="" className={styles.pendingThumb} onError={() => setThumbFailed(true)} />
+      ) : (
+        <span className={styles.pendingThumb} aria-hidden="true"><IconPhoto size={16} /></span>
+      )}
+      <div className={styles.pendingInfo}>
+        <div className={styles.pendingHead}>
+          <span className={styles.pendingName} title={props.file.name}>{props.file.name}</span>
+          <span className={styles.pendingStatus} title={phase === "failed" && error ? error : undefined}>
+            {attachmentUploadLabel(phase, progress)}
+          </span>
+        </div>
+        {phase === "uploading" || phase === "idle" ? (
+          <div
+            className={styles.pendingBar}
+            role="progressbar"
+            aria-label="附件上传进度"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(progress)}
+          >
+            <span style={{ width: `${Math.max(2, Math.min(100, progress))}%` }} />
+          </div>
+        ) : null}
+      </div>
+      <CloseButton size="sm" aria-label="移除附件" onClick={props.onRemove} icon={<IconX size={14} />} />
+    </div>
+  );
+}
+
+function useObjectUrl(file: File | null) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!file || !file.type.startsWith("image/")) {
+      setUrl(null);
+      return;
+    }
+    const next = URL.createObjectURL(file);
+    setUrl(next);
+    return () => URL.revokeObjectURL(next);
+  }, [file]);
+  return url;
+}
+
+function isImageAttachment(attachment: TicketAttachmentPreview) {
+  return !attachment.mimeType || attachment.mimeType.startsWith("image/");
+}
+
+function isSameSpeakerBurst(previous: TicketMessage, next: TicketMessage) {
+  return (
+    previous.authorRole === next.authorRole &&
+    previous.authorRole !== "system" &&
+    previous.authorDisplayName === next.authorDisplayName &&
+    new Date(next.createdAt).getTime() - new Date(previous.createdAt).getTime() < GROUP_WINDOW_MS
   );
 }
 
 function statusLabel(status: ClientSupportTicketSummaryDto["status"]) {
   switch (status) {
     case "waiting_admin":
-      return "等待处理";
+      return "等待客服";
     case "waiting_user":
-      return "等待补充";
+      return "待补充";
     case "closed":
       return "已关闭";
     default:
@@ -531,15 +801,15 @@ function statusColor(status: ClientSupportTicketSummaryDto["status"]) {
     case "waiting_admin":
       return "blue";
     case "waiting_user":
-      return "yellow";
+      return "orange";
     case "closed":
       return "gray";
     default:
-      return "green";
+      return "teal";
   }
 }
 
-function authorLabel(role: ClientSupportTicketDetailDto["messages"][number]["authorRole"]) {
+function authorLabel(role: TicketMessage["authorRole"]) {
   switch (role) {
     case "admin":
       return "客服";
@@ -550,29 +820,16 @@ function authorLabel(role: ClientSupportTicketDetailDto["messages"][number]["aut
   }
 }
 
-function attachmentUploadLabel(phase: TicketAttachmentUploadState["phase"]) {
+function attachmentUploadLabel(phase: TicketAttachmentUploadState["phase"], progress: number) {
   switch (phase) {
     case "uploading":
-      return "上传中";
+      return `上传中 ${Math.round(progress)}%`;
     case "uploaded":
       return "已上传";
     case "failed":
-      return "上传失败";
+      return "上传失败，请重新选择";
     default:
-      return "待上传";
-  }
-}
-
-function attachmentUploadColor(phase: TicketAttachmentUploadState["phase"]) {
-  switch (phase) {
-    case "uploaded":
-      return "green";
-    case "failed":
-      return "red";
-    case "uploading":
-      return "blue";
-    default:
-      return "gray";
+      return "等待上传";
   }
 }
 
@@ -581,22 +838,51 @@ function ticketCode(ticket: ClientSupportTicketSummaryDto) {
   return `TK${formatCompactDateTime(ticket.createdAt)}${shortId}`;
 }
 
+function pad(value: number) {
+  return `${value}`.padStart(2, "0");
+}
+
 function formatCompactDateTime(value: string) {
   const date = new Date(value);
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  const hour = `${date.getHours()}`.padStart(2, "0");
-  const minute = `${date.getMinutes()}`.padStart(2, "0");
-  return `${year}${month}${day}${hour}${minute}`;
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}${pad(date.getHours())}${pad(date.getMinutes())}`;
 }
 
 function formatDateTime(value: string) {
   const date = new Date(value);
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  const hour = `${date.getHours()}`.padStart(2, "0");
-  const minute = `${date.getMinutes()}`.padStart(2, "0");
-  return `${year}/${month}/${day} ${hour}:${minute}`;
+  return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function formatTime(value: string) {
+  const date = new Date(value);
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function dayKey(value: string) {
+  const date = new Date(value);
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+function daysAgo(value: string) {
+  const date = new Date(value);
+  const today = new Date();
+  const startOfDay = (target: Date) => new Date(target.getFullYear(), target.getMonth(), target.getDate()).getTime();
+  return Math.round((startOfDay(today) - startOfDay(date)) / 86_400_000);
+}
+
+function formatDayLabel(value: string) {
+  const date = new Date(value);
+  const ago = daysAgo(value);
+  if (ago === 0) return "今天";
+  if (ago === 1) return "昨天";
+  if (date.getFullYear() === new Date().getFullYear()) return `${date.getMonth() + 1}月${date.getDate()}日`;
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+}
+
+function formatListTime(value: string) {
+  const date = new Date(value);
+  const ago = daysAgo(value);
+  if (ago === 0) return formatTime(value);
+  if (ago === 1) return "昨天";
+  if (date.getFullYear() === new Date().getFullYear()) return `${date.getMonth() + 1}/${date.getDate()}`;
+  return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
 }

@@ -1966,7 +1966,10 @@ export function App() {
         replyAttachment={ticketReplyAttachment}
         replyAttachmentUpload={ticketReplyAttachmentUpload}
         onClose={() => setTicketCenterOpened(false)}
-        onRefresh={() => void loadTicketList(selectedTicketId)}
+        onRefresh={() => {
+          void loadTicketList(selectedTicketId);
+          if (selectedTicketId && !ticketCreateMode) void loadTicketDetail(selectedTicketId);
+        }}
         onOpenCreate={openTicketComposer}
         onCancelCreate={closeTicketComposer}
         onSelectTicket={(ticketId) => {
