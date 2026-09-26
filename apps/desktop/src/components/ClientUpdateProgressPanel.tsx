@@ -1,6 +1,6 @@
 import type { UpdateDownloadState } from "../lib/updateState";
 import { downloadProgressPercent, formatByteSize, hasKnownTotalBytes } from "../lib/updateState";
-import { describeUserError, formatErrorCodeLine } from "../lib/userFacingErrors";
+import { describeUserError } from "../lib/userFacingErrors";
 import { DownloadProgressPanel } from "./DownloadProgressPanel";
 
 export function ClientUpdateProgressPanel({state,version,onRetry,onInstall,onResetLegacyMirror}: {
@@ -19,6 +19,7 @@ export function ClientUpdateProgressPanel({state,version,onRetry,onInstall,onRes
       state.downloadedBytes > 0 ? `已下载 ${formatByteSize(state.downloadedBytes)}` : "正在连接下载服务器";
   return <DownloadProgressPanel label="客户端更新下载进度" onResetLegacyMirror={onResetLegacyMirror} title={completed ? "客户端更新包已就绪" : failed ? "客户端更新下载失败" : verifying ? "正在校验客户端更新包" : `正在下载 ChordV${version ? ` ${version}` : " 更新包"}`}
     amount={amount} percent={percent} failed={failed} completed={completed} waiting={state.phase==="preparing"||verifying||(!failed&&!completed&&percent===null)}
-    details={[state.fileName,failure ? failure.message : state.message,failure ? formatErrorCodeLine(state.errorCode ?? failure.code) : null].filter((line):line is string=>Boolean(line))}
+    errorCode={failure ? state.errorCode ?? failure.code : null}
+    details={[state.fileName,failure ? failure.message : state.message].filter((line):line is string=>Boolean(line))}
     action={failed ? {label:"重新下载",onClick:onRetry} : completed ? {label:"安装并重启",onClick:onInstall} : null}/>
 }

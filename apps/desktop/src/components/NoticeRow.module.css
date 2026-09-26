@@ -19,5 +19,5 @@
 .notice[data-tone="success"] { --notice-bg: var(--cv-success-bg); --notice-border: var(--cv-success-border); --notice-text: var(--cv-success-text); }
 /* 13px text at 1.5 line height: 2px top offset centres the icon on the first line. */
 .icon { flex-shrink: 0; margin-top: 2px; }
-.text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.text { flex: 1; min-width: 0; overflow-wrap: anywhere; white-space: pre-line; }
 .action { flex-shrink: 0; align-self: center; }

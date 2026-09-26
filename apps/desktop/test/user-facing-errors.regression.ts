@@ -226,6 +226,7 @@ function testGuidanceUsesErrorNumberAndStaysPlain() {
   assert.equal(vpn?.errorCode, "external_vpn_conflict");
   assert.match(formatGuidanceMessage(vpn!), /\n错误编号：external_vpn_conflict$/);
   assert.ok(vpn?.diagnostic?.includes("external_vpn_conflict"), "raw failure kept for copy");
+  assert.equal((vpn as Record<string, unknown>).detail, undefined, "raw text must never land in GuidanceDialog's visible detail");
   const failures = [
     "external_proxy_conflict",
     "windows_proxy_failed InternetSetOption",
@@ -258,10 +259,25 @@ function testGuidanceSourceHasNoDeveloperJargon() {
 
 function testDisplaySurfacesUseErrorNumber() {
   const banner = readFileSync(resolve(import.meta.dirname, "../src/components/RuntimeAssetsBanner.tsx"), "utf8");
-  assert.match(banner, /formatErrorCodeLine\(state\.errorCode\)/);
+  assert.match(banner, /errorCode=\{failed && !view\.cancelled \? state\.errorCode : null\}/);
+  assert.doesNotMatch(banner, /错误编号：/, "panels show the code through ErrorCodeHint, not a text line");
+  const updatePanel = readFileSync(resolve(import.meta.dirname, "../src/components/ClientUpdateProgressPanel.tsx"), "utf8");
+  assert.match(updatePanel, /errorCode=\{failure \?/);
+  const downloadPanel = readFileSync(resolve(import.meta.dirname, "../src/components/DownloadProgressPanel.tsx"), "utf8");
+  assert.match(downloadPanel, /<ErrorCodeHint code=\{errorCode\}\/>/);
+  const routing = readFileSync(resolve(import.meta.dirname, "../src/components/RoutingRulesModal.tsx"), "utf8");
+  assert.doesNotMatch(routing, /getApiErrorRawMessage/, "routing dialog never shows raw server text");
+  assert.match(routing, /<ErrorCodeHint code=\{error\.code\} \/>/);
+  const guidanceDialog = readFileSync(resolve(import.meta.dirname, "../src/components/GuidanceDialog.tsx"), "utf8");
+  assert.match(guidanceDialog, /ErrorCodeHint code=\{guidance\.errorCode\}/);
   assert.doesNotMatch(banner, /错误代码/);
   const app = readFileSync(resolve(import.meta.dirname, "../src/App.tsx"), "utf8");
-  assert.doesNotMatch(app, /错误代码/);
+  assert.doesNotMatch(app, /错误代码|错误编号：/, "App no longer renders code text lines itself");
+  assert.match(app, /<GuidanceDialog guidance=\{guidanceDialog\}/);
+  const styles = readFileSync(resolve(import.meta.dirname, "../src/styles.css"), "utf8");
+  assert.match(styles, /\.cv-notification \.mantine-Notification-description[\s\S]*white-space: pre-line/, "toast code line renders on its own line");
+  const notice = readFileSync(resolve(import.meta.dirname, "../src/components/NoticeRow.module.css"), "utf8");
+  assert.match(notice, /\.text \{[^}]*white-space: pre-line/, "inline notices keep the code line break");
   const client = readFileSync(resolve(import.meta.dirname, "../src/api/client.ts"), "utf8");
   assert.doesNotMatch(client, /璇锋眰瓒呮椂/, "no mojibake in client request errors");
   const appState = readFileSync(resolve(import.meta.dirname, "../src/lib/appState.ts"), "utf8");

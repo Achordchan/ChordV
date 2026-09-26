@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ActionIcon, Badge, Button, Collapse, Group, Switch, Text, TextInput, UnstyledButton } from "@mantine/core";
 import { notifications } from "../lib/notifications";
-import { toUserMessage } from "../lib/userFacingErrors";
+import { describeUserError, type UserErrorContext } from "../lib/userFacingErrors";
 import {
   IconChevronDown,
   IconChevronRight,
@@ -11,7 +11,7 @@ import {
   IconTrash,
   IconX
 } from "@tabler/icons-react";
-import { AppDialog } from "./AppDialog";
+import { AppDialog, ErrorCodeHint } from "./AppDialog";
 import { NoticeRow } from "./NoticeRow";
 import styles from "./RoutingRulesModal.module.css";
 import type {
@@ -45,7 +45,13 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
   const [rules, setRules] = useState<ClientRoutingRuleDto[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setErrorState] = useState<{ message: string; code: string | null } | null>(null);
+  // 失败原因统一经过客户文案映射；错误编号单独用「错误编号 + 复制」展示。
+  const setError = (message: string | null) => setErrorState(message ? { message, code: null } : null);
+  const showFailure = (reason: unknown, context?: UserErrorContext) => {
+    const failure = describeUserError(reason, { context });
+    setErrorState({ message: failure.message, code: failure.code });
+  };
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
@@ -67,7 +73,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
     try {
       setRules(await fetchRoutingRules(props.accessToken));
     } catch (reason) {
-      setError(toUserMessage(reason));
+      showFailure(reason);
     } finally {
       setLoading(false);
     }
@@ -98,7 +104,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
         });
       }
     } catch (reason) {
-      setError(toUserMessage(reason, { context: "connect" }));
+      showFailure(reason, "connect");
       notifications.show({
         color: "red",
         title: "自动重连失败",
@@ -126,7 +132,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
       );
     } catch (reason) {
       setTestResult(null);
-      setError(toUserMessage(reason));
+      showFailure(reason);
     } finally {
       setBusy(null);
     }
@@ -156,7 +162,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
       await loadRules();
       await applyIfConnected("规则已保存");
     } catch (reason) {
-      setError(toUserMessage(reason));
+      showFailure(reason);
     } finally {
       setBusy(null);
     }
@@ -170,7 +176,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
       await loadRules();
       await applyIfConnected(enabled ? "规则已启用" : "规则已停用");
     } catch (reason) {
-      setError(toUserMessage(reason));
+      showFailure(reason);
     } finally {
       setBusy(null);
     }
@@ -187,7 +193,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
       await loadRules();
       await applyIfConnected("规则已删除");
     } catch (reason) {
-      setError(toUserMessage(reason));
+      showFailure(reason);
     } finally {
       setBusy(null);
     }
@@ -222,7 +228,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
   return (
     <AppDialog opened={props.opened} onClose={props.onClose} size={520} title="自定义分流" closeLabel="关闭自定义分流">
       <div className={styles.stack}>
-        {error ? <NoticeRow tone="danger" role="alert">{error}</NoticeRow> : null}
+        {error ? <NoticeRow tone="danger" role="alert" action={error.code ? <ErrorCodeHint code={error.code} /> : null}>{error.message}</NoticeRow> : null}
         {props.connected ? (
           <NoticeRow tone="info" role="status">
             {props.reconnecting ? "正在重新连接，使分流规则立即生效…" : "当前已连接。保存、启停或删除规则后会自动重连生效。"}
