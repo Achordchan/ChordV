@@ -64,17 +64,21 @@ function testWindowsInstallerCleansStaleRuntime() {
   assert.ok(updater.indexOf("shutdown_runtime_state(app)?") < updater.indexOf("pending.update.install"));
 }
 
-function testMacosUniversalBundleCarriesBothRuntimeBinaries() {
+function testDesktopInstallersShipWithoutRuntimeComponents() {
   const packageJson = read(join(desktopRoot, "package.json"));
   const buildScript = read(join(desktopRoot, "scripts", "build-tauri-platform.mjs"));
   const checkScript = read(join(desktopRoot, "scripts", "check-macos-bundle.mjs"));
+  const hook = read(join(desktopRoot, "src-tauri", "windows", "chordv-installer-hooks.nsh"));
+  const runtimeAssets = read(join(desktopRoot, "src", "hooks", "useRuntimeAssets.ts"));
 
   assert.match(packageJson, /"check:macos-bundle": "node \.\/scripts\/check-macos-bundle\.mjs"/);
-  assert.match(buildScript, /\["darwin-arm64", "darwin-x64"\]/);
-  assert.match(buildScript, /"bin\/xray-aarch64-apple-darwin"/);
-  assert.match(buildScript, /"bin\/xray-x86_64-apple-darwin"/);
-  assert.match(checkScript, /xray-aarch64-apple-darwin/);
-  assert.match(checkScript, /xray-x86_64-apple-darwin/);
+  assert.doesNotMatch(buildScript, /setup-xray|bin\/xray|bin\/geo(ip|site)\.dat/);
+  assert.match(checkScript, /Runtime component must not be bundled/);
+  // Legacy install-dir seeds are removed on upgrade so uninstall can delete the folder.
+  assert.match(hook, /NSIS_HOOK_POSTINSTALL[\s\S]*ChordVRemoveLegacyBundledRuntime[\s\S]*NSIS_HOOK_POSTUNINSTALL[\s\S]*ChordVRemoveLegacyBundledRuntime/);
+  // Without seeds, a startup inspection with missing files must not mark ready,
+  // otherwise connect skips the blocking download.
+  assert.match(runtimeAssets, /if \(inspectOnly\) \{[\s\S]{0,400}if \(!localReady\) \{\s*markPendingInstall\(\);\s*return true;/);
 }
 
 function testSharedRuntimeDtoCarriesRules() {
@@ -89,5 +93,5 @@ function testSharedRuntimeDtoCarriesRules() {
 testDesktopRoutingRuleEntryAndApi();
 testRustRoutingRuleInjectionOrder();
 testWindowsInstallerCleansStaleRuntime();
-testMacosUniversalBundleCarriesBothRuntimeBinaries();
+testDesktopInstallersShipWithoutRuntimeComponents();
 testSharedRuntimeDtoCarriesRules();

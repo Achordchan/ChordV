@@ -294,6 +294,20 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
     });
   }, []);
 
+  const markPendingInstall = useCallback(() => {
+    setRuntimeAssets({
+      phase: "idle",
+      currentComponent: null,
+      fileName: null,
+      downloadedBytes: 0,
+      totalBytes: null,
+      message: "首次连接前需要下载必要核心组件。",
+      errorCode: null,
+      errorMessage: null,
+      blocking: false
+    });
+  }, []);
+
   const ensureRuntimeAssetsReady = useCallback(
     async (ensureOptions: EnsureRuntimeAssetsOptions) => {
       if (options.platformTarget === "android" || options.platformTarget === "web") {
@@ -918,6 +932,11 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
           if (inspectOnly) {
             summary.current = !summary.xray.available && !summary.geo.available;
             lastSummaryRef.current = summary;
+            // 安装包不再内置组件：本地缺件时保持 idle，连接流程会先阻塞下载；标 ready 会让连接跳过下载。
+            if (!localReady) {
+              markPendingInstall();
+              return true;
+            }
             // 静默巡检也要置 ready，避免启动后连接按钮长期灰色。
             markReady(summary.current ? "核心组件已就绪。" : "组件版本检查完成。");
             return true;
@@ -1026,6 +1045,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
     },
     [
       failRuntimeAssets,
+      markPendingInstall,
       markReady,
       options,
       runtimeAssets.currentComponent,
