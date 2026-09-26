@@ -54,6 +54,7 @@ export * from "./teams";
 export * from "./users";
 
 export type AdminReleasePlatform = "macos" | "windows" | "android" | "ios";
+export type AdminReleaseChannel = "stable" | "beta";
 export type AdminReleaseStatus = ReleaseStatus;
 export type AdminReleaseArtifactType = ReleaseArtifactType;
 export type AdminRuntimeComponentArchitecture = RuntimeComponentArchitecture;
@@ -82,6 +83,7 @@ export type AdminReleaseArtifactRecordDto = {
 export type AdminReleaseRecordDto = {
   id: string;
   platform: AdminReleasePlatform;
+  channel: AdminReleaseChannel;
   status: AdminReleaseStatus;
   version: string;
   minimumVersion: string;
@@ -130,12 +132,13 @@ export type AdminRuntimeEventDto = {
   nodeId?: string | null;
   state?: string | null;
   platform?: AdminReleasePlatform | null;
-  channel?: "stable" | null;
+  channel?: AdminReleaseChannel | null;
   latestVersion?: string | null;
 };
 
 export type CreateAdminReleaseInputDto = {
   platform: AdminReleasePlatform;
+  channel?: AdminReleaseChannel;
   status: Extract<AdminReleaseStatus, "draft" | "published">;
   version: string;
   minimumVersion?: string;
@@ -146,6 +149,7 @@ export type CreateAdminReleaseInputDto = {
 };
 
 export type UpdateAdminReleaseInputDto = {
+  channel?: AdminReleaseChannel;
   title?: string;
   changelog?: string[];
   minimumVersion?: string;
@@ -225,6 +229,7 @@ function mapRelease(record: SharedAdminReleaseRecordDto): AdminReleaseRecordDto 
   return {
     id: record.id,
     platform: record.platform,
+    channel: record.channel === "beta" ? "beta" : "stable",
     status: record.status,
     version: record.version,
     minimumVersion: record.minimumVersion,
@@ -252,7 +257,7 @@ export async function createAdminRelease(input: CreateAdminReleaseInputDto) {
   const minimumVersion = input.minimumVersion?.trim();
   const payload: CreateReleaseInputDto = {
     platform: input.platform,
-    channel: "stable",
+    channel: input.channel ?? "stable",
     version,
     ...(input.title !== undefined ? { displayTitle: title } : {}),
     changelog: input.changelog,
@@ -273,6 +278,7 @@ export async function updateAdminRelease(releaseId: string, input: UpdateAdminRe
   const title = input.title?.trim();
   const minimumVersion = input.minimumVersion?.trim();
   const payload: UpdateReleaseInputDto = {
+    ...(input.channel !== undefined ? { channel: input.channel } : {}),
     ...(input.title !== undefined ? { displayTitle: title } : {}),
     ...(input.changelog !== undefined ? { changelog: input.changelog } : {}),
     ...(minimumVersion !== undefined ? { minimumVersion } : {}),
@@ -290,6 +296,14 @@ export async function updateAdminRelease(releaseId: string, input: UpdateAdminRe
 
 export async function publishAdminRelease(releaseId: string) {
   const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/publish`, {
+    method: "POST",
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
+  });
+  return mapRelease(record);
+}
+
+export async function promoteAdminRelease(releaseId: string) {
+  const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/promote`, {
     method: "POST",
     timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });

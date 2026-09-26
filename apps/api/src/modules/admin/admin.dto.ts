@@ -631,7 +631,7 @@ export class CreateReleaseDto {
   platform!: PlatformTarget;
 
   @IsDefined()
-  @IsIn(["stable"])
+  @IsIn(["stable", "beta"])
   channel!: ReleaseChannel;
 
   @IsDefined()
@@ -674,6 +674,10 @@ export class CreateReleaseDto {
 }
 
 export class UpdateReleaseDto {
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsIn(["stable", "beta"])
+  channel?: ReleaseChannel;
+
   @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   displayTitle?: string;

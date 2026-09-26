@@ -566,6 +566,11 @@ export class AdminController {
     return this.devDataService.publishRelease(releaseId);
   }
 
+  @Post("releases/:releaseId/promote")
+  promoteRelease(@Param("releaseId") releaseId: string) {
+    return this.devDataService.promoteRelease(releaseId);
+  }
+
   @Post("releases/:releaseId/unpublish")
   unpublishRelease(@Param("releaseId") releaseId: string) {
     return this.devDataService.unpublishRelease(releaseId);

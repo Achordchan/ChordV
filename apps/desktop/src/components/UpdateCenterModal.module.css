@@ -5,6 +5,7 @@
 .logo { width: 44px; height: 44px; object-fit: contain; flex-shrink: 0; }
 .clientInfo { min-width: 0; flex: 1; overflow-wrap: anywhere; }
 .clientName { font-size: 17px; font-weight: 600; }
+.channel { padding: 12px 0; border-bottom: 1px solid var(--mantine-color-default-border); }
 .components { padding-top: 12px; }
 .sectionTitle { font-size: 14px; font-weight: 600; }
 .rows { margin-top: 6px; }

@@ -5,7 +5,7 @@ import { RemoteArtifactSourceFields } from "./RemoteArtifactSourceFields";
 import { ArtifactImportProgress } from "./ArtifactImportProgress";
 import type { ArtifactImportProgress as ImportProgress } from "../../api/client";
 import type { ReleaseEditorFormState } from "./types";
-import { releasePlatformOptions } from "./types";
+import { releaseChannelLabel, releaseChannelOptions, releasePlatformOptions } from "./types";
 
 type ReleaseEditorModalProps = {
   opened: boolean;
@@ -28,6 +28,8 @@ export function ReleaseEditorModal(p: ReleaseEditorModalProps) {
   useEffect(() => { if (p.opened) setStep(0); }, [p.opened]);
   if (!p.opened) return null;
   const platform=releasePlatformOptions.find(x=>x.value===p.form.platform)?.label;
+  const channel=releaseChannelLabel(p.form.channel);
+  const channelLocked=p.editing&&p.form.status!=="draft";
   const steps=p.editing?["版本信息","确认保存"]:["版本信息","安装包","确认保存"];
   const final=step===steps.length-1;
   return <section className={styles.editor}>
@@ -40,6 +42,9 @@ export function ReleaseEditorModal(p: ReleaseEditorModalProps) {
       <Stack gap="lg">
       {step===0?<>
         <Select label="平台" data={releasePlatformOptions.map(x=>({...x}))} value={p.form.platform} disabled={p.editing||p.saving} onChange={value=>value&&p.onChange({...p.form,platform:value as ReleaseEditorFormState["platform"],selectedFile:null,fileName:"",signatureFile:null})}/>
+        <Select label="发布通道" data={releaseChannelOptions.map(x=>({...x}))} value={p.form.channel} disabled={channelLocked||p.saving}
+          description={channelLocked?"已发布版本不能切换通道；测试版验证通过后，在列表中点“转为正式版”。":p.form.channel==="beta"?"只推送给在更新中心开启“接收测试版更新”的客户端。":"推送给所有客户端。"}
+          onChange={value=>value&&p.onChange({...p.form,channel:value as ReleaseEditorFormState["channel"]})}/>
         <Group grow><TextInput label="版本号" placeholder="例如 1.2.0" value={p.form.version} disabled={p.editing||p.saving} onChange={e=>p.onChange({...p.form,version:e.currentTarget.value})}/><TextInput label="发布标题" value={p.form.title} disabled={p.saving} onChange={e=>p.onChange({...p.form,title:e.currentTarget.value})}/></Group>
         <Textarea label="更新说明" description="每行一条，展示给客户端用户" autosize minRows={5} value={p.form.changelog} disabled={p.saving} onChange={e=>p.onChange({...p.form,changelog:e.currentTarget.value})}/>
         <Checkbox label="强制更新" description="开启后，旧版客户端必须更新才能继续使用。" checked={p.form.forceUpgrade} disabled={p.saving} onChange={e=>p.onChange({...p.form,forceUpgrade:e.currentTarget.checked})}/>
@@ -47,13 +52,13 @@ export function ReleaseEditorModal(p: ReleaseEditorModalProps) {
         <details><summary>最低兼容版本</summary><TextInput mt="sm" label="最低可用版本" description="低于此版本仍会强制更新；0.0.0 表示不限制。" value={p.form.minimumVersion} disabled={p.saving} onChange={e=>p.onChange({...p.form,minimumVersion:e.currentTarget.value})}/></details>
         {p.editing?<Text size="sm" c="dimmed">安装包在版本详情中单独管理；已发布版本需先撤回再调整安装包。</Text>:null}
       </>:!final?<><NewReleaseArtifactFields form={p.form} saving={p.saving} onChange={p.onChange}/></>:<>
-        <dl className={styles.facts}><div><dt>平台与版本</dt><dd>{platform} {p.form.version}</dd></div><div><dt>更新策略</dt><dd>{p.form.forceUpgrade?"强制更新":"可选更新"} · 最低兼容 {p.form.minimumVersion||"0.0.0"}</dd></div><div><dt>标题</dt><dd>{p.form.title||"使用默认标题"}</dd></div>{!p.editing?<div><dt>安装包来源</dt><dd>{p.form.artifactSource==="external"?(p.form.downloadUrl||"暂不添加安装包"):(p.form.selectedFile?.name||"暂不添加安装包")}</dd></div>:null}</dl>
+        <dl className={styles.facts}><div><dt>平台与版本</dt><dd>{platform} {p.form.version}</dd></div><div><dt>发布通道</dt><dd>{channel}</dd></div><div><dt>更新策略</dt><dd>{p.form.forceUpgrade?"强制更新":"可选更新"} · 最低兼容 {p.form.minimumVersion||"0.0.0"}</dd></div><div><dt>标题</dt><dd>{p.form.title||"使用默认标题"}</dd></div>{!p.editing?<div><dt>安装包来源</dt><dd>{p.form.artifactSource==="external"?(p.form.downloadUrl||"暂不添加安装包"):(p.form.selectedFile?.name||"暂不添加安装包")}</dd></div>:null}</dl>
         <Text size="sm" c="dimmed">{p.editing?"保存本次修改。":"保存后生成草稿；从发布列表确认发布，服务端会检查安装包可用性。"}</Text>
       </>}
       </Stack>
       <ArtifactImportProgress value={p.saving ? p.importProgress : null} />
       <footer className={styles.editorFooter}><Button variant="default" disabled={p.saving} onClick={()=>step?setStep(step-1):p.onClose()}>{step?"上一步":"取消"}</Button>{final?<Button color="teal.9" loading={p.saving} onClick={p.onSubmit}>{p.editing?"保存修改":"保存草稿"}</Button>:<Button color="teal.9" disabled={p.saving||!p.form.version.trim()} onClick={()=>setStep(step+1)}>继续</Button>}</footer>
-    </div><aside className={styles.summary}><h3>发布摘要</h3><dl className={styles.facts}><div><dt>平台</dt><dd>{platform}</dd></div><div><dt>版本</dt><dd>{p.form.version||"待填写"}</dd></div><div><dt>状态</dt><dd>{p.editing?(p.form.status==="published"?"已发布":"草稿"):"尚未保存"}</dd></div><div><dt>分发方式</dt><dd>{p.form.artifactSource==="external"?"远程获取并托管":"上传文件"}</dd></div></dl><details><summary>更新说明</summary><p>{p.form.changelog||"尚未填写"}</p></details></aside></div>
+    </div><aside className={styles.summary}><h3>发布摘要</h3><dl className={styles.facts}><div><dt>平台</dt><dd>{platform}</dd></div><div><dt>版本</dt><dd>{p.form.version||"待填写"}</dd></div><div><dt>通道</dt><dd>{channel}</dd></div><div><dt>状态</dt><dd>{p.editing?(p.form.status==="published"?"已发布":"草稿"):"尚未保存"}</dd></div><div><dt>分发方式</dt><dd>{p.form.artifactSource==="external"?"远程获取并托管":"上传文件"}</dd></div></dl><details><summary>更新说明</summary><p>{p.form.changelog||"尚未填写"}</p></details></aside></div>
   </section>;
 }
 type NewReleaseArtifactFieldsProps = {

@@ -101,8 +101,13 @@ export function createId(prefix: string) {
   return `${prefix}_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
 }
 
-export function normalizeReleaseChannel(_channel: string | null | undefined): ReleaseChannel {
-  return "stable";
+export function normalizeReleaseChannel(channel: string | null | undefined): ReleaseChannel {
+  return channel === "beta" ? "beta" : "stable";
+}
+
+/** Beta testers see stable and beta builds and take whichever version is higher. */
+export function releaseChannelsVisibleTo(channel: ReleaseChannel): ReleaseChannel[] {
+  return channel === "beta" ? ["stable", "beta"] : ["stable"];
 }
 
 export function normalizeVersion(value: string) {

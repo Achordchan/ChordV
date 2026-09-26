@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Badge, Button, Collapse, Group, Loader, Modal, Text, UnstyledButton } from "@mantine/core";
+import { Badge, Button, Collapse, Group, Loader, Modal, Switch, Text, UnstyledButton } from "@mantine/core";
 import { IconAlertCircle, IconChevronDown, IconCircleCheckFilled, IconClock } from "@tabler/icons-react";
 import appIcon from "../../src-tauri/icons/icon.png";
 import type { UpdateCenterItem, UpdateCenterItemKey, UpdateCenterState } from "../lib/updateCenter";
@@ -13,6 +13,8 @@ type UpdateCenterModalProps = {
   runtimeInUse: boolean;
   syncDeferred: boolean;
   syncError?: string | null;
+  betaChannel: boolean;
+  onBetaChannelChange: (enabled: boolean) => void;
   onClose: () => void;
   onCheckOnly: () => void;
   onUpdateOne: (key: UpdateCenterItemKey) => void;
@@ -46,6 +48,17 @@ export function UpdateCenterModal(props: UpdateCenterModalProps) {
         </div>
         {app?.canUpdate && <Button size="xs" disabled={props.busy} onClick={() => props.onUpdateOne("app")}>查看更新</Button>}
       </div>
+
+      <Switch
+        className={styles.channel}
+        checked={props.betaChannel}
+        disabled={props.busy}
+        onChange={(event) => props.onBetaChannelChange(event.currentTarget.checked)}
+        label="接收测试版更新"
+        description={props.betaChannel
+          ? "将优先收到测试版，可能不够稳定。关闭后不会降级，正式版追上后恢复正常更新。"
+          : "提前体验新版本，可能不够稳定。"}
+      />
 
       <section className={styles.components} aria-labelledby="runtime-components-heading">
         <Text id="runtime-components-heading" className={styles.sectionTitle}>运行组件</Text>

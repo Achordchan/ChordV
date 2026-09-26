@@ -205,6 +205,7 @@ const devDataServiceStub = {
   createRelease: async (body: unknown) => record("release-create", "new", body),
   updateRelease: async (releaseId: string, body: unknown) => record("release-update", releaseId, body),
   publishRelease: async (releaseId: string) => record("release-publish", releaseId),
+  promoteRelease: async (releaseId: string) => record("release-promote", releaseId),
   unpublishRelease: async (releaseId: string) => record("release-unpublish", releaseId),
   deleteRelease: async (releaseId: string) => record("release-delete", releaseId),
   importReleaseArtifact: async (releaseId: string, body: any, progress: (value: unknown) => void) => {
@@ -676,6 +677,7 @@ async function main() {
       200
     );
     assert.equal((await requestJson(baseUrl, "/api/admin/releases/release_1/publish")).status, 201);
+    assert.equal((await requestJson(baseUrl, "/api/admin/releases/release_1/promote")).status, 201);
     assert.equal((await requestJson(baseUrl, "/api/admin/releases/release_1/unpublish")).status, 201);
     assert.equal((await requestJson(baseUrl, "/api/admin/releases/release_1", { method: "DELETE" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/runtime-components", { method: "GET" })).status, 200);
@@ -955,6 +957,7 @@ async function main() {
         },
         { route: "release-update", value: "release_1", body: { displayTitle: "1.1.7 hotfix" } },
         { route: "release-publish", value: "release_1" },
+        { route: "release-promote", value: "release_1" },
         { route: "release-unpublish", value: "release_1" },
         { route: "release-delete", value: "release_1" },
         { route: "runtime-list", value: "all" },

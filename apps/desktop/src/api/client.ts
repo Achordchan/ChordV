@@ -36,7 +36,7 @@ const DEFAULT_RELEASE_CHANNEL = "stable";
 const JSON_REQUEST_TIMEOUT_MS = 60_000;
 const FORM_REQUEST_TIMEOUT_MS = 60_000;
 
-export type ReleaseChannel = "stable";
+export type ReleaseChannel = "stable" | "beta";
 export type UpdateDeliveryMode = "desktop_installer_download" | "desktop_full_replace" | "apk_download" | "external_download" | "none";
 export type ReleaseArtifactType = "dmg" | "app" | "exe" | "setup.exe" | "zip" | "apk" | "ipa" | "external";
 
@@ -1487,7 +1487,7 @@ function readStringArray(value: unknown) {
 }
 
 function readChannel(value: unknown): ReleaseChannel | null {
-  return value === "stable" ? "stable" : null;
+  return value === "stable" || value === "beta" ? value : null;
 }
 
 function readPlatform(value: unknown): PlatformTarget | "ios" | null {

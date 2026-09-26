@@ -693,7 +693,8 @@ function createInMemoryReleaseCenterHarness() {
     },
     findMany: async (payload: Record<string, any>) => {
       const rows = releases.filter((release) => {
-        if (payload.where?.channel && release.channel !== payload.where.channel) return false;
+        const channelFilter = payload.where?.channel;
+        if (channelFilter && (typeof channelFilter === "object" ? !channelFilter.in.includes(release.channel) : release.channel !== channelFilter)) return false;
         if (payload.where?.status && release.status !== payload.where.status) return false;
         if (payload.where?.platform && release.platform !== payload.where.platform) return false;
         return true;

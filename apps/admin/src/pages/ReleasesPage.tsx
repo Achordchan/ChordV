@@ -19,6 +19,7 @@ import {
   deleteAdminReleaseArtifact,
   fetchAdminUploadLimits,
   fetchAdminReleases,
+  promoteAdminRelease,
   publishAdminRelease,
   replaceAdminReleaseArtifactUpload,
   unpublishAdminRelease,
@@ -310,11 +311,36 @@ export function ReleasesPage(props: ReleasesPageProps) {
       return;
     }
 
-    if (!await confirmation.confirm({title:"发布版本",message:`确认发布 ${record.version}？服务端将检查安装包，成功后客户端可收到更新。`,confirmLabel:"确认发布"})) {
+    const audience = record.channel === "beta" ? "开启测试版更新的客户端" : "客户端";
+    if (!await confirmation.confirm({title:record.channel === "beta" ? "发布测试版" : "发布版本",message:`确认发布 ${record.version}？服务端将检查安装包，成功后${audience}可收到更新。`,confirmLabel:"确认发布"})) {
       return;
     }
 
     await updateReleaseStatus(record, "published");
+  }
+
+  async function promoteRelease(record: AdminReleaseRecordDto) {
+    if (!await confirmation.confirm({title:"转为正式版",message:`将测试版 ${record.version} 原样转为正式版，安装包不变，所有客户端都会收到这个更新。`,confirmLabel:"转为正式版"})) {
+      return;
+    }
+    const actionKey = `release-promote:${record.id}`;
+    if (!beginSaving(actionKey)) {
+      return;
+    }
+    try {
+      releaseMutationSeqRef.current += 1;
+      const nextRecord = await promoteAdminRelease(record.id);
+      releaseMutationSeqRef.current += 1;
+      setReleases((current) => upsertRelease(current, nextRecord));
+      notifications.show({ color: "green", title: "发布中心", message: `${record.version} 已转为正式版` });
+    } catch (reason) {
+      const result = showReleaseRequestFailure(reason, "转为正式版失败");
+      if (result.uncertain) {
+        void loadReleases();
+      }
+    } finally {
+      endSaving(actionKey);
+    }
   }
 
   async function withdrawRelease(record: AdminReleaseRecordDto) {
@@ -608,7 +634,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
       {confirmation.dialog}
       {!releaseEditorOpened ? <>
         {error ? <Alert color="red">{error}</Alert> : null}
-        {loading && releases.length === 0 ? <DataSkeleton variant="page" rows={4}/> : <ReleaseOverview records={visibleReleases} allRecords={releases} search={searchValue} onSearch={setSearchValue} platform={platformFilter} onPlatform={setPlatformFilter} busy={saving !== null} onCreate={openCreateRelease} onEdit={openEditRelease} onPublish={record=>void publishRelease(record)} onWithdraw={record=>void withdrawRelease(record)} onDelete={record=>void deleteRelease(record)} onAdd={record=>setManagerId(record.id)} onEditArtifact={openEditArtifact} onDeleteArtifact={(id,artifactId)=>void removeArtifact(id,artifactId)} onCopy={url=>void copyDownloadUrl(url)}/>}
+        {loading && releases.length === 0 ? <DataSkeleton variant="page" rows={4}/> : <ReleaseOverview records={visibleReleases} allRecords={releases} search={searchValue} onSearch={setSearchValue} platform={platformFilter} onPlatform={setPlatformFilter} busy={saving !== null} onCreate={openCreateRelease} onEdit={openEditRelease} onPublish={record=>void publishRelease(record)} onPromote={record=>void promoteRelease(record)} onWithdraw={record=>void withdrawRelease(record)} onDelete={record=>void deleteRelease(record)} onAdd={record=>setManagerId(record.id)} onEditArtifact={openEditArtifact} onDeleteArtifact={(id,artifactId)=>void removeArtifact(id,artifactId)} onCopy={url=>void copyDownloadUrl(url)}/>}
       </> : null}
 
       <ReleaseEditorModal

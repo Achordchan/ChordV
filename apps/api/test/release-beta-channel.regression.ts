@@ -1,0 +1,128 @@
+import "reflect-metadata";
+import assert from "node:assert/strict";
+import { ReleaseCenterService } from "../src/modules/common/release-center.service";
+import { normalizeReleaseChannel, releaseChannelsVisibleTo } from "../src/modules/common/release-center.utils";
+
+type Row = {
+  id: string;
+  platform: string;
+  channel: string;
+  version: string;
+  displayTitle: string;
+  changelog: string[];
+  minimumVersion: string;
+  forceUpgrade: boolean;
+  status: string;
+  publishedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  artifacts: any[];
+};
+
+function release(id: string, channel: string, version: string, status = "published"): Row {
+  const now = new Date("2026-09-01T00:00:00Z");
+  return {
+    id, platform: "macos", channel, version, displayTitle: version, changelog: [], minimumVersion: "0.0.0",
+    forceUpgrade: false, status, publishedAt: status === "published" ? now : null, createdAt: now, updatedAt: now, artifacts: []
+  };
+}
+
+function matches(row: Row, where: Record<string, any>) {
+  return Object.entries(where).every(([key, expected]) =>
+    expected && typeof expected === "object" && "in" in expected
+      ? expected.in.includes((row as any)[key])
+      : (row as any)[key] === expected
+  );
+}
+
+function createService(rows: Row[]) {
+  const events: Array<{ platform: string; channel: string }> = [];
+  const service: any = Object.create(ReleaseCenterService.prototype);
+  service.logger = { warn() {} };
+  service.prisma = {
+    release: {
+      findMany: async ({ where }: any) => rows.filter(row => matches(row, where)).map(row => ({ ...row })),
+      findUnique: async ({ where }: any) => {
+        const row = rows.find(item => item.id === where.id);
+        return row ? { ...row } : null;
+      },
+      updateMany: async ({ where, data }: any) => {
+        const targets = rows.filter(row => matches(row, where));
+        for (const row of targets) Object.assign(row, data);
+        return { count: targets.length };
+      }
+    }
+  };
+  service.pickClientUsableArtifact = async () => ({
+    id: "artifact", type: "dmg", source: "uploaded", deliveryMode: "desktop_installer_download",
+    downloadUrl: "https://updates.example/ChordV.dmg", fileName: "ChordV.dmg", fileHash: null, fileSizeBytes: 1n,
+    isPrimary: true, isFullPackage: true, createdAt: new Date(), updatedAt: new Date()
+  });
+  service.clientEventsPublisher = {
+    publishVersionUpdated: async (platform: string, channel: string) => { events.push({ platform, channel }); }
+  };
+  service.adminRuntimeEventsService = { publishVersionUpdated() {}, publishReleaseCenterUpdated() {} };
+  return { service, events };
+}
+
+async function check(service: any, currentVersion: string, channel: "stable" | "beta") {
+  return service.checkClientUpdate({ currentVersion, platform: "macos", channel, artifactType: "dmg" });
+}
+
+async function main() {
+  assert.equal(normalizeReleaseChannel("beta"), "beta");
+  assert.equal(normalizeReleaseChannel("stable"), "stable");
+  assert.equal(normalizeReleaseChannel(undefined), "stable");
+  assert.equal(normalizeReleaseChannel("nightly"), "stable", "unknown channels must fall back to stable");
+  assert.deepEqual(releaseChannelsVisibleTo("stable"), ["stable"]);
+  assert.deepEqual(releaseChannelsVisibleTo("beta"), ["stable", "beta"]);
+
+  const rows = [
+    release("stable-11", "stable", "1.1.11"),
+    release("beta-12", "beta", "1.1.12"),
+    release("beta-13", "beta", "1.1.13"),
+    release("beta-14-draft", "beta", "1.1.14", "draft")
+  ];
+  const { service, events } = createService(rows);
+
+  // Beta A (1.1.12) had a bug, beta B (1.1.13) replaced it. Stable users never see either.
+  const stableUser = await check(service, "1.1.11", "stable");
+  assert.equal(stableUser.hasUpdate, false);
+  assert.equal(stableUser.channel, "stable");
+
+  const tester = await check(service, "1.1.11", "beta");
+  assert.equal(tester.hasUpdate, true);
+  assert.equal(tester.latestVersion, "1.1.13", "testers take the highest published build across both channels");
+
+  const testerOnBetaA = await check(service, "1.1.12", "beta");
+  assert.equal(testerOnBetaA.latestVersion, "1.1.13", "testers still on beta A are moved to beta B");
+
+  // Turning the switch off never downgrades a tester to the older stable build.
+  const leftBeta = await check(service, "1.1.13", "stable");
+  assert.equal(leftBeta.hasUpdate, false);
+  assert.equal(leftBeta.latestVersion, "1.1.13");
+
+  // Guard rails around promotion.
+  await assert.rejects(service.promoteRelease("stable-11"), /只有测试版/);
+  await assert.rejects(service.promoteRelease("beta-14-draft"), /请先发布测试版/);
+  await assert.rejects(service.updateRelease("beta-13", { channel: "stable" }), /转为正式版/);
+
+  const promoted = await service.promoteRelease("beta-13");
+  assert.equal(promoted.channel, "stable");
+  assert.equal(promoted.version, "1.1.13");
+  assert.deepEqual(events.at(-1), { platform: "macos", channel: "stable" }, "promotion must notify stable clients");
+
+  const stableAfterPromotion = await check(service, "1.1.11", "stable");
+  assert.equal(stableAfterPromotion.hasUpdate, true);
+  assert.equal(stableAfterPromotion.latestVersion, "1.1.13", "stable users jump straight to the promoted build");
+
+  const testerAfterPromotion = await check(service, "1.1.13", "beta");
+  assert.equal(testerAfterPromotion.hasUpdate, false, "testers already on the promoted build are not prompted again");
+
+  // Beta A is now older than stable, so promoting it would be a downgrade.
+  await assert.rejects(service.promoteRelease("beta-12"), /正式版已是 1\.1\.13/);
+
+  console.log("Release beta channel: tester visibility, no-downgrade opt-out, promotion guard rails and stable rollout passed");
+}
+
+main().catch(error => { console.error(error); process.exitCode = 1; });

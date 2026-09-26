@@ -1,6 +1,7 @@
 import type {
   AdminReleaseArtifactRecordDto,
   AdminReleaseArtifactType,
+  AdminReleaseChannel,
   AdminReleasePlatform,
   AdminReleaseRecordDto,
   AdminReleaseStatus,
@@ -11,6 +12,7 @@ import type {
 
 export type ReleaseEditorFormState = {
   platform: AdminReleasePlatform;
+  channel: AdminReleaseChannel;
   status: AdminReleaseStatus;
   version: string;
   title: string;
@@ -45,9 +47,19 @@ export const releasePlatformOptions = [
   { value: "ios", label: "iOS" }
 ] as const;
 
+export const releaseChannelOptions = [
+  { value: "stable", label: "正式版" },
+  { value: "beta", label: "测试版" }
+] as const;
+
+export function releaseChannelLabel(channel: AdminReleaseChannel) {
+  return channel === "beta" ? "测试版" : "正式版";
+}
+
 export function emptyReleaseEditorForm(platform: AdminReleasePlatform = "macos"): ReleaseEditorFormState {
   return {
     platform,
+    channel: "stable",
     status: "draft",
     version: "",
     title: "",
@@ -66,6 +78,7 @@ export function emptyReleaseEditorForm(platform: AdminReleasePlatform = "macos")
 export function toReleaseEditorForm(record: AdminReleaseRecordDto): ReleaseEditorFormState {
   return {
     platform: record.platform,
+    channel: record.channel,
     status: record.status,
     version: record.version,
     title: record.title,
@@ -88,6 +101,7 @@ export function buildCreateReleasePayload(
   const version = form.version.trim();
   return {
     platform: form.platform,
+    channel: form.channel,
     status: "draft",
     version,
     title: form.title.trim() || undefined,
@@ -100,6 +114,8 @@ export function buildCreateReleasePayload(
 
 export function buildUpdateReleasePayload(form: ReleaseEditorFormState): UpdateAdminReleaseInputDto {
   return {
+    // Published builds change channel only through promotion.
+    ...(form.status === "draft" ? { channel: form.channel } : {}),
     title: form.title.trim(),
     changelog: splitReleaseChangelog(form.changelog),
     forceUpgrade: form.forceUpgrade,

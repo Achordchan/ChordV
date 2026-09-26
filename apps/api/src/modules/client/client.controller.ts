@@ -74,6 +74,10 @@ class TauriUpdateQueryDto {
   @MaxLength(64)
   @Matches(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/)
   currentVersion!: string;
+
+  @IsOptional()
+  @IsIn(["stable", "beta"])
+  channel?: ReleaseChannel;
 }
 
 class UpdateCheckDto {
@@ -86,7 +90,7 @@ class UpdateCheckDto {
   platform!: PlatformTarget;
 
   @IsString()
-  @IsIn(["stable"])
+  @IsIn(["stable", "beta"])
   channel!: ReleaseChannel;
 
   @IsOptional()
@@ -345,7 +349,7 @@ export class ClientController {
 
   @Get("update/tauri")
   async tauriUpdate(@Query() query: TauriUpdateQueryDto, @Req() request: Request, @Res() response: Response) {
-    const result = await this.clientService.checkUpdate({ currentVersion: query.currentVersion, platform: "windows", channel: "stable", artifactType: "setup.exe" });
+    const result = await this.clientService.checkUpdate({ currentVersion: query.currentVersion, platform: "windows", channel: query.channel ?? "stable", artifactType: "setup.exe" });
     const artifact = result.recommendedArtifact;
     response.setHeader("Cache-Control", "no-store");
     if (!result.hasUpdate || !artifact?.updaterSignature || !result.downloadUrl) {

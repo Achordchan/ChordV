@@ -42,6 +42,7 @@ import {
   normalizeReleaseChannel,
   normalizeVersion,
   pickPrimaryReleaseArtifact,
+  releaseChannelsVisibleTo,
   type ReleaseRowLike,
   readZipEntryData,
   releaseArtifactStorageRoot,
@@ -254,8 +255,13 @@ export class ReleaseCenterService {
     this.assertReleaseRecordMutable(current);
     const nextMinimumVersion = input.minimumVersion !== undefined ? normalizeVersion(input.minimumVersion) : current.minimumVersion;
     assertMinimumVersionNotAboveRelease(current.version, nextMinimumVersion);
+    const nextChannel = input.channel !== undefined ? normalizeReleaseChannel(input.channel) : undefined;
+    if (nextChannel !== undefined && nextChannel !== current.channel && current.status !== "draft") {
+      throw new BadRequestException("已发布版本不能直接切换通道；测试版验证通过后请使用“转为正式版”。");
+    }
 
     const baseData = {
+      ...(nextChannel !== undefined ? { channel: nextChannel } : {}),
       ...(input.displayTitle !== undefined ? { displayTitle: input.displayTitle.trim() || current.version } : {}),
       ...(input.changelog !== undefined ? { changelog: normalizeChangelog(input.changelog) } : {}),
       ...(input.minimumVersion !== undefined ? { minimumVersion: nextMinimumVersion } : {}),
@@ -375,6 +381,37 @@ export class ReleaseCenterService {
     );
     this.publishReleaseCenterUpdatedBestEffort();
     return toAdminReleaseRecord(updated);
+  }
+
+  /** Ships the exact beta build that testers verified to stable users; no repackaging. */
+  async promoteRelease(releaseId: string): Promise<AdminReleaseRecordDto> {
+    const current = await this.ensureReleaseExists(releaseId);
+    this.assertReleaseRecordMutable(current);
+    if (current.channel !== "beta") {
+      throw new BadRequestException("只有测试版可以转为正式版。");
+    }
+    if (current.status !== "published") {
+      throw new BadRequestException("请先发布测试版并验证通过，再转为正式版。");
+    }
+    const latestStable = await this.findLatestPublishedRelease("stable", current.platform as PlatformTarget);
+    if (latestStable && compareSemver(latestStable.version, current.version) >= 0) {
+      throw new BadRequestException(`正式版已是 ${latestStable.version}，不低于此测试版，无需转正。`);
+    }
+    let promoted: number;
+    try {
+      ({ count: promoted } = await this.prisma.release.updateMany({
+        where: { id: releaseId, channel: "beta", status: "published" },
+        data: { channel: "stable", publishedAt: new Date() }
+      }));
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "转为正式版失败，请刷新发布中心后重试。");
+    }
+    if (promoted === 0) {
+      throw new ConflictException("发布记录已被修改，请刷新发布中心后重试。");
+    }
+    this.publishVersionUpdatedBestEffort(current.platform as PlatformTarget, "stable");
+    this.publishReleaseCenterUpdatedBestEffort();
+    return this.getAdminRelease(releaseId);
   }
 
   async unpublishRelease(releaseId: string): Promise<AdminReleaseRecordDto> {
@@ -1132,7 +1169,7 @@ export class ReleaseCenterService {
     try {
       rows = await this.prisma.release.findMany({
         where: {
-          channel,
+          channel: { in: releaseChannelsVisibleTo(channel) },
           status: "published",
           ...(platform ? { platform } : {})
         },
@@ -1461,7 +1498,7 @@ export class ReleaseCenterService {
       return await task();
     } catch (error) {
       if (isPrismaUniqueConstraintError(error)) {
-        throw new ConflictException("相同平台和渠道下已存在这个版本号。");
+        throw new ConflictException("该平台已存在这个版本号；正式版和测试版的版本号不能重复。");
       }
       throwLocalSaveAsServiceUnavailable(error, "发布记录保存失败，请刷新发布中心后重试。");
     }

@@ -1197,6 +1197,10 @@ export class DevDataService implements OnModuleInit {
     return this.releaseCenterService.publishRelease(releaseId, publishedAt);
   }
 
+  async promoteRelease(releaseId: string): Promise<AdminReleaseRecordDto> {
+    return this.releaseCenterService.promoteRelease(releaseId);
+  }
+
   async unpublishRelease(releaseId: string): Promise<AdminReleaseRecordDto> {
     return this.releaseCenterService.unpublishRelease(releaseId);
   }

@@ -334,7 +334,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           fileName: preferredFileName,
           expectedVersion: effectiveUpdate.latestVersion,
           currentVersion: options.appVersion,
-          channel: "stable",
+          channel: options.updateChannel ?? "stable",
           onProgress: (progress) => {
             setUpdateDownload((current) => normalizeUpdateDownloadProgress(current, progress));
           }
@@ -355,7 +355,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           fileName: preferredFileName,
           expectedVersion: effectiveUpdate.latestVersion,
           currentVersion: options.appVersion,
-          channel: "stable",
+          channel: options.updateChannel ?? "stable",
           onProgress: (progress) => {
             setUpdateDownload((current) => normalizeUpdateDownloadProgress(current, progress));
           }

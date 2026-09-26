@@ -22,16 +22,18 @@ struct PreparedUpdate { update: Update, bytes: Vec<u8>, path: PathBuf }
 #[derive(Default)]
 pub struct PreparedState(Mutex<Option<PreparedUpdate>>);
 
-pub async fn download(app: &AppHandle, channel: &Channel<DesktopInstallerDownloadProgress>, expected_version: Option<&str>, candidate: Option<&str>) -> Result<DesktopInstallerDownloadResult, String> {
+pub async fn download(app: &AppHandle, channel: &Channel<DesktopInstallerDownloadProgress>, expected_version: Option<&str>, candidate: Option<&str>, release_channel: Option<&str>) -> Result<DesktopInstallerDownloadResult, String> {
     set_installer_operation_active(app, true)?;
-    let result = download_inner(app, channel, expected_version, candidate).await;
+    let result = download_inner(app, channel, expected_version, candidate, release_channel).await;
     let _ = set_installer_operation_active(app, false);
     result
 }
 
-async fn download_inner(app: &AppHandle, channel: &Channel<DesktopInstallerDownloadProgress>, expected_version: Option<&str>, candidate: Option<&str>) -> Result<DesktopInstallerDownloadResult, String> {
+async fn download_inner(app: &AppHandle, channel: &Channel<DesktopInstallerDownloadProgress>, expected_version: Option<&str>, candidate: Option<&str>, release_channel: Option<&str>) -> Result<DesktopInstallerDownloadResult, String> {
     let mut endpoint = api_base_url_parsed()?.join("/api/client/update/tauri").map_err(|e| e.to_string())?;
     endpoint.query_pairs_mut().append_pair("currentVersion", &app.package_info().version.to_string());
+    // Beta testers must resolve the same build the update check offered them.
+    if release_channel == Some("beta") { endpoint.query_pairs_mut().append_pair("channel", "beta"); }
     if !cfg!(debug_assertions) && endpoint.scheme() != "https" { return Err("更新服务必须使用 HTTPS".into()); }
     let updater = app.updater_builder().endpoints(vec![endpoint]).map_err(|e| e.to_string())?
         .timeout(Duration::from_secs(30)).build().map_err(|e| e.to_string())?;
