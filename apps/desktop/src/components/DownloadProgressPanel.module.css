@@ -1,4 +1,4 @@
-.panel { width: 100%; box-sizing: border-box; padding: 17px 16px 14px; border: 1px solid #dce3e9; border-radius: 10px; background: #fff; color: #192e3b; box-shadow: 0 6px 20px #1734441c; font-family: inherit; }
+.panel { width: 100%; box-sizing: border-box; padding: 17px 16px 14px; border: 1px solid #dce3e9; border-radius: var(--cv-radius-lg); background: #fff; color: #192e3b; box-shadow: 0 6px 20px #1734441c; font-family: inherit; }
 .heading { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .icon { display: flex; flex: 0 0 auto; color: #14accb; }
 .title { flex: 1; min-width: 0; font-size: 14px; line-height: 20px; font-weight: 600; overflow-wrap: anywhere; }

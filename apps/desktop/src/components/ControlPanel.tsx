@@ -26,7 +26,7 @@ export function ControlPanel(props: ControlPanelProps) {
 
   if (isMobile) {
     return (
-      <Paper withBorder radius={30} p="lg" className="desktop-panel control-panel control-panel--mobile">
+      <Paper withBorder p="lg" className="desktop-panel control-panel control-panel--mobile">
         <Stack gap="md">
           <Group justify="space-between" align="flex-start">
             <Stack gap={4}>
@@ -39,7 +39,6 @@ export function ControlPanel(props: ControlPanelProps) {
             </Stack>
             <ThemeIcon
               size={48}
-              radius="xl"
               variant={props.desktopStatus.status === "connected" ? "filled" : "light"}
               color={props.desktopStatus.status === "connected" ? "green" : "cyan"}
               className="control-panel__badge"
@@ -56,9 +55,9 @@ export function ControlPanel(props: ControlPanelProps) {
 
           <SegmentedControl
             fullWidth
-            radius="xl"
             size="md"
             className="control-panel__mode-switch"
+            color="cyan"
             value={props.mode}
             onChange={(value) => props.onModeChange(value as ConnectionMode)}
             disabled={props.modeLocked}
@@ -70,7 +69,6 @@ export function ControlPanel(props: ControlPanelProps) {
 
           <Button
             size="xl"
-            radius="xl"
             className="primary-action control-primary-action"
             leftSection={<IconPlugConnected size={20} />}
             onClick={props.onPrimaryAction}
@@ -88,16 +86,14 @@ export function ControlPanel(props: ControlPanelProps) {
           </Button>
 
           <SimpleGrid cols={2} spacing="sm" verticalSpacing="sm" className="control-panel__ports">
-            <MetricBlock label="HTTP 端口" value={props.runtime ? `${props.runtime.localHttpPort}` : "--"} compact />
-            <MetricBlock label="SOCKS 端口" value={props.runtime ? `${props.runtime.localSocksPort}` : "--"} compact />
+            <MetricBlock label="HTTP 端口" value={props.runtime ? `${props.runtime.localHttpPort}` : "--"} />
+            <MetricBlock label="SOCKS 端口" value={props.runtime ? `${props.runtime.localSocksPort}` : "--"} />
           </SimpleGrid>
 
           {props.error ? (
-            <Paper withBorder radius="md" p="sm" style={{ borderColor: "rgba(239, 68, 68, 0.24)", background: "rgba(254, 242, 242, 0.9)" }}>
-              <Text c="red.6" size="sm">
-                {props.error}
-              </Text>
-            </Paper>
+            <Text size="sm" className="control-error" role="alert">
+              {props.error}
+            </Text>
           ) : null}
 
           <Divider />
@@ -133,17 +129,19 @@ export function ControlPanel(props: ControlPanelProps) {
   }
 
   return (
-    <Paper withBorder radius="lg" p="md" className="desktop-panel">
+    <Paper withBorder p="md" className="desktop-panel control-panel">
       <Stack h="100%" gap="sm" className="control-shell">
         <Stack gap="sm">
           <div className="control-head">
-            <Title order={3}>连接控制</Title>
+            <Title order={3} className="panel-title">连接控制</Title>
           </div>
 
           <StatusSurface status={props.desktopStatus.status} nodeName={props.runtime?.node.name ?? "未连接"} />
 
           <SegmentedControl
             fullWidth
+            className="control-panel__mode-switch"
+            color="cyan"
             value={props.mode}
             onChange={(value) => props.onModeChange(value as ConnectionMode)}
             disabled={props.modeLocked}
@@ -155,7 +153,6 @@ export function ControlPanel(props: ControlPanelProps) {
 
           <Button
             size="lg"
-            radius="md"
             className="primary-action control-primary-action"
             leftSection={<IconPlugConnected size={20} />}
             onClick={props.onPrimaryAction}
@@ -173,12 +170,12 @@ export function ControlPanel(props: ControlPanelProps) {
           </Button>
 
           <Group grow wrap="nowrap" className="control-metrics">
-            <MetricBlock label="HTTP" value={props.runtime ? `${props.runtime.localHttpPort}` : "--"} />
-            <MetricBlock label="SOCKS" value={props.runtime ? `${props.runtime.localSocksPort}` : "--"} />
+            <MetricBlock label="HTTP 端口" value={props.runtime ? `${props.runtime.localHttpPort}` : "--"} />
+            <MetricBlock label="SOCKS 端口" value={props.runtime ? `${props.runtime.localSocksPort}` : "--"} />
           </Group>
 
           {props.error ? (
-            <Text c="red.6" size="sm">
+            <Text size="sm" className="control-error" role="alert">
               {props.error}
             </Text>
           ) : null}
@@ -235,12 +232,7 @@ function readRuntimeInstallLabel(
 
 function StatusSurface(props: { status: string; nodeName: string; compact?: boolean }) {
   return (
-    <Paper
-      radius="md"
-      p={props.compact ? "md" : "sm"}
-      className={props.compact ? "status-surface status-surface--compact" : "status-surface"}
-      style={props.compact ? { borderRadius: 22 } : undefined}
-    >
+    <div className={props.compact ? "status-surface status-surface--compact" : "status-surface"}>
       <Stack gap={props.compact ? 8 : 6}>
         <Group justify="space-between">
           <Text size="sm" c="dimmed">
@@ -250,24 +242,24 @@ function StatusSurface(props: { status: string; nodeName: string; compact?: bool
             {translateRuntimeStatus(props.status)}
           </Badge>
         </Group>
-        <Text fw={700} size={props.compact ? "lg" : undefined} c={props.status === "connected" ? "green.7" : undefined}>
+        <Text fw={650} size={props.compact ? "lg" : undefined} c={props.status === "connected" ? "green.7" : undefined} lineClamp={1}>
           {props.nodeName}
         </Text>
       </Stack>
-    </Paper>
+    </div>
   );
 }
 
-function MetricBlock(props: { label: string; value: string; compact?: boolean }) {
+function MetricBlock(props: { label: string; value: string }) {
   return (
-    <Paper withBorder radius="md" p={props.compact ? "md" : "sm"}>
-      <Text size="sm" c="dimmed">
+    <div className="metric-item">
+      <Text size="xs" c="dimmed" className="metric-label">
         {props.label}
       </Text>
-      <Text fw={700} mt="xs" size={props.compact ? "lg" : undefined}>
+      <Text fw={650} className="metric-value">
         {props.value}
       </Text>
-    </Paper>
+    </div>
   );
 }
 

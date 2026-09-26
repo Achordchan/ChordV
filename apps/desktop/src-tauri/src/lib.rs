@@ -23,6 +23,8 @@ mod android_mobile_plugin;
 mod android_runtime;
 mod routing_diagnostics;
 mod window_transition;
+#[cfg(not(target_os = "android"))]
+mod tray_menu;
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -71,7 +73,7 @@ use std::io::{BufRead, BufReader};
 use tauri::tray::TrayIconBuilder;
 
 #[cfg(windows)]
-use tauri::tray::{MouseButton, TrayIconEvent};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -163,12 +165,27 @@ struct SessionLeaseStatusDto {
     detail_reason: Option<String>,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, PartialEq)]
 struct ShellState {
     status: String,
     signed_in: bool,
     node_name: Option<String>,
     primary_action_label: String,
+    // Tray-only context pushed by the frontend; the native side never derives it.
+    mode: Option<String>,
+    modes: Vec<String>,
+    nodes: Vec<ShellNode>,
+    selected_node_id: Option<String>,
+    traffic_line: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ShellNode {
+    id: String,
+    name: String,
+    latency_ms: Option<u32>,
+    status: String,
 }
 
 fn shell_state_matches(
@@ -460,6 +477,16 @@ struct ShellSummaryInput {
     signed_in: Option<bool>,
     node_name: Option<String>,
     primary_action_label: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    modes: Vec<String>,
+    #[serde(default)]
+    nodes: Vec<ShellNode>,
+    #[serde(default)]
+    selected_node_id: Option<String>,
+    #[serde(default)]
+    traffic_line: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3150,25 +3177,24 @@ fn update_shell_summary(
         .primary_action_label
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "连接/断开".to_string());
-    let next_signed_in = summary.signed_in.unwrap_or(false);
-    let next_node_name = summary.node_name;
-    let next_status = summary.status;
+    let next = ShellState {
+        status: summary.status,
+        signed_in: summary.signed_in.unwrap_or(false),
+        node_name: summary.node_name,
+        primary_action_label: next_primary_action_label,
+        mode: summary.mode,
+        modes: summary.modes,
+        nodes: summary.nodes,
+        selected_node_id: summary.selected_node_id,
+        traffic_line: summary.traffic_line,
+    };
     let mut should_refresh = false;
     {
         let mut state = shell_state
             .lock()
             .map_err(|_| "桌面壳层状态异常".to_string())?;
-        if !shell_state_matches(
-            &state,
-            &next_status,
-            next_signed_in,
-            next_node_name.as_deref(),
-            &next_primary_action_label,
-        ) {
-            state.status = next_status;
-            state.signed_in = next_signed_in;
-            state.node_name = next_node_name;
-            state.primary_action_label = next_primary_action_label;
+        if *state != next {
+            *state = next;
             should_refresh = true;
         }
     }
@@ -6759,7 +6785,7 @@ fn disable_context_menu(window: &tauri::WebviewWindow) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(target_os = "macos")]
 fn shell_status_text(status: &str) -> &'static str {
     match status {
         "signed-out" => "未登录",
@@ -6893,6 +6919,32 @@ fn emit_shell_action(app: &AppHandle, action: &str) -> Result<(), String> {
     window
         .eval(script)
         .map_err(|error| format!("壳层动作派发失败：{error}"))
+}
+
+/// Tray selections carry a value; it is JSON-encoded so node ids can never break
+/// out of the injected call.
+#[cfg(not(target_os = "android"))]
+fn emit_shell_selection(app: &AppHandle, method: &str, value: &str) -> Result<(), String> {
+    if !matches!(method, "setMode" | "selectNode") {
+        return Err(format!("未知壳层动作：{method}"));
+    }
+    let value = serde_json::to_string(value).map_err(|error| error.to_string())?;
+    let script = format!(
+        "(function(){{ const bridge = window.__CHORDV_DESKTOP_SHELL__; if (!bridge || typeof bridge.{method} !== 'function') {{ throw new Error('shell bridge {method} unavailable'); }} bridge.{method}({value}); }})();"
+    );
+    window_for_shell(app)?
+        .eval(&script)
+        .map_err(|error| format!("壳层动作派发失败：{error}"))
+}
+
+#[cfg(not(target_os = "android"))]
+fn copy_proxy_command_from_tray(app: &AppHandle) -> Result<(), String> {
+    let (http_port, socks_port) = {
+        let binding = app.state::<Mutex<RuntimeState>>();
+        let runtime = binding.try_lock().map_err(|_| "运行时状态忙，请稍后重试".to_string())?;
+        (runtime.local_http_port, runtime.local_socks_port)
+    };
+    tray_menu::copy_proxy_command(http_port, socks_port)
 }
 
 #[cfg(not(target_os = "android"))]
@@ -7093,97 +7145,6 @@ fn build_shell_menu(
 }
 
 #[cfg(not(target_os = "android"))]
-fn build_shell_tray_menu(
-    app: &AppHandle,
-    state: &ShellState,
-) -> Result<tauri::menu::Menu<tauri::Wry>, String> {
-    #[cfg(target_os = "macos")]
-    let _ = state;
-
-    #[cfg(target_os = "macos")]
-    {
-        let show = MenuItemBuilder::with_id("shell.show", "显示主界面")
-            .build(app)
-            .map_err(|error| error.to_string())?;
-        let action = MenuItemBuilder::with_id("shell.toggle", "连接/断开")
-            .build(app)
-            .map_err(|error| error.to_string())?;
-        let logs = MenuItemBuilder::with_id("shell.logs", "打开连接诊断")
-            .build(app)
-            .map_err(|error| error.to_string())?;
-        let hide = MenuItemBuilder::with_id("shell.hide", "隐藏窗口")
-            .build(app)
-            .map_err(|error| error.to_string())?;
-        let quit = MenuItemBuilder::with_id("shell.quit", "退出 ChordV")
-            .build(app)
-            .map_err(|error| error.to_string())?;
-
-        return MenuBuilder::new(app)
-            .item(&show)
-            .item(&action)
-            .item(&logs)
-            .item(&hide)
-            .separator()
-            .item(&quit)
-            .build()
-            .map_err(|error| error.to_string());
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let status_text = format!("当前状态：{}", shell_status_text(&state.status));
-        let node_text = format!(
-            "当前节点：{}",
-            state.node_name.as_deref().unwrap_or("未选择")
-        );
-        let primary_action = if state.primary_action_label.trim().is_empty() {
-            "连接/断开".to_string()
-        } else {
-            state.primary_action_label.clone()
-        };
-
-        let show = MenuItemBuilder::with_id("shell.show", "显示主界面")
-            .build(app)
-            .map_err(|error| error.to_string())?;
-        let status = MenuItemBuilder::with_id("shell.status", status_text)
-            .enabled(false)
-            .build(app)
-            .map_err(|error| error.to_string())?;
-        let node = MenuItemBuilder::with_id("shell.node", node_text)
-            .enabled(false)
-            .build(app)
-            .map_err(|error| error.to_string())?;
-        let action = MenuItemBuilder::with_id("shell.toggle", primary_action)
-            .enabled(state.signed_in)
-            .build(app)
-            .map_err(|error| error.to_string())?;
-        let logs = MenuItemBuilder::with_id("shell.logs", "打开连接诊断")
-            .enabled(state.signed_in)
-            .build(app)
-            .map_err(|error| error.to_string())?;
-        let hide = MenuItemBuilder::with_id("shell.hide", "隐藏窗口")
-            .build(app)
-            .map_err(|error| error.to_string())?;
-        let quit = MenuItemBuilder::with_id("shell.quit", "退出 ChordV")
-            .build(app)
-            .map_err(|error| error.to_string())?;
-
-        MenuBuilder::new(app)
-            .item(&show)
-            .item(&status)
-            .item(&node)
-            .separator()
-            .item(&action)
-            .item(&logs)
-            .item(&hide)
-            .separator()
-            .item(&quit)
-            .build()
-            .map_err(|error| error.to_string())
-    }
-}
-
-#[cfg(not(target_os = "android"))]
 fn refresh_shell_ui(app: &AppHandle) -> Result<(), String> {
     // Runtime workers may own RuntimeState here. Menu constructors synchronously
     // wait for the main thread, so dispatch the whole render without waiting.
@@ -7204,29 +7165,18 @@ fn render_shell_ui(app: &AppHandle) -> Result<(), String> {
         state.clone()
     };
     #[cfg(target_os = "macos")]
-    let menu = build_shell_menu(app, &shell)?;
-    #[cfg(target_os = "windows")]
-    let tray_menu = build_shell_tray_menu(app, &shell)?;
+    build_shell_menu(app, &shell)?
+        .set_as_app_menu()
+        .map_err(|error| error.to_string())?;
 
-    #[cfg(target_os = "macos")]
-    menu.set_as_app_menu().map_err(|error| error.to_string())?;
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(tray) = app.tray_by_id("main-tray") {
-            tray.set_menu(Some(tray_menu))
-                .map_err(|error| error.to_string())?;
-            tray.set_tooltip(Some(&format!(
-                "ChordV · {}{}",
-                shell_status_text(&shell.status),
-                shell
-                    .node_name
-                    .as_deref()
-                    .map(|value| format!(" · {value}"))
-                    .unwrap_or_default()
-            )))
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        tray.set_menu(Some(tray_menu::build_menu(app, &shell)?))
             .map_err(|error| error.to_string())?;
-        }
+        tray.set_tooltip(Some(&tray_menu::tooltip(&shell)))
+            .map_err(|error| error.to_string())?;
+        tray.set_icon(tray_menu::tray_icon(app, tray_menu::is_connected_state(&shell)))
+            .map_err(|error| error.to_string())?;
     }
 
     Ok(())
@@ -7244,22 +7194,22 @@ fn setup_desktop_tray(app: &AppHandle) -> Result<(), String> {
         let state = binding.lock().map_err(|_| "桌面壳层状态异常".to_string())?;
         state.clone()
     };
-    let menu = build_shell_tray_menu(app, &shell)?;
-    let icon = app
-        .default_window_icon()
-        .ok_or_else(|| "缺少默认应用图标".to_string())?
-        .clone();
+    let menu = tray_menu::build_menu(app, &shell)?;
+    let icon = tray_menu::tray_icon(app, tray_menu::is_connected_state(&shell))
+        .ok_or_else(|| "缺少默认应用图标".to_string())?;
 
     let mut builder = TrayIconBuilder::with_id("main-tray");
-    builder = builder.icon(icon).tooltip("ChordV").menu(&menu);
+    builder = builder.icon(icon).tooltip(tray_menu::tooltip(&shell)).menu(&menu);
 
+    // Windows convention: a left click opens the app, a right click opens the menu.
     #[cfg(target_os = "windows")]
     {
         builder = builder
             .show_menu_on_left_click(false)
             .on_tray_icon_event(|tray, event| {
-                if let TrayIconEvent::DoubleClick {
+                if let TrayIconEvent::Click {
                     button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
                     ..
                 } = event
                 {
@@ -7305,6 +7255,7 @@ pub fn run() {
             signed_in: false,
             node_name: None,
             primary_action_label: "连接/断开".into(),
+            ..ShellState::default()
         }))
         .manage(Mutex::new(InstallerOperationState::default()))
         .manage(Mutex::new(PendingInstallerState::default()))
@@ -7430,6 +7381,21 @@ pub fn run() {
             }
             "shell.quit" => {
                 app_handle.exit(0);
+            }
+            tray_menu::COPY_PROXY_ID => {
+                if let Err(error) = copy_proxy_command_from_tray(app_handle) {
+                    append_download_diagnostic_log(app_handle, "shell-ui", format!("复制代理命令失败：{error}"));
+                }
+            }
+            id if id.starts_with(tray_menu::MODE_ID_PREFIX) || id.starts_with(tray_menu::NODE_ID_PREFIX) => {
+                let (method, value) = match id.strip_prefix(tray_menu::MODE_ID_PREFIX) {
+                    Some(mode) => ("setMode", mode),
+                    None => ("selectNode", &id[tray_menu::NODE_ID_PREFIX.len()..]),
+                };
+                let _ = emit_shell_selection(app_handle, method, value);
+                // Check items toggle themselves natively; redraw from state so a refused
+                // switch does not leave a stale check mark behind.
+                let _ = refresh_shell_ui(app_handle);
             }
             _ => {}
         },

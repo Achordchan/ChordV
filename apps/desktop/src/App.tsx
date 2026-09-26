@@ -72,7 +72,8 @@ import {
   saveRememberedCredentials as saveRememberedCredentialsToStorage,
   showErrorToast,
   toneToToastColor,
-  toSubscriptionServerProbe
+  toSubscriptionServerProbe,
+  formatTrayTrafficLine
 } from "./lib/appState";
 import {
   recoverDesktopSessionAfterUnauthorized,
@@ -105,6 +106,8 @@ declare global {
     __CHORDV_DESKTOP_SHELL__?: {
       toggleConnection: () => void;
       openLogs: () => void;
+      setMode: (mode: string) => void;
+      selectNode: (nodeId: string) => void;
     };
   }
 }
@@ -157,6 +160,8 @@ export function App() {
   const selectedTicketIdRef = useRef<string | null>(null);
   const shellActionRef = useRef<(() => Promise<void>) | null>(null);
   const openLogsActionRef = useRef<(() => void) | null>(null);
+  const trayModeActionRef = useRef<((mode: string) => Promise<void>) | null>(null);
+  const trayNodeActionRef = useRef<((nodeId: string) => Promise<void>) | null>(null);
   const sessionRef = useRef<AuthSessionDto | null>(null);
   const sessionGenerationRef = useRef(0);
   const invalidateSessionOperations = useCallback(() => { sessionGenerationRef.current += 1; }, []);
@@ -478,6 +483,7 @@ export function App() {
     handlePrimaryAction,
     handleDisconnect,
     handleReconnect,
+    handleSwitchConnection,
     handleEmergencyDisconnect,
     handleForcedGuidance,
     syncForegroundState,
@@ -774,7 +780,7 @@ export function App() {
       }));
       const result = await probeClientServerLatency();
       setServerProbe({
-        status: result.elapsedMs !== null && result.elapsedMs >= 200 ? "slow" : "healthy",
+        status: "healthy",
         elapsedMs: result.elapsedMs,
         checkedAt: Date.now(),
         errorMessage: null
@@ -813,6 +819,39 @@ export function App() {
     };
   });
 
+  const handleSelectNode = (nodeId: string) => {
+    setSelectedNodeId(nodeId);
+    setConnectionGuidance((current) => {
+      const nextGuidance =
+        current && (current.code === "node_access_revoked" || current.code === "node_unavailable") ? null : current;
+      if (!nextGuidance) {
+        setGuidanceDialog(null);
+      }
+      return nextGuidance;
+    });
+  };
+
+  // Tray switches take effect immediately: a live connection reconnects with the choice.
+  useEffect(() => {
+    trayModeActionRef.current = async (requestedMode) => {
+      const nextMode = bootstrap?.policies.modes.find((item) => item === requestedMode);
+      if (!sessionRef.current || !nextMode || nextMode === mode || actionBusy) {
+        return;
+      }
+      setMode(nextMode);
+      await handleSwitchConnection({ mode: nextMode });
+    };
+    trayNodeActionRef.current = async (nodeId) => {
+      if (!sessionRef.current || actionBusy || !nodes.some((node) => node.id === nodeId)) {
+        return;
+      }
+      handleSelectNode(nodeId);
+      if ((runtime?.node.id ?? desktopStatus.activeNodeId) !== nodeId) {
+        await handleSwitchConnection({ nodeId });
+      }
+    };
+  });
+
   useEffect(() => {
     openLogsActionRef.current = () => {
       if (!sessionRef.current) {
@@ -840,6 +879,12 @@ export function App() {
       },
       openLogs: () => {
         openLogsActionRef.current?.();
+      },
+      setMode: (nextMode) => {
+        void trayModeActionRef.current?.(nextMode);
+      },
+      selectNode: (nodeId) => {
+        void trayNodeActionRef.current?.(nodeId);
       }
     };
 
@@ -967,12 +1012,25 @@ export function App() {
         ? "断开连接"
         : "连接";
 
-    const summaryKey = JSON.stringify({
+    const summary = {
       status: session ? desktopStatus.status : "signed-out",
       signedIn: Boolean(session),
       nodeName,
-      primaryActionLabel: summaryLabel
-    });
+      primaryActionLabel: summaryLabel,
+      ...(session && bootstrap ? {
+        mode,
+        modes: bootstrap.policies.modes,
+        nodes: nodes.map((node) => {
+          const probe = Object.hasOwn(probeResults, node.id) ? probeResults[node.id] : undefined;
+          // The native side reads whole milliseconds; a fractional value would reject the summary.
+          const latencyMs = typeof probe?.latencyMs === "number" ? Math.round(probe.latencyMs) : null;
+          return { id: node.id, name: node.name, latencyMs, status: probe?.status ?? "unknown" };
+        }),
+        selectedNodeId: runtime?.node.id ?? selectedNodeId,
+        trafficLine: formatTrayTrafficLine(bootstrap.subscription)
+      } : {})
+    };
+    const summaryKey = JSON.stringify(summary);
     if (lastShellSummaryRef.current === summaryKey || pendingShellSummaryRef.current === summaryKey) {
       return;
     }
@@ -980,12 +1038,7 @@ export function App() {
     shellSummaryRequestSeqRef.current = requestId;
     pendingShellSummaryRef.current = summaryKey;
 
-    void updateDesktopShellSummary({
-      status: session ? desktopStatus.status : "signed-out",
-      signedIn: Boolean(session),
-      nodeName,
-      primaryActionLabel: summaryLabel
-    })
+    void updateDesktopShellSummary(summary)
       .then(() => {
         if (shellSummaryRequestSeqRef.current !== requestId) {
           return;
@@ -1008,8 +1061,14 @@ export function App() {
     desktopStatus.activePid,
     session,
     runtime?.node.name,
+    runtime?.node.id,
     selectedNode?.name,
-    selectedNodeOffline
+    selectedNodeOffline,
+    selectedNodeId,
+    bootstrap,
+    mode,
+    nodes,
+    probeResults
   ]);
 
   useEffect(() => {
@@ -1594,7 +1653,9 @@ export function App() {
         : "";
   const loginMobileClassName =
     mobilePlatformClassName && (!session || !bootstrap) ? " desktop-app--mobile-login" : "";
-  const appClassName = `desktop-app${windowTransitioning ? " desktop-app--window-transition" : ""}${!mainLayoutReady ? " desktop-app--login" : ""}${mobilePlatformClassName ? ` ${mobilePlatformClassName}` : ""}${loginMobileClassName}`;
+  // macOS draws the web content under a transparent title bar so the title can be centred.
+  const macTitleBar = desktopStatus.platformTarget === "macos";
+  const appClassName = `desktop-app${macTitleBar ? " desktop-app--mac-titlebar" : ""}${windowTransitioning ? " desktop-app--window-transition" : ""}${!mainLayoutReady ? " desktop-app--login" : ""}${mobilePlatformClassName ? ` ${mobilePlatformClassName}` : ""}${loginMobileClassName}`;
   const mobileHomeMode = Boolean(session && bootstrap && mobilePlatformClassName);
   const updateStatusDescription = updateCheckStatus === "failed"
     ? "暂时无法获取版本信息，点击检查更新重试。"
@@ -1629,6 +1690,11 @@ export function App() {
 
   return (
     <div className={appClassName}>
+      {macTitleBar ? (
+        <div className="app-titlebar" data-tauri-drag-region>
+          <span className="app-titlebar__title">ChordV v{appVersion.replace(/^v/i, "")}</span>
+        </div>
+      ) : null}
       {DownloadProgressDebug ? <Suspense fallback={null}><DownloadProgressDebug realDownloadVisible={(runtimeAssets.phase !== "idle" && runtimeAssets.phase !== "ready") || updateDownload.phase !== "idle"}/></Suspense> : null}
       <LoadingOverlay visible={booting} zIndex={200} overlayProps={{ color: "#fff", backgroundOpacity: 1 }} />
       {bootstrap && !windowTransitioning ? (
@@ -1713,17 +1779,7 @@ export function App() {
                   probeResults={probeResults}
                   probeBusy={probeBusy}
                   probeCooldownLeft={probeCooldownLeft}
-                  onSelect={(nodeId) => {
-                    setSelectedNodeId(nodeId);
-                    setConnectionGuidance((current) => {
-                      const nextGuidance =
-                        current && (current.code === "node_access_revoked" || current.code === "node_unavailable") ? null : current;
-                      if (!nextGuidance) {
-                        setGuidanceDialog(null);
-                      }
-                      return nextGuidance;
-                    });
-                  }}
+                  onSelect={handleSelectNode}
                   onProbe={() => void runProbe(nodes, false)}
                 />
               </div>
@@ -1766,7 +1822,6 @@ export function App() {
             >
               <ThemeIcon
                 size={34}
-                radius="xl"
                 variant={mobileTab === "home" ? "filled" : "light"}
                 color={mobileTab === "home" ? "cyan" : "gray"}
               >
@@ -1782,7 +1837,6 @@ export function App() {
             >
               <ThemeIcon
                 size={34}
-                radius="xl"
                 variant={mobileTab === "nodes" ? "filled" : "light"}
                 color={mobileTab === "nodes" ? "cyan" : "gray"}
               >
@@ -1798,7 +1852,6 @@ export function App() {
             >
               <ThemeIcon
                 size={34}
-                radius="xl"
                 variant={mobileTab === "profile" ? "filled" : "light"}
                 color={mobileTab === "profile" ? "cyan" : "gray"}
               >
@@ -1839,17 +1892,7 @@ export function App() {
               probeResults={probeResults}
               probeBusy={probeBusy}
               probeCooldownLeft={probeCooldownLeft}
-              onSelect={(nodeId) => {
-                setSelectedNodeId(nodeId);
-                setConnectionGuidance((current) => {
-                  const nextGuidance =
-                    current && (current.code === "node_access_revoked" || current.code === "node_unavailable") ? null : current;
-                  if (!nextGuidance) {
-                    setGuidanceDialog(null);
-                  }
-                  return nextGuidance;
-                });
-              }}
+              onSelect={handleSelectNode}
               onProbe={() => void runProbe(nodes, false)}
             />
 
