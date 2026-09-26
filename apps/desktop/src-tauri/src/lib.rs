@@ -1,3 +1,4 @@
+mod build_info;
 mod download_cleanup;
 mod update_report;
 #[cfg(any(windows, test))]
@@ -1495,12 +1496,16 @@ async fn fetch_trusted_desktop_update_package(
         "linux"
     };
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "currentVersion": current_version,
         "platform": platform,
         "channel": channel,
         "artifactType": artifact_type
     });
+    // Without the build a newer installer of the same version would never be offered.
+    if let Some(build) = build_info::embedded_build_number() {
+        body["currentBuild"] = serde_json::json!(build);
+    }
 
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(DOWNLOAD_CONNECT_TIMEOUT_SECS))

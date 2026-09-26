@@ -34,18 +34,27 @@ async fn download_inner(app: &AppHandle, channel: &Channel<DesktopInstallerDownl
     endpoint.query_pairs_mut().append_pair("currentVersion", &app.package_info().version.to_string());
     // Beta testers must resolve the same build the update check offered them.
     if release_channel == Some("beta") { endpoint.query_pairs_mut().append_pair("channel", "beta"); }
+    let local_build = crate::build_info::embedded_build_number();
+    if let Some(build) = local_build { endpoint.query_pairs_mut().append_pair("currentBuild", &build.to_string()); }
     if !cfg!(debug_assertions) && endpoint.scheme() != "https" { return Err("更新服务必须使用 HTTPS".into()); }
+    // The manifest carries "1.1.10+42" only for clients that sent their build, so a
+    // newer build of the installed version is accepted and anything else is not.
     let updater = app.updater_builder().endpoints(vec![endpoint]).map_err(|e| e.to_string())?
+        .version_comparator(move |current, remote| crate::build_info::is_newer_release(&current, &remote.version, local_build))
         .timeout(Duration::from_secs(30)).build().map_err(|e| e.to_string())?;
     let mut update = updater.check().await.map_err(|e| format!("检查签名更新失败：{e}"))?
         .ok_or("当前没有可安装的签名更新，请重新检查版本")?;
-    if expected_version.is_some_and(|version| version != update.version) {
+    let target_version = crate::build_info::strip_build_metadata(&update.version).to_string();
+    if expected_version.is_some_and(|version| version != target_version) {
         return Err("发布版本已变化，请重新检查更新后再下载".into());
     }
     apply_download_candidate(&mut update, &api_base_url_parsed()?, candidate.unwrap_or("mirror"))?;
     update.timeout = Some(Duration::from_secs(DOWNLOAD_TOTAL_TIMEOUT_SECS));
     let expected_size = require_desktop_update_download_size(json_u64_field(&update.raw_json, &["fileSizeBytes"]))?;
-    let file_name = format!("ChordV_{}_x64-setup.exe", update.version);
+    let file_name = match crate::build_info::build_from_version(&update.version) {
+        Some(build) => format!("ChordV_{target_version}_build{build}_x64-setup.exe"),
+        None => format!("ChordV_{target_version}_x64-setup.exe"),
+    };
     let path = ensure_installer_download_dir(app)?.join(&file_name);
     let progress = |phase: &str, bytes, message: &str| send_update_download_progress(app, channel, DesktopInstallerDownloadProgress {
         phase: phase.into(), file_name: Some(file_name.clone()), downloaded_bytes: bytes,
@@ -100,7 +109,9 @@ pub fn install(app: &AppHandle) -> Result<CommandResult, String> {
         // a replaced cache file can never change the executable being installed.
         shutdown_runtime_state(app)?;
         let intent_path = desktop_update_report_path(app)?.with_file_name("official-install-pending.json");
-        fs::write(&intent_path, serde_json::json!({"version": pending.update.version}).to_string()).map_err(|e| e.to_string())?;
+        let version = crate::build_info::strip_build_metadata(&pending.update.version);
+        let build = crate::build_info::build_from_version(&pending.update.version);
+        fs::write(&intent_path, serde_json::json!({"version": version, "build": build}).to_string()).map_err(|e| e.to_string())?;
         if let Err(error) = pending.update.install(&pending.bytes) {
             let _ = fs::remove_file(intent_path);
             return Err(format!("安装器启动失败：{error}"));
@@ -116,7 +127,9 @@ pub fn reconcile_install_result(app: &AppHandle) -> Result<(), String> {
     if !path.exists() { return Ok(()); }
     let value = crate::update_report::parse(&fs::read_to_string(&path).map_err(|e| e.to_string())?)?;
     let expected = value["version"].as_str().ok_or("更新结果缺少目标版本")?;
-    let installed = app.package_info().version.to_string() == expected;
+    // A same-version update only counts as installed when the running build matches.
+    let build_matches = value["build"].as_u64().is_none_or(|build| crate::build_info::embedded_build_number() == Some(build));
+    let installed = app.package_info().version.to_string() == expected && build_matches;
     write_desktop_update_install_report(app, installed, "tauri_nsis",
         if installed { "更新安装完成" } else { "上次更新尚未完成，当前仍在运行原版本，请重试安装。" }, None, None)?;
     fs::remove_file(path).map_err(|e| e.to_string())
