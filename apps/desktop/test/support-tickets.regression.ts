@@ -118,6 +118,42 @@ function testNewTicketMessageScrollsToLatestWithoutRefreshJitter() {
   assert.match(stylesSource, /\.desktop-runtime-overlay \{[\s\S]*?z-index: 320;/);
 }
 
+function testTicketCenterKeepsConversationFirst() {
+  const modalSource = readFileSync(resolve(import.meta.dirname, "../src/components/TicketCenterModal.tsx"), "utf8");
+  const modalStyles = readFileSync(resolve(import.meta.dirname, "../src/components/TicketCenterModal.module.css"), "utf8");
+
+  assert.match(modalStyles, /\.content \{[^}]*height: calc\(100dvh - 24px\);/, "the modal should use the window height");
+  assert.match(modalStyles, /\.messages \{[^}]*flex: 1 1 auto;[^}]*overflow-y: auto;/, "the thread should take the remaining height");
+  assert.match(modalSource, /role="log"/);
+  assert.match(modalSource, /autosize\s+minRows=\{1\}\s+maxRows=\{6\}/, "the composer should start as a single line");
+  assert.match(
+    modalSource,
+    /event\.key !== "Enter" \|\| event\.shiftKey \|\| event\.nativeEvent\.isComposing \|\| event\.keyCode === 229/,
+    "Enter sends, Shift+Enter and IME composition must not"
+  );
+  assert.match(modalSource, /if \(props\.createMode\) \{\s*return \(/, "the new-ticket form only renders in create mode");
+  assert.match(modalSource, /detail\?\.id === props\.selectedTicketId/, "a stale detail must not show under another ticket");
+  assert.match(modalSource, /new ResizeObserver\(/, "a growing composer keeps the latest message in view");
+  assert.match(
+    modalSource,
+    /props\.error && props\.tickets\.length === 0 \? \(\s*<div className=\{styles\.railEmpty\} role="alert">[\s\S]*?onClick=\{props\.onRefresh\}/,
+    "a failed list load must offer retry inside the rail, which is the only pane visible on narrow windows"
+  );
+}
+
+function testManualRefreshLoadsListBeforeMarkingDetailRead() {
+  const hookSource = readFileSync(resolve(import.meta.dirname, "../src/hooks/useSupportTickets.ts"), "utf8");
+  const appSource = readFileSync(resolve(import.meta.dirname, "../src/App.tsx"), "utf8");
+
+  assert.match(
+    hookSource,
+    /const refreshTicketCenter = useCallback\(async \(\) => \{[\s\S]*?const tickets = await loadTicketList\(ticketId\);[\s\S]*?await loadTicketDetail\(ticketId\);/,
+    "the list must land before the detail is loaded and marked read"
+  );
+  assert.match(appSource, /onRefresh=\{\(\) => void refreshTicketCenter\(\)\}/);
+  assert.doesNotMatch(appSource, /void loadTicketList\(selectedTicketId\);\s*if \(selectedTicketId[^\n]*void loadTicketDetail/);
+}
+
 function main() {
   testUnreadPatchSurvivesUntilExplicitRead();
   testBackgroundDetailRefreshMarkerIsOneShot();
@@ -128,6 +164,8 @@ function main() {
   testJsonRequestsHaveTimeoutAndNetworkErrorNormalization();
   testVisibleTicketUpdateMarksDetailRead();
   testNewTicketMessageScrollsToLatestWithoutRefreshJitter();
+  testTicketCenterKeepsConversationFirst();
+  testManualRefreshLoadsListBeforeMarkingDetailRead();
   console.log("desktop support tickets regression checks passed");
 }
 

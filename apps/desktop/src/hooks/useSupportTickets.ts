@@ -276,6 +276,16 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
     [options.accessToken, options.onUnauthorized, options.readError, selectedTicketId]
   );
 
+  // The list lands before the detail is fetched and marked read, so an older list snapshot can
+  // never put the unread badge back on the ticket the user is looking at.
+  const refreshTicketCenter = useCallback(async () => {
+    const ticketId = selectedTicketId;
+    const tickets = await loadTicketList(ticketId);
+    if (ticketId && !ticketCreateMode && tickets.some((ticket) => ticket.id === ticketId)) {
+      await loadTicketDetail(ticketId);
+    }
+  }, [loadTicketDetail, loadTicketList, selectedTicketId, ticketCreateMode]);
+
   const openTicketCenter = useCallback(async () => {
     setTicketCenterOpened(true);
     setTicketCreateMode(false);
@@ -419,6 +429,7 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
     hasUnreadTickets,
     loadTicketList,
     loadTicketDetail,
+    refreshTicketCenter,
     markTicketAsRead,
     markTicketUnread,
     openTicketCenter,
