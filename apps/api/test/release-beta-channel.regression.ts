@@ -1,7 +1,7 @@
 import "reflect-metadata";
 import assert from "node:assert/strict";
 import { ReleaseCenterService } from "../src/modules/common/release-center.service";
-import { normalizeReleaseChannel, releaseChannelsVisibleTo } from "../src/modules/common/release-center.utils";
+import { assertVersionMatchesChannel, normalizeReleaseChannel, releaseChannelsVisibleTo } from "../src/modules/common/release-center.utils";
 
 type Row = {
   id: string;
@@ -170,6 +170,32 @@ async function main() {
   assert.equal(noLoop.latestVersion, "1.1.11", "fall back like stable users do when the newest stable is unavailable");
   assert.equal(noLoop.releaseChannel, "stable");
 
+  // Numbered betas: testers move beta.2 -> beta.3 -> the plain stable build,
+  // even when the stable build differs from the last beta.
+  assert.doesNotThrow(() => assertVersionMatchesChannel("1.1.10-beta.2", "beta"));
+  assert.doesNotThrow(() => assertVersionMatchesChannel("1.1.10", "stable"));
+  assert.throws(() => assertVersionMatchesChannel("1.1.10", "beta"), /测试版的版本号需要带编号，例如 1\.1\.10-beta\.2/);
+  assert.throws(() => assertVersionMatchesChannel("1.1.10-beta.2", "stable"), /正式版的版本号不能带后缀，请填写 1\.1\.10/);
+
+  const numbered = createService([release("stable-9", "stable", "1.1.9"), release("beta-10b2", "beta", "1.1.10-beta.2")]);
+  assert.equal((await check(numbered.service, "1.1.9", "stable")).hasUpdate, false, "stable users never see numbered betas");
+  assert.equal((await check(numbered.service, "1.1.9", "beta")).latestVersion, "1.1.10-beta.2");
+  numbered.service.prisma.release.findMany = async ({ where }: any) => [
+    release("stable-9", "stable", "1.1.9"), release("beta-10b2", "beta", "1.1.10-beta.2"), release("beta-10b3", "beta", "1.1.10-beta.3")
+  ].filter(row => matches(row, where));
+  assert.equal((await check(numbered.service, "1.1.10-beta.2", "beta")).latestVersion, "1.1.10-beta.3", "testers receive the next numbered beta");
+  numbered.service.prisma.release.findMany = async ({ where }: any) => [
+    release("stable-9", "stable", "1.1.9"), release("beta-10b3", "beta", "1.1.10-beta.3"), release("stable-10", "stable", "1.1.10")
+  ].filter(row => matches(row, where));
+  const converged = await check(numbered.service, "1.1.10-beta.3", "beta");
+  assert.equal(converged.latestVersion, "1.1.10", "testers converge on the plain stable build");
+  assert.equal(converged.releaseChannel, "stable");
+  assert.equal((await check(numbered.service, "1.1.9", "stable")).latestVersion, "1.1.10", "stable users go 1.1.9 -> 1.1.10 without a skipped number");
+  assert.equal((await check(numbered.service, "1.1.10", "beta")).hasUpdate, false, "nobody is offered an older numbered beta");
+
+  const numberedPromote = createService([release("beta-10b2", "beta", "1.1.10-beta.2")]);
+  await assert.rejects(numberedPromote.service.promoteRelease("beta-10b2"), /不能直接转为正式版/, "a numbered beta installer must not become stable");
+
   // Guard rails around promotion.
   await assert.rejects(service.promoteRelease("stable-11"), /只有测试版/);
   await assert.rejects(service.promoteRelease("beta-14-draft"), /请先发布测试版/);
@@ -211,7 +237,7 @@ async function main() {
   assert.match(String((lower as PromiseRejectedResult).reason?.message), /正式版已是 1\.1\.13/);
   assert.ok(race.lockKeys.every(key => key === "chordv:release-line:macos"), "promotion locks the platform release line");
 
-  console.log("Release beta channel: tester visibility, beta never forced, no-downgrade opt-out, promotion guard rails and stable rollout passed");
+  console.log("Release beta channel: tester visibility, beta never forced, numbered beta progression, no-downgrade opt-out, promotion guard rails and stable rollout passed");
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -44,9 +44,9 @@ export function ReleaseEditorModal(p: ReleaseEditorModalProps) {
       {step===0?<>
         <Select label="平台" data={releasePlatformOptions.map(x=>({...x}))} value={p.form.platform} disabled={p.editing||p.saving} onChange={value=>value&&p.onChange({...p.form,platform:value as ReleaseEditorFormState["platform"],selectedFile:null,fileName:"",signatureFile:null})}/>
         <Select label="发布通道" data={releaseChannelOptions.map(x=>({...x}))} value={p.form.channel} disabled={channelLocked||p.saving}
-          description={channelLocked?"已发布版本不能切换通道；测试版验证通过后，在列表中点“转为正式版”。":p.form.channel==="beta"?"只推送给在更新中心开启“接收测试版更新”的客户端。":"推送给所有客户端。"}
+          description={channelLocked?"已发布版本不能切换通道；测试版验证通过后，用同一份代码构建不带后缀的正式版再发布。":p.form.channel==="beta"?"只推送给在更新中心开启“接收测试版更新”的客户端。":"推送给所有客户端。"}
           onChange={value=>value&&p.onChange({...p.form,channel:value as ReleaseEditorFormState["channel"]})}/>
-        <Group grow><TextInput label="版本号" placeholder="例如 1.2.0" value={p.form.version} disabled={p.editing||p.saving} onChange={e=>p.onChange({...p.form,version:e.currentTarget.value})}/><TextInput label="发布标题" value={p.form.title} disabled={p.saving} onChange={e=>p.onChange({...p.form,title:e.currentTarget.value})}/></Group>
+        <Group grow><TextInput label="版本号" placeholder={beta?"例如 1.1.10-beta.2":"例如 1.1.10"} description={beta?"测试版需带编号，每次测试递增；测试用户最终会自动升到同号正式版。":"正式版不带后缀。"} value={p.form.version} disabled={p.editing||p.saving} onChange={e=>p.onChange({...p.form,version:e.currentTarget.value})}/><TextInput label="发布标题" value={p.form.title} disabled={p.saving} onChange={e=>p.onChange({...p.form,title:e.currentTarget.value})}/></Group>
         <Textarea label="更新说明" description="每行一条，展示给客户端用户" autosize minRows={5} value={p.form.changelog} disabled={p.saving} onChange={e=>p.onChange({...p.form,changelog:e.currentTarget.value})}/>
         <Checkbox label="强制更新" description={beta?"测试版始终是可选更新，不会强制任何客户端；转为正式版后可再开启。":"开启后，旧版客户端必须更新才能继续使用。"} checked={p.form.forceUpgrade&&!beta} disabled={p.saving||beta} onChange={e=>p.onChange({...p.form,forceUpgrade:e.currentTarget.checked})}/>
         {!beta && !p.form.forceUpgrade && p.form.minimumVersion.trim() && p.form.minimumVersion.trim() !== "0.0.0" ? <Text size="sm" c="orange.8">低于 {p.form.minimumVersion} 的客户端仍须更新。若不限制旧版，请将最低兼容版本设为 0.0.0。</Text> : null}

@@ -271,6 +271,23 @@ export function parseSemver(value: string) {
   };
 }
 
+// Testers only move forward on a strictly higher version, so every beta needs its
+// own prerelease number (1.1.10-beta.2 < 1.1.10-beta.3 < 1.1.10) and stable
+// versions stay plain.
+export function assertVersionMatchesChannel(version: string, channel: ReleaseChannel) {
+  const { prerelease } = parseSemver(version);
+  if (channel === "stable" && prerelease) {
+    throw new BadRequestException(`正式版的版本号不能带后缀，请填写 ${stripPrerelease(version)} 这样的版本号。`);
+  }
+  if (channel === "beta" && !prerelease) {
+    throw new BadRequestException(`测试版的版本号需要带编号，例如 ${normalizeVersion(version)}-beta.2。不带编号时，测试用户收不到同一版本号的后续测试版和正式版。`);
+  }
+}
+
+function stripPrerelease(version: string) {
+  return normalizeVersion(version).replace(/[-+].*$/, "");
+}
+
 export function defaultDeliveryModeForArtifact(type: ReleaseArtifactType): UpdateDeliveryMode {
   if (type === "zip") {
     return "desktop_full_replace";

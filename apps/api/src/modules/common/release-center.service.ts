@@ -40,7 +40,9 @@ import {
   normalizeOptionalBoolean,
   normalizePublishedAt,
   normalizeReleaseChannel,
+  assertVersionMatchesChannel,
   normalizeVersion,
+  parseSemver,
   pickPrimaryReleaseArtifact,
   releaseChannelsVisibleTo,
   type ReleaseRowLike,
@@ -198,6 +200,7 @@ export class ReleaseCenterService {
     const minimumVersion = input.minimumVersion?.trim() ? normalizeVersion(input.minimumVersion) : version;
     const displayTitle = input.displayTitle?.trim() || version;
     assertMinimumVersionNotAboveRelease(version, minimumVersion);
+    assertVersionMatchesChannel(version, normalizeReleaseChannel(input.channel));
     const baseReleaseData = {
       id: releaseId,
       platform: input.platform,
@@ -256,6 +259,7 @@ export class ReleaseCenterService {
     const nextMinimumVersion = input.minimumVersion !== undefined ? normalizeVersion(input.minimumVersion) : current.minimumVersion;
     assertMinimumVersionNotAboveRelease(current.version, nextMinimumVersion);
     const nextChannel = input.channel !== undefined ? normalizeReleaseChannel(input.channel) : undefined;
+    if (nextChannel !== undefined) assertVersionMatchesChannel(current.version, nextChannel);
 
     const baseData = {
       ...(nextChannel !== undefined ? { channel: nextChannel } : {}),
@@ -365,6 +369,10 @@ export class ReleaseCenterService {
     }
     if (current.status !== "published") {
       throw new BadRequestException("请先发布测试版并验证通过，再转为正式版。");
+    }
+    if (parseSemver(current.version).prerelease) {
+      // The installer reports its own version; promoting it would show stable users a beta number.
+      throw new BadRequestException(`安装包里的版本号是 ${current.version}，不能直接转为正式版。请用同一份代码构建不带后缀的正式版，作为正式版发布。`);
     }
     let promoted: number;
     try {
@@ -1220,6 +1228,7 @@ export class ReleaseCenterService {
       throw new NotFoundException("发布记录不存在。");
     }
     this.assertReleaseRecordMutable(release);
+    assertVersionMatchesChannel(release.version, normalizeReleaseChannel(release.channel));
     const primaryArtifact = release.artifacts.find((item) => item.isPrimary) ?? release.artifacts[0];
     if (!primaryArtifact) {
       throw new BadRequestException("发布前请至少添加一个安装包。");
