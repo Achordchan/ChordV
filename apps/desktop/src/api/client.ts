@@ -2,6 +2,7 @@ import type {
   AnnouncementDto,
   AuthSessionDto,
   ClientNodeProbeResultDto,
+  ClientReleaseHistoryItemDto,
   ClientBootstrapDto,
   ClientVersionDto,
   ClientRuntimeComponentsPlanDto,
@@ -463,6 +464,26 @@ export async function checkClientUpdate(input: {
       channel,
       artifactType
     });
+  } catch (reason) {
+    if (isApiStatusError(reason, 404, 405)) {
+      return null;
+    }
+    throw reason;
+  }
+}
+
+/** Published releases for this platform, newest first; null when the server predates the endpoint. */
+export async function fetchReleaseHistory(input: { channel: ReleaseChannel }) {
+  const query = new URLSearchParams({ platform: detectUpdatePlatform(), channel: input.channel });
+  try {
+    const result = await request<ClientReleaseHistoryItemDto[]>(`/client/releases/history?${query.toString()}`);
+    return (Array.isArray(result) ? result : []).filter((item) => typeof item?.version === "string").map((item) => ({
+      version: item.version,
+      releaseChannel: readChannel(item.releaseChannel) ?? "stable",
+      title: typeof item.title === "string" ? item.title : item.version,
+      changelog: readStringArray(item.changelog),
+      publishedAt: typeof item.publishedAt === "string" ? item.publishedAt : null
+    }));
   } catch (reason) {
     if (isApiStatusError(reason, 404, 405)) {
       return null;

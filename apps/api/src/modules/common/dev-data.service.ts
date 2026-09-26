@@ -490,6 +490,10 @@ export class DevDataService implements OnModuleInit {
     return this.releaseCenterService.checkClientUpdate(input);
   }
 
+  listClientReleaseHistory(input: Parameters<ReleaseCenterService["listClientReleaseHistory"]>[0]) {
+    return this.releaseCenterService.listClientReleaseHistory(input);
+  }
+
   async listClientRoutingRules(token?: string): Promise<ClientRoutingRuleDto[]> {
     return this.clientRoutingRuleService.listRules(token);
   }

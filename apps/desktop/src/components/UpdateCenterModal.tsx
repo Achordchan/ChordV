@@ -1,7 +1,9 @@
-import { Badge, Button, Group, Loader, Modal, Switch, Text } from "@mantine/core";
-import { IconAlertCircle, IconArrowRight, IconCircleCheckFilled, IconClock } from "@tabler/icons-react";
+import { useEffect, useState } from "react";
+import { ActionIcon, Badge, Button, Group, Loader, Modal, Switch, Text, UnstyledButton } from "@mantine/core";
+import { IconAlertCircle, IconArrowLeft, IconArrowRight, IconChevronRight, IconCircleCheckFilled, IconClock } from "@tabler/icons-react";
 import appIcon from "../../src-tauri/icons/icon.png";
 import type { UpdateCenterItem, UpdateCenterItemKey, UpdateCenterState } from "../lib/updateCenter";
+import { ReleaseHistory } from "./ReleaseHistory";
 import styles from "./UpdateCenterModal.module.css";
 
 type UpdateCenterModalProps = {
@@ -26,17 +28,30 @@ export function UpdateCenterModal(props: UpdateCenterModalProps) {
   // Only states the user can act on or should wait for get a line of explanation.
   const runtimeNotice = props.syncDeferred ? "连接期间暂缓更新，断开连接后将自动同步。"
     : props.syncError && !runtimeChecking ? props.syncError : null;
+  const [view, setView] = useState<"overview" | "history">("overview");
+  useEffect(() => { if (props.state.opened) setView("overview"); }, [props.state.opened]);
+  const title = view === "history" ? (
+    <span className={styles.titleRow}>
+      <ActionIcon variant="subtle" color="gray" size="sm" aria-label="返回更新中心" onClick={() => setView("overview")}>
+        <IconArrowLeft size={16} />
+      </ActionIcon>
+      更新日志
+    </span>
+  ) : "更新中心";
   return (
     <Modal
       opened={props.state.opened}
       onClose={props.onClose}
       centered
       closeButtonProps={{ "aria-label": "关闭更新中心" }}
-      title="更新中心"
+      title={title}
       size={500}
       radius="lg"
       classNames={{ title: styles.title, header: styles.header, body: styles.body }}
     >
+      {view === "history" ? (
+        <ReleaseHistory channel={props.betaChannel ? "beta" : "stable"} appVersion={props.appVersion} />
+      ) : (<>
       <div className={styles.client}>
         <img src={appIcon} alt="ChordV" className={styles.logo} />
         <div className={styles.clientInfo}>
@@ -46,6 +61,9 @@ export function UpdateCenterModal(props: UpdateCenterModalProps) {
             {app && <ItemStatus item={app} />}
           </Group>
           {app?.status === "available" && app.remoteVersion && <Text size="sm" c="dimmed" mt={6}>可更新至 {app.remoteVersion}</Text>}
+          <UnstyledButton className={styles.historyLink} onClick={() => setView("history")}>
+            查看更新日志<IconChevronRight size={14} aria-hidden="true" />
+          </UnstyledButton>
         </div>
         {app?.canUpdate && <Button size="xs" disabled={props.busy} onClick={() => props.onUpdateOne("app")}>查看更新</Button>}
       </div>
@@ -96,6 +114,7 @@ export function UpdateCenterModal(props: UpdateCenterModalProps) {
           : "尚未检查"}</Text>
         <Button size="sm" loading={props.state.checking} disabled={props.busy} onClick={props.onCheckOnly}>检查更新</Button>
       </div>
+      </>)}
     </Modal>
   );
 }

@@ -361,6 +361,15 @@ export interface ClientUpdateCheckDto {
   clientMirrorPrefix?: string | null;
 }
 
+/** One published client release as shown in the update center's history. */
+export interface ClientReleaseHistoryItemDto {
+  version: string;
+  releaseChannel: ReleaseChannel;
+  title: string;
+  changelog: string[];
+  publishedAt: string | null;
+}
+
 export interface ClientUpdateCheckResultDto {
   hasUpdate: boolean;
   forceUpgrade: boolean;

@@ -5,7 +5,7 @@ import { ClientAccessService } from "../common/client-access.service";
 import { Body, Req, Res, Controller, Delete, Get, Headers, Param, Patch, Post, Query, Sse, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
 import { Type } from "class-transformer";
 import { FileInterceptor } from "@nestjs/platform-express";
-import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsNotEmpty, IsOptional, IsString, Matches, MaxLength, ValidateNested } from "class-validator";
+import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateNested } from "class-validator";
 import { diskStorage } from "multer";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -102,6 +102,24 @@ class UpdateCheckDto {
   @IsString()
   @MaxLength(512)
   clientMirrorPrefix?: string | null;
+}
+
+class ReleaseHistoryQueryDto {
+  @IsString()
+  @IsIn(["macos", "windows", "android", "ios"])
+  platform!: PlatformTarget;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(["stable", "beta"])
+  channel?: ReleaseChannel;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  limit?: number;
 }
 
 class CreateRoutingRuleDto {
@@ -367,6 +385,11 @@ export class ClientController {
   @Post("update/check")
   checkUpdate(@Body() body: UpdateCheckDto) {
     return this.clientService.checkUpdate(body);
+  }
+
+  @Get("releases/history")
+  getReleaseHistory(@Query() query: ReleaseHistoryQueryDto) {
+    return this.clientService.listReleaseHistory({ platform: query.platform, channel: query.channel ?? "stable", limit: query.limit ?? null });
   }
 
   @Get("routing-rules")
