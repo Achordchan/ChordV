@@ -279,8 +279,9 @@ export function assertVersionMatchesChannel(version: string, channel: ReleaseCha
   if (channel === "stable" && prerelease) {
     throw new BadRequestException(`正式版的版本号不能带后缀，请填写 ${stripPrerelease(version)} 这样的版本号。`);
   }
-  if (channel === "beta" && !prerelease) {
-    throw new BadRequestException(`测试版的版本号需要带编号，例如 ${normalizeVersion(version)}-beta.2。不带编号时，测试用户收不到同一版本号的后续测试版和正式版。`);
+  // "beta" or "rc" alone cannot order successive test builds; require beta.N.
+  if (channel === "beta" && !/^beta\.(0|[1-9]\d*)$/.test(prerelease)) {
+    throw new BadRequestException(`测试版的版本号需要带编号，例如 ${stripPrerelease(version)}-beta.2。不带编号时，测试用户收不到同一版本号的后续测试版和正式版。`);
   }
 }
 

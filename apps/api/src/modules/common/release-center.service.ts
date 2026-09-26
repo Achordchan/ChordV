@@ -259,7 +259,10 @@ export class ReleaseCenterService {
     const nextMinimumVersion = input.minimumVersion !== undefined ? normalizeVersion(input.minimumVersion) : current.minimumVersion;
     assertMinimumVersionNotAboveRelease(current.version, nextMinimumVersion);
     const nextChannel = input.channel !== undefined ? normalizeReleaseChannel(input.channel) : undefined;
-    if (nextChannel !== undefined) assertVersionMatchesChannel(current.version, nextChannel);
+    // Legacy unnumbered betas stay editable; only a real channel switch is validated.
+    if (nextChannel !== undefined && nextChannel !== normalizeReleaseChannel(current.channel)) {
+      assertVersionMatchesChannel(current.version, nextChannel);
+    }
 
     const baseData = {
       ...(nextChannel !== undefined ? { channel: nextChannel } : {}),

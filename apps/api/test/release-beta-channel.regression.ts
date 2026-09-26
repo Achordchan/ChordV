@@ -176,6 +176,14 @@ async function main() {
   assert.doesNotThrow(() => assertVersionMatchesChannel("1.1.10", "stable"));
   assert.throws(() => assertVersionMatchesChannel("1.1.10", "beta"), /测试版的版本号需要带编号，例如 1\.1\.10-beta\.2/);
   assert.throws(() => assertVersionMatchesChannel("1.1.10-beta.2", "stable"), /正式版的版本号不能带后缀，请填写 1\.1\.10/);
+  for (const unnumbered of ["1.1.10-beta", "1.1.10-rc", "1.1.10-rc.1", "1.1.10-beta.x"]) {
+    assert.throws(() => assertVersionMatchesChannel(unnumbered, "beta"), /测试版的版本号需要带编号，例如 1\.1\.10-beta\.2/, `${unnumbered} cannot order successive test builds`);
+  }
+
+  // Legacy unnumbered betas keep ordinary metadata edits, including a resent unchanged channel.
+  const legacyBeta = createService([release("beta-legacy", "beta", "1.1.10")]);
+  const edited = await legacyBeta.service.updateRelease("beta-legacy", { channel: "beta", displayTitle: "1.1.10 测试版" });
+  assert.equal(edited.displayTitle, "1.1.10 测试版");
 
   const numbered = createService([release("stable-9", "stable", "1.1.9"), release("beta-10b2", "beta", "1.1.10-beta.2")]);
   assert.equal((await check(numbered.service, "1.1.9", "stable")).hasUpdate, false, "stable users never see numbered betas");
