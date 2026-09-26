@@ -106,7 +106,7 @@ export function buildCreateReleasePayload(
     version,
     title: form.title.trim() || undefined,
     changelog: splitReleaseChangelog(form.changelog),
-    forceUpgrade: form.forceUpgrade,
+    forceUpgrade: form.channel === "beta" ? false : form.forceUpgrade,
     minimumVersion: form.minimumVersion.trim() || "0.0.0",
     ...(initialArtifact !== undefined ? { initialArtifact } : {})
   };
@@ -118,7 +118,7 @@ export function buildUpdateReleasePayload(form: ReleaseEditorFormState): UpdateA
     ...(form.status === "draft" ? { channel: form.channel } : {}),
     title: form.title.trim(),
     changelog: splitReleaseChangelog(form.changelog),
-    forceUpgrade: form.forceUpgrade,
+    forceUpgrade: form.channel === "beta" ? false : form.forceUpgrade,
     minimumVersion: form.minimumVersion.trim() || "0.0.0"
   };
 }

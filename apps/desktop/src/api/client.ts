@@ -57,6 +57,8 @@ export type ClientUpdateArtifact = {
 export type ClientUpdateCheckResult = {
   platform: PlatformTarget | "ios";
   channel: ReleaseChannel;
+  /** Channel of the offered build; older servers omit it. */
+  releaseChannel?: ReleaseChannel | null;
   currentVersion: string;
   latestVersion: string;
   minimumVersion: string;
@@ -1306,6 +1308,7 @@ export function normalizeUpdateCheckResult(
   return {
     platform: readPlatform(record.platform) ?? fallback.platform,
     channel: readChannel(record.channel) ?? fallback.channel,
+    releaseChannel: readChannel(record.releaseChannel),
     currentVersion: fallback.currentVersion,
     latestVersion,
     minimumVersion,

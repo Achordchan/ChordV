@@ -30,6 +30,7 @@ export function ReleaseEditorModal(p: ReleaseEditorModalProps) {
   const platform=releasePlatformOptions.find(x=>x.value===p.form.platform)?.label;
   const channel=releaseChannelLabel(p.form.channel);
   const channelLocked=p.editing&&p.form.status!=="draft";
+  const beta=p.form.channel==="beta";
   const steps=p.editing?["版本信息","确认保存"]:["版本信息","安装包","确认保存"];
   const final=step===steps.length-1;
   return <section className={styles.editor}>
@@ -47,12 +48,12 @@ export function ReleaseEditorModal(p: ReleaseEditorModalProps) {
           onChange={value=>value&&p.onChange({...p.form,channel:value as ReleaseEditorFormState["channel"]})}/>
         <Group grow><TextInput label="版本号" placeholder="例如 1.2.0" value={p.form.version} disabled={p.editing||p.saving} onChange={e=>p.onChange({...p.form,version:e.currentTarget.value})}/><TextInput label="发布标题" value={p.form.title} disabled={p.saving} onChange={e=>p.onChange({...p.form,title:e.currentTarget.value})}/></Group>
         <Textarea label="更新说明" description="每行一条，展示给客户端用户" autosize minRows={5} value={p.form.changelog} disabled={p.saving} onChange={e=>p.onChange({...p.form,changelog:e.currentTarget.value})}/>
-        <Checkbox label="强制更新" description="开启后，旧版客户端必须更新才能继续使用。" checked={p.form.forceUpgrade} disabled={p.saving} onChange={e=>p.onChange({...p.form,forceUpgrade:e.currentTarget.checked})}/>
-        {!p.form.forceUpgrade && p.form.minimumVersion.trim() && p.form.minimumVersion.trim() !== "0.0.0" ? <Text size="sm" c="orange.8">低于 {p.form.minimumVersion} 的客户端仍须更新。若不限制旧版，请将最低兼容版本设为 0.0.0。</Text> : null}
-        <details><summary>最低兼容版本</summary><TextInput mt="sm" label="最低可用版本" description="低于此版本仍会强制更新；0.0.0 表示不限制。" value={p.form.minimumVersion} disabled={p.saving} onChange={e=>p.onChange({...p.form,minimumVersion:e.currentTarget.value})}/></details>
+        <Checkbox label="强制更新" description={beta?"测试版始终是可选更新，不会强制任何客户端；转为正式版后可再开启。":"开启后，旧版客户端必须更新才能继续使用。"} checked={p.form.forceUpgrade&&!beta} disabled={p.saving||beta} onChange={e=>p.onChange({...p.form,forceUpgrade:e.currentTarget.checked})}/>
+        {!beta && !p.form.forceUpgrade && p.form.minimumVersion.trim() && p.form.minimumVersion.trim() !== "0.0.0" ? <Text size="sm" c="orange.8">低于 {p.form.minimumVersion} 的客户端仍须更新。若不限制旧版，请将最低兼容版本设为 0.0.0。</Text> : null}
+        <details><summary>最低兼容版本</summary><TextInput mt="sm" label="最低可用版本" description={beta?"测试版不限制旧版客户端；转为正式版后此项才生效。":"低于此版本仍会强制更新；0.0.0 表示不限制。"} value={p.form.minimumVersion} disabled={p.saving} onChange={e=>p.onChange({...p.form,minimumVersion:e.currentTarget.value})}/></details>
         {p.editing?<Text size="sm" c="dimmed">安装包在版本详情中单独管理；已发布版本需先撤回再调整安装包。</Text>:null}
       </>:!final?<><NewReleaseArtifactFields form={p.form} saving={p.saving} onChange={p.onChange}/></>:<>
-        <dl className={styles.facts}><div><dt>平台与版本</dt><dd>{platform} {p.form.version}</dd></div><div><dt>发布通道</dt><dd>{channel}</dd></div><div><dt>更新策略</dt><dd>{p.form.forceUpgrade?"强制更新":"可选更新"} · 最低兼容 {p.form.minimumVersion||"0.0.0"}</dd></div><div><dt>标题</dt><dd>{p.form.title||"使用默认标题"}</dd></div>{!p.editing?<div><dt>安装包来源</dt><dd>{p.form.artifactSource==="external"?(p.form.downloadUrl||"暂不添加安装包"):(p.form.selectedFile?.name||"暂不添加安装包")}</dd></div>:null}</dl>
+        <dl className={styles.facts}><div><dt>平台与版本</dt><dd>{platform} {p.form.version}</dd></div><div><dt>发布通道</dt><dd>{channel}</dd></div><div><dt>更新策略</dt><dd>{beta?"可选更新（测试版不强制）":`${p.form.forceUpgrade?"强制更新":"可选更新"} · 最低兼容 ${p.form.minimumVersion||"0.0.0"}`}</dd></div><div><dt>标题</dt><dd>{p.form.title||"使用默认标题"}</dd></div>{!p.editing?<div><dt>安装包来源</dt><dd>{p.form.artifactSource==="external"?(p.form.downloadUrl||"暂不添加安装包"):(p.form.selectedFile?.name||"暂不添加安装包")}</dd></div>:null}</dl>
         <Text size="sm" c="dimmed">{p.editing?"保存本次修改。":"保存后生成草稿；从发布列表确认发布，服务端会检查安装包可用性。"}</Text>
       </>}
       </Stack>

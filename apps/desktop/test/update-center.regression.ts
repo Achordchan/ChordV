@@ -4,6 +4,13 @@ import {
   createDefaultUpdateCenterItems,
   formatUpdateCenterItemMessage
 } from "../src/lib/updateCenter.ts";
+import { cleanChangelogItem } from "../src/lib/updateState.ts";
+
+function testChangelogDropsGithubAttribution() {
+  assert.equal(cleanChangelogItem("修复客户端更新缓存与异常下载残留清理 by @Achordchan in #59"), "修复客户端更新缓存与异常下载残留清理");
+  assert.equal(cleanChangelogItem("chore: 发布后台 0.0.22 by @dependabot[bot] in https://github.com/Achordchan/ChordV/pull/63"), "chore: 发布后台 0.0.22");
+  assert.equal(cleanChangelogItem("  支持 by 关键字的规则  "), "支持 by 关键字的规则", "only the trailing attribution is removed");
+}
 
 function testDefaultItems() {
   const items = createDefaultUpdateCenterItems();
@@ -59,6 +66,7 @@ function main() {
   testDefaultItems();
   testAppItemAvailable();
   testAppItemCurrent();
+  testChangelogDropsGithubAttribution();
   console.log("desktop update center regression checks passed");
 }
 

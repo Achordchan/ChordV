@@ -1,5 +1,6 @@
 import { canApplyNativeSessionRefresh } from "./lib/nativeSessionRefresh";
 import { ClientUpdateProgressPanel } from "./components/ClientUpdateProgressPanel";
+import { ClientUpdateModal } from "./components/ClientUpdateModal";
 import { lazy, Suspense } from "react";
 import { shouldReportNodeAccessRevoked } from "./lib/startupReadiness";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -2053,86 +2054,38 @@ export function App() {
         onUpdateOne={(key) => void handleUpdateCenterUpdateOne(key)}
       />
 
-      <Modal
+      <ClientUpdateModal
         opened={updateDialogOpened && effectiveUpdate !== null && !windowTransitioning}
+        update={effectiveUpdate}
+        appVersion={appVersion}
+        forceRequired={forceUpdateRequired}
+        downloadBusy={updateDownload.phase === "preparing" || updateDownload.phase === "downloading" || updateDownload.phase === "verifying"}
         onClose={() => {
           if (!forceUpdateRequired) {
             setUpdateDialogOpened(false);
           }
         }}
-        centered
-        title={effectiveUpdate?.title ?? "版本更新"}
-        withCloseButton={!forceUpdateRequired}
-        closeOnClickOutside={!forceUpdateRequired}
-        closeOnEscape={!forceUpdateRequired}
-      >
-        <Stack gap="md">
-          <Alert color={forceUpdateRequired ? "red" : "blue"} variant="light">
-            {forceUpdateRequired
-              ? "当前版本已低于最低支持版本，必须先升级客户端后再继续使用。"
-              : effectiveUpdate?.deliveryMode === "desktop_full_replace"
-                ? "下载完整更新包后会自动替换并重启应用。"
-                : "下载完成后点击“安装并重启”。应用会退出并自动完成替换安装。"}
-          </Alert>
-          <Text size="sm" c="dimmed">
-            当前版本：{formatVersionLabel(appVersion)}
-          </Text>
-          <Text size="sm" c="dimmed">
-            最新版本：{formatVersionLabel(effectiveUpdate?.latestVersion ?? appVersion)}
-          </Text>
-          <Text size="sm" c="dimmed">
-            最低支持：{formatVersionLabel(effectiveUpdate?.minimumVersion ?? appVersion)}
-          </Text>
-          <Text size="sm" c="dimmed">
-            发布渠道：正式版，仓库地址（<a href="https://github.com/achordchan" target="_blank" rel="noopener noreferrer">github.com/achordchan</a>）
-          </Text>
+        progress={updateDownload.phase === "idle" ? null : (
           <ClientUpdateProgressPanel onResetLegacyMirror={runtimeMirrorPrefix ? clearLegacyDownloadMirror : null} state={updateDownload} version={effectiveUpdate?.latestVersion} onRetry={()=>void handleUpdateDownload()} onInstall={()=>void handleQuitForUpdate()}/>
-          <Stack gap={6}>
-            <Text fw={600}>更新内容</Text>
-            {effectiveUpdate?.changelog.length ? (
-              effectiveUpdate.changelog.map((item, index) => (
-                <Text key={`${item}-${index}`} size="sm">
-                  {index + 1}. {item}
-                </Text>
-              ))
-            ) : (
-              <Text size="sm" c="dimmed">
-                本次版本暂未填写更新日志。
-              </Text>
-            )}
-          </Stack>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-            {!forceUpdateRequired ? (
-              <Button
-                variant="default"
-                disabled={updateDownload.phase === "preparing" || updateDownload.phase === "downloading" || updateDownload.phase === "verifying"}
-                onClick={() => setUpdateDialogOpened(false)}
-              >
-                稍后再说
-              </Button>
-            ) : null}
-            {effectiveUpdate?.downloadUrl ? (
-              updateDownload.phase === "completed" ? (
-                <Button
-                  color="green"
-                  onClick={() => void handleQuitForUpdate()}
-                >
-                  安装并重启
-                </Button>
-              ) : (
-                <Button
-                  loading={updateDownload.phase === "preparing" || updateDownload.phase === "downloading" || updateDownload.phase === "verifying"}
-                  onClick={() => void handleUpdateDownload()}
-                >
-                  {updateActionLabel(effectiveUpdate, updateDownload)}
-                </Button>
-              )
-            ) : (
-              <Button disabled>暂无下载地址</Button>
-            )}
-          </div>
-        </Stack>
-      </Modal>
+        )}
+        primaryAction={effectiveUpdate?.downloadUrl ? (
+          updateDownload.phase === "completed" ? (
+            <Button color="green" data-autofocus onClick={() => void handleQuitForUpdate()}>
+              安装并重启
+            </Button>
+          ) : (
+            <Button
+              data-autofocus
+              loading={updateDownload.phase === "preparing" || updateDownload.phase === "downloading" || updateDownload.phase === "verifying"}
+              onClick={() => void handleUpdateDownload()}
+            >
+              {updateActionLabel(effectiveUpdate, updateDownload)}
+            </Button>
+          )
+        ) : (
+          <Button disabled>暂无下载地址</Button>
+        )}
+      />
 
       <Modal
         opened={forcedAnnouncement !== null && !windowTransitioning}
