@@ -225,7 +225,7 @@ function testGuidanceUsesErrorNumberAndStaysPlain() {
   const vpn = deriveGuidanceFromRuntimeFailure("external_vpn_conflict: 已有 VPN 正在运行，请先断开后再连接 ChordV", "node");
   assert.equal(vpn?.errorCode, "external_vpn_conflict");
   assert.match(formatGuidanceMessage(vpn!), /\n错误编号：external_vpn_conflict$/);
-  assert.ok(vpn?.detail?.includes("external_vpn_conflict"), "raw failure kept for copy");
+  assert.ok(vpn?.diagnostic?.includes("external_vpn_conflict"), "raw failure kept for copy");
   const failures = [
     "external_proxy_conflict",
     "windows_proxy_failed InternetSetOption",

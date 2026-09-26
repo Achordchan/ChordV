@@ -42,8 +42,8 @@ export type ConnectionGuidance = {
   recommendedNodeId?: string | null;
   /** 稳定的机器错误码，只作为「错误编号」次要展示。 */
   errorCode?: string | null;
-  /** 原始失败文本，仅供复制诊断 / 日志使用，不作为主文案展示。 */
-  detail?: string | null;
+  /** 原始失败文本，仅供日志 / 复制诊断使用，绝不能作为界面上的 detail 展示。 */
+  diagnostic?: string | null;
 };
 
 export function readError(message: string) {
@@ -350,7 +350,7 @@ export function deriveGuidanceFromRuntimeFailure(
   fallbackNodeId: string | null
 ): ConnectionGuidance | null {
   const guidance = deriveGuidanceFromRuntimeFailureText(rawMessage, fallbackNodeId);
-  return guidance ? { ...guidance, detail: rawMessage.trim() || null } : null;
+  return guidance ? { ...guidance, diagnostic: rawMessage.trim() || null } : null;
 }
 
 function deriveGuidanceFromRuntimeFailureText(
