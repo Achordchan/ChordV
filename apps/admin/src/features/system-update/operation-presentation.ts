@@ -77,3 +77,68 @@ export function operationProgress(operation: SystemUpdateOperationDto | null, ki
     }))
   };
 }
+
+/** A normal update restart: drain ~1s, supervisor promotion and readiness
+ * ~15s, then STABILIZE_SECONDS (10s) before the new process is approved, plus
+ * one admin webroot poll (3s). 30s covers that with margin, so the countdown
+ * rarely runs out before the confirmed reload happens. */
+export const RESTART_COUNTDOWN_SECONDS = 30;
+/** Past the supervisor's 90s health gate plus its rollback: something needs a
+ * human look. Checking continues; the view only stops sounding reassuring. */
+export const RESTART_OVERDUE_SECONDS = 180;
+/** Fixed retry cadence while a restart is expected (replaces 3s→30s backoff). */
+export const RESTART_RETRY_MS = 2000;
+export const RESTART_OVERDUE_RETRY_MS = 5000;
+
+export type RestartWait = { operationId: string; kind: SystemUpdateOperationDto["kind"]; toVersion: string | null; since: number };
+
+// Phases in which this process is (about to be) gone: the app marks "draining"
+// right before it exits, and every later phase is supervisor-owned.
+const RESTART_PHASES = new Set(["draining", ...SWITCH_PHASES]);
+const isRunning = (operation: SystemUpdateOperationDto) => operation.status === "running" || operation.status === "pending";
+
+/** A live snapshot that already says the process is going down. Rollback and
+ * restart have no app-side stage besides a momentary "checking". */
+export function restartImminent(operation: SystemUpdateOperationDto) {
+  return isRunning(operation) && (operation.kind !== "update" || Boolean(operation.phase && RESTART_PHASES.has(operation.phase)));
+}
+
+/** Whether losing the connection now is the expected restart. After extraction
+ * the app only detects migrations and marks "draining" before draining closes
+ * every stream, and the drain usually wins the race against that last event —
+ * so the last delivered phase of a healthy update is "extracting". Extraction
+ * failures are reported over the still-open stream rather than by a drop.
+ * A drop while checking or downloading stays "unconfirmed". */
+export function restartExpected(operation: SystemUpdateOperationDto) {
+  return restartImminent(operation) || (isRunning(operation) && operation.kind === "update" && operation.phase === "extracting");
+}
+
+/** Next restart-wait state for the latest operation snapshot and connection. */
+export function trackRestart(current: RestartWait | null, operation: SystemUpdateOperationDto | null,
+  connection: UpdateConnection, now: number): RestartWait | null {
+  if (!operation) return current;
+  if (current && current.operationId !== operation.operationId) current = null;
+  if (!isRunning(operation)) return null;
+  const live = connection === "live";
+  const expected = live ? restartImminent(operation) : connection === "reconnecting" && restartExpected(operation);
+  if (expected) return current ?? { operationId: operation.operationId, kind: operation.kind, toVersion: operation.toVersion ?? null, since: now };
+  // A live snapshot from an earlier stage proves the process never restarted
+  // (e.g. a network blip during extraction): back to regular progress.
+  return live ? null : current;
+}
+
+export function restartView(wait: RestartWait, now: number) {
+  const elapsed = Math.max(0, Math.floor((now - wait.since) / 1000));
+  const countdown = Math.max(0, RESTART_COUNTDOWN_SECONDS - elapsed);
+  const overdue = elapsed >= RESTART_OVERDUE_SECONDS;
+  const title = overdue ? "服务长时间未恢复"
+    : wait.kind === "update" ? "更新已安装，服务正在重启"
+    : wait.kind === "rollback" ? "回滚已就绪，服务正在重启" : "服务正在重启";
+  // A same-version restart keeps the page; update/rollback reload onto the new build.
+  const reloads = wait.kind !== "restart";
+  const description = overdue
+    ? `已等待约 ${Math.floor(elapsed / 60)} 分钟，仍在自动检测。包含数据库迁移时可能需要更久；如持续无响应，请检查服务器状态后刷新页面。`
+    : countdown > 0 ? (reloads ? `${countdown} 秒后自动刷新页面` : `预计 ${countdown} 秒内恢复`)
+    : reloads ? "即将完成，正在确认服务状态，恢复后自动刷新页面。" : "即将完成，正在确认服务状态。";
+  return { title, description, countdown, overdue, percent: Math.min(100, Math.round(elapsed / RESTART_COUNTDOWN_SECONDS * 100)) };
+}
