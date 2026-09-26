@@ -778,8 +778,10 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
     [handleForcedGuidance, options, syncAnnouncementsState, syncSubscriptionState]
   );
 
-  const handleConnect = useCallback(async (connectOptions?: { bypassStatusGate?: boolean; nodeId?: string | null }) => {
+  const handleConnect = useCallback(async (connectOptions?: { bypassStatusGate?: boolean; nodeId?: string | null; mode?: ConnectionMode }) => {
     const bypassStatusGate = Boolean(connectOptions?.bypassStatusGate);
+    // A mode chosen in the same tick (tray switch) is not in options yet.
+    const connectMode = connectOptions?.mode ?? options.mode;
     const preferredNodeId =
       connectOptions?.nodeId ??
       options.selectedNodeId ??
@@ -861,7 +863,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         debugAndroidConnect("handleConnect:start", {
           status: options.desktopStatus.status,
           nodeId: selectedNode.id,
-          mode: options.mode
+          mode: connectMode
         });
         if (options.desktopStatus.platformTarget === "android" && options.desktopStatus.status === "error") {
           const staleSessionId = options.runtime?.sessionId ?? options.desktopStatus.activeSessionId;
@@ -877,10 +879,10 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           connectSession({
             accessToken,
             nodeId: selectedNode.id,
-            mode: options.mode
+            mode: connectMode
           });
         try {
-          debugAndroidConnect("handleConnect:connect-session:request", { nodeId: selectedNode.id, mode: options.mode });
+          debugAndroidConnect("handleConnect:connect-session:request", { nodeId: selectedNode.id, mode: connectMode });
           config = await connectWithAccessToken(configAccessToken);
           debugAndroidConnect("handleConnect:connect-session:success", {
             sessionId: config.sessionId,
@@ -1048,6 +1050,18 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
     options
   ]);
 
+  /** Applies a tray node/mode switch to a live connection by reconnecting with it. */
+  const handleSwitchConnection = useCallback(async (target: { nodeId?: string; mode?: ConnectionMode }) => {
+    if (actionBusy || options.desktopStatus.status !== "connected") {
+      return false;
+    }
+    const nodeId = target.nodeId ?? options.runtime?.node.id ?? options.desktopStatus.activeNodeId ?? options.selectedNodeId ?? null;
+    options.setConnectionGuidance(null);
+    if (!await disconnectCurrentRuntime({ notifyServer: true })) return false;
+    await handleConnect({ bypassStatusGate: true, nodeId, mode: target.mode });
+    return true;
+  }, [actionBusy, disconnectCurrentRuntime, handleConnect, options]);
+
   const handleEmergencyDisconnect = useCallback(async () => {
     if (actionBusy === "disconnect") {
       return;
@@ -1101,6 +1115,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
     handlePrimaryAction,
     handleDisconnect,
     handleReconnect,
+    handleSwitchConnection,
     handleEmergencyDisconnect,
     handleForcedGuidance,
     syncForegroundState,

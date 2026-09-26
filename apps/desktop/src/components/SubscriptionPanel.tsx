@@ -28,7 +28,7 @@ import {
 } from "@tabler/icons-react";
 
 export type SubscriptionServerProbe = {
-  status: "checking" | "healthy" | "slow" | "failed";
+  status: "checking" | "healthy" | "failed";
   label: string;
   detail: string;
 };
@@ -70,7 +70,6 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
     return (
       <Paper
         withBorder
-        radius={28}
         p="lg"
         className={isTeam ? "subscription-card subscription-card--team subscription-card--mobile" : "subscription-card subscription-card--mobile"}
       >
@@ -78,11 +77,11 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
           <Group justify="space-between" align="flex-start" wrap="nowrap" className="subscription-mobile__head">
             <Stack gap={4} style={{ minWidth: 0, flex: 1 }}>
               <Group gap="xs" wrap="nowrap" align="center">
-                <Title order={2} style={{ lineHeight: 1.05 }} className="subscription-mobile__title">
+                <Title order={2} className="subscription-mobile__title">
                   {title}
                 </Title>
                 {isTeam ? (
-                  <ThemeIcon variant="light" color="amber" radius="xl" size={28}>
+                  <ThemeIcon variant="light" color="yellow" radius="xl" size={28}>
                     <IconSparkles size={16} />
                   </ThemeIcon>
                 ) : null}
@@ -95,7 +94,7 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
                   {subtitle}
                 </Text>
                 {isTeam ? (
-                  <Badge variant="light" color="amber">
+                  <Badge variant="light" color="yellow">
                     高级订阅
                   </Badge>
                 ) : null}
@@ -104,7 +103,7 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
 
             <Menu shadow="md" width={180} position="bottom-end">
               <Menu.Target>
-                <ActionIcon variant={isTeam ? "white" : "default"} color={isTeam ? "dark" : "gray"} radius="xl" size={38}>
+                <ActionIcon variant={isTeam ? "white" : "default"} color={isTeam ? "dark" : "gray"} size={38} aria-label="更多操作">
                   <IconDots size={18} />
                 </ActionIcon>
               </Menu.Target>
@@ -132,16 +131,7 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
             </Menu>
           </Group>
 
-          <Paper
-            withBorder
-            radius="xl"
-            p="sm"
-            className="subscription-mobile__network"
-            style={{
-              background: isTeam ? "rgba(255,255,255,0.08)" : "rgba(248, 250, 252, 0.92)",
-              borderColor: isTeam ? "rgba(255,255,255,0.12)" : "rgba(148, 163, 184, 0.18)"
-            }}
-          >
+          <div className="subscription-mobile__network">
             <Group justify="space-between" align="center" wrap="nowrap">
               <Stack gap={2}>
                 <Text size="xs" c={isTeam ? "rgba(255,255,255,0.7)" : "dimmed"}>
@@ -172,8 +162,8 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
                 <ActionIcon
                   variant="light"
                   color={serverColor}
-                  radius="xl"
                   size={42}
+                  aria-label="重新检测线路"
                   onClick={props.onRefreshServerProbe}
                   loading={props.serverProbeBusy}
                 >
@@ -181,7 +171,7 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
                 </ActionIcon>
               </Tooltip>
             </Group>
-          </Paper>
+          </div>
 
           <SimpleGrid cols={2} spacing="sm" verticalSpacing="sm" className="subscription-mobile__actions">
             <Indicator
@@ -196,7 +186,6 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
               <Button
                 variant={isTeam ? "white" : "default"}
                 color={isTeam ? "dark" : "gray"}
-                radius="xl"
                 leftSection={<IconBell size={16} />}
                 rightSection={<IconChevronRight size={14} />}
                 justify="space-between"
@@ -218,7 +207,6 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
               <Button
                 variant={isTeam ? "white" : "default"}
                 color={isTeam ? "dark" : "gray"}
-                radius="xl"
                 leftSection={<IconLifebuoy size={16} />}
                 rightSection={<IconChevronRight size={14} />}
                 justify="space-between"
@@ -249,7 +237,6 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
   return (
     <Paper
       withBorder
-      radius="md"
       p="md"
       className={isTeam ? "subscription-card subscription-card--team" : "subscription-card"}
     >
@@ -257,7 +244,7 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
         <div className="subscription-head">
           <div className="subscription-copy">
             <Group gap="sm" align="baseline" wrap="wrap" className="subscription-title-row">
-              <Title order={2}>{title}</Title>
+              <Title order={2} className="subscription-title">{title}</Title>
               <Text c={isTeam ? "rgba(255,255,255,0.82)" : "dimmed"} size="sm" className="subscription-email">
                 {props.bootstrap.user.email}
               </Text>
@@ -267,7 +254,7 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
                 {subtitle}
               </Text>
               {isTeam ? (
-                <Badge variant="light" color="amber">
+                <Badge variant="light" color="yellow">
                   高级订阅
                 </Badge>
               ) : null}
@@ -395,21 +382,20 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
 
 function probeColor(status: SubscriptionServerProbe["status"]) {
   if (status === "healthy") return "green";
-  if (status === "slow") return "yellow";
   if (status === "failed") return "red";
   return "gray";
 }
 
 function MetricItem(props: { label: string; value: string; inverse?: boolean; compactValue?: boolean }) {
   return (
-    <Paper withBorder radius="md" p="md" className={props.inverse ? "metric-item metric-item--inverse" : "metric-item"}>
-      <Text size="sm" c={props.inverse ? "rgba(255,255,255,0.72)" : "dimmed"} className="metric-label">
+    <div className={props.inverse ? "metric-item metric-item--inverse" : "metric-item"}>
+      <Text size="xs" c={props.inverse ? "rgba(255,255,255,0.72)" : "dimmed"} className="metric-label">
         {props.label}
       </Text>
-      <Text fw={700} mt="xs" className={props.compactValue ? "metric-value metric-value--compact" : "metric-value"}>
+      <Text fw={650} className={props.compactValue ? "metric-value metric-value--compact" : "metric-value"}>
         {props.value}
       </Text>
-    </Paper>
+    </div>
   );
 }
 

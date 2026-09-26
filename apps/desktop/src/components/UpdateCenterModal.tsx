@@ -1,6 +1,5 @@
-import { useState } from "react";
-import { Badge, Button, Collapse, Group, Loader, Modal, Switch, Text, UnstyledButton } from "@mantine/core";
-import { IconAlertCircle, IconChevronDown, IconCircleCheckFilled, IconClock } from "@tabler/icons-react";
+import { Badge, Button, Group, Loader, Modal, Switch, Text } from "@mantine/core";
+import { IconAlertCircle, IconArrowRight, IconCircleCheckFilled, IconClock } from "@tabler/icons-react";
 import appIcon from "../../src-tauri/icons/icon.png";
 import type { UpdateCenterItem, UpdateCenterItemKey, UpdateCenterState } from "../lib/updateCenter";
 import styles from "./UpdateCenterModal.module.css";
@@ -21,10 +20,12 @@ type UpdateCenterModalProps = {
 };
 
 export function UpdateCenterModal(props: UpdateCenterModalProps) {
-  const [detailsOpened, setDetailsOpened] = useState(false);
   const app = props.state.items.find((item) => item.key === "app");
   const runtimeItems = props.state.items.filter((item) => item.key !== "app");
   const runtimeChecking = props.runtimeBusy || props.state.checking;
+  // Only states the user can act on or should wait for get a line of explanation.
+  const runtimeNotice = props.syncDeferred ? "连接期间暂缓更新，断开连接后将自动同步。"
+    : props.syncError && !runtimeChecking ? props.syncError : null;
   return (
     <Modal
       opened={props.state.opened}
@@ -62,55 +63,33 @@ export function UpdateCenterModal(props: UpdateCenterModalProps) {
 
       <section className={styles.components} aria-labelledby="runtime-components-heading">
         <Text id="runtime-components-heading" className={styles.sectionTitle}>运行组件</Text>
-        <Text c="dimmed" size="sm" mt={5}>
-          {props.syncDeferred ? "组件待同步，断开连接后将自动更新。"
-            : props.syncError && !runtimeChecking ? props.syncError
-              : "自动同步，连接期间暂缓更新。"}
-        </Text>
+        {runtimeNotice ? <Text c={props.syncError && !props.syncDeferred ? "red" : "dimmed"} size="sm" mt={5}>{runtimeNotice}</Text> : null}
         <div className={styles.rows} aria-live="polite">
           {runtimeItems.map((item) => {
             const waiting = props.runtimeInUse && (props.syncDeferred || item.status === "available");
             const actionable = item.canUpdate || item.status === "failed";
             return (
               <div key={item.key} className={styles.row}>
-                <Text size="sm" fw={600}>{item.key === "xray" ? "Xray 内核" : "GEO 数据"}</Text>
-                <Group gap="sm" justify="flex-end" className={styles.rowStatus}>
-                  {runtimeChecking ? <Group gap={6}><Loader size={16} /><Text size="sm" c="dimmed">{props.state.checking ? "正在检查" : "正在同步"}</Text></Group>
-                    : waiting ? <Group gap={6}><IconClock size={18} /><Text size="sm" c="dimmed">等待断开连接</Text></Group>
-                      : <ItemStatus item={item} />}
-                  {actionable && !runtimeChecking && !waiting && (
-                    <Button size="xs" variant="light" disabled={props.busy || props.runtimeInUse} onClick={() => props.onUpdateOne(item.key)}>
-                      {item.status === "failed" ? "重试同步" : "同步"}
-                    </Button>
-                  )}
-                </Group>
+                <div className={styles.rowMain}>
+                  <Text size="sm" fw={600}>{item.key === "xray" ? "Xray 内核" : "GEO 数据"}</Text>
+                  <Group gap="sm" justify="flex-end" wrap="nowrap" className={styles.rowStatus}>
+                    {runtimeChecking ? <Group gap={6} wrap="nowrap"><Loader size={14} /><Text size="sm" c="dimmed">{props.state.checking ? "正在检查" : "正在同步"}</Text></Group>
+                      : <RuntimeVersion item={item} waiting={waiting} />}
+                    {actionable && !runtimeChecking && !waiting && (
+                      <Button size="compact-sm" variant="light" disabled={props.busy || props.runtimeInUse} onClick={() => props.onUpdateOne(item.key)}>
+                        {item.status === "failed" ? "重试" : "同步"}
+                      </Button>
+                    )}
+                  </Group>
+                </div>
+                {item.status === "failed" && item.message && !runtimeChecking
+                  ? <Text size="xs" c="red" className={styles.rowMessage}>{item.message}</Text> : null}
               </div>
             );
           })}
         </div>
       </section>
 
-      <UnstyledButton
-        className={styles.detailsToggle}
-        aria-expanded={detailsOpened}
-        aria-controls="update-version-details"
-        onClick={() => setDetailsOpened((value) => !value)}
-      >
-        <IconChevronDown size={16} style={{ transform: detailsOpened ? "rotate(180deg)" : undefined }} />
-        <span>{detailsOpened ? "收起版本详情" : "查看版本详情"}</span>
-      </UnstyledButton>
-      <Collapse in={detailsOpened}>
-        <div id="update-version-details" className={styles.details}>
-          {props.state.items.map((item) => (
-            <div key={item.key} className={styles.detailItem}>
-              <Text size="sm" fw={600}>{item.key === "app" ? "客户端" : item.label}</Text>
-              <Text size="sm" c="dimmed">当前版本：{item.localVersion || (item.key === "app" ? props.appVersion : "尚未读取")}</Text>
-              <Text size="sm" c="dimmed">{item.key === "app" ? "可用版本" : "后台目标版本"}：{item.remoteVersion || "尚未获取"}</Text>
-              {item.message && item.status !== "current" && <Text size="sm" c={item.status === "failed" ? "red" : "dimmed"}>{item.message}</Text>}
-            </div>
-          ))}
-        </div>
-      </Collapse>
       <div className={styles.footer}>
         <Text size="xs" c="dimmed">{props.state.lastCheckedAt
           ? `上次检查：${new Date(props.state.lastCheckedAt).toLocaleString("zh-CN", { hour12: false })}`
@@ -121,18 +100,48 @@ export function UpdateCenterModal(props: UpdateCenterModalProps) {
   );
 }
 
-function ItemStatus({ item }: { item: UpdateCenterItem }) {
-  if (item.status === "checking" || item.status === "updating") {
-    return <Group gap={6}><Loader size={16} /><Text size="sm" c="dimmed">{item.status === "checking" ? "正在检查" : "正在更新"}</Text></Group>;
+/** Current version, plus a check when it matches the version the backend distributes. */
+function RuntimeVersion({ item, waiting }: { item: UpdateCenterItem; waiting: boolean }) {
+  const local = item.localVersion?.trim() || null;
+  const remote = item.remoteVersion?.trim() || null;
+  if (item.status === "updating") {
+    return <Group gap={6} wrap="nowrap"><Loader size={14} /><Text size="sm" c="dimmed">正在更新</Text></Group>;
   }
   if (item.status === "current") {
-    return item.key === "app" ? <Badge color="green" variant="light">已是最新</Badge>
-      : <Group gap={7} c="green"><IconCircleCheckFilled size={18} /><Text size="sm">已同步</Text></Group>;
+    return (
+      <Group gap={6} wrap="nowrap" className={styles.version}>
+        <Text size="sm" className={styles.versionText}>{local ?? remote ?? "已安装"}</Text>
+        <IconCircleCheckFilled size={16} className={styles.versionOk} aria-label="与后台版本一致" />
+      </Group>
+    );
+  }
+  if (item.status === "available") {
+    return (
+      <Group gap={6} wrap="nowrap" className={styles.version}>
+        {waiting ? <IconClock size={15} className={styles.versionMuted} aria-hidden="true" /> : null}
+        <Text size="sm" className={styles.versionText} c="dimmed">{local ?? "未安装"}</Text>
+        {remote ? <><IconArrowRight size={13} className={styles.versionMuted} aria-hidden="true" /><Text size="sm" c="cyan.7" className={styles.versionText}>{remote}</Text></> : null}
+      </Group>
+    );
   }
   if (item.status === "failed") {
-    return <Group gap={6} c="red"><IconAlertCircle size={18} /><Text size="sm">{item.key === "app" ? "检查失败" : "同步未完成"}</Text></Group>;
+    return (
+      <Group gap={6} wrap="nowrap" className={styles.version}>
+        {local ? <Text size="sm" className={styles.versionText} c="dimmed">{local}</Text> : null}
+        <IconAlertCircle size={16} className={styles.versionFailed} aria-label="同步未完成" />
+      </Group>
+    );
   }
+  return <Text size="sm" c="dimmed">{item.status === "unsupported" ? "暂不可用" : "尚未检查"}</Text>;
+}
+
+function ItemStatus({ item }: { item: UpdateCenterItem }) {
+  if (item.status === "checking" || item.status === "updating") {
+    return <Group gap={6}><Loader size={14} /><Text size="sm" c="dimmed">{item.status === "checking" ? "正在检查" : "正在更新"}</Text></Group>;
+  }
+  if (item.status === "current") return <Badge color="green" variant="light">已是最新</Badge>;
+  if (item.status === "failed") return <Group gap={6} c="red"><IconAlertCircle size={16} /><Text size="sm">检查失败</Text></Group>;
   return <Text size="sm" c={item.status === "available" ? "cyan" : "dimmed"}>
-    {item.status === "available" ? (item.key === "app" ? "有新版本" : "待同步") : item.status === "unsupported" ? "暂不可用" : "尚未检查"}
+    {item.status === "available" ? "有新版本" : item.status === "unsupported" ? "暂不可用" : "尚未检查"}
   </Text>;
 }

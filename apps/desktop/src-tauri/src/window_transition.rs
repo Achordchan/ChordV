@@ -2,7 +2,11 @@
 use tauri::WebviewWindow;
 
 const LOGIN_SIZE: (f64, f64) = (660.0, 440.0);
-const MAIN_SIZE: (f64, f64) = (980.0, 700.0);
+const MAIN_SIZE: (f64, f64) = (880.0, 620.0);
+/// macOS uses an overlay title bar (tauri.conf.json `titleBarStyle`), so the web content
+/// also covers the title bar; its height is added to keep the layout area unchanged.
+#[cfg(target_os = "macos")]
+const TITLE_BAR_INSET: f64 = 28.0;
 
 #[derive(Default)]
 pub struct WindowTransitionState(tokio::sync::Mutex<()>);
@@ -40,6 +44,8 @@ pub async fn transition_main_window(
 #[cfg(target_os = "macos")]
 async fn transition(window: WebviewWindow, size: (f64, f64), animate: bool) -> Result<(), String> {
     use objc2_app_kit::NSWindow;
+    let size = (size.0, size.1 + TITLE_BAR_INSET);
+    let login_size = (LOGIN_SIZE.0, LOGIN_SIZE.1 + TITLE_BAR_INSET);
     use objc2_foundation::{NSPoint, NSRect, NSSize};
     let (send, receive) = tokio::sync::oneshot::channel();
     let handle = window.clone();
@@ -59,7 +65,7 @@ async fn transition(window: WebviewWindow, size: (f64, f64), animate: bool) -> R
                 Frame { x: from.origin.x, y: from.origin.y, width: from.size.width, height: from.size.height },
                 (requested.size.width, requested.size.height), bounds,
             );
-            native.setContentMinSize(NSSize::new(LOGIN_SIZE.0, LOGIN_SIZE.1));
+            native.setContentMinSize(NSSize::new(login_size.0, login_size.1));
             // AppKit changes position and size atomically and supplies its own
             // resize animation, rather than two asynchronous JS IPC calls per frame.
             native.setFrame_display_animate(

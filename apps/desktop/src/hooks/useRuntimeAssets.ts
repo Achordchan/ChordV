@@ -202,6 +202,12 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
       if (cancelRequestedRef.current) {
         return;
       }
+      // Native events travel separately from the command result, so a "completed"
+      // event can land after the task has already settled on ready/failed. Only the
+      // running task may feed progress; otherwise the banner is stuck on completed.
+      if (!runtimeAssetsTaskRef.current) {
+        return;
+      }
       setRuntimeAssets((current) => normalizeRuntimeAssetsProgress(current, progress));
     }).then((cleanup) => {
       if (disposed) {
@@ -624,7 +630,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                 && localInfos.geosite?.exists
                 && (localInfos.geosite.sizeBytes ?? 0) > 0
               ) {
-                writeStoredGeoPlanRevision(revision);
+                writeStoredGeoPlanRevision(revision, resolveGeoPlanVersionLabel(geoPlanItems));
               }
             }
           }
@@ -686,12 +692,16 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                     geoItems.map((item) => checkRuntimeComponentFile(item).catch(() => null))
                   );
                   if (localStatuses.every((status) => status?.ready)) {
-                    writeStoredGeoPlanRevision(remoteRevision);
+                    writeStoredGeoPlanRevision(remoteRevision, remoteVersionLabel);
                     geoCurrent = true;
                   }
                 }
 
                 if (geoCurrent) {
+                  // Backfill the installed label for installs recorded before labels were stored.
+                  if (remoteVersionLabel && storedGeoVersionLabel !== remoteVersionLabel) {
+                    writeStoredGeoPlanRevision(remoteRevision, remoteVersionLabel);
+                  }
                   summary.geo.localVersion = remoteVersionLabel ?? storedGeoVersionLabel ?? "后台配置";
                   summary.geo.current = true;
                   summary.geo.available = false;
@@ -751,7 +761,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                     && (localInfos.geosite.sizeBytes ?? 0) > 0
                   );
                   if (bothReady && summary.failed.length === 0) {
-                    writeStoredGeoPlanRevision(remoteRevision);
+                    writeStoredGeoPlanRevision(remoteRevision, remoteVersionLabel);
                     summary.geo.localVersion = remoteVersionLabel ?? "后台配置";
                     summary.geo.current = true;
                     summary.geo.available = false;

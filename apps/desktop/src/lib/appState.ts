@@ -33,6 +33,17 @@ export function primaryButtonLabel(
   return "启动连接";
 }
 
+/** One read-only tray line: what is left and until when. */
+export function formatTrayTrafficLine(subscription: SubscriptionStatusDto) {
+  const remaining = Number.isFinite(subscription.remainingTrafficGb) ? Math.max(0, subscription.remainingTrafficGb) : 0;
+  const amount = remaining >= 100 ? remaining.toFixed(0) : remaining.toFixed(1).replace(/\.0$/, "");
+  const expireAt = new Date(subscription.expireAt);
+  const prefix = subscription.ownerType === "team" ? "团队剩余" : "剩余";
+  if (!Number.isFinite(expireAt.getTime())) return `${prefix} ${amount} GB`;
+  const date = `${expireAt.getFullYear()}/${`${expireAt.getMonth() + 1}`.padStart(2, "0")}/${`${expireAt.getDate()}`.padStart(2, "0")}`;
+  return `${prefix} ${amount} GB · ${date} 到期`;
+}
+
 export function pickNode(
   nodes: NodeSummaryDto[],
   preferredId: string | null,
@@ -111,12 +122,6 @@ export function toSubscriptionServerProbe(serverProbe: ServerProbeState): Subscr
         status: "healthy",
         label: "连接服务器正常",
         detail: serverProbe.elapsedMs !== null ? `连接服务器延迟 ${serverProbe.elapsedMs} ms` : "服务器连接正常"
-      };
-    case "slow":
-      return {
-        status: "slow",
-        label: "连接服务器较慢",
-        detail: serverProbe.elapsedMs !== null ? `连接服务器延迟 ${serverProbe.elapsedMs} ms` : "服务器有响应，但速度偏慢"
       };
     case "failed":
       return {

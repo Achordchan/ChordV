@@ -133,7 +133,6 @@ export function LoginScreen(props: LoginScreenProps) {
                 <Button
                   variant="light"
                   color="red"
-                  radius="xl"
                   loading={props.emergencyRuntimeBusy}
                   className="auth-screen__runtime-action"
                   onClick={props.onEmergencyDisconnect}

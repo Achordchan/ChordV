@@ -9,7 +9,7 @@ import {
 } from "../api/client";
 
 export type ServerProbeState = {
-  status: "idle" | "checking" | "healthy" | "slow" | "failed";
+  status: "idle" | "checking" | "healthy" | "failed";
   elapsedMs: number | null;
   checkedAt: number | null;
   errorMessage: string | null;
@@ -33,9 +33,10 @@ export function applyServerProbeKeepalive(current: ServerProbeState): ServerProb
   };
 }
 
+// Servers are overseas, so latency alone is not a fault: reachable is healthy.
 function createOpenedServerProbeState(elapsedMs: number | null): ServerProbeState {
   return {
-    status: elapsedMs !== null && elapsedMs >= 200 ? "slow" : "healthy",
+    status: "healthy",
     elapsedMs,
     checkedAt: Date.now(),
     errorMessage: null
@@ -53,7 +54,7 @@ function createFailedServerProbeState(readError: (message: string) => string, re
 
 function createReachableServerProbeState(elapsedMs: number | null): ServerProbeState {
   return {
-    status: elapsedMs !== null && elapsedMs >= 200 ? "slow" : "healthy",
+    status: "healthy",
     elapsedMs,
     checkedAt: Date.now(),
     errorMessage: null

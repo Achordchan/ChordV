@@ -137,6 +137,12 @@ export type DesktopShellSummary = {
   signedIn?: boolean;
   nodeName: string | null;
   primaryActionLabel: string;
+  // Tray menu context: the native side renders these as they are.
+  mode?: string | null;
+  modes?: string[];
+  nodes?: { id: string; name: string; latencyMs: number | null; status: string }[];
+  selectedNodeId?: string | null;
+  trafficLine?: string | null;
 };
 
 export type NativeLeaseHeartbeatEvent = {

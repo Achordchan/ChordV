@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "发布版本，不带 v，例如 1.1.8"
+        description: "发布版本，不带 v，例如 1.1.9"
         required: true
-        default: "1.1.8"
+        default: "1.1.9"
         type: string
 
 concurrency:
