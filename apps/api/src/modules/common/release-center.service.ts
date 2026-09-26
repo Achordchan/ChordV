@@ -8,6 +8,7 @@ import * as path from "node:path";
 import type {
   AdminReleaseRecordDto,
   ClientUpdateCheckDto,
+  ClientReleaseHistoryItemDto,
   ClientUpdateCheckResultDto,
   CreateReleaseArtifactInputDto,
   CreateReleaseInputDto,
@@ -1164,6 +1165,20 @@ export class ReleaseCenterService {
       fileHash: null,
       publishedAt: latestPublishedRelease.publishedAt?.toISOString() ?? null
     };
+  }
+
+  // Same visibility as the update check: stable clients see stable releases,
+  // testers also see betas. Newest version first.
+  async listClientReleaseHistory(input: { platform: ClientUpdateCheckDto["platform"]; channel?: ReleaseChannel | null; limit?: number | null }): Promise<ClientReleaseHistoryItemDto[]> {
+    const limit = Math.min(Math.max(Math.trunc(input.limit ?? 30), 1), 50);
+    const releases = await this.findPublishedReleaseCandidates(normalizeReleaseChannel(input.channel), input.platform);
+    return releases.slice(0, limit).map((release) => ({
+      version: release.version,
+      releaseChannel: normalizeReleaseChannel(release.channel),
+      title: release.displayTitle?.trim() || release.version,
+      changelog: release.changelog,
+      publishedAt: release.publishedAt?.toISOString() ?? null
+    }));
   }
 
   async findLatestPublishedRelease(channel: ReleaseChannel, platform?: ClientUpdateCheckDto["platform"]) {

@@ -170,6 +170,20 @@ async function main() {
   assert.equal(noLoop.latestVersion, "1.1.11", "fall back like stable users do when the newest stable is unavailable");
   assert.equal(noLoop.releaseChannel, "stable");
 
+  // Release history follows update-check visibility, newest first, published only.
+  const history = createService([
+    { ...release("stable-8", "stable", "1.1.8"), changelog: ["旧版本"] },
+    { ...release("stable-9", "stable", "1.1.9"), displayTitle: "", changelog: ["修复下载状态条"] },
+    release("beta-10", "beta", "1.1.10"),
+    release("stable-11-draft", "stable", "1.1.11", "draft")
+  ]);
+  const stableHistory = await history.service.listClientReleaseHistory({ platform: "macos", channel: "stable" });
+  assert.deepEqual(stableHistory.map((item: any) => item.version), ["1.1.9", "1.1.8"], "stable history hides betas and drafts");
+  assert.equal(stableHistory[0].title, "1.1.9", "an empty title falls back to the version");
+  assert.deepEqual(stableHistory[0].changelog, ["修复下载状态条"]);
+  const testerHistory = await history.service.listClientReleaseHistory({ platform: "macos", channel: "beta", limit: 2 });
+  assert.deepEqual(testerHistory.map((item: any) => [item.version, item.releaseChannel]), [["1.1.10", "beta"], ["1.1.9", "stable"]]);
+
   // Guard rails around promotion.
   await assert.rejects(service.promoteRelease("stable-11"), /只有测试版/);
   await assert.rejects(service.promoteRelease("beta-14-draft"), /请先发布测试版/);
@@ -211,7 +225,7 @@ async function main() {
   assert.match(String((lower as PromiseRejectedResult).reason?.message), /正式版已是 1\.1\.13/);
   assert.ok(race.lockKeys.every(key => key === "chordv:release-line:macos"), "promotion locks the platform release line");
 
-  console.log("Release beta channel: tester visibility, beta never forced, no-downgrade opt-out, promotion guard rails and stable rollout passed");
+  console.log("Release beta channel: release history, tester visibility, beta never forced, no-downgrade opt-out, promotion guard rails and stable rollout passed");
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });

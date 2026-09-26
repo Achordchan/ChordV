@@ -2,6 +2,7 @@ import { Injectable } from "@nestjs/common";
 import type {
   ClientPingDto,
   PlatformTarget,
+  ReleaseChannel,
   ClientUpdateCheckDto,
   CreateClientRoutingRuleInputDto,
   CreateClientSupportTicketInputDto,
@@ -55,6 +56,10 @@ export class ClientService {
 
   checkUpdate(input: ClientUpdateCheckDto) {
     return this.devDataService.checkClientUpdate(input);
+  }
+
+  listReleaseHistory(input: { platform: PlatformTarget; channel?: ReleaseChannel | null; limit?: number | null }) {
+    return this.devDataService.listClientReleaseHistory(input);
   }
 
   listRoutingRules(token?: string) {
