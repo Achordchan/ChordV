@@ -2,7 +2,7 @@
 use tauri::WebviewWindow;
 
 const LOGIN_SIZE: (f64, f64) = (660.0, 440.0);
-const MAIN_SIZE: (f64, f64) = (880.0, 620.0);
+const MAIN_SIZE: (f64, f64) = (820.0, 560.0);
 /// macOS uses an overlay title bar (tauri.conf.json `titleBarStyle`), so the web content
 /// also covers the title bar; its height is added to keep the layout area unchanged.
 #[cfg(target_os = "macos")]
@@ -154,5 +154,13 @@ mod tests {
         let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
         assert_eq!(config["app"]["windows"][0]["width"].as_f64(), Some(LOGIN_SIZE.0));
         assert_eq!(config["app"]["windows"][0]["height"].as_f64(), Some(LOGIN_SIZE.1));
+    }
+    #[test]
+    fn linux_config_matches_main_window() {
+        // Linux has no native transition, so its fixed window must equal MAIN_SIZE.
+        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.linux.conf.json")).unwrap();
+        let window = &config["app"]["windows"][0];
+        assert_eq!((window["width"].as_f64(), window["height"].as_f64()), (Some(MAIN_SIZE.0), Some(MAIN_SIZE.1)));
+        assert_eq!((window["minWidth"].as_f64(), window["minHeight"].as_f64()), (Some(MAIN_SIZE.0), Some(MAIN_SIZE.1)));
     }
 }

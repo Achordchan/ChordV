@@ -1,4 +1,8 @@
-import { Code, Drawer, ScrollArea, Stack, Text, Title } from "@mantine/core";
+import { useEffect, useRef, useState } from "react";
+import { Button } from "@mantine/core";
+import { IconCheck, IconCopy } from "@tabler/icons-react";
+import { copyText } from "../lib/clipboard";
+import { AppDialog } from "./AppDialog";
 
 type LogDrawerProps = {
   opened: boolean;
@@ -7,22 +11,39 @@ type LogDrawerProps = {
 };
 
 export function LogDrawer(props: LogDrawerProps) {
-  return (
-    <Drawer opened={props.opened} onClose={props.onClose} position="right" size={420} title="连接诊断">
-      <Stack gap="md" h="100%">
-        <div>
-          <Title order={4}>连接诊断日志</Title>
-          <Text size="sm" c="dimmed" mt={4}>
-            如遇连接问题，请复制日志联系管理员
-          </Text>
-        </div>
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | null>(null);
+  useEffect(() => () => { if (timer.current !== null) window.clearTimeout(timer.current); }, []);
+  useEffect(() => { if (!props.opened) setCopied(false); }, [props.opened]);
 
-        <ScrollArea h="100%">
-          <Code block className="log-viewer">
-            {props.log || "当前没有日志"}
-          </Code>
-        </ScrollArea>
-      </Stack>
-    </Drawer>
+  async function copyLog() {
+    if (!props.log || !(await copyText(props.log))) return;
+    setCopied(true);
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setCopied(false), 1600);
+  }
+
+  return (
+    <AppDialog
+      opened={props.opened}
+      onClose={props.onClose}
+      title="连接诊断"
+      closeLabel="关闭连接诊断"
+      size={600}
+      fill
+      footerStart="如遇连接问题，请复制日志联系管理员"
+      actions={
+        <Button
+          variant="default"
+          disabled={!props.log}
+          leftSection={copied ? <IconCheck size={15} /> : <IconCopy size={15} />}
+          onClick={() => void copyLog()}
+        >
+          {copied ? "已复制" : "复制日志"}
+        </Button>
+      }
+    >
+      <pre className="log-viewer" tabIndex={0} aria-label="连接诊断日志">{props.log || "当前没有日志"}</pre>
+    </AppDialog>
   );
 }

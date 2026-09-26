@@ -5,7 +5,7 @@ import { lazy, Suspense } from "react";
 import { shouldReportNodeAccessRevoked } from "./lib/startupReadiness";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { Alert, Button, Checkbox, LoadingOverlay, Modal, Stack, Text, ThemeIcon, UnstyledButton } from "@mantine/core";
+import { Button, Checkbox, LoadingOverlay, Stack, Text, ThemeIcon, UnstyledButton } from "@mantine/core";
 import { notifications } from "./lib/notifications";
 import { IconHome2, IconStack2, IconUserCircle } from "@tabler/icons-react";
 import type {
@@ -26,6 +26,9 @@ import {
   type ReleaseChannel
 } from "./api/client";
 import { AnnouncementDrawer } from "./components/AnnouncementDrawer";
+import { AppDialog, DialogText } from "./components/AppDialog";
+import { GuidanceDialog } from "./components/GuidanceDialog";
+import { NoticeRow } from "./components/NoticeRow";
 import { ControlPanel } from "./components/ControlPanel";
 import { LogDrawer } from "./components/LogDrawer";
 import { LoginScreen } from "./components/LoginScreen";
@@ -73,7 +76,6 @@ import {
   resolveDefaultMode,
   saveRememberedCredentials as saveRememberedCredentialsToStorage,
   showErrorToast,
-  toneToToastColor,
   toSubscriptionServerProbe,
   formatTrayTrafficLine
 } from "./lib/appState";
@@ -1681,14 +1683,17 @@ export function App() {
   // "必须更新" button plus the floating progress card already cover this.
   const forceUpdateNotice =
     forceUpdateRequired && effectiveUpdateActionable && effectiveUpdate && !updateDialogOpened ? (
-      <div className="force-update-strip" role="status">
-        <Text size="xs" className="force-update-strip__text" lineClamp={2}>
-          {describeRequiredUpdate(effectiveUpdate, appVersion)}
-        </Text>
-        <Button size="compact-xs" variant="light" color="orange" className="force-update-strip__action" onClick={() => setUpdateDialogOpened(true)}>
-          {updateDownload.phase === "idle" ? "立即更新" : "查看进度"}
-        </Button>
-      </div>
+      <NoticeRow
+        tone="warning"
+        role="status"
+        action={
+          <Button size="compact-xs" variant="light" color="orange" onClick={() => setUpdateDialogOpened(true)}>
+            {updateDownload.phase === "idle" ? "立即更新" : "查看进度"}
+          </Button>
+        }
+      >
+        <span className="force-update-strip__text">{describeRequiredUpdate(effectiveUpdate, appVersion)}</span>
+      </NoticeRow>
     ) : null;
 
   return (
@@ -1983,51 +1988,31 @@ export function App() {
         onSubmitReply={() => void handleReplyTicket()}
       />
 
-      <Modal
+      <AppDialog
         opened={closeHintOpened && !windowTransitioning}
         onClose={() => setCloseHintOpened(false)}
-        centered
         title="关闭窗口说明"
-      >
-        <Stack gap="md">
-          <Alert color="blue" variant="light">
-            {desktopStatus.platformTarget === "windows"
-              ? "点击窗口关闭按钮后，ChordV 会缩到系统托盘继续运行。你可以从右下角托盘重新打开，真正退出请使用托盘菜单里的“退出 ChordV”。"
-              : "点击窗口关闭按钮后，ChordV 会隐藏窗口并继续在后台运行。你可以从顶部菜单栏或 Dock 恢复窗口，真正退出请使用菜单里的“退出 ChordV”。"}
-          </Alert>
+        closeLabel="关闭说明"
+        footerStart={
           <Checkbox
+            size="xs"
             checked={rememberCloseHint}
             onChange={(event) => setRememberCloseHint(event.currentTarget.checked)}
             label="下次不再提示"
           />
-          <Button size="lg" onClick={() => void acknowledgeCloseHint()}>
-            我知道了
-          </Button>
-        </Stack>
-      </Modal>
-
-      <Modal
-        opened={guidanceDialog !== null}
-        onClose={dismissGuidanceDialog}
-        centered
-        title={guidanceDialog?.title ?? ""}
+        }
+        actions={<Button data-autofocus onClick={() => void acknowledgeCloseHint()}>我知道了</Button>}
       >
-        <Stack gap="md">
-          <Alert color={toneToToastColor(guidanceDialog?.tone ?? "info")} variant="light">
-            {guidanceDialog?.message}
-          </Alert>
-          {guidanceDialog?.errorCode ? (
-            <Text size="sm" c="dimmed">
-              错误代码：{guidanceDialog.errorCode}
-            </Text>
-          ) : null}
-          <Button size="lg" onClick={dismissGuidanceDialog}>
-            {guidanceDialog?.actionLabel ?? "我知道了"}
-          </Button>
-        </Stack>
-      </Modal>
+        <DialogText>
+          {desktopStatus.platformTarget === "windows"
+            ? "点击窗口关闭按钮后，ChordV 会缩到系统托盘继续运行。你可以从右下角托盘重新打开，真正退出请使用托盘菜单里的“退出 ChordV”。"
+            : "点击窗口关闭按钮后，ChordV 会隐藏窗口并继续在后台运行。你可以从顶部菜单栏或 Dock 恢复窗口，真正退出请使用菜单里的“退出 ChordV”。"}
+        </DialogText>
+      </AppDialog>
 
-            <UpdateCenterModal
+      <GuidanceDialog guidance={guidanceDialog} onClose={dismissGuidanceDialog} />
+
+      <UpdateCenterModal
         state={updateCenter}
         appVersion={appVersion}
         runtimeBusy={runtimeAssetsBusy}
@@ -2075,31 +2060,24 @@ export function App() {
         )}
       />
 
-      <Modal
+      <AppDialog
         opened={forcedAnnouncement !== null && !windowTransitioning}
         onClose={() => {}}
-        withCloseButton={false}
-        closeOnEscape={false}
-        closeOnClickOutside={false}
-        centered
+        dismissible={false}
         title={forcedAnnouncement?.title ?? ""}
-      >
-        <Stack>
-          <Text>{forcedAnnouncement?.body}</Text>
-          {forcedAnnouncement?.displayMode === "modal_countdown" ? (
-            <Text size="sm" c="dimmed">
-              请等待 {countdown} 秒后确认
-            </Text>
-          ) : null}
+        size={460}
+        actions={
           <Button
-            size="lg"
+            data-autofocus
             disabled={forcedAnnouncement?.displayMode === "modal_countdown" && countdown > 0}
             onClick={acknowledgeAnnouncement}
           >
             {forcedAnnouncement?.displayMode === "modal_countdown" && countdown > 0 ? `请等待 ${countdown}s` : "我知道了"}
           </Button>
-        </Stack>
-      </Modal>
+        }
+      >
+        <DialogText>{forcedAnnouncement?.body}</DialogText>
+      </AppDialog>
     </div>
   );
 }

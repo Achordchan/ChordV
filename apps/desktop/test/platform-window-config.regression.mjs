@@ -4,7 +4,7 @@ const read = name => JSON.parse(readFileSync(new URL(`../src-tauri/${name}`,impo
 const base = read('tauri.conf.json').app.windows[0];
 const linux = read('tauri.linux.conf.json').app.windows[0];
 assert.deepEqual([base.width,base.height],[660,440]);
-assert.deepEqual([linux.width,linux.height,linux.minWidth,linux.minHeight],[880,620,880,620]);
+assert.deepEqual([linux.width,linux.height,linux.minWidth,linux.minHeight],[820,560,820,560]);
 assert.equal(linux.resizable,base.resizable);
 assert.equal(linux.visible,base.visible);
 console.log('platform window configuration regression checks passed');

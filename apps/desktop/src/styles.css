@@ -25,6 +25,19 @@
   --cv-shadow-sm: 0 1px 2px rgba(16, 32, 48, 0.05);
   --cv-shadow-md: 0 4px 14px rgba(16, 32, 48, 0.08);
   --cv-shadow-lg: 0 12px 32px rgba(16, 32, 48, 0.12);
+  /* Notice rows (NoticeRow): pale fill, solid hairline border, readable text. */
+  --cv-info-bg: #f2f9fb;
+  --cv-info-border: #cde6ee;
+  --cv-info-text: #155e75;
+  --cv-warning-bg: #fffaeb;
+  --cv-warning-border: #f3e0a6;
+  --cv-warning-text: #85530a;
+  --cv-danger-bg: #fdf5f4;
+  --cv-danger-border: #f3d3d1;
+  --cv-danger-text: #9f3a35;
+  --cv-success-bg: #f1faf5;
+  --cv-success-border: #cbe9d8;
+  --cv-success-text: #17704a;
 }
 
 html,
@@ -56,7 +69,7 @@ body {
 /* The native title bar already sits above the content, so the top gutter is kept short. */
 .desktop-app {
   height: 100%;
-  padding: 8px 14px 14px;
+  padding: 8px 12px 12px;
   overflow: hidden;
 }
 
@@ -112,22 +125,19 @@ body {
 }
 
 .metering-floating-banner__panel {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-height: 44px;
-  pointer-events: none;
-  background: #fffbeb;
-  border-color: #f6dfa6;
-  box-shadow: var(--cv-shadow-lg);
+  box-shadow: var(--cv-shadow-md);
 }
 
-.metering-floating-banner__badge {
-  flex: 0 0 auto;
+.metering-floating-banner__label {
+  margin-right: 8px;
+  font-weight: 600;
 }
 
 .metering-floating-banner__text {
-  min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .desktop-app--mobile {
@@ -157,23 +167,18 @@ body {
   width: calc(100vw - 20px);
 }
 
-.desktop-app--mobile .metering-floating-banner__panel {
-  min-height: 42px;
-  gap: 8px;
-}
-
 .desktop-main {
   height: 100%;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 12px;
+  gap: 10px;
 }
 
 .desktop-content {
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.95fr);
-  gap: 12px;
+  grid-template-columns: minmax(0, 1.05fr) minmax(348px, 0.95fr);
+  gap: 10px;
 }
 
 /* ---- Shared surfaces ---- */
@@ -199,8 +204,8 @@ body {
 
 .metric-item {
   min-width: 0;
-  min-height: 60px;
-  padding: 10px 12px;
+  min-height: 52px;
+  padding: 8px 12px;
   border-radius: var(--cv-radius-md);
   background: var(--cv-surface-muted);
 }
@@ -211,8 +216,8 @@ body {
 }
 
 .metric-value {
-  margin-top: 4px;
-  font-size: 17px;
+  margin-top: 2px;
+  font-size: 16px;
   line-height: 1.25;
   white-space: nowrap;
   color: var(--cv-text);
@@ -264,7 +269,7 @@ body {
 .subscription-shell {
   display: grid;
   grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
-  gap: 14px;
+  gap: 10px;
   align-items: stretch;
 }
 
@@ -420,7 +425,7 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 11px 14px;
+  padding: 9px 12px;
   border: 1px solid var(--cv-border);
   border-radius: var(--cv-radius-md);
   background: var(--cv-surface);
@@ -552,7 +557,7 @@ body {
 /* ---- Connection control ---- */
 
 .status-surface {
-  padding: 12px 14px;
+  padding: 10px 12px;
   border-radius: var(--cv-radius-md);
   background: var(--cv-surface-muted);
 }
@@ -593,7 +598,7 @@ body {
 }
 
 .primary-action {
-  min-height: 46px;
+  min-height: 42px;
   font-size: 15px;
   font-weight: 600;
 }
@@ -677,25 +682,58 @@ body {
 }
 
 .control-error {
-  padding: 6px 10px;
-  border-radius: var(--cv-radius-md);
-  background: #fef2f2;
-  color: #b42318;
-  overflow-wrap: anywhere;
+  flex-shrink: 0;
+}
+
+/* Local proxy ports: reference-only caption under the connect button. */
+.control-ports {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  flex-wrap: wrap;
+  column-gap: 6px;
+  row-gap: 2px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--cv-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.control-ports__label {
+  margin-right: 2px;
+}
+
+.control-ports__value {
+  font-weight: 500;
+  color: var(--cv-text);
+  user-select: all;
+  -webkit-user-select: all;
+}
+
+.control-ports__separator {
+  color: #a3b0bd;
 }
 
 .control-shell {
   justify-content: flex-start;
   min-height: 0;
-  overflow-y: auto;
-  scrollbar-width: none;
 }
 
-.control-shell::-webkit-scrollbar {
-  display: none;
+/* Only the body scrolls when an error pushes past the fixed window height; the
+ * footer (routing rules, diagnostics) stays pinned and reachable. */
+.control-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.control-body > * {
+  flex-shrink: 0;
 }
 
 .control-footer {
+  flex-shrink: 0;
   margin-top: auto;
   padding-top: 10px;
   border-top: 1px solid var(--cv-border);
@@ -710,10 +748,6 @@ body {
 .control-log-button {
   white-space: nowrap;
   font-weight: 500;
-}
-
-.control-metrics {
-  min-height: 0;
 }
 
 /* ---- Overlays ---- */
@@ -1349,26 +1383,11 @@ textarea,
   min-height: 0;
 }
 
-.force-update-strip {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 40px;
-  padding: 6px 8px 6px 12px;
-  border: 1px solid #fcd9b6;
-  border-radius: var(--cv-radius-md);
-  background: #fff7ed;
-}
-
 .force-update-strip__text {
-  flex: 1 1 auto;
-  min-width: 0;
-  color: #9a3412;
-  line-height: 1.4;
-}
-
-.force-update-strip__action {
-  flex: 0 0 auto;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .desktop-mobile-home__screen {
@@ -1625,14 +1644,6 @@ textarea,
     overflow: visible;
   }
 
-  .control-metrics {
-    flex-wrap: wrap;
-  }
-
-  .control-metrics > * {
-    flex: 1 1 calc(50% - 6px);
-  }
-
   .control-footer {
     flex-direction: column;
     align-items: stretch;
@@ -1650,11 +1661,28 @@ textarea,
 }
 
 .log-viewer {
-  display: block;
-  min-height: 100%;
-  white-space: pre-wrap;
-  line-height: 1.5;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--cv-border);
+  border-radius: var(--cv-radius-md);
+  background: var(--cv-surface-muted);
+  color: var(--cv-text);
+  font-family: var(--mantine-font-family-monospace);
   font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  scrollbar-width: thin;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.log-viewer:focus-visible {
+  outline: 2px solid var(--cv-accent);
+  outline-offset: -2px;
 }
 
 /* Opacity only: a lingering transform keeps the card on its own layer, which

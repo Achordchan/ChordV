@@ -98,7 +98,7 @@ export function NodeListPanel(props: NodeListPanelProps) {
       p="md"
       className={isMobile ? "desktop-panel node-list-panel node-list-panel--mobile" : "desktop-panel node-list-panel"}
     >
-      <Stack gap={isMobile ? "sm" : "md"} h="100%">
+      <Stack gap="sm" h="100%">
         <Group justify="space-between" align="center" className="node-list-head">
           <Stack gap={2}>
             <Title order={3} className="panel-title">节点列表</Title>

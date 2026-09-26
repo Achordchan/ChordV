@@ -3,10 +3,10 @@
     "windows": [
       {
         "title": "ChordV v1.1.10",
-        "width": 880,
-        "height": 620,
-        "minWidth": 880,
-        "minHeight": 620,
+        "width": 820,
+        "height": 560,
+        "minWidth": 820,
+        "minHeight": 560,
         "resizable": false,
         "center": true,
         "visible": false,
