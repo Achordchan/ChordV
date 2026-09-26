@@ -18,90 +18,75 @@ type NodeListPanelProps = {
 export function NodeListPanel(props: NodeListPanelProps) {
   const isMobile = useMediaQuery("(max-width: 760px)");
   const listContent = (
-    <Stack gap={isMobile ? 8 : "sm"}>
+    <Stack gap={8}>
       {props.nodes.map((node) => {
         const probe: RuntimeNodeProbeResult | undefined = Object.hasOwn(props.probeResults, node.id) ? props.probeResults[node.id] : undefined;
         const isSelected = props.selectedNodeId === node.id;
         const latency = probe?.latencyMs ?? null;
         const status = probe?.status ?? "unknown";
+        const statusLabel = status === "unknown" ? "未检测" : status === "healthy" ? "可用" : "不可用";
 
         return (
-          <Paper
+          <div
             key={node.id}
-            withBorder
-            radius="md"
-            p="md"
             className={isSelected ? "node-item node-item--selected" : "node-item"}
+            data-status={status}
             role="button"
             tabIndex={0}
+            aria-pressed={isSelected}
             onClick={() => props.onSelect(node.id)}
-            style={
-              isMobile
-                ? {
-                    padding: 14,
-                    borderRadius: 20,
-                    boxShadow: "none",
-                    transform: "none",
-                    background:
-                      isSelected
-                        ? "linear-gradient(135deg, rgba(8,145,178,0.12), rgba(34,211,238,0.08))"
-                        : "rgba(255,255,255,0.92)"
-                  }
-                : undefined
-            }
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                props.onSelect(node.id);
+              }
+            }}
           >
-            <Group justify="space-between" align="center" wrap="nowrap">
-              <Group gap="sm" wrap="nowrap" align="flex-start" style={{ minWidth: 0, flex: 1 }}>
-                <ThemeIcon
-                  size={isMobile ? 30 : 24}
-                  radius="xl"
-                  variant={isSelected ? "filled" : "light"}
-                  color={isSelected ? "cyan" : status === "healthy" ? "green" : "gray"}
-                  mt={2}
-                >
-                  {isSelected ? <IconRosetteDiscountCheck size={16} /> : <IconBolt size={14} />}
-                </ThemeIcon>
-                <Stack gap={4} style={{ minWidth: 0, flex: 1 }}>
-                  <Text fw={600}>{node.name}</Text>
-                  <Group gap="xs" wrap="wrap">
-                    {isSelected ? (
-                      <Badge variant="filled" color="cyan">
-                        当前选择
-                      </Badge>
-                    ) : null}
-                    {node.recommended ? (
-                      <Badge variant="light" color="cyan">
-                        推荐
-                      </Badge>
-                    ) : null}
-                    <Badge variant="light" color={status === "unknown" ? "gray" : status === "healthy" ? "green" : "red"}>
-                      {status === "unknown" ? "未检测" : status === "healthy" ? "可用" : "不可用"}
-                    </Badge>
-                  </Group>
-                  <Group gap={6} wrap="nowrap">
-                    <CountryFlag code={node.countryCode} size="sm" />
-                    <Text size="sm" c="dimmed" lineClamp={1} style={{ minWidth: 0, flex: 1 }}>
-                      {node.region} · {node.provider}
-                    </Text>
-                  </Group>
-                  {probe?.error ? (
-                    <Text size="xs" c={status === "unknown" ? "dimmed" : "red.6"}>
-                      {probe.error}
-                    </Text>
-                  ) : null}
-                </Stack>
-              </Group>
-
-              <Stack gap={2} align="end" style={{ flexShrink: 0 }}>
-                <Text fw={700} size={isMobile ? "lg" : undefined}>
-                  {latency !== null && latency !== undefined ? `${latency}ms` : "--"}
+            <ThemeIcon
+              size={isMobile ? 30 : 28}
+              radius="xl"
+              variant={isSelected ? "filled" : "light"}
+              color={isSelected ? "cyan" : status === "healthy" ? "green" : "gray"}
+              className="node-item__icon"
+            >
+              {isSelected ? <IconRosetteDiscountCheck size={16} /> : <IconBolt size={14} />}
+            </ThemeIcon>
+            <div className="node-item__body">
+              <div className="node-item__title-row">
+                <Text fw={600} className="node-item__name" lineClamp={1}>
+                  {node.name}
                 </Text>
-                <Text size="xs" c="dimmed">
-                  本机 TCP 延迟
+                {node.recommended ? (
+                  <Badge size="xs" variant="light" color="cyan">
+                    推荐
+                  </Badge>
+                ) : null}
+              </div>
+              <div className="node-item__meta">
+                <CountryFlag code={node.countryCode} size="sm" />
+                <Text size="xs" c="dimmed" lineClamp={1} className="node-item__region">
+                  {node.region} · {node.provider}
                 </Text>
-              </Stack>
-            </Group>
-          </Paper>
+                <span className="node-item__status">
+                  <span className="node-item__status-dot" aria-hidden="true" />
+                  {statusLabel}
+                </span>
+              </div>
+              {probe?.error ? (
+                <Text size="xs" c={status === "unknown" ? "dimmed" : "red.6"} className="node-item__error">
+                  {probe.error}
+                </Text>
+              ) : null}
+            </div>
+            <div className="node-item__latency">
+              <Text fw={650} className="node-item__latency-value">
+                {latency !== null && latency !== undefined ? `${latency}ms` : "--"}
+              </Text>
+              <Text size="xs" c="dimmed">
+                本机 TCP 延迟
+              </Text>
+            </div>
+          </div>
         );
       })}
     </Stack>
@@ -110,14 +95,13 @@ export function NodeListPanel(props: NodeListPanelProps) {
   return (
     <Paper
       withBorder
-      radius={isMobile ? 28 : 18}
-      p={isMobile ? "md" : "lg"}
+      p="md"
       className={isMobile ? "desktop-panel node-list-panel node-list-panel--mobile" : "desktop-panel node-list-panel"}
     >
       <Stack gap={isMobile ? "sm" : "md"} h="100%">
         <Group justify="space-between" align="center" className="node-list-head">
           <Stack gap={2}>
-            <Title order={3}>节点列表</Title>
+            <Title order={3} className="panel-title">节点列表</Title>
             {isMobile ? (
               <Text size="sm" c="dimmed">
                 选择一个延迟更低的节点作为当前出口。
@@ -126,7 +110,7 @@ export function NodeListPanel(props: NodeListPanelProps) {
           </Stack>
           <Button
             variant="default"
-            size="compact-md"
+            size="compact-sm"
             leftSection={<IconRefresh size={15} />}
             className="node-list-probe-button"
             onClick={props.onProbe}
@@ -138,12 +122,12 @@ export function NodeListPanel(props: NodeListPanelProps) {
         </Group>
 
         {props.nodes.length === 0 ? (
-          <Paper withBorder radius="md" p="lg" className="empty-state">
+          <div className="empty-state">
             <Stack gap="xs" align="center">
               <IconBolt size={18} />
               <Text fw={600}>暂无可用节点</Text>
             </Stack>
-          </Paper>
+          </div>
         ) : (
           isMobile ? listContent : <ScrollArea className="node-scroll">{listContent}</ScrollArea>
         )}

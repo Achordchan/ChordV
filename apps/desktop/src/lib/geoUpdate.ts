@@ -4,6 +4,7 @@ export const GEO_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
 export const GEO_LAST_CHECK_STORAGE_KEY = "chordv.geo.lastCheckAt";
 export const GEO_INSTALLED_PLAN_REVISION_STORAGE_KEY = "chordv.geo.installedPlanRevision";
 export const LEGACY_GEO_INSTALLED_TAG_STORAGE_KEY = "chordv.geo.installedReleaseTag";
+export const GEO_INSTALLED_VERSION_LABEL_STORAGE_KEY = "chordv.geo.installedVersionLabel";
 
 export type RuntimeComponentLocalInfo = {
   kind: "xray" | "geoip" | "geosite";
@@ -41,19 +42,25 @@ export function readStoredGeoPlanRevision(storage: Storage = localStorage) {
 }
 
 export function readStoredGeoVersionLabel(storage: Storage = localStorage) {
+  const installedLabel = String(storage.getItem(GEO_INSTALLED_VERSION_LABEL_STORAGE_KEY) ?? "").trim();
   const planLabel = resolveStoredGeoPlanVersionLabel(readStoredGeoPlanRevision(storage));
   const legacyLabel = String(storage.getItem(LEGACY_GEO_INSTALLED_TAG_STORAGE_KEY) ?? "").trim();
-  return planLabel ?? (legacyLabel || null);
+  return (installedLabel || null) ?? planLabel ?? (legacyLabel || null);
 }
 
-export function writeStoredGeoPlanRevision(revision: string, storage: Storage = localStorage) {
+// The label is stored beside the revision rather than inside it, so installs made
+// before labels existed still compare as current and are not downloaded again.
+export function writeStoredGeoPlanRevision(revision: string, versionLabel?: string | null, storage: Storage = localStorage) {
   storage.setItem(GEO_INSTALLED_PLAN_REVISION_STORAGE_KEY, revision);
   storage.removeItem(LEGACY_GEO_INSTALLED_TAG_STORAGE_KEY);
+  if (versionLabel) storage.setItem(GEO_INSTALLED_VERSION_LABEL_STORAGE_KEY, versionLabel);
+  else storage.removeItem(GEO_INSTALLED_VERSION_LABEL_STORAGE_KEY);
 }
 
 export function clearStoredGeoPlanRevision(storage: Storage = localStorage) {
   storage.removeItem(GEO_INSTALLED_PLAN_REVISION_STORAGE_KEY);
   storage.removeItem(LEGACY_GEO_INSTALLED_TAG_STORAGE_KEY);
+  storage.removeItem(GEO_INSTALLED_VERSION_LABEL_STORAGE_KEY);
 }
 
 function resolveOriginUrl(item: RuntimeComponentDownloadItem) {
@@ -77,11 +84,14 @@ export function resolveStoredGeoPlanVersionLabel(revision: string | null) {
   return labels.length > 0 && labels.every((label) => label === labels[0]) ? labels[0] : null;
 }
 
+// Backend-hosted downloads carry no release tag in their URL, so the plan's own
+// versionLabel is authoritative and the GitHub tag is only a fallback.
 export function resolveGeoPlanVersionLabel(items: RuntimeComponentDownloadItem[]) {
   const labels = items
     .filter((item) => item.component === "geoip" || item.component === "geosite")
-    .map((item) => resolveReleaseTag(resolveOriginUrl(item)));
-  return labels.length === 2 && labels.every((label) => label && label === labels[0]) ? labels[0] : null;
+    .map((item) => String(item.versionLabel ?? "").trim().replace(/^v/i, "") || resolveReleaseTag(resolveOriginUrl(item)));
+  if (labels.length !== 2 || !labels[0] || !labels[1]) return null;
+  return labels[0] === labels[1] ? labels[0] : `${labels[0]} / ${labels[1]}`;
 }
 
 export function buildGeoPlanRevision(items: RuntimeComponentDownloadItem[]) {

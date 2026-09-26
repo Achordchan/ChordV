@@ -61,8 +61,10 @@ export function useNodeProbe(options: UseNodeProbeOptions) {
   useEffect(() => { syncIdentity(options.sessionIdentity); }, [options.sessionIdentity, syncIdentity]);
   useEffect(() => () => { generation.current += 1; }, []);
 
+  // The caller's clock only ticks while a countdown is visible, so its last value can be
+  // minutes old when a new cooldown starts; never measure against a time earlier than now.
   const probeCooldownLeft = useMemo(
-    () => Math.max(0, Math.ceil((probeCooldownUntil - (options.nowMs ?? Date.now())) / 1000)),
+    () => Math.max(0, Math.ceil((probeCooldownUntil - Math.max(options.nowMs ?? 0, Date.now())) / 1000)),
     [options.nowMs, probeCooldownUntil]
   );
 

@@ -8,10 +8,27 @@ import "flag-icons/css/flag-icons.min.css";
 import { App } from "./App";
 import "./styles.css";
 
+const fontFamily =
+  '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif';
+
+// Radii are capped at 14px so no control renders as a full pill; thin borders on
+// large arcs are what look jagged under fractional Windows display scaling.
 const theme = createTheme({
   primaryColor: "cyan",
-  defaultRadius: "xl",
-  fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif"
+  fontFamily,
+  fontFamilyMonospace: 'ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace',
+  headings: { fontFamily, fontWeight: "650" },
+  radius: { xs: "4px", sm: "6px", md: "8px", lg: "12px", xl: "14px" },
+  defaultRadius: "md",
+  components: {
+    Checkbox: { defaultProps: { radius: "xs" } },
+    Badge: { defaultProps: { radius: "sm" }, styles: { root: { textTransform: "none", letterSpacing: 0, fontWeight: 600 } } },
+    Paper: { defaultProps: { radius: "lg" } },
+    Modal: { defaultProps: { radius: "xl" } },
+    Tooltip: { defaultProps: { radius: "md" } },
+    Menu: { defaultProps: { radius: "md", shadow: "md" } },
+    Notification: { defaultProps: { radius: "md" } }
+  }
 });
 
 const Root = (import.meta.env.DEV || import.meta.env.VITE_CHORDV_LOCAL_PREVIEW === "1") && new URLSearchParams(window.location.search).has("download-preview")
@@ -19,7 +36,7 @@ const Root = (import.meta.env.DEV || import.meta.env.VITE_CHORDV_LOCAL_PREVIEW =
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <MantineProvider theme={theme} defaultColorScheme="light">
-    <Notifications position="top-right" autoClose={2600} />
+    <Notifications position="top-right" autoClose={2600} classNames={{ notification: "cv-notification" }} />
     <React.Suspense fallback={null}><Root /></React.Suspense>
   </MantineProvider>
 );
