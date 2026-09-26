@@ -766,8 +766,7 @@ body {
 }
 
 /* 错误通知的「错误编号：xxx」在换行之后，需要单独成行。 */
-.cv-notification .mantine-Notification-description,
-.ticket-center__detail .mantine-Alert-message {
+.cv-notification .mantine-Notification-description {
   white-space: pre-line;
 }
 

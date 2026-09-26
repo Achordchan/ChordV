@@ -1,6 +1,6 @@
 import type { ClientBootstrapDto, NodeSummaryDto, SubscriptionStatusDto } from "@chordv/shared";
 import { notifications } from "./notifications";
-import { describeUserError, formatUserError, type UserErrorContext } from "./userFacingErrors";
+import { describeUserError, formatUserError, splitUserErrorText, type UserErrorContext } from "./userFacingErrors";
 import { recordClientDiagnosticLog } from "../api/client";
 import type { SubscriptionServerProbe } from "../components/SubscriptionPanel";
 import type { GuidanceTone, ConnectionGuidance } from "./connectionGuidance";
@@ -129,7 +129,8 @@ export function toSubscriptionServerProbe(serverProbe: ServerProbeState): Subscr
       return {
         status: "failed",
         label: "无法连接服务器",
-        detail: serverProbe.errorMessage ?? "当前无法连接服务器，请检查网络后重试。"
+        // 状态栏空间有限，只显示说明，不带错误编号行。
+        detail: splitUserErrorText(serverProbe.errorMessage).message || "当前无法连接服务器，请检查网络后重试。"
       };
     default:
       return {

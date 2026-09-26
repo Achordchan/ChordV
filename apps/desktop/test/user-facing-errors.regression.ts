@@ -8,6 +8,7 @@ import {
   detectErrorCode,
   formatCopyableErrorDetail,
   isCustomerSafeText,
+  splitUserErrorText,
   toUserMessage,
   type UserErrorContext
 } from "../src/lib/userFacingErrors";
@@ -192,6 +193,10 @@ function testIdempotentAndCodePreserved() {
   // 旧的“错误代码：xxx”行会被识别并统一成“错误编号”，编号保持不变
   const legacy = toUserMessage("请先断开那个 VPN，再连接 ChordV。\n错误代码：external_vpn_conflict");
   assert.match(legacy, /\n错误编号：external_vpn_conflict$/);
+  const split = splitUserErrorText(toUserMessage("HTTP 502", { context: "ticket" }));
+  assert.equal(split.code, "http_502");
+  assert.equal(split.message, USER_ERROR_CATALOG.http_5xx.message);
+  assert.deepEqual(splitUserErrorText("工单已关闭"), { message: "工单已关闭", code: null });
   const reader = createUserErrorReader("ticket");
   assert.equal(reader("工单已关闭，无法回复"), "工单已关闭，无法回复");
   assertNoLeak(reader("Cannot POST /api/client/support-tickets/1/replies"), "ticket reader");
@@ -268,6 +273,9 @@ function testDisplaySurfacesUseErrorNumber() {
   const routing = readFileSync(resolve(import.meta.dirname, "../src/components/RoutingRulesModal.tsx"), "utf8");
   assert.doesNotMatch(routing, /getApiErrorRawMessage/, "routing dialog never shows raw server text");
   assert.match(routing, /<ErrorCodeHint code=\{error\.code\} \/>/);
+  const ticketCenter = readFileSync(resolve(import.meta.dirname, "../src/components/TicketCenterModal.tsx"), "utf8");
+  assert.doesNotMatch(ticketCenter, /\berror\.message\b|String\(error\)|<code>\{previewOpenError\}/, "ticket preview never shows raw error text");
+  assert.match(ticketCenter, /splitUserErrorText\(message\)/, "ticket error bar shows the code via ErrorCodeHint");
   const guidanceDialog = readFileSync(resolve(import.meta.dirname, "../src/components/GuidanceDialog.tsx"), "utf8");
   assert.match(guidanceDialog, /ErrorCodeHint code=\{guidance\.errorCode\}/);
   assert.doesNotMatch(banner, /错误代码/);

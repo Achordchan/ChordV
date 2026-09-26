@@ -626,6 +626,14 @@ export function formatUserError(error: Pick<UserFacingError, "message" | "code">
   return codeLine ? `${error.message}\n${codeLine}` : error.message;
 }
 
+/**
+ * 把「主文案 + 换行 + 错误编号：xxx」拆回两部分，供弹窗 / 面板用 ErrorCodeHint 单独展示编号。
+ */
+export function splitUserErrorText(text: string | null | undefined): { message: string; code: string | null } {
+  const { code, lines } = splitCodeLines(text ?? "");
+  return { message: lines.join("\n"), code };
+}
+
 /** 直接得到客户可见文本（幂等：对已处理过的文本再次调用结果不变）。 */
 export function toUserMessage(reason: unknown, options: { context?: UserErrorContext } = {}) {
   return formatUserError(describeUserError(reason, options));

@@ -30,7 +30,10 @@ import {
   IconX
 } from "@tabler/icons-react";
 import type { TicketAttachmentUploadState } from "../hooks/useSupportTickets";
+import { recordClientDiagnosticLog } from "../api/client";
 import { openExternalUrl } from "../lib/runtime";
+import { describeUserError, splitUserErrorText, type UserFacingError } from "../lib/userFacingErrors";
+import { ErrorCodeHint } from "./AppDialog";
 import { isSupportTicketUnread } from "../lib/supportTickets";
 import styles from "./TicketCenterModal.module.css";
 
@@ -79,7 +82,7 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
   const [statusFilter, setStatusFilter] = useState<TicketStatusFilter>("all");
   const [paneView, setPaneView] = useState<PaneView>("list");
   const [previewAttachment, setPreviewAttachment] = useState<TicketAttachmentPreview | null>(null);
-  const [previewOpenError, setPreviewOpenError] = useState<string | null>(null);
+  const [previewOpenError, setPreviewOpenError] = useState<UserFacingError | null>(null);
   const messagesScrollRef = useRef<HTMLDivElement | null>(null);
   // Mirrors the ref as state so effects re-run once the modal transition actually mounts the thread.
   const [messagesElement, setMessagesElement] = useState<HTMLDivElement | null>(null);
@@ -226,7 +229,10 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
       await openExternalUrl(previewAttachment.url);
       setPreviewOpenError(null);
     } catch (error) {
-      setPreviewOpenError(error instanceof Error ? error.message : String(error));
+      // 原始错误只写入诊断日志；预览里只显示客户可读的说明和错误编号。
+      const failure = describeUserError(error);
+      if (failure.detail) void recordClientDiagnosticLog("user-error", `[ticket-preview] detail=${failure.detail}`);
+      setPreviewOpenError(failure);
     }
   };
 
@@ -420,7 +426,8 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
       body = (
         <>
           <Text fw={600}>{props.tickets.length === 0 ? "工单暂时加载不出来" : "这条工单暂时打不开"}</Text>
-          <Text size="sm" c="dimmed">{props.error}</Text>
+          <Text size="sm" c="dimmed">{splitUserErrorText(props.error).message}</Text>
+          {splitUserErrorText(props.error).code ? <ErrorCodeHint code={splitUserErrorText(props.error).code!} /> : null}
           <Button size="xs" variant="default" mt={4} leftSection={<IconRefresh size={14} />} onClick={props.onRefresh}>
             重试
           </Button>
@@ -562,7 +569,7 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                   ) : props.error && props.tickets.length === 0 ? (
                     <div className={styles.railEmpty} role="alert">
                       <Text size="xs" fw={600}>工单暂时加载不出来</Text>
-                      <Text size="xs" c="dimmed">{props.error}</Text>
+                      <Text size="xs" c="dimmed">{splitUserErrorText(props.error).message}</Text>
                       <Button size="compact-xs" variant="default" leftSection={<IconRefresh size={12} />} onClick={props.onRefresh}>
                         重试
                       </Button>
@@ -613,10 +620,7 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
             {previewOpenError ? (
               <Alert color="red" variant="light" icon={<IconAlertCircle size={16} />} className={styles.previewError}>
                 <Text size="sm">无法打开原图，请稍后再试。</Text>
-                <details className={styles.errorDetails}>
-                  <summary>详细信息</summary>
-                  <code>{previewOpenError}</code>
-                </details>
+                {previewOpenError.code ? <ErrorCodeHint code={previewOpenError.code} /> : null}
               </Alert>
             ) : null}
             <div className={styles.previewFrame}>
@@ -649,10 +653,12 @@ function ErrorBar({ message }: { message: string | null }) {
   if (!message) {
     return null;
   }
+  const notice = splitUserErrorText(message);
   return (
     <div className={styles.errorBar} role="alert">
       <IconAlertCircle size={15} aria-hidden="true" className={styles.errorIcon} />
-      <span>{message}</span>
+      <span>{notice.message}</span>
+      {notice.code ? <ErrorCodeHint code={notice.code} /> : null}
     </div>
   );
 }
