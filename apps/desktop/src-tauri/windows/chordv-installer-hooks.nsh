@@ -40,8 +40,19 @@ Var ChordVUpdateGate
 !macro NSIS_HOOK_POSTINSTALL
   !insertmacro ChordVKeepLegacyEntry "chordv-desktop.exe"
   !insertmacro ChordVKeepLegacyEntry "chordv_desktop.exe"
+  !insertmacro ChordVRemoveLegacyBundledRuntime
   System::Call 'kernel32::CloseHandle(p $ChordVUpdateGate)'
   StrCpy $ChordVUpdateGate 0
+!macroend
+
+; Installers up to 1.1.9 shipped runtime seeds in $INSTDIR\bin. The client runs
+; its own copy from the app-data runtime dir, and this installer's uninstaller
+; does not know these files, so drop them instead of leaving the folder behind.
+!macro ChordVRemoveLegacyBundledRuntime
+  Delete "$INSTDIR\bin\xray.exe"
+  Delete "$INSTDIR\bin\geoip.dat"
+  Delete "$INSTDIR\bin\geosite.dat"
+  RMDir "$INSTDIR\bin"
 !macroend
 
 ; Preserve arbitrary legacy shortcuts without retaining the old version. NTFS
@@ -81,6 +92,7 @@ Var ChordVUpdateGate
 !macro NSIS_HOOK_POSTUNINSTALL
   Delete "$INSTDIR\chordv-desktop.exe"
   Delete "$INSTDIR\chordv_desktop.exe"
+  !insertmacro ChordVRemoveLegacyBundledRuntime
   ; Tauri's earlier RMDir cannot remove a folder containing generated aliases.
   RMDir "$INSTDIR"
   System::Call 'kernel32::CloseHandle(p $ChordVUpdateGate)'

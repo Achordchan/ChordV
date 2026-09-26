@@ -6,8 +6,7 @@ const outputDir = path.resolve(desktopRoot, "..", "..", "output", "release", "ma
 const macosVersion = resolveDesktopPlatformVersion("macos");
 const macosArtifactNames = buildMacArtifactNames(macosVersion);
 const minimumArtifactBytes = 1024 * 1024;
-const minimumRuntimeBytes = 1024 * 1024;
-const minimumGeoDataBytes = 64 * 1024;
+const bundledRuntimePattern = /^xray(?:[-.].*)?$|^geo(?:ip|site)\.dat$/i;
 
 const dmgPath = path.join(outputDir, macosArtifactNames.dmg);
 const expectedArtifactNames = new Set([macosArtifactNames.dmg]);
@@ -27,20 +26,13 @@ if (!existsSync(dmgPath)) {
   invalid.push(`DMG is suspiciously small: ${path.relative(process.cwd(), dmgPath)} (${formatSize(statSync(dmgPath).size)})`);
 }
 
-for (const resource of [
-  ["bin/xray-aarch64-apple-darwin", minimumRuntimeBytes],
-  ["bin/xray-x86_64-apple-darwin", minimumRuntimeBytes],
-  ["bin/geoip.dat", minimumGeoDataBytes],
-  ["bin/geosite.dat", minimumGeoDataBytes]
-]) {
-  const [relativePath, minimumBytes] = resource;
-  const fullPath = path.join(desktopRoot, "src-tauri", ...relativePath.split("/"));
-  if (!existsSync(fullPath)) {
-    missing.push(`Bundled runtime resource: ${relativePath}`);
-    continue;
-  }
-  if (statSync(fullPath).size < minimumBytes) {
-    invalid.push(`Bundled runtime resource is invalid: ${relativePath} (${formatSize(statSync(fullPath).size)})`);
+// Runtime components come from the server plan; a DMG carrying them is a regression.
+const appBundlePath = findAppBundle(path.join(desktopRoot, "src-tauri", "target"));
+if (!appBundlePath) {
+  missing.push("App bundle: src-tauri/target/*/release/bundle/macos/ChordV.app");
+} else {
+  for (const leaked of findFiles(path.join(appBundlePath, "Contents", "Resources"), bundledRuntimePattern)) {
+    invalid.push(`Runtime component must not be bundled: ${path.relative(process.cwd(), leaked)}`);
   }
 }
 
@@ -61,7 +53,31 @@ if (missing.length > 0 || invalid.length > 0 || staleArtifacts.length > 0) {
 
 console.log(`macOS ${macosVersion} release artifacts:`);
 console.log(`- DMG: ${path.relative(process.cwd(), dmgPath)} (${formatSize(statSync(dmgPath).size)})`);
-console.log("- Bundled runtime resources: xray arm64, xray x64, geoip.dat, geosite.dat");
+console.log("- Runtime components: not bundled (delivered by server plan)");
+
+function findAppBundle(targetDir) {
+  if (!existsSync(targetDir)) {
+    return null;
+  }
+  const candidates = readdirSync(targetDir)
+    .map((triple) => path.join(targetDir, triple, "release", "bundle", "macos", "ChordV.app"))
+    .filter((candidate) => existsSync(candidate));
+  candidates.sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs);
+  return candidates[0] ?? null;
+}
+
+function findFiles(directory, pattern) {
+  if (!existsSync(directory)) {
+    return [];
+  }
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const fullPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      return findFiles(fullPath, pattern);
+    }
+    return pattern.test(entry.name) ? [fullPath] : [];
+  });
+}
 
 function formatSize(bytes) {
   if (bytes < 1024) {

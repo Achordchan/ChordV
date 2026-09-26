@@ -32,14 +32,13 @@ const platformConfig = withPlatformVersion(baseConfig, version);
 const buildArgs = ["pnpm", "exec", "tauri", "build", "-c", path.relative(desktopRoot, tempConfigPath)];
 const pnpmCommand = "corepack";
 
-prepareBundledRuntimeResources(platform);
-const bundledResources = buildBundledRuntimeResources(platform);
+// Xray and GEO data are delivered by the server's runtime-component plan on first
+// connect, so installers ship only the client itself.
 const macosGuideImagePath = path.join(desktopRoot, "public", "yindao.png");
 const macosGuideImageConfigPath = "../public/yindao.png";
 const macosGuideImageBundlePath = "yindao.png";
 const bundleConfig = {
   ...baseConfig.bundle,
-  resources: bundledResources,
   ...(platform === "windows" ? { targets: ["nsis"], createUpdaterArtifacts: true } : {})
 };
 if (platform === "windows" && !process.env.TAURI_SIGNING_PRIVATE_KEY) {
@@ -48,7 +47,6 @@ if (platform === "windows" && !process.env.TAURI_SIGNING_PRIVATE_KEY) {
 
 if (platform === "macos" && fs.existsSync(macosGuideImagePath)) {
   bundleConfig.resources = {
-    ...Object.fromEntries(bundledResources.map((resource) => [resource, resource])),
     [macosGuideImageConfigPath]: macosGuideImageBundlePath
   };
   bundleConfig.macOS = {
@@ -103,24 +101,6 @@ if ((result.status ?? 1) === 0) {
 }
 process.exit(result.status ?? 1);
 
-function prepareBundledRuntimeResources(platform) {
-  const setupScript = path.join(desktopRoot, "scripts", "setup-xray.mjs");
-  const targets = platform === "macos" ? ["darwin-arm64", "darwin-x64"] : ["win32-x64"];
-  for (const target of targets) {
-    const result = spawnSync("node", [setupScript], {
-      cwd: desktopRoot,
-      stdio: "inherit",
-      env: {
-        ...process.env,
-        CHORDV_XRAY_TARGET: target
-      }
-    });
-    if ((result.status ?? 1) !== 0) {
-      throw new Error(`准备内置运行时资源失败：${target}`);
-    }
-  }
-}
-
 function withPlatformVersion(config, version) {
   const title = `ChordV ${formatWindowVersion(version)}`;
   return {
@@ -142,14 +122,6 @@ function formatWindowVersion(version) {
     return "v-";
   }
   return normalized.toLowerCase().startsWith("v") ? normalized : `v${normalized}`;
-}
-
-function buildBundledRuntimeResources(platform) {
-  const common = ["bin/geoip.dat", "bin/geosite.dat"];
-  if (platform === "macos") {
-    return [...common, "bin/xray-aarch64-apple-darwin", "bin/xray-x86_64-apple-darwin"];
-  }
-  return [...common, "bin/xray.exe"];
 }
 
 function curateReleaseArtifacts(platform, version, projectRoot, buildStartedAt) {

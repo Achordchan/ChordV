@@ -105,8 +105,9 @@ try {
   $exe = Join-Path $installDir 'ChordV.exe'
   if (!(Test-Path $exe)) { throw 'Upgrade did not preserve the custom installation directory' }
   if (![Diagnostics.FileVersionInfo]::GetVersionInfo($exe).ProductVersion.StartsWith($ExpectedVersion)) { throw 'Upgrade left the old executable version installed' }
+  # Runtime components are delivered by the server; the legacy install-dir seeds must be cleaned up.
   foreach ($resource in @('bin\xray.exe','bin\geoip.dat','bin\geosite.dat')) {
-    if (!(Test-Path (Join-Path $installDir $resource))) { throw "Missing bundled resource: $resource" }
+    if (Test-Path (Join-Path $installDir $resource)) { throw "Legacy bundled resource survived the upgrade: $resource" }
   }
   $deadline = (Get-Date).AddSeconds(45)
   $running = $null
@@ -134,7 +135,7 @@ try {
   } finally { $gate.Dispose() }
   $after = Start-Process -FilePath $exe -PassThru
   if ($after.WaitForExit(5000)) { throw 'Client could not start after installer lock was released' }
-  Write-Output 'PASS: real 1.1.7 -> current NSIS upgrade, custom Chinese path, installed version/resources, automatic restart and launch gate'
+  Write-Output 'PASS: real 1.1.7 -> current NSIS upgrade, custom Chinese path, installed version, legacy runtime seed cleanup, automatic restart and launch gate'
 } catch {
   Write-Host $_.Exception.ToString()
   Write-Host $_.ScriptStackTrace
