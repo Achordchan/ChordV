@@ -153,7 +153,7 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
           return [];
         }
         if (!loadOptions?.silent) {
-          setTicketCenterError(reason instanceof Error ? (options.readError ?? defaultReadError)(reason) : "工单列表加载失败");
+          setTicketCenterError(reason ? (options.readError ?? defaultReadError)(reason) : "工单列表加载失败");
         }
         return [];
       } finally {
@@ -190,7 +190,7 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
           return null;
         }
         if (!loadOptions?.silent) {
-          setTicketCenterError(reason instanceof Error ? (options.readError ?? defaultReadError)(reason) : "工单详情加载失败");
+          setTicketCenterError(reason ? (options.readError ?? defaultReadError)(reason) : "工单详情加载失败");
         }
         return null;
       } finally {
@@ -264,7 +264,7 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
           if (attachmentUploadRunRef.current !== runId) {
             return;
           }
-          const message = reason instanceof Error ? (options.readError ?? defaultReadError)(reason) : "附件上传失败";
+          const message = reason ? (options.readError ?? defaultReadError)(reason) : "附件上传失败";
           setTicketReplyAttachmentUpload({
             phase: "failed",
             progress: 0,
@@ -335,7 +335,7 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
         await options.onUnauthorized?.();
         return null;
       }
-      setTicketCenterError(reason instanceof Error ? (options.readError ?? defaultReadError)(reason) : "工单提交失败");
+      setTicketCenterError(reason ? (options.readError ?? defaultReadError)(reason) : "工单提交失败");
       return null;
     } finally {
       setTicketSubmitting(false);
@@ -386,7 +386,7 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
         await options.onUnauthorized?.();
         return null;
       }
-      const message = reason instanceof Error ? (options.readError ?? defaultReadError)(reason) : "发送回复失败";
+      const message = reason ? (options.readError ?? defaultReadError)(reason) : "发送回复失败";
       setTicketCenterError(message);
       return null;
     } finally {

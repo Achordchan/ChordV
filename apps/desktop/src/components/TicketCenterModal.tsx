@@ -570,6 +570,7 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                     <div className={styles.railEmpty} role="alert">
                       <Text size="xs" fw={600}>工单暂时加载不出来</Text>
                       <Text size="xs" c="dimmed">{splitUserErrorText(props.error).message}</Text>
+                      {splitUserErrorText(props.error).code ? <ErrorCodeHint code={splitUserErrorText(props.error).code!} /> : null}
                       <Button size="compact-xs" variant="default" leftSection={<IconRefresh size={12} />} onClick={props.onRefresh}>
                         重试
                       </Button>

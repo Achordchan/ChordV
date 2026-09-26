@@ -128,7 +128,7 @@ export function useNodeProbe(options: UseNodeProbeOptions) {
           return null;
         }
         if (!auto) {
-          options.onError?.(reason instanceof Error ? (options.readError ?? defaultReadError)(reason) : "测速失败");
+          options.onError?.(reason ? (options.readError ?? defaultReadError)(reason) : "测速失败");
         }
         return null;
       } finally {

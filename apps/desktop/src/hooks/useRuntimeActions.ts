@@ -237,7 +237,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         }
         return true;
       } catch (reason) {
-        options.showErrorToast(reason instanceof Error ? options.readError(reason.message) : "断开失败", "disconnect");
+        options.showErrorToast(reason || "断开连接时出现问题，请重试。", "disconnect");
         return false;
       } finally {
         disconnectInFlight.current = false;
@@ -827,7 +827,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         const message = reason instanceof Error ? options.readError(reason.message) : options.readError(String(reason));
         const guidance = deriveGuidanceFromConnectFailure(message, options.fallbackNodeId, options.desktopStatus.platformTarget);
         if (guidance) applyGuidance(guidance, true, false);
-        else options.showErrorToast(reason instanceof Error ? reason : message, "connect");
+        else options.showErrorToast(reason || message, "connect");
         return;
       }
       if (!isCurrentLogin()) return;
@@ -991,7 +991,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         if (connectGuidance) {
           applyGuidance(connectGuidance, true, true);
         } else {
-          options.showErrorToast(reason instanceof Error ? reason : message, "connect");
+          options.showErrorToast(reason || message, "connect");
         }
       } finally {
         debugAndroidConnect("handleConnect:finish");
@@ -1081,7 +1081,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           : "登录态缺失时，已优先停止本地内核并恢复系统代理。"
       });
     } catch (reason) {
-      options.showErrorToast(reason instanceof Error ? options.readError(reason.message) : "断开失败", "disconnect");
+      options.showErrorToast(reason || "断开连接时出现问题，请重试。", "disconnect");
     } finally {
       setActionBusy(null);
     }

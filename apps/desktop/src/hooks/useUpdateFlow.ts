@@ -418,7 +418,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         message: failure.message,
         errorCode: failure.code
       }));
-      options.showError?.(reason instanceof Error ? reason : failure.message, "update_download");
+      options.showError?.(reason || failure.message, "update_download");
       return false;
     }
   }, [effectiveUpdate, options, updateDownload, updatePlatform]);
@@ -626,7 +626,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           return null;
         }
         if (!runOptions.openUpdateCenter && (!runOptions.silent || runOptions.source === "manual")) {
-          options.showError?.(reason instanceof Error ? reason : "暂时无法检查更新，请稍后重试。", "update_check");
+          options.showError?.(reason || "暂时无法检查更新，请稍后重试。", "update_check");
         }
         return null;
       } finally {
@@ -763,7 +763,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       dispatchUpdateCheck({ type: "reset" });
       return true;
     } catch (reason) {
-      options.showError?.(reason instanceof Error ? reason : "更新安装没有成功启动，请重试。", "update_install");
+      options.showError?.(reason || "更新安装没有成功启动，请重试。", "update_install");
       return false;
     }
   }, [effectiveUpdate, options, updateDownload, updatePlatform]);

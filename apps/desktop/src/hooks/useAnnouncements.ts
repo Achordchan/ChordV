@@ -113,7 +113,7 @@ export function useAnnouncements(options: UseAnnouncementsOptions) {
           color: "red",
           title: "公告状态同步失败",
           message:
-            reason instanceof Error
+            reason
               ? (options.readError ?? defaultReadError)(reason)
               : "当前无法保存公告已读状态"
         });

@@ -48,7 +48,7 @@ function createFailedServerProbeState(readError: (reason: unknown) => string, re
     status: "failed",
     elapsedMs: null,
     checkedAt: Date.now(),
-    errorMessage: reason instanceof Error ? readError(reason) : "当前无法连接服务器，请检查网络后重试。"
+    errorMessage: reason ? readError(reason) : "当前无法连接服务器，请检查网络后重试。"
   };
 }
 

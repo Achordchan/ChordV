@@ -85,6 +85,11 @@ function testReaderKeepsApiMetadataAndRecordsDiagnostics() {
   assertNoLeak(unknown, "ticket unknown");
   assert.ok(recorded.some((entry) => entry.context === "ticket" && entry.detail.includes("Support ticket inbox is temporarily unavailable.")), "hidden raw text is recorded");
   assert.ok(recorded.some((entry) => entry.detail.includes("Internal server error")), "mapped HTTP errors keep their raw body in diagnostics");
+  // Tauri 命令以纯字符串 reject：同样要识别编号并记录原文
+  const updateReader = createUserErrorReader("update_download", { onDiagnostic: (error, context) => recorded.push({ code: error.code, detail: error.detail, context }) });
+  const tauriString = "下载或签名校验失败：error sending request for url (https://updates.example.com/ChordV.exe)";
+  assert.equal(updateReader(tauriString), `${USER_ERROR_CATALOG.network_offline.message}\n错误编号：network_offline`);
+  assert.ok(recorded.some((entry) => entry.context === "update_download" && entry.detail === tauriString));
   // 客户可读的业务提示原样展示时，不需要额外记录
   const before = recorded.length;
   reader(Object.assign(new Error("工单已关闭，无法回复"), { status: 409 }));
@@ -100,6 +105,12 @@ function testDisplayHooksPassWholeErrors() {
   assert.match(events, /readError\(reason\) : /);
   const app = readFileSync(resolve(import.meta.dirname, "../src/App.tsx"), "utf8");
   assert.match(app, /createLoggedUserErrorReader\("ticket"\)/, "display readers record hidden raw text");
+  // Tauri 命令以字符串 reject：展示路径不能只认 Error，否则原文和编号都会丢失
+  for (const hook of ["useAuthBootstrap", "useRuntimeActions", "useUpdateFlow", "useSupportTickets", "useAnnouncements", "useNodeProbe", "useClientEvents"]) {
+    const source = readFileSync(resolve(import.meta.dirname, `../src/hooks/${hook}.ts`), "utf8");
+    assert.doesNotMatch(source, /showError(?:Toast)?\??\.?\((\w+) instanceof Error \? \1 :/, `${hook}: string rejections must reach the toast mapper`);
+    assert.doesNotMatch(source, /(\w+) instanceof Error\s*\?\s*(?:\(options\.readError \?\? defaultReadError\)|readError)\(\1\)/, `${hook}: string rejections must reach the reader`);
+  }
   const auth = readFileSync(resolve(import.meta.dirname, "../src/hooks/useAuthBootstrap.ts"), "utf8");
   assert.doesNotMatch(auth, /showErrorToast\(reason instanceof Error \? readError\(reason\.message\)/, "auth toasts keep HTTP status");
 }
@@ -320,6 +331,7 @@ function testDisplaySurfacesUseErrorNumber() {
   const ticketCenter = readFileSync(resolve(import.meta.dirname, "../src/components/TicketCenterModal.tsx"), "utf8");
   assert.doesNotMatch(ticketCenter, /\berror\.message\b|String\(error\)|<code>\{previewOpenError\}/, "ticket preview never shows raw error text");
   assert.match(ticketCenter, /splitUserErrorText\(message\)/, "ticket error bar shows the code via ErrorCodeHint");
+  assert.equal((ticketCenter.match(/<ErrorCodeHint code=\{splitUserErrorText\(props\.error\)\.code!\} \/>/g) ?? []).length, 2, "both the conversation pane and the narrow rail keep the error number");
   const guidanceDialog = readFileSync(resolve(import.meta.dirname, "../src/components/GuidanceDialog.tsx"), "utf8");
   assert.match(guidanceDialog, /ErrorCodeHint code=\{guidance\.errorCode\}/);
   assert.doesNotMatch(banner, /错误代码/);
