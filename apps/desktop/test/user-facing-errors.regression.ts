@@ -60,6 +60,50 @@ function testRuntimeComponentCodesAreMappedAndPreserved() {
   }
 }
 
+function testRecognizedCodesWithoutCatalogArePreserved() {
+  for (const code of ["service_stop_failed", "android_runtime_stop_failed", "service_task_removed"]) {
+    const described = describeUserError(new Error(`${code}: stopService threw IllegalStateException`), { context: "disconnect" });
+    assert.equal(described.code, code, "support needs the original runtime code");
+    assert.equal(described.known, true);
+    assertNoLeak(described.message, code);
+  }
+  // 自带“错误编号”行的文本也保留原编号
+  assert.equal(describeUserError("本机连接停止失败\n错误编号：service_stop_failed", { context: "disconnect" }).code, "service_stop_failed");
+}
+
+function testReaderKeepsApiMetadataAndRecordsDiagnostics() {
+  const recorded: Array<{ code: string | null; detail: string; context: string }> = [];
+  const reader = createUserErrorReader("ticket", { onDiagnostic: (error, context) => recorded.push({ code: error.code, detail: error.detail, context }) });
+  // 503 + 中文业务提示：原样展示且带 http 编号（只有拿到完整错误对象才可能做到）
+  const unavailable = Object.assign(new Error("工单服务维护中，请稍后再试"), { status: 503, rawMessage: "工单服务维护中，请稍后再试" });
+  assert.equal(reader(unavailable), "工单服务维护中，请稍后再试\n错误编号：http_503");
+  // 500 英文：按 HTTP 分类，而不是落到场景兜底
+  const internal = Object.assign(new Error("Internal server error"), { status: 500, rawMessage: "{\"statusCode\":500,\"message\":\"Internal server error\"}" });
+  assert.equal(reader(internal), `${USER_ERROR_CATALOG.http_5xx.message}\n错误编号：http_500`);
+  // 未识别的原文：展示兜底，原文交给诊断记录
+  const unknown = reader(new Error("Support ticket inbox is temporarily unavailable."));
+  assertNoLeak(unknown, "ticket unknown");
+  assert.ok(recorded.some((entry) => entry.context === "ticket" && entry.detail.includes("Support ticket inbox is temporarily unavailable.")), "hidden raw text is recorded");
+  assert.ok(recorded.some((entry) => entry.detail.includes("Internal server error")), "mapped HTTP errors keep their raw body in diagnostics");
+  // 客户可读的业务提示原样展示时，不需要额外记录
+  const before = recorded.length;
+  reader(Object.assign(new Error("工单已关闭，无法回复"), { status: 409 }));
+  assert.equal(recorded.length, before);
+}
+
+function testDisplayHooksPassWholeErrors() {
+  for (const hook of ["useSupportTickets", "useAnnouncements", "useNodeProbe"]) {
+    const source = readFileSync(resolve(import.meta.dirname, `../src/hooks/${hook}.ts`), "utf8");
+    assert.doesNotMatch(source, /readError \?\? defaultReadError\)\(reason\.message\)/, `${hook} must pass the whole error to the reader`);
+  }
+  const events = readFileSync(resolve(import.meta.dirname, "../src/hooks/useClientEvents.ts"), "utf8");
+  assert.match(events, /readError\(reason\) : /);
+  const app = readFileSync(resolve(import.meta.dirname, "../src/App.tsx"), "utf8");
+  assert.match(app, /createLoggedUserErrorReader\("ticket"\)/, "display readers record hidden raw text");
+  const auth = readFileSync(resolve(import.meta.dirname, "../src/hooks/useAuthBootstrap.ts"), "utf8");
+  assert.doesNotMatch(auth, /showErrorToast\(reason instanceof Error \? readError\(reason\.message\)/, "auth toasts keep HTTP status");
+}
+
 function testRustConnectPreflightErrorsAreMapped() {
   for (const raw of [
     "runtime component verification failed before connect: xray is missing after bundled runtime restore.",
@@ -294,6 +338,9 @@ function testDisplaySurfacesUseErrorNumber() {
 
 testCatalogEntriesAreCustomerSafe();
 testRuntimeComponentCodesAreMappedAndPreserved();
+testRecognizedCodesWithoutCatalogArePreserved();
+testReaderKeepsApiMetadataAndRecordsDiagnostics();
+testDisplayHooksPassWholeErrors();
 testRustConnectPreflightErrorsAreMapped();
 testHttpStatusesMapToFriendlyText();
 testServerBusinessMessagesStayVerbatimWithoutCode();

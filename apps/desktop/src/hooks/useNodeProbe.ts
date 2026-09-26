@@ -20,7 +20,7 @@ type UseNodeProbeOptions = {
   nowMs?: number;
   probeCooldownMs?: number;
   selectedNodeId?: string | null;
-  readError?: (message: string) => string;
+  readError?: (reason: unknown) => string;
   onUnauthorized?: () => Promise<unknown> | unknown;
   onError?: (message: string) => void;
   pickNodeId?: (
@@ -37,8 +37,9 @@ type UseNodeProbeOptions = {
   onGuidance?: (guidance: NodeProbeGuidance, auto: boolean) => void;
 };
 
-function defaultReadError(message: string) {
-  return message;
+/** 展示层读取器接收完整错误对象，便于保留 HTTP 状态等信息；默认只取 message。 */
+function defaultReadError(reason: unknown) {
+  return reason instanceof Error ? reason.message : String(reason ?? "");
 }
 
 export function useNodeProbe(options: UseNodeProbeOptions) {
@@ -127,7 +128,7 @@ export function useNodeProbe(options: UseNodeProbeOptions) {
           return null;
         }
         if (!auto) {
-          options.onError?.(reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "测速失败");
+          options.onError?.(reason instanceof Error ? (options.readError ?? defaultReadError)(reason) : "测速失败");
         }
         return null;
       } finally {

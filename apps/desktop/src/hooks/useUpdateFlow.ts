@@ -1,5 +1,12 @@
 import { initialUpdateCheckState, reduceUpdateCheckState } from "../lib/updateCheckState";
-import { describeUserError, isCustomerSafeText, toUserMessage, type UserErrorContext } from "../lib/userFacingErrors";
+import { describeUserError, formatUserError, isCustomerSafeText, shouldRecordDiagnostic, type UserErrorContext, type UserFacingError } from "../lib/userFacingErrors";
+
+/** 被映射 / 隐藏的原始错误写入诊断日志，客服可据此还原真实原因。 */
+function recordUpdateDiagnostic(error: UserFacingError, context: UserErrorContext) {
+  if (shouldRecordDiagnostic(error)) {
+    void recordClientDiagnosticLog("user-error", `[${context}] code=${error.code ?? "-"} detail=${error.detail}`);
+  }
+}
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { ClientVersionDto } from "@chordv/shared";
 import {
@@ -7,6 +14,7 @@ import {
   type ClientUpdateArtifact,
   type ClientUpdateCheckResult,
   isUnauthorizedApiError,
+  recordClientDiagnosticLog,
   type ReleaseChannel
 } from "../api/client";
 import {
@@ -89,9 +97,8 @@ type UseUpdateFlowOptions = {
   accessToken?: string | null;
   bootstrapVersion?: ClientVersionDto | null;
   updateChannel?: ReleaseChannel;
-  readError?: (message: string) => string;
   notify?: (notice: NoticeInput) => void;
-  showError?: (message: string, context?: UserErrorContext) => void;
+  showError?: (reason: unknown, context?: UserErrorContext) => void;
   onUnauthorized?: () => Promise<unknown> | unknown;
   isPromptBlocked?: () => boolean;
   checkRuntimeComponents?: (input: {
@@ -101,10 +108,6 @@ type UseUpdateFlowOptions = {
     targets?: Array<"xray" | "geo">;
   }) => Promise<RuntimeAssetsCheckSummary | null | void>;
 };
-
-function defaultReadError(message: string) {
-  return message;
-}
 
 function isDesktopManagedUpdate(mode: ClientUpdateCheckResult["deliveryMode"], platform: ResolvedUpdatePlatform) {
   return mode === "desktop_installer_download";
@@ -306,11 +309,13 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         return true;
       } catch (reason) {
         setUpdateDownload(createIdleUpdateDownloadState());
+        const failure = describeUserError(reason, { context: "update_install" });
+        recordUpdateDiagnostic(failure, "update_install");
         options.notify?.({
           color: "yellow",
           title: "本地更新包不可用",
           message: reason instanceof Error
-            ? `${toUserMessage((options.readError ?? defaultReadError)(reason.message), { context: "update_install" })}\n已切换为重新下载安装器。`
+            ? `${formatUserError(failure)}\n已切换为重新下载安装器。`
             : "已切换为重新下载安装器。"
         });
       }
@@ -401,7 +406,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       return true;
     } catch (reason) {
       const failure = describeUserError(
-        reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : reason,
+        reason,
         { context: "update_download" }
       );
       setUpdateDownload((current) => ({
@@ -413,7 +418,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         message: failure.message,
         errorCode: failure.code
       }));
-      options.showError?.(reason instanceof Error ? reason.message : failure.message, "update_download");
+      options.showError?.(reason instanceof Error ? reason : failure.message, "update_download");
       return false;
     }
   }, [effectiveUpdate, options, updateDownload, updatePlatform]);
@@ -621,7 +626,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           return null;
         }
         if (!runOptions.openUpdateCenter && (!runOptions.silent || runOptions.source === "manual")) {
-          options.showError?.(reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "暂时无法检查更新，请稍后重试。", "update_check");
+          options.showError?.(reason instanceof Error ? reason : "暂时无法检查更新，请稍后重试。", "update_check");
         }
         return null;
       } finally {
@@ -758,8 +763,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       dispatchUpdateCheck({ type: "reset" });
       return true;
     } catch (reason) {
-      const message = reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "更新安装没有成功启动，请重试。";
-      options.showError?.(message, "update_install");
+      options.showError?.(reason instanceof Error ? reason : "更新安装没有成功启动，请重试。", "update_install");
       return false;
     }
   }, [effectiveUpdate, options, updateDownload, updatePlatform]);

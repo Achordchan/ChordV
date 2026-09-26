@@ -28,19 +28,21 @@ async function actions(reconnect:boolean){
  assert.equal(notices.length,1);assert.match(notices[0],/cleanup failed/);
 }
 await actions(false);await actions(true);
-let cleared=0,revoked=0;const notices:string[]=[];
+// Toasts now receive the original Error (so HTTP status and raw text reach the user-facing mapper).
+const noticeText=(value:unknown)=>value instanceof Error?value.message:String(value);
+let cleared=0,revoked=0;const notices:unknown[]=[];
 const authOptions=new Proxy({session:{accessToken:"token",refreshToken:"refresh"},logoutBusy:false,
  forceStopLocalRuntime:async()=>{throw Error("cleanup failed");},clearStoredSession:async()=>{cleared++;},
- logoutSession:async()=>{revoked++;},showErrorToast:(message:string)=>notices.push(message),readError:(message:string)=>message,
+ logoutSession:async()=>{revoked++;},showErrorToast:(message:unknown)=>notices.push(message),readError:(message:string)=>message,
 } as Record<string,unknown>,{get:(target,key:string)=>key in target?target[key]:()=>{}});
 await load("useAuthBootstrap").useAuthBootstrap(authOptions).handleLogout();
-assert.equal(cleared,0);assert.equal(revoked,0);assert.match(notices[0],/cleanup failed/);
+assert.equal(cleared,0);assert.equal(revoked,0);assert.match(noticeText(notices[0]),/cleanup failed/);
 console.log("cleanup errors are handled; reconnect and logout never continue after failed local stop");
 
-let signedOut=0;const clearErrors:string[]=[];
+let signedOut=0;const clearErrors:unknown[]=[];
 const clearFailure=new Proxy({session:{accessToken:"token",refreshToken:"refresh"},logoutBusy:false,
  forceStopLocalRuntime:async()=>{},clearStoredSession:async()=>{throw Error("credential removal failed");},
- logoutSession:async()=>{},setSession:()=>{signedOut++;},showErrorToast:(message:string)=>clearErrors.push(message),readError:(message:string)=>message,
+ logoutSession:async()=>{},setSession:()=>{signedOut++;},showErrorToast:(message:unknown)=>clearErrors.push(message),readError:(message:string)=>message,
 } as Record<string,unknown>,{get:(target,key:string)=>key in target?target[key]:()=>{}});
 await load("useAuthBootstrap").useAuthBootstrap(clearFailure).handleLogout();
-assert.equal(signedOut,0);assert.match(clearErrors[0],/credential removal failed/);
+assert.equal(signedOut,0);assert.match(noticeText(clearErrors[0]),/credential removal failed/);

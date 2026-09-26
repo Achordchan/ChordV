@@ -126,7 +126,7 @@ type UseRuntimeActionsOptions = {
   guidanceDialog: ConnectionGuidance | null;
   setGuidanceDialog: Dispatch<SetStateAction<ConnectionGuidance | null>>;
   readError: (message: string) => string;
-  showErrorToast: (message: string, context?: UserErrorContext) => void;
+  showErrorToast: (reason: unknown, context?: UserErrorContext) => void;
   notify: (notice: NoticeInput) => void;
   setServerProbe: Dispatch<SetStateAction<ServerProbeState>>;
   mergeSubscriptionState: (subscription: SubscriptionStatusDto) => void;
@@ -827,7 +827,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         const message = reason instanceof Error ? options.readError(reason.message) : options.readError(String(reason));
         const guidance = deriveGuidanceFromConnectFailure(message, options.fallbackNodeId, options.desktopStatus.platformTarget);
         if (guidance) applyGuidance(guidance, true, false);
-        else options.showErrorToast(message, "connect");
+        else options.showErrorToast(reason instanceof Error ? reason : message, "connect");
         return;
       }
       if (!isCurrentLogin()) return;
@@ -991,7 +991,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         if (connectGuidance) {
           applyGuidance(connectGuidance, true, true);
         } else {
-          options.showErrorToast(message, "connect");
+          options.showErrorToast(reason instanceof Error ? reason : message, "connect");
         }
       } finally {
         debugAndroidConnect("handleConnect:finish");

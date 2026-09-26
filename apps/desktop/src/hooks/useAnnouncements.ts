@@ -23,12 +23,13 @@ type UseAnnouncementsOptions = {
   announcements: AnnouncementDto[];
   patchAnnouncements: AnnouncementPatchFn;
   onUnauthorized?: () => Promise<unknown> | unknown;
-  readError?: (message: string) => string;
+  readError?: (reason: unknown) => string;
   notify?: (notice: NoticeInput) => void;
 };
 
-function defaultReadError(message: string) {
-  return message;
+/** 展示层读取器接收完整错误对象，便于保留 HTTP 状态等信息；默认只取 message。 */
+function defaultReadError(reason: unknown) {
+  return reason instanceof Error ? reason.message : String(reason ?? "");
 }
 
 export function useAnnouncements(options: UseAnnouncementsOptions) {
@@ -113,7 +114,7 @@ export function useAnnouncements(options: UseAnnouncementsOptions) {
           title: "公告状态同步失败",
           message:
             reason instanceof Error
-              ? (options.readError ?? defaultReadError)(reason.message)
+              ? (options.readError ?? defaultReadError)(reason)
               : "当前无法保存公告已读状态"
         });
         return false;

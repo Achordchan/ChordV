@@ -483,8 +483,9 @@ export function detectErrorCode(text: string, context: UserErrorContext = "gener
   if (/Panel client is queued but not confirmed yet/i.test(text)) {
     return "node_provisioning_pending";
   }
+  // 已识别的运行时机器码即使没有专门文案也要原样保留，客服依赖它定位问题。
   const runtimeCode = RUNTIME_REASON_CODES.find((code) => text.includes(code));
-  if (runtimeCode && USER_ERROR_CATALOG[runtimeCode]) {
+  if (runtimeCode) {
     return runtimeCode;
   }
   if (/No space left|os error 28\b|ENOSPC|There is not enough space|磁盘空间不足/i.test(text)) {
@@ -563,6 +564,8 @@ export function describeUserError(
     const entry = USER_ERROR_CATALOG[technicalCode];
     return { ...entry, code: existingCode ?? technicalCode, detail, known: true };
   }
+  // 识别出机器码但没有专门文案：文案走场景兜底，编号保留原码。
+  const recognizedCode = existingCode ?? technicalCode;
 
   // 多行（例如「连接失败 + 本机停止失败」）：每行独立判断，只保留安全行。
   const safeLines = bodies.filter((line) => isCustomerSafeText(line));
@@ -577,7 +580,7 @@ export function describeUserError(
         title: status >= 500 ? entry?.title ?? fallback.title : fallback.title,
         message: unique(safeLines).join("\n"),
         action: entry?.action ?? fallback.action,
-        code: existingCode ?? (status >= 500 ? `http_${status}` : null),
+        code: recognizedCode ?? (status >= 500 ? `http_${status}` : null),
         detail,
         known: true
       };
@@ -585,9 +588,9 @@ export function describeUserError(
     // 401 / 413 / 429 / 5xx 的原因与场景无关，用状态码文案；403 / 404 / 409 在具体场景下用场景文案更贴切。
     const contextSpecific = context !== "general" && (status === 403 || status === 404 || status === 409);
     if (entry && !contextSpecific) {
-      return { ...entry, code: existingCode ?? `http_${status}`, detail, known: true };
+      return { ...entry, code: recognizedCode ?? `http_${status}`, detail, known: true };
     }
-    return { ...fallback, code: existingCode ?? `http_${status}`, detail, known: true };
+    return { ...fallback, code: recognizedCode ?? `http_${status}`, detail, known: true };
   }
 
   if (allSafe) {
@@ -595,7 +598,7 @@ export function describeUserError(
       title: fallback.title,
       message: unique(safeLines).join("\n"),
       action: fallback.action,
-      code: existingCode,
+      code: recognizedCode,
       detail,
       known: true
     };
@@ -605,9 +608,9 @@ export function describeUserError(
     title: fallback.title,
     message: fallback.message,
     action: fallback.action,
-    code: existingCode ?? fallback.code,
+    code: recognizedCode ?? fallback.code,
     detail,
-    known: false
+    known: recognizedCode !== null
   };
 }
 
@@ -663,6 +666,22 @@ export function describeRuntimeAssetsFailure(code: string | null | undefined, ra
 }
 
 /** 生成与旧 readError 签名兼容的读取器，供只负责展示的 hook 使用。 */
-export function createUserErrorReader(context: UserErrorContext) {
-  return (message: string) => toUserMessage(message, { context });
+export function createUserErrorReader(
+  context: UserErrorContext,
+  options: { onDiagnostic?: (error: UserFacingError, context: UserErrorContext) => void } = {}
+) {
+  // 接收完整的错误对象（而不只是 message），这样 HTTP 状态、服务端原文都能参与判断；
+  // 被隐藏的原文在转换成展示文本之前交给 onDiagnostic 记录。
+  return (reason: unknown) => {
+    const error = describeUserError(reason, { context });
+    if (shouldRecordDiagnostic(error)) {
+      options.onDiagnostic?.(error, context);
+    }
+    return formatUserError(error);
+  };
+}
+
+/** 原文与展示文本不同（被映射或被隐藏）时，需要把原文写入诊断日志。 */
+export function shouldRecordDiagnostic(error: UserFacingError) {
+  return Boolean(error.detail) && (!error.known || error.detail !== error.message);
 }

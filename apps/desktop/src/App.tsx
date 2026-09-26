@@ -68,7 +68,7 @@ import {
   readError,
   shouldAutoHandleRuntimeGuidance
 } from "./lib/connectionGuidance";
-import { createUserErrorReader, toUserMessage } from "./lib/userFacingErrors";
+import { toUserMessage } from "./lib/userFacingErrors";
 import {
   clearRememberedCredentials as clearRememberedCredentialsStorage,
   loadRememberedCredentials as loadRememberedCredentialsFromStorage,
@@ -77,6 +77,7 @@ import {
   resolveDefaultMode,
   saveRememberedCredentials as saveRememberedCredentialsToStorage,
   showErrorToast,
+  createLoggedUserErrorReader,
   toSubscriptionServerProbe,
   formatTrayTrafficLine
 } from "./lib/appState";
@@ -121,10 +122,11 @@ declare global {
 const DownloadProgressDebug = (import.meta.env.DEV || import.meta.env.VITE_CHORDV_LOCAL_PREVIEW === "1")
   ? lazy(() => import("./dev/DownloadProgressDebug").then(module => ({ default: module.DownloadProgressDebug }))) : null;
 // 只负责展示的 hook 使用面向客户的错误读取器：原始错误不会直接出现在界面上。
-const readAnnouncementError = createUserErrorReader("announcement");
-const readTicketError = createUserErrorReader("ticket");
-const readNodeProbeError = createUserErrorReader("node_probe");
-const readServerProbeError = createUserErrorReader("server_probe");
+// 读取器接收完整错误对象（保留 HTTP 状态），被隐藏的原文会写入诊断日志。
+const readAnnouncementError = createLoggedUserErrorReader("announcement");
+const readTicketError = createLoggedUserErrorReader("ticket");
+const readNodeProbeError = createLoggedUserErrorReader("node_probe");
+const readServerProbeError = createLoggedUserErrorReader("server_probe");
 
 export function App() {
   const [session, setSessionState] = useState<AuthSessionDto | null>(null);
@@ -298,7 +300,6 @@ export function App() {
     accessToken: session?.accessToken ?? null,
     bootstrapVersion: bootstrap?.version ?? null,
     updateChannel,
-    readError,
     notify: notifications.show,
     showError: showErrorToast,
     onUnauthorized: recoverSessionAfterUnauthorized,
@@ -816,7 +817,7 @@ export function App() {
         status: "failed",
         elapsedMs: null,
         checkedAt: Date.now(),
-        errorMessage: toUserMessage(reason, { context: "server_probe" })
+        errorMessage: readServerProbeError(reason)
       });
     } finally {
       setServerProbeBusy(false);

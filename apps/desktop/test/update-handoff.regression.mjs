@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+// Plain-JS stand-in for userFacingErrors.isCustomerSafeText (only the branches these reports hit).
+const isCustomerSafeText = text => /[\u3400-\u9fff]/.test(text) && !/[A-Za-z]{2,}(?:[\s-]+[A-Za-z]{2,}){2,}/.test(text);
+
 // Execute the production callback with isolated native adapters; no installer runs.
 const source = readFileSync(fileURLToPath(new URL('../src/hooks/useUpdateFlow.ts', import.meta.url)), 'utf8');
 const callback = source.match(/const handleQuitForUpdate = useCallback\((async \(\) => \{[\s\S]*?\n  \}), \[/)?.[1];
@@ -25,7 +28,6 @@ function scenario(platform, failAt, waitForApply) {
     installWindowsUpdate: native('apply'),
     openDesktopInstaller: native('installer'),
     quitForUpdate: native('quit'),
-    defaultReadError: value => value,
     dispatchUpdateCheck: event => { assert.equal(event.type, 'reset'); confirmed = null; calls.push('reset'); }
   };
   return {
@@ -54,14 +56,19 @@ console.log('update handoff regression checks passed (3 failures and 2 successes
 
 const reportCallback = source.match(/const consumeUpdateInstallReport = useCallback\((async \(\) => \{[\s\S]*?\n  \}), \[/)?.[1];
 assert.ok(reportCallback);
-for (const input of ['read-error', { ok: false, summary: '自动更新失败，已恢复旧版本。' }, { ok: true }, null]) {
+for (const input of ['read-error', { ok: false, summary: '自动更新失败，已恢复旧版本。' }, { ok: false, summary: 'Start-Process failed with exit code 5' }, { ok: true }, null]) {
   const notices = [];
-  const run = new Function('consumeDesktopUpdateInstallReport', 'options', `return (${reportCallback});`)(
+  const run = new Function('consumeDesktopUpdateInstallReport', 'options', 'isCustomerSafeText', `return (${reportCallback});`)(
     async () => { if (input === 'read-error') throw new Error('invalid report'); return input; },
-    { notify: notice => notices.push(notice) }
+    { notify: notice => notices.push(notice) },
+    isCustomerSafeText
   );
   await run();
   assert.equal(notices.length, input === 'read-error' || input?.ok === false ? 1 : 0);
   if (input === 'read-error') assert.equal(notices[0].title, '无法读取更新结果');
+  if (input?.ok === false) {
+    assert.equal(notices[0].title, '更新安装未完全成功');
+    assert.equal(notices[0].message, /[\u3400-\u9fff]/.test(input.summary) ? input.summary : '自动替换安装未成功，已改为打开安装包。', 'raw English summaries are replaced');
+  }
 }
 console.log('installation report failures are visible; successful and absent reports stay silent');

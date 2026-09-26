@@ -117,7 +117,7 @@ export type UseAuthBootstrapOptions = {
     subscription: SubscriptionStatusDto,
     nodes: NodeSummaryDto[]
   ) => ConnectionGuidanceLike | null;
-  showErrorToast: (message: string, context?: UserErrorContext) => void;
+  showErrorToast: (reason: unknown, context?: UserErrorContext) => void;
   readError: (message: string) => string;
   saveRememberedCredentials: (email: string, password: string) => void;
   clearRememberedCredentials: () => void;
@@ -242,7 +242,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
           try {
             await runProbe(nextNodes, true, nextSession.accessToken);
           } catch (reason) {
-            showErrorToast(reason instanceof Error ? readError(reason.message) : "节点测速失败", "node_probe");
+            showErrorToast(reason instanceof Error ? reason : "节点测速没有完成，请稍后重试。", "node_probe");
           }
         } else if (nextNodes.length > 0) {
           setProbeResults((current) =>
@@ -264,7 +264,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
               includeRuntimeComponents: false
             });
           } catch (reason) {
-            showErrorToast(reason instanceof Error ? readError(reason.message) : "更新信息同步失败", "update_check");
+            showErrorToast(reason instanceof Error ? reason : "暂时无法检查更新，请稍后重试。", "update_check");
           }
         }
 
@@ -301,7 +301,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
                 return false;
               }
               await clearSession(true);
-              showErrorToast(refreshReason instanceof Error ? readError(refreshReason.message) : "登录未成功，请稍后重试。", "login");
+              showErrorToast(refreshReason instanceof Error ? refreshReason : "登录未成功，请稍后重试。", "login");
               return false;
             }
             if (session) {
@@ -317,7 +317,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
 
         if (isUnauthorizedApiError(reason)) {
           await clearSession(true);
-          showErrorToast(reason instanceof Error ? readError(reason.message) : "登录状态已失效，请重新登录。", "session");
+          showErrorToast(reason instanceof Error ? reason : "登录状态已失效，请重新登录。", "session");
           return false;
         }
 
@@ -351,11 +351,11 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
         if (session) {
           setSession(nextSession);
           await saveStoredSession(nextSession).catch(() => null);
-          showErrorToast(reason instanceof Error ? readError(reason.message) : "账号信息暂时无法同步，已保留当前登录状态，请稍后刷新。", "session");
+          showErrorToast(reason instanceof Error ? reason : "账号信息暂时无法同步，已保留当前登录状态，请稍后刷新。", "session");
           return true;
         }
 
-        showErrorToast(reason instanceof Error ? readError(reason.message) : "登录未成功，请稍后重试。", "login");
+        showErrorToast(reason instanceof Error ? reason : "登录未成功，请稍后重试。", "login");
         return false;
       }
     },
@@ -412,7 +412,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
         await clearStoredSession().catch(() => null);
       }
     } catch (reason) {
-      showErrorToast(reason instanceof Error ? readError(reason.message) : "登录未成功，请稍后重试。", "login");
+      showErrorToast(reason instanceof Error ? reason : "登录未成功，请稍后重试。", "login");
     } finally {
       setAuthBusy(false);
     }
@@ -482,7 +482,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
         setCredentials((current) => ({ ...current, password: "" }));
       }
     } catch (reason) {
-      showErrorToast(reason instanceof Error ? readError(reason.message) : "退出失败，请重试。", "logout");
+      showErrorToast(reason instanceof Error ? reason : "退出失败，请重试。", "logout");
     } finally {
       setLogoutBusy(false);
     }

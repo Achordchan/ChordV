@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { ActionIcon, Badge, Button, Collapse, Group, Switch, Text, TextInput, UnstyledButton } from "@mantine/core";
 import { notifications } from "../lib/notifications";
-import { describeUserError, type UserErrorContext } from "../lib/userFacingErrors";
+import { logUserErrorDiagnostic } from "../lib/appState";
+import { describeUserError, shouldRecordDiagnostic, type UserErrorContext } from "../lib/userFacingErrors";
 import {
   IconChevronDown,
   IconChevronRight,
@@ -50,6 +51,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
   const setError = (message: string | null) => setErrorState(message ? { message, code: null } : null);
   const showFailure = (reason: unknown, context?: UserErrorContext) => {
     const failure = describeUserError(reason, { context });
+    if (shouldRecordDiagnostic(failure)) logUserErrorDiagnostic(failure, context ?? "general");
     setErrorState({ message: failure.message, code: failure.code });
   };
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
