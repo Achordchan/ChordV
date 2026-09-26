@@ -155,6 +155,21 @@ async function main() {
   assert.equal(belowMinimum.minimumVersion, "1.1.11", "testers inherit the stable minimum version");
   assert.equal(belowMinimum.updateRequirement, "required_minimum");
 
+  // The newest stable has no artifact for this client: a lower beta cannot meet
+  // the stable requirement, so it must not be handed out as a mandatory update.
+  const unreachable = createService([
+    { ...release("stable-20", "stable", "1.2.0"), minimumVersion: "1.2.0", forceUpgrade: true, artifacts: ["unusable"] },
+    release("beta-112", "beta", "1.1.12"),
+    release("stable-111", "stable", "1.1.11")
+  ]);
+  const usableArtifact = unreachable.service.pickClientUsableArtifact;
+  unreachable.service.pickClientUsableArtifact = async (artifacts: any[], ...rest: any[]) =>
+    artifacts[0] === "unusable" ? null : usableArtifact(artifacts, ...rest);
+  const noLoop = await check(unreachable.service, "1.1.10", "beta");
+  assert.notEqual(noLoop.latestVersion, "1.1.12", "a beta below the inherited requirement must be skipped");
+  assert.equal(noLoop.latestVersion, "1.1.11", "fall back like stable users do when the newest stable is unavailable");
+  assert.equal(noLoop.releaseChannel, "stable");
+
   // Guard rails around promotion.
   await assert.rejects(service.promoteRelease("stable-11"), /只有测试版/);
   await assert.rejects(service.promoteRelease("beta-14-draft"), /请先发布测试版/);

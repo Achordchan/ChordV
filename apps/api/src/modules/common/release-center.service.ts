@@ -1064,6 +1064,19 @@ export class ReleaseCenterService {
       if (compareSemver(release.minimumVersion, release.version) > 0) {
         continue;
       }
+      const releaseChannel = normalizeReleaseChannel(release.channel);
+      const requirementSource = releaseChannel === "stable" ? release : stableLine;
+      const minimumVersion = requirementSource?.minimumVersion ?? input.currentVersion;
+      const mustUpgrade = compareSemver(input.currentVersion, minimumVersion) < 0;
+      const forcedByRelease = Boolean(
+        requirementSource?.forceUpgrade && compareSemver(requirementSource.version, input.currentVersion) > 0
+      );
+      // A beta can inherit a stable requirement it cannot meet (e.g. the newest
+      // stable has no artifact for this client); installing it would loop forever.
+      const requiredVersion = forcedByRelease ? requirementSource!.version : mustUpgrade ? minimumVersion : null;
+      if (requiredVersion && compareSemver(release.version, requiredVersion) < 0) {
+        continue;
+      }
 
       let resolvedArtifact = await this.pickClientUsableArtifact(
         release.artifacts,
@@ -1081,13 +1094,6 @@ export class ReleaseCenterService {
         resolvedArtifact = { ...resolvedArtifact, type: "external", deliveryMode: "external_download" };
       }
       const latestVersionComparison = compareSemver(release.version, input.currentVersion);
-      const releaseChannel = normalizeReleaseChannel(release.channel);
-      const requirementSource = releaseChannel === "stable" ? release : stableLine;
-      const minimumVersion = requirementSource?.minimumVersion ?? input.currentVersion;
-      const mustUpgrade = compareSemver(input.currentVersion, minimumVersion) < 0;
-      const forcedByRelease = Boolean(
-        requirementSource?.forceUpgrade && compareSemver(requirementSource.version, input.currentVersion) > 0
-      );
 
       if (latestVersionComparison <= 0 && !mustUpgrade) {
         return {
