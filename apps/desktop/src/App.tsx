@@ -245,6 +245,7 @@ export function App() {
     hasUnreadTickets,
     loadTicketList,
     loadTicketDetail,
+    refreshTicketCenter,
     markTicketUnread,
     openTicketCenter,
     openTicketComposer,
@@ -1966,10 +1967,7 @@ export function App() {
         replyAttachment={ticketReplyAttachment}
         replyAttachmentUpload={ticketReplyAttachmentUpload}
         onClose={() => setTicketCenterOpened(false)}
-        onRefresh={() => {
-          void loadTicketList(selectedTicketId);
-          if (selectedTicketId && !ticketCreateMode) void loadTicketDetail(selectedTicketId);
-        }}
+        onRefresh={() => void refreshTicketCenter()}
         onOpenCreate={openTicketComposer}
         onCancelCreate={closeTicketComposer}
         onSelectTicket={(ticketId) => {

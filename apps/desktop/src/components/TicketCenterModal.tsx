@@ -482,7 +482,18 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                   <Button size="compact-sm" leftSection={<IconPlus size={14} />} onClick={props.onOpenCreate} disabled={props.createMode}>
                     新建工单
                   </Button>
-                  <CloseButton size="md" className={styles.railClose} aria-label="关闭工单窗口" onClick={props.onClose} />
+                  <ActionIcon
+                    variant="subtle"
+                    color="gray"
+                    size={30}
+                    className={styles.railNarrowOnly}
+                    aria-label="刷新工单"
+                    loading={refreshing}
+                    onClick={props.onRefresh}
+                  >
+                    <IconRefresh size={17} />
+                  </ActionIcon>
+                  <CloseButton size="md" className={styles.railNarrowOnly} aria-label="关闭工单窗口" onClick={props.onClose} />
                 </div>
                 <div className={styles.railTools}>
                   <TextInput
@@ -548,6 +559,14 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                         );
                       })}
                     </ul>
+                  ) : props.error && props.tickets.length === 0 ? (
+                    <div className={styles.railEmpty} role="alert">
+                      <Text size="xs" fw={600}>工单暂时加载不出来</Text>
+                      <Text size="xs" c="dimmed">{props.error}</Text>
+                      <Button size="compact-xs" variant="default" leftSection={<IconRefresh size={12} />} onClick={props.onRefresh}>
+                        重试
+                      </Button>
+                    </div>
                   ) : (
                     <div className={styles.railEmpty}>
                       <Text size="xs" c="dimmed">{props.tickets.length > 0 ? "没有符合条件的工单" : "暂无工单"}</Text>
