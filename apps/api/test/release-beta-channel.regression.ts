@@ -1,5 +1,6 @@
 import "reflect-metadata";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { ReleaseCenterService } from "../src/modules/common/release-center.service";
 import { assertVersionMatchesChannel, normalizeReleaseChannel, releaseChannelsVisibleTo } from "../src/modules/common/release-center.utils";
 
@@ -179,6 +180,11 @@ async function main() {
   for (const unnumbered of ["1.1.10-beta", "1.1.10-rc", "1.1.10-rc.1", "1.1.10-beta.x"]) {
     assert.throws(() => assertVersionMatchesChannel(unnumbered, "beta"), /测试版的版本号需要带编号，例如 1\.1\.10-beta\.2/, `${unnumbered} cannot order successive test builds`);
   }
+
+  // Legacy unnumbered betas stay publishable: the rule is enforced on create and channel switch only.
+  const serviceSource = readFileSync(new URL("../src/modules/common/release-center.service.ts", import.meta.url), "utf8");
+  const publishCheck = serviceSource.slice(serviceSource.indexOf("private async assertReleasePublishable"), serviceSource.indexOf("const primaryArtifact", serviceSource.indexOf("private async assertReleasePublishable")));
+  assert.doesNotMatch(publishCheck, /assertVersionMatchesChannel/, "publishing must not reject records created before the numbering rule");
 
   // Legacy unnumbered betas keep ordinary metadata edits, including a resent unchanged channel.
   const legacyBeta = createService([release("beta-legacy", "beta", "1.1.10")]);

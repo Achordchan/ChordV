@@ -1231,7 +1231,9 @@ export class ReleaseCenterService {
       throw new NotFoundException("发布记录不存在。");
     }
     this.assertReleaseRecordMutable(release);
-    assertVersionMatchesChannel(release.version, normalizeReleaseChannel(release.channel));
+    // Version/channel rules are enforced on create and channel switch only, so
+    // records created before them (e.g. an unnumbered beta withdrawn to draft)
+    // can still be republished or promoted.
     const primaryArtifact = release.artifacts.find((item) => item.isPrimary) ?? release.artifacts[0];
     if (!primaryArtifact) {
       throw new BadRequestException("发布前请至少添加一个安装包。");
