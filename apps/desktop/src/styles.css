@@ -569,9 +569,12 @@ body {
   border-radius: var(--cv-radius-md);
 }
 
+/* Neutral elevated indicator: it must not compete with the cyan/green primary
+ * button, and it stays readable while the mode is locked during a connection. */
 .control-panel__mode-switch .mantine-SegmentedControl-indicator {
   border-radius: var(--cv-radius-sm);
-  box-shadow: var(--cv-shadow-sm);
+  background: var(--cv-surface);
+  box-shadow: 0 0 0 1px var(--cv-border-strong), var(--cv-shadow-sm);
 }
 
 .control-panel__mode-switch .mantine-SegmentedControl-label {
@@ -579,15 +582,98 @@ body {
   color: var(--cv-text-muted);
 }
 
-.control-panel__mode-switch .mantine-SegmentedControl-label[data-active] {
+/* Mantine drops data-active from a disabled label, so key off the control. */
+.control-panel__mode-switch .mantine-SegmentedControl-control[data-active] .mantine-SegmentedControl-label {
   font-weight: 600;
-  color: #fff;
+  color: var(--cv-text);
+}
+
+.control-panel__mode-switch[data-disabled] .mantine-SegmentedControl-control:not([data-active]) .mantine-SegmentedControl-label {
+  color: #a3b0bd;
 }
 
 .primary-action {
   min-height: 46px;
   font-size: 15px;
   font-weight: 600;
+}
+
+/* Connect progress. There is no real percentage, so the bar eases toward ~92%
+ * and "connected" sweeps it to 100% before the green button takes over. Text
+ * stays dark: readable on both the pale track and the green fill. */
+.control-primary-action[data-fill] {
+  --cv-fill-track: var(--mantine-color-green-0);
+  --cv-fill-bar: var(--mantine-color-green-filled);
+  background: var(--cv-fill-track);
+  border-color: var(--mantine-color-green-3);
+  color: var(--cv-text);
+  cursor: progress;
+}
+
+.control-primary-action[data-fill] .mantine-Button-inner {
+  position: relative;
+  z-index: 1;
+}
+
+.control-primary-action[data-fill]::before,
+.control-primary-action[data-fill]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: 0;
+  background: var(--cv-fill-bar);
+  opacity: 1;
+  filter: none;
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: none;
+  pointer-events: none;
+}
+
+.control-primary-action[data-fill="connecting"]::after,
+.control-primary-action[data-fill="completing"]::after {
+  animation: cv-connect-fill 12s cubic-bezier(0.08, 0.82, 0.17, 1) forwards;
+}
+
+/* Same colour on top: invisible until it overtakes the progress edge. */
+.control-primary-action[data-fill="completing"]::before {
+  animation: cv-connect-complete 280ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+
+.control-primary-action[data-fill="disconnecting"]::after {
+  animation: cv-disconnect-drain 6s cubic-bezier(0.08, 0.82, 0.17, 1) forwards;
+}
+
+@keyframes cv-connect-fill {
+  from { transform: scaleX(0.04); }
+  to { transform: scaleX(0.92); }
+}
+
+@keyframes cv-connect-complete {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+@keyframes cv-disconnect-drain {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0.06); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .control-primary-action[data-fill]::before,
+  .control-primary-action[data-fill]::after {
+    animation: none;
+  }
+
+  .control-primary-action[data-fill]::after {
+    transform: none;
+    opacity: 0.35;
+  }
+
+  .control-primary-action[data-fill="completing"]::before {
+    transform: none;
+  }
 }
 
 .control-error {
@@ -1261,6 +1347,28 @@ textarea,
 
 .desktop-mobile-home__notice {
   min-height: 0;
+}
+
+.force-update-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 6px 8px 6px 12px;
+  border: 1px solid #fcd9b6;
+  border-radius: var(--cv-radius-md);
+  background: #fff7ed;
+}
+
+.force-update-strip__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: #9a3412;
+  line-height: 1.4;
+}
+
+.force-update-strip__action {
+  flex: 0 0 auto;
 }
 
 .desktop-mobile-home__screen {
