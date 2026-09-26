@@ -39,12 +39,13 @@ function createService(rows: Row[]) {
   const events: Array<{ platform: string; channel: string }> = [];
   const lockKeys: string[] = [];
   let lockChain: Promise<unknown> = Promise.resolve();
+  const hooks: { beforeTransaction?: () => void } = {};
   const service: any = Object.create(ReleaseCenterService.prototype);
   service.logger = { warn() {} };
   const prisma: any = {
     // Transactions run one at a time, like holders of the same advisory lock.
     $transaction: (task: (tx: any) => Promise<unknown>) => {
-      const run = lockChain.then(() => task(prisma));
+      const run = lockChain.then(() => { hooks.beforeTransaction?.(); hooks.beforeTransaction = undefined; return task(prisma); });
       lockChain = run.catch(() => undefined);
       return run;
     },
@@ -54,6 +55,11 @@ function createService(rows: Row[]) {
       findUnique: async ({ where }: any) => {
         const row = rows.find(item => item.id === where.id);
         return row ? { ...row } : null;
+      },
+      update: async ({ where, data }: any) => {
+        const row = rows.find(item => item.id === where.id)!;
+        Object.assign(row, data);
+        return { ...row };
       },
       updateMany: async ({ where, data }: any) => {
         const targets = rows.filter(row => matches(row, where));
@@ -72,7 +78,7 @@ function createService(rows: Row[]) {
     publishVersionUpdated: async (platform: string, channel: string) => { events.push({ platform, channel }); }
   };
   service.adminRuntimeEventsService = { publishVersionUpdated() {}, publishReleaseCenterUpdated() {} };
-  return { service, events, lockKeys };
+  return { service, events, lockKeys, hooks };
 }
 
 async function check(service: any, currentVersion: string, channel: "stable" | "beta") {
@@ -131,6 +137,15 @@ async function main() {
 
   // Beta A is now older than stable, so promoting it would be a downgrade.
   await assert.rejects(service.promoteRelease("beta-12"), /正式版已是 1\.1\.13/);
+
+  // An admin edits a draft beta's channel while another publishes it: the
+  // channel check must use the persisted status read under the lock.
+  const editRace = createService([release("stable-11", "stable", "1.1.11"), release("beta-15", "beta", "1.1.15", "draft")]);
+  editRace.hooks.beforeTransaction = () => { editRace.service.prisma.release.update({ where: { id: "beta-15" }, data: { status: "published" } }); };
+  await assert.rejects(editRace.service.updateRelease("beta-15", { channel: "stable" }), /转为正式版/);
+  const draftEdit = createService([release("beta-16", "beta", "1.1.16", "draft")]);
+  const switched = await draftEdit.service.updateRelease("beta-16", { channel: "stable" });
+  assert.equal(switched.channel, "stable", "drafts can still switch channel");
 
   // Two admins promote different betas at once: the lower one must not land after the higher one.
   const race = createService([

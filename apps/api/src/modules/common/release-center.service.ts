@@ -256,9 +256,6 @@ export class ReleaseCenterService {
     const nextMinimumVersion = input.minimumVersion !== undefined ? normalizeVersion(input.minimumVersion) : current.minimumVersion;
     assertMinimumVersionNotAboveRelease(current.version, nextMinimumVersion);
     const nextChannel = input.channel !== undefined ? normalizeReleaseChannel(input.channel) : undefined;
-    if (nextChannel !== undefined && nextChannel !== current.channel && current.status !== "draft") {
-      throw new BadRequestException("已发布版本不能直接切换通道；测试版验证通过后请使用“转为正式版”。");
-    }
 
     const baseData = {
       ...(nextChannel !== undefined ? { channel: nextChannel } : {}),
@@ -275,19 +272,11 @@ export class ReleaseCenterService {
       await this.assertReleasePublishable(releaseId);
       let updated: ReleaseRowLike;
       try {
-        updated = await this.withReleaseLineLock(releaseId, tx => tx.release.update({
-          where: { id: releaseId },
-          data: {
-            ...baseData,
-            status: "published",
-            publishedAt: normalizePublishedAt("published", input.publishedAt ?? undefined)
-          },
-          include: {
-            artifacts: {
-              orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
-            }
-          }
-        }));
+        updated = await this.writeReleaseEdit(releaseId, nextChannel, {
+          ...baseData,
+          status: "published",
+          publishedAt: normalizePublishedAt("published", input.publishedAt ?? undefined)
+        });
       } catch (error) {
         throwLocalSaveAsServiceUnavailable(error, "发布记录保存失败，请刷新发布中心后重试。");
       }
@@ -302,18 +291,10 @@ export class ReleaseCenterService {
     if (input.status === "draft") {
       let updated: ReleaseRowLike;
       try {
-        updated = await this.prisma.release.update({
-          where: { id: releaseId },
-          data: {
-            ...baseData,
-            status: "draft",
-            publishedAt: null
-          },
-          include: {
-            artifacts: {
-              orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
-            }
-          }
+        updated = await this.writeReleaseEdit(releaseId, nextChannel, {
+          ...baseData,
+          status: "draft",
+          publishedAt: null
         });
       } catch (error) {
         throwLocalSaveAsServiceUnavailable(error, "发布记录保存失败，请刷新发布中心后重试。");
@@ -331,15 +312,7 @@ export class ReleaseCenterService {
     if (Object.keys(baseData).length > 0) {
       let updated: ReleaseRowLike;
       try {
-        updated = await this.prisma.release.update({
-          where: { id: releaseId },
-          data: baseData,
-          include: {
-            artifacts: {
-              orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
-            }
-          }
-        });
+        updated = await this.writeReleaseEdit(releaseId, nextChannel, baseData);
       } catch (error) {
         throwLocalSaveAsServiceUnavailable(error, "发布记录保存失败，请刷新发布中心后重试。");
       }
@@ -397,7 +370,11 @@ export class ReleaseCenterService {
     try {
       promoted = await this.withReleaseLineLock(releaseId, async tx => {
         // Re-read under the lock: a concurrent promotion or stable publish may
-        // have raised the stable line since the admin opened the dialog.
+        // have raised the stable line since the admin opened the dialog. Like
+        // the client update check (findPublishedReleaseCandidates), this counts
+        // every published stable release regardless of publishedAt: a
+        // future-dated stable is already offered to clients, so promoting a
+        // lower beta would never reach them.
         const stable = await tx.release.findMany({
           where: { platform: current.platform, channel: "stable", status: "published" },
           select: { version: true }
@@ -1401,6 +1378,29 @@ export class ReleaseCenterService {
     if(!release)throw new NotFoundException("发布记录不存在");
     if(allowPublished)this.assertReleaseRecordMutable(release);else this.assertReleaseArtifactsMutable(release);
     return release;
+  }
+
+  /** Applies an edit under the release-line lock. Status only becomes
+   * "published" under this lock, so a channel change validated here against
+   * the persisted draft status cannot land on a release published meanwhile. */
+  private async writeReleaseEdit(releaseId: string, nextChannel: ReleaseChannel | undefined, data: Prisma.ReleaseUpdateInput) {
+    return this.withReleaseLineLock(releaseId, async tx => {
+      if (nextChannel !== undefined) {
+        const persisted = await tx.release.findUnique({ where: { id: releaseId }, select: { status: true, channel: true } });
+        if (persisted && persisted.channel !== nextChannel && persisted.status !== "draft") {
+          throw new BadRequestException("已发布版本不能直接切换通道；测试版验证通过后请使用“转为正式版”。");
+        }
+      }
+      return tx.release.update({
+        where: { id: releaseId },
+        data,
+        include: {
+          artifacts: {
+            orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+          }
+        }
+      });
+    });
   }
 
   /** Serializes every change that can raise a platform's published line
