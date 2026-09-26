@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { Button, Checkbox, Group, Modal, PasswordInput, Stack, Text, TextInput } from "@mantine/core";
+import { Button, Checkbox, PasswordInput, Text, TextInput } from "@mantine/core";
 import { IconLock, IconMail, IconSend } from "@tabler/icons-react";
 import { openExternalUrl } from "../lib/runtime";
 import appIcon from "../../src-tauri/icons/icon.png";
+import { AppDialog, DialogText } from "./AppDialog";
 import "./LoginScreen.css";
 
 type LoginScreenProps = {
@@ -156,41 +157,26 @@ export function LoginScreen(props: LoginScreenProps) {
         </div>
       </div>
 
-      <Modal
+      <AppDialog
         opened={helpOpened}
         onClose={() => setHelpOpened(false)}
         title="账号帮助"
-        closeButtonProps={{ "aria-label": "关闭账号帮助" }}
-        centered
-        size="min(92vw, 520px)"
-        classNames={{
-          content: "auth-help__modal-content",
-          header: "auth-help__modal-header",
-          body: "auth-help__modal-body"
-        }}
-      >
-        <div className="auth-help">
-          <div className="auth-help__scroll">
-            <Stack gap={7}>
-              <Text size="sm" fw={600}>忘记密码或无法登录</Text>
-              <Text size="sm" c="dimmed">
-                请发送登录邮箱和购买或团队信息，由管理员核对后协助重置密码。
-              </Text>
-              <Text size="sm" c="dimmed">
-                已登录用户也可通过工单申请修改密码。
-              </Text>
-            </Stack>
-            <div className="auth-help__contact">
-              <Text size="xs" c="dimmed">联系邮箱</Text>
-              <Text size="sm" className="auth-help__email">{SUPPORT_EMAIL}</Text>
-            </div>
-          </div>
-          <Group justify="flex-end" gap="xs" className="auth-help__actions">
+        closeLabel="关闭账号帮助"
+        size={440}
+        actions={
+          <>
             <Button variant="default" onClick={() => setHelpOpened(false)}>关闭</Button>
             <Button leftSection={<IconSend size={15} />} onClick={openSupportEmail}>发送邮件</Button>
-          </Group>
+          </>
+        }
+      >
+        <Text size="sm" fw={600} mb={4}>忘记密码或无法登录</Text>
+        <DialogText muted>请发送登录邮箱和购买或团队信息，由管理员核对后协助重置密码。已登录用户也可通过工单申请修改密码。</DialogText>
+        <div className="auth-help__contact">
+          <Text size="xs" c="dimmed">联系邮箱</Text>
+          <Text size="sm" className="auth-help__email">{SUPPORT_EMAIL}</Text>
         </div>
-      </Modal>
+      </AppDialog>
     </div>
   );
 }

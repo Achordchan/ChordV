@@ -1,0 +1,23 @@
+.notice {
+  --notice-bg: var(--cv-info-bg);
+  --notice-border: var(--cv-info-border);
+  --notice-text: var(--cv-info-text);
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--notice-border);
+  border-radius: var(--cv-radius-md);
+  background: var(--notice-bg);
+  color: var(--notice-text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.notice[data-tone="warning"] { --notice-bg: var(--cv-warning-bg); --notice-border: var(--cv-warning-border); --notice-text: var(--cv-warning-text); }
+.notice[data-tone="danger"] { --notice-bg: var(--cv-danger-bg); --notice-border: var(--cv-danger-border); --notice-text: var(--cv-danger-text); }
+.notice[data-tone="success"] { --notice-bg: var(--cv-success-bg); --notice-border: var(--cv-success-border); --notice-text: var(--cv-success-text); }
+/* 13px text at 1.5 line height: 2px top offset centres the icon on the first line. */
+.icon { flex-shrink: 0; margin-top: 2px; }
+.text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.action { flex-shrink: 0; align-self: center; }

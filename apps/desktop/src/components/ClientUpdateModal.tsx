@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
 import { Badge, Button, Modal, Text } from "@mantine/core";
-import { IconAlertCircle, IconArrowRight } from "@tabler/icons-react";
+import { IconArrowRight } from "@tabler/icons-react";
 import appIcon from "../../src-tauri/icons/icon.png";
 import type { ClientUpdateCheckResult } from "../api/client";
 import { cleanChangelogItem, compareVersion, formatVersionLabel } from "../lib/updateState";
+import { NoticeRow } from "./NoticeRow";
 import styles from "./ClientUpdateModal.module.css";
 
 type ClientUpdateModalProps = {
@@ -60,14 +61,11 @@ export function ClientUpdateModal(props: ClientUpdateModalProps) {
       </div>
 
       {props.forceRequired ? (
-        <div className={styles.notice} role="alert">
-          <IconAlertCircle size={16} className={styles.noticeIcon} aria-hidden="true" />
-          <span>
-            {belowMinimum
-              ? `当前版本低于最低支持版本 ${formatVersionLabel(update?.minimumVersion ?? "")}，更新后才能继续使用。`
-              : "这是一次必要更新，更新后才能继续使用。"}
-          </span>
-        </div>
+        <NoticeRow tone="danger" role="alert" className={styles.notice}>
+          {belowMinimum
+            ? `当前版本低于最低支持版本 ${formatVersionLabel(update?.minimumVersion ?? "")}，更新后才能继续使用。`
+            : "这是一次必要更新，更新后才能继续使用。"}
+        </NoticeRow>
       ) : null}
 
       {props.progress ? <div className={styles.progress}>{props.progress}</div> : null}

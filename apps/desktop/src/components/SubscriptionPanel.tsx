@@ -237,7 +237,8 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
   return (
     <Paper
       withBorder
-      p="md"
+      px="md"
+      py={12}
       className={isTeam ? "subscription-card subscription-card--team" : "subscription-card"}
     >
       <div className="subscription-shell">

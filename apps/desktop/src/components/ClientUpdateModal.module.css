@@ -13,8 +13,6 @@
 .arrow { flex-shrink: 0; color: var(--cv-text-muted); }
 .versionNext { color: var(--cv-accent-strong); font-weight: 500; }
 .published { margin-left: 6px; padding-left: 8px; border-left: 1px solid var(--cv-border-strong); }
-.notice { display: flex; align-items: flex-start; gap: 8px; padding: 9px 12px; border: 1px solid #f3d3d1; border-radius: var(--cv-radius-md); background: #fdf5f4; color: #9f3a35; font-size: 13px; line-height: 1.5; }
-.noticeIcon { flex-shrink: 0; margin-top: 2px; }
 .progress { margin-top: 12px; }
 .changelog { flex: 1 1 auto; min-height: 88px; display: flex; flex-direction: column; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--cv-border); }
 .sectionTitle { font-size: 14px; font-weight: 600; }

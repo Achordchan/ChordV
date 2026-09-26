@@ -1,9 +1,10 @@
-import { Badge, Button, Divider, Group, Paper, SegmentedControl, SimpleGrid, Stack, Text, ThemeIcon, Title } from "@mantine/core";
+import { Badge, Button, Divider, Group, Paper, SegmentedControl, Stack, Text, ThemeIcon, Title } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import { useEffect, useState } from "react";
 import type { ConnectionMode, GeneratedRuntimeConfigDto } from "@chordv/shared";
 import { IconChartBar, IconPlugConnected, IconRoute, IconShieldCheckered } from "@tabler/icons-react";
 import type { RuntimeStatus } from "../lib/runtime";
+import { NoticeRow } from "./NoticeRow";
 import {
   PRIMARY_FILL_COMPLETE_MS,
   resolvePrimaryFillPhase,
@@ -44,7 +45,7 @@ export function ControlPanel(props: ControlPanelProps) {
         : fillPhase === "completing"
           ? "已连接"
           : props.primaryLabel;
-  const renderPrimaryButton = (size: "lg" | "xl") => (
+  const renderPrimaryButton = (size: "md" | "xl") => (
     <Button
       size={size}
       className="primary-action control-primary-action"
@@ -113,15 +114,12 @@ export function ControlPanel(props: ControlPanelProps) {
 
           {renderPrimaryButton("xl")}
 
-          <SimpleGrid cols={2} spacing="sm" verticalSpacing="sm" className="control-panel__ports">
-            <MetricBlock label="HTTP 端口" value={props.runtime ? `${props.runtime.localHttpPort}` : "--"} />
-            <MetricBlock label="SOCKS 端口" value={props.runtime ? `${props.runtime.localSocksPort}` : "--"} />
-          </SimpleGrid>
+          <LocalProxyPorts runtime={props.runtime} />
 
           {props.error ? (
-            <Text size="sm" className="control-error" role="alert">
+            <NoticeRow tone="danger" role="alert" className="control-error">
               {props.error}
-            </Text>
+            </NoticeRow>
           ) : null}
 
           <Divider />
@@ -158,8 +156,8 @@ export function ControlPanel(props: ControlPanelProps) {
 
   return (
     <Paper withBorder p="md" className="desktop-panel control-panel">
-      <Stack h="100%" gap="sm" className="control-shell">
-        <Stack gap="sm">
+      <Stack h="100%" gap={10} className="control-shell">
+        <Stack gap={10} className="control-body">
           <div className="control-head">
             <Title order={3} className="panel-title">连接控制</Title>
           </div>
@@ -178,17 +176,14 @@ export function ControlPanel(props: ControlPanelProps) {
             }))}
           />
 
-          {renderPrimaryButton("lg")}
+          {renderPrimaryButton("md")}
 
-          <Group grow wrap="nowrap" className="control-metrics">
-            <MetricBlock label="HTTP 端口" value={props.runtime ? `${props.runtime.localHttpPort}` : "--"} />
-            <MetricBlock label="SOCKS 端口" value={props.runtime ? `${props.runtime.localSocksPort}` : "--"} />
-          </Group>
+          <LocalProxyPorts runtime={props.runtime} />
 
           {props.error ? (
-            <Text size="sm" className="control-error" role="alert">
+            <NoticeRow tone="danger" role="alert" className="control-error">
               {props.error}
-            </Text>
+            </NoticeRow>
           ) : null}
         </Stack>
 
@@ -261,7 +256,7 @@ function readRuntimeInstallLabel(
 function StatusSurface(props: { status: string; nodeName: string; compact?: boolean }) {
   return (
     <div className={props.compact ? "status-surface status-surface--compact" : "status-surface"}>
-      <Stack gap={props.compact ? 8 : 6}>
+      <Stack gap={props.compact ? 8 : 4}>
         <Group justify="space-between">
           <Text size="sm" c="dimmed">
             当前状态
@@ -278,15 +273,19 @@ function StatusSurface(props: { status: string; nodeName: string; compact?: bool
   );
 }
 
-function MetricBlock(props: { label: string; value: string }) {
+/** Local proxy ports are reference information, so they sit under the connect
+ * button as a single muted caption instead of metric cards. */
+function LocalProxyPorts(props: { runtime: GeneratedRuntimeConfigDto | null }) {
   return (
-    <div className="metric-item">
-      <Text size="xs" c="dimmed" className="metric-label">
-        {props.label}
-      </Text>
-      <Text fw={650} className="metric-value">
-        {props.value}
-      </Text>
+    <div className="control-ports" aria-label="本地代理端口">
+      <span className="control-ports__label">本地代理</span>
+      <span>
+        HTTP <span className="control-ports__value">{props.runtime ? props.runtime.localHttpPort : "--"}</span>
+      </span>
+      <span className="control-ports__separator" aria-hidden="true">·</span>
+      <span>
+        SOCKS <span className="control-ports__value">{props.runtime ? props.runtime.localSocksPort : "--"}</span>
+      </span>
     </div>
   );
 }

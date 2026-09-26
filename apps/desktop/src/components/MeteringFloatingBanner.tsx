@@ -1,6 +1,5 @@
-import { Badge, Paper, Text } from "@mantine/core";
-import { useMediaQuery } from "@mantine/hooks";
 import { createPortal } from "react-dom";
+import { NoticeRow } from "./NoticeRow";
 
 type MeteringFloatingBannerProps = {
   status: "ok" | "degraded";
@@ -8,26 +7,18 @@ type MeteringFloatingBannerProps = {
 };
 
 export function MeteringFloatingBanner(props: MeteringFloatingBannerProps) {
-  const isMobile = useMediaQuery("(max-width: 760px)");
   if (props.status !== "degraded" || !props.message || typeof document === "undefined") {
     return null;
   }
 
   return createPortal(
     <div className="metering-floating-banner" aria-live="polite">
-      <Paper withBorder p="sm" className="metering-floating-banner__panel">
-        <Badge variant="light" color="yellow" className="metering-floating-banner__badge">
-          计量同步延迟
-        </Badge>
-        <Text
-          c="orange.8"
-          size={isMobile ? "xs" : "sm"}
-          className="metering-floating-banner__text"
-          lineClamp={2}
-        >
+      <NoticeRow tone="warning" className="metering-floating-banner__panel">
+        <span className="metering-floating-banner__text">
+          <strong className="metering-floating-banner__label">计量同步延迟</strong>
           {props.message}
-        </Text>
-      </Paper>
+        </span>
+      </NoticeRow>
     </div>,
     document.body
   );
