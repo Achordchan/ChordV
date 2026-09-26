@@ -275,7 +275,7 @@ export class ReleaseCenterService {
       await this.assertReleasePublishable(releaseId);
       let updated: ReleaseRowLike;
       try {
-        updated = await this.prisma.release.update({
+        updated = await this.withReleaseLineLock(releaseId, tx => tx.release.update({
           where: { id: releaseId },
           data: {
             ...baseData,
@@ -287,7 +287,7 @@ export class ReleaseCenterService {
               orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
             }
           }
-        });
+        }));
       } catch (error) {
         throwLocalSaveAsServiceUnavailable(error, "发布记录保存失败，请刷新发布中心后重试。");
       }
@@ -360,7 +360,7 @@ export class ReleaseCenterService {
     await this.assertReleasePublishable(releaseId);
     let updated: ReleaseRowLike;
     try {
-      updated = await this.prisma.release.update({
+      updated = await this.withReleaseLineLock(releaseId, tx => tx.release.update({
         where: { id: releaseId },
         data: {
           status: "published",
@@ -371,7 +371,7 @@ export class ReleaseCenterService {
             orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
           }
         }
-      });
+      }));
     } catch (error) {
       throwLocalSaveAsServiceUnavailable(error, "发布记录保存失败，请刷新发布中心后重试。");
     }
@@ -393,16 +393,25 @@ export class ReleaseCenterService {
     if (current.status !== "published") {
       throw new BadRequestException("请先发布测试版并验证通过，再转为正式版。");
     }
-    const latestStable = await this.findLatestPublishedRelease("stable", current.platform as PlatformTarget);
-    if (latestStable && compareSemver(latestStable.version, current.version) >= 0) {
-      throw new BadRequestException(`正式版已是 ${latestStable.version}，不低于此测试版，无需转正。`);
-    }
     let promoted: number;
     try {
-      ({ count: promoted } = await this.prisma.release.updateMany({
-        where: { id: releaseId, channel: "beta", status: "published" },
-        data: { channel: "stable", publishedAt: new Date() }
-      }));
+      promoted = await this.withReleaseLineLock(releaseId, async tx => {
+        // Re-read under the lock: a concurrent promotion or stable publish may
+        // have raised the stable line since the admin opened the dialog.
+        const stable = await tx.release.findMany({
+          where: { platform: current.platform, channel: "stable", status: "published" },
+          select: { version: true }
+        });
+        const latestStable = stable.map(row => row.version).sort((left, right) => compareSemver(right, left))[0];
+        if (latestStable && compareSemver(latestStable, current.version) >= 0) {
+          throw new BadRequestException(`正式版已是 ${latestStable}，不低于此测试版，无需转正。`);
+        }
+        const { count } = await tx.release.updateMany({
+          where: { id: releaseId, channel: "beta", status: "published" },
+          data: { channel: "stable", publishedAt: new Date() }
+        });
+        return count;
+      });
     } catch (error) {
       throwLocalSaveAsServiceUnavailable(error, "转为正式版失败，请刷新发布中心后重试。");
     }
@@ -1392,6 +1401,19 @@ export class ReleaseCenterService {
     if(!release)throw new NotFoundException("发布记录不存在");
     if(allowPublished)this.assertReleaseRecordMutable(release);else this.assertReleaseArtifactsMutable(release);
     return release;
+  }
+
+  /** Serializes every change that can raise a platform's published line
+   * (publishing, promotion) so promotion's "above current stable" rule is
+   * checked against committed state rather than a stale read. */
+  private async withReleaseLineLock<T>(releaseId: string, task: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    return this.prisma.$transaction(async tx => {
+      const release = await tx.release.findUnique({ where: { id: releaseId }, select: { platform: true } });
+      if (!release) throw new NotFoundException("发布记录不存在。");
+      const key = `chordv:release-line:${release.platform}`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
+      return task(tx);
+    });
   }
 
   private assertReleaseArtifactsMutable(release: { status: string }) {

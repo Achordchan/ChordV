@@ -37,9 +37,18 @@ function matches(row: Row, where: Record<string, any>) {
 
 function createService(rows: Row[]) {
   const events: Array<{ platform: string; channel: string }> = [];
+  const lockKeys: string[] = [];
+  let lockChain: Promise<unknown> = Promise.resolve();
   const service: any = Object.create(ReleaseCenterService.prototype);
   service.logger = { warn() {} };
-  service.prisma = {
+  const prisma: any = {
+    // Transactions run one at a time, like holders of the same advisory lock.
+    $transaction: (task: (tx: any) => Promise<unknown>) => {
+      const run = lockChain.then(() => task(prisma));
+      lockChain = run.catch(() => undefined);
+      return run;
+    },
+    $executeRaw: async (_strings: TemplateStringsArray, key: string) => { lockKeys.push(key); return 1; },
     release: {
       findMany: async ({ where }: any) => rows.filter(row => matches(row, where)).map(row => ({ ...row })),
       findUnique: async ({ where }: any) => {
@@ -53,6 +62,7 @@ function createService(rows: Row[]) {
       }
     }
   };
+  service.prisma = prisma;
   service.pickClientUsableArtifact = async () => ({
     id: "artifact", type: "dmg", source: "uploaded", deliveryMode: "desktop_installer_download",
     downloadUrl: "https://updates.example/ChordV.dmg", fileName: "ChordV.dmg", fileHash: null, fileSizeBytes: 1n,
@@ -62,7 +72,7 @@ function createService(rows: Row[]) {
     publishVersionUpdated: async (platform: string, channel: string) => { events.push({ platform, channel }); }
   };
   service.adminRuntimeEventsService = { publishVersionUpdated() {}, publishReleaseCenterUpdated() {} };
-  return { service, events };
+  return { service, events, lockKeys };
 }
 
 async function check(service: any, currentVersion: string, channel: "stable" | "beta") {
@@ -121,6 +131,18 @@ async function main() {
 
   // Beta A is now older than stable, so promoting it would be a downgrade.
   await assert.rejects(service.promoteRelease("beta-12"), /正式版已是 1\.1\.13/);
+
+  // Two admins promote different betas at once: the lower one must not land after the higher one.
+  const race = createService([
+    release("stable-11", "stable", "1.1.11"),
+    release("beta-12", "beta", "1.1.12"),
+    release("beta-13", "beta", "1.1.13")
+  ]);
+  const [higher, lower] = await Promise.allSettled([race.service.promoteRelease("beta-13"), race.service.promoteRelease("beta-12")]);
+  assert.equal(higher.status, "fulfilled");
+  assert.equal(lower.status, "rejected");
+  assert.match(String((lower as PromiseRejectedResult).reason?.message), /正式版已是 1\.1\.13/);
+  assert.ok(race.lockKeys.every(key => key === "chordv:release-line:macos"), "promotion locks the platform release line");
 
   console.log("Release beta channel: tester visibility, no-downgrade opt-out, promotion guard rails and stable rollout passed");
 }

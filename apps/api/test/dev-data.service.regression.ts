@@ -169,7 +169,9 @@ function withFileMaintenanceFixture(overrides: Record<string, any>) {
   return { files, prisma: { ...prisma, $transaction: async (task: any) => {
     const pending: Array<() => Promise<void>> = [];
     const run = async (tx: any) => {
-      const releaseDelegate=tx.release??prisma.release??{findUnique:({where}:any)=>overrides.ensureReleaseExists?.(where.id)};
+      const baseReleaseDelegate=tx.release??prisma.release??{};
+      // Publishing takes the platform release-line lock, which first reads the platform.
+      const releaseDelegate={...baseReleaseDelegate,findUnique:baseReleaseDelegate.findUnique??(({where}:any)=>overrides.ensureReleaseExists?.(where.id)??{id:where.id,platform:"windows"})};
       const artifactDelegate={...prisma.releaseArtifact,...tx.releaseArtifact};
       const releaseWithRelations={...releaseDelegate,findUnique:async(input:any)=>{
         const record=await releaseDelegate.findUnique(input);
@@ -182,6 +184,7 @@ function withFileMaintenanceFixture(overrides: Record<string, any>) {
       }};
       const writer = { ...tx,
         $queryRaw: tx.$queryRaw ?? (async()=>[]),
+        $executeRaw: tx.$executeRaw ?? (async()=>1),
         release: releaseWithRelations,
         runtimeComponentVersion: tx.runtimeComponentVersion ?? {findMany:async()=>[]},
         releaseArtifact: { findFirst:async()=>null, findUnique:(input:any)=>(tx.releaseArtifact?.findFirst??prisma.releaseArtifact?.findFirst)?.(input), ...(tx.releaseArtifact??prisma.releaseArtifact) }
