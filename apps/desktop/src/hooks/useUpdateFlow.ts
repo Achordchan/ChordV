@@ -50,6 +50,13 @@ import {
   type UpdateCenterItemKey,
   type UpdateCenterState
 } from "../lib/updateCenter";
+import {
+  formatSilentUpdateFailureLog,
+  isSilentUpdateCandidate,
+  isUpdateReadyIndicatorVisible,
+  shouldStartSilentUpdateDownload,
+  SILENT_UPDATE_LOG_CATEGORY
+} from "../lib/silentUpdate";
 
 type NoticeInput = {
   color: "green" | "yellow" | "red" | "blue";
@@ -98,6 +105,10 @@ type UseUpdateFlowOptions = {
   accessToken?: string | null;
   bootstrapVersion?: ClientVersionDto | null;
   updateChannel?: ReleaseChannel;
+  /** 「自动在后台下载更新」偏好：开启后普通更新会静默下载，完成后只显示“新版本已就绪”标记。 */
+  autoDownloadUpdates?: boolean;
+  /** 当前是否适合开始后台下载（已进入主界面、窗口没有在切换）。 */
+  backgroundDownloadAllowed?: boolean;
   notify?: (notice: NoticeInput) => void;
   showError?: (reason: unknown, context?: UserErrorContext) => void;
   onUnauthorized?: () => Promise<unknown> | unknown;
@@ -201,6 +212,16 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
   const completedDownloadIdentityRef = useRef<string | null>(null);
   const updateCheckBusyRef = useRef(false);
   const pendingUpdateCheckRef = useRef<RunUpdateCheckOptions | null>(null);
+  // 后台静默下载：用户没有主动介入时不展示进度、失败只记诊断日志。
+  const [backgroundUpdateDownload, setBackgroundUpdateDownload] = useState(false);
+  const backgroundDownloadRef = useRef(false);
+  const silentDownloadInFlightRef = useRef(false);
+  const silentAttemptedIdentityRef = useRef<string | null>(null);
+  const [silentReadyIdentity, setSilentReadyIdentity] = useState<string | null>(null);
+  const markBackgroundDownload = useCallback((value: boolean) => {
+    backgroundDownloadRef.current = value;
+    setBackgroundUpdateDownload(value);
+  }, []);
 
   const effectiveUpdate = updateCheckResult;
 
@@ -217,6 +238,8 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
   const updateArtifactIdentity = useMemo(() => {
     return buildUpdateArtifactIdentity(effectiveUpdate);
   }, [effectiveUpdate]);
+  const artifactIdentityRef = useRef(updateArtifactIdentity);
+  artifactIdentityRef.current = updateArtifactIdentity;
 
   useEffect(() => {
     if (updatePlatform === "android") {
@@ -256,11 +279,13 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     }
   }, [updateCheckResult?.artifact]);
 
-  const handleUpdateDownload = useCallback(async () => {
+  const handleUpdateDownload = useCallback(async (request: { silent?: boolean } = {}) => {
+    const silent = request.silent === true;
     const resolvedDownloadUrl = resolveUpdateDownloadUrl(effectiveUpdate?.downloadUrl ?? null);
     const originDownloadUrl = resolveUpdateDownloadUrl(effectiveUpdate?.artifact?.originDownloadUrl ?? null);
 
     if (!resolvedDownloadUrl || !effectiveUpdate) {
+      if (silent) return false;
       options.notify?.({
         color: "yellow",
         title: "暂无下载地址",
@@ -271,6 +296,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
 
 
     if (!isDesktopManagedUpdate(effectiveUpdate.deliveryMode, updatePlatform) || updatePlatform === "android") {
+      if (silent) return false;
       try {
         const result = await openExternalUrl(resolvedDownloadUrl);
         if (!result.ok) throw new Error("无法打开系统浏览器，请检查默认浏览器设置后重试。");
@@ -294,6 +320,8 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     }
 
     if (updateDownload.phase === "preparing" || updateDownload.phase === "downloading" || updateDownload.phase === "verifying") {
+      // 用户主动点了下载：接管正在进行的后台下载，之后的进度与失败按正常流程展示。
+      if (!silent && backgroundDownloadRef.current) markBackgroundDownload(false);
       return false;
     }
 
@@ -330,7 +358,15 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       effectiveUpdate.artifact?.fileName ??
       inferInstallerFileName(resolvedDownloadUrl, effectiveUpdate.artifact?.fileType ?? preferredArtifactType(updatePlatform));
 
-    setUpdateDialogOpened(false);
+    const targetIdentity = updateArtifactIdentity;
+    setSilentReadyIdentity(null);
+    if (silent) {
+      silentDownloadInFlightRef.current = true;
+      markBackgroundDownload(true);
+    } else {
+      markBackgroundDownload(false);
+      setUpdateDialogOpened(false);
+    }
     setUpdateDownload({
       phase: "preparing",
       fileName: preferredFileName,
@@ -391,18 +427,32 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         message: "更新包下载完成，点击下方按钮开始安装。"
       });
 
-      completedDownloadIdentityRef.current = updateArtifactIdentity;
+      completedDownloadIdentityRef.current = targetIdentity;
+      if (updatePlatform !== "windows") {
+        // Mac/DMG 与安装器路径：先登记待安装文件，由用户点击“安装并重启”再退出安装。
+        await openDesktopInstaller(result.localPath);
+        setUpdateDownload((current) => ({
+          ...current,
+          phase: "completed",
+          message: usedFallback
+            ? "更新包已下载完成（已回退原始地址）。请点击“安装并重启”。"
+            : "更新包已下载完成。请点击“安装并重启”，应用退出后自动完成替换安装。"
+        }));
+      }
+      if (silent && backgroundDownloadRef.current) {
+        // 下载期间更新包已变化（例如切换了测试版通道）：旧包不能再拿来安装，交给新一轮判断。
+        if (artifactIdentityRef.current !== targetIdentity) {
+          completedDownloadIdentityRef.current = null;
+          markBackgroundDownload(false);
+          setUpdateDownload(createIdleUpdateDownloadState());
+          return false;
+        }
+        // 后台下载完成：不弹窗、不提示，只点亮“新版本已就绪 · 重启更新”标记。
+        setSilentReadyIdentity(targetIdentity);
+        void recordClientDiagnosticLog(SILENT_UPDATE_LOG_CATEGORY, `background download ready version=${effectiveUpdate.latestVersion}`);
+        return true;
+      }
       if (updatePlatform === "windows") return true;
-
-      // Mac/DMG 与安装器路径：先登记待安装文件，由用户点击“安装并重启”再退出安装。
-      await openDesktopInstaller(result.localPath);
-      setUpdateDownload((current) => ({
-        ...current,
-        phase: "completed",
-        message: usedFallback
-          ? "更新包已下载完成（已回退原始地址）。请点击“安装并重启”。"
-          : "更新包已下载完成。请点击“安装并重启”，应用退出后自动完成替换安装。"
-      }));
       options.notify?.({
         color: "green",
         title: "更新包已就绪",
@@ -414,6 +464,17 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         reason,
         { context: "update_download" }
       );
+      if (silent && backgroundDownloadRef.current) {
+        // 后台下载失败不打扰用户：只写诊断日志、不显示就绪标记，用户仍可在更新中心手动更新。
+        void recordClientDiagnosticLog(SILENT_UPDATE_LOG_CATEGORY, formatSilentUpdateFailureLog({
+          version: effectiveUpdate.latestVersion,
+          code: failure.code,
+          detail: failure.detail || failure.message
+        }));
+        markBackgroundDownload(false);
+        setUpdateDownload(createIdleUpdateDownloadState());
+        return false;
+      }
       setUpdateDownload((current) => ({
         phase: "failed",
         fileName: current.fileName,
@@ -425,8 +486,57 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       }));
       options.showError?.(reason || failure.message, "update_download");
       return false;
+    } finally {
+      if (silent) silentDownloadInFlightRef.current = false;
     }
-  }, [effectiveUpdate, options, updateDownload, updatePlatform]);
+  }, [effectiveUpdate, markBackgroundDownload, options, updateArtifactIdentity, updateDownload, updatePlatform]);
+
+  const silentUpdateCandidate = isSilentUpdateCandidate({
+    update: effectiveUpdate,
+    channel: updateChannel,
+    appVersion: options.appVersion,
+    actionable: hasActionableUpdate(effectiveUpdate, options.appVersion),
+    platform: updatePlatform
+  });
+
+  useEffect(() => {
+    if (silentDownloadInFlightRef.current) return;
+    if (!shouldStartSilentUpdateDownload({
+      enabled: options.autoDownloadUpdates === true,
+      allowed: options.backgroundDownloadAllowed === true,
+      candidate: silentUpdateCandidate,
+      phase: updateDownload.phase,
+      artifactIdentity: updateArtifactIdentity,
+      attemptedIdentity: silentAttemptedIdentityRef.current
+    })) {
+      return;
+    }
+    // 同一个更新包本次运行只自动尝试一次，失败后不反复重试。
+    silentAttemptedIdentityRef.current = updateArtifactIdentity;
+    void handleUpdateDownload({ silent: true });
+  }, [
+    handleUpdateDownload,
+    options.autoDownloadUpdates,
+    options.backgroundDownloadAllowed,
+    silentUpdateCandidate,
+    updateArtifactIdentity,
+    updateDownload.phase
+  ]);
+
+  useEffect(() => {
+    // 用户打开了更新弹窗在看进度：后台下载转为前台，失败时照常提示。
+    const inProgress = updateDownload.phase === "preparing" || updateDownload.phase === "downloading" || updateDownload.phase === "verifying";
+    if (updateDialogOpened && inProgress && backgroundDownloadRef.current) {
+      markBackgroundDownload(false);
+    }
+  }, [markBackgroundDownload, updateDialogOpened, updateDownload.phase]);
+
+  const updateReadyToInstall = isUpdateReadyIndicatorVisible({
+    download: updateDownload,
+    readyIdentity: silentReadyIdentity,
+    artifactIdentity: updateArtifactIdentity,
+    forceUpdateRequired
+  });
 
 
   const openUpdateCenter = useCallback(() => {
@@ -599,8 +709,23 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           runOptions.source === "manual" ||
           result.forceUpgrade ||
           lastUpdatePromptVersionRef.current !== promptKey;
+        // 开启后台下载时，普通更新不再自动弹窗：静默下载完成后只显示“新版本已就绪”标记。
+        // 强制更新、手动检查、以及不能静默下载的更新仍走原来的弹窗。
+        const handledSilently =
+          runOptions.source !== "manual" &&
+          options.autoDownloadUpdates === true &&
+          isSilentUpdateCandidate({
+            update: result,
+            channel: options.updateChannel ?? "stable",
+            appVersion: options.appVersion,
+            actionable: effectiveHasUpdate,
+            platform: updatePlatform
+          });
 
-        if (shouldPrompt) {
+        if (shouldPrompt && handledSilently) {
+          deferredUpdatePromptKeyRef.current = null;
+          lastUpdatePromptVersionRef.current = promptKey;
+        } else if (shouldPrompt) {
           if (runOptions.source !== "manual" && options.isPromptBlocked?.()) {
             deferredUpdatePromptKeyRef.current = promptKey;
           } else {
@@ -610,7 +735,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           }
         }
 
-        if (runOptions.source !== "manual" && !runOptions.silent) {
+        if (runOptions.source !== "manual" && !runOptions.silent && !handledSilently) {
           options.notify?.({
             color: result.forceUpgrade ? "red" : "blue",
             title: result.forceUpgrade ? "发现强制更新" : "发现新版本",
@@ -809,6 +934,8 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     setUpdateDialogOpened,
     updateDownload,
     setUpdateDownload,
+    backgroundUpdateDownload,
+    updateReadyToInstall,
     deferredUpdatePromptKeyRef,
     lastUpdatePromptVersionRef,
     runUpdateCheck,

@@ -17,6 +17,8 @@ type UpdateCenterModalProps = {
   syncError?: string | null;
   betaChannel: boolean;
   onBetaChannelChange: (enabled: boolean) => void;
+  autoDownload: boolean;
+  onAutoDownloadChange: (enabled: boolean) => void;
   onClose: () => void;
   onCheckOnly: () => void;
   onUpdateOne: (key: UpdateCenterItemKey) => void;
@@ -78,6 +80,16 @@ export function UpdateCenterModal(props: UpdateCenterModalProps) {
         description={props.betaChannel
           ? "将优先收到测试版，可能不够稳定。关闭后不会降级，正式版追上后恢复正常更新。"
           : "提前体验新版本，可能不够稳定。"}
+      />
+
+      <Switch
+        className={styles.channel}
+        checked={props.autoDownload}
+        onChange={(event) => props.onAutoDownloadChange(event.currentTarget.checked)}
+        label="自动在后台下载更新"
+        description={props.autoDownload
+          ? "有新版本时在后台下载，完成后提示重启更新，不会自动安装。"
+          : "有新版本时弹窗提醒，由你决定何时下载。"}
       />
 
       <section className={styles.components} aria-labelledby="runtime-components-heading">

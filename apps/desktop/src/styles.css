@@ -410,6 +410,55 @@ body {
   border-color: #c3ccd6;
 }
 
+/* Background-downloaded update: a quiet pill on a second toolbar row, under the update button. */
+.subscription-toolbar-row {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--group-gap, 10px);
+}
+
+.subscription-update-ready {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding-inline: 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  background: rgba(16, 185, 129, 0.1);
+  color: #047857;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.subscription-update-ready:hover {
+  background: rgba(16, 185, 129, 0.18);
+  border-color: rgba(16, 185, 129, 0.55);
+}
+
+.subscription-update-ready:focus-visible {
+  outline: 2px solid var(--cv-accent);
+  outline-offset: 2px;
+}
+
+.subscription-update-ready__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+}
+
+.subscription-card--team .subscription-update-ready {
+  border-color: rgba(110, 231, 183, 0.45);
+  background: rgba(16, 185, 129, 0.2);
+  color: #d1fae5;
+}
+
 .team-icon {
   color: #fde68a;
 }

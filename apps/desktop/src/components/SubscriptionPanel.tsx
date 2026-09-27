@@ -42,6 +42,8 @@ type SubscriptionPanelProps = {
   updateStatusDescription?: string;
   hasUpdate: boolean;
   forceUpdate?: boolean;
+  /** 后台下载完成的普通更新；非空时在更新按钮旁显示“新版本已就绪 · 重启更新”。 */
+  updateReady?: { version: string | null } | null;
   serverProbe: SubscriptionServerProbe;
   serverProbeBusy?: boolean;
   onOpenAnnouncements: () => void;
@@ -49,6 +51,7 @@ type SubscriptionPanelProps = {
   onRefreshServerProbe?: () => void;
   onRefresh: () => void;
   onCheckUpdate: () => void;
+  onInstallUpdate?: () => void;
   onLogout: () => void;
 };
 
@@ -234,6 +237,19 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
     );
   }
 
+  const logoutButton = (
+    <Button
+      variant={isTeam ? "white" : "default"}
+      color={isTeam ? "dark" : "gray"}
+      size="xs"
+      leftSection={<IconLogout size={14} />}
+      className="subscription-secondary-button subscription-logout subscription-toolbar-button"
+      onClick={props.onLogout}
+    >
+      退出登录
+    </Button>
+  );
+
   return (
     <Paper
       withBorder
@@ -352,16 +368,24 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
             >
               {props.forceUpdate ? "必须更新" : props.hasUpdate ? "有新版本" : "检查更新"}
             </Button>
-            <Button
-              variant={isTeam ? "white" : "default"}
-              color={isTeam ? "dark" : "gray"}
-              size="xs"
-              leftSection={<IconLogout size={14} />}
-              className="subscription-secondary-button subscription-logout subscription-toolbar-button"
-              onClick={props.onLogout}
-            >
-              退出登录
-            </Button>
+            {props.updateReady && props.onInstallUpdate ? (
+              // 就绪标记和“退出登录”另起一行，标记正好在“有新版本”下方，不挤占第一行按钮。
+              <div className="subscription-toolbar-row">
+                <Tooltip
+                  withArrow
+                  multiline
+                  w={240}
+                  position="bottom"
+                  label={`ChordV ${props.updateReady.version ?? "新版本"} 已在后台下载并校验完成。点击后应用会退出并自动安装，完成后重新打开。`}
+                >
+                  <UnstyledButton type="button" className="subscription-update-ready" onClick={props.onInstallUpdate}>
+                    <span className="subscription-update-ready__dot" aria-hidden="true" />
+                    新版本已就绪 · 重启更新
+                  </UnstyledButton>
+                </Tooltip>
+                {logoutButton}
+              </div>
+            ) : logoutButton}
           </Group>
         </div>
 

@@ -103,6 +103,7 @@ import { useRuntimeStatus } from "./hooks/useRuntimeStatus";
 import { useSupportTickets } from "./hooks/useSupportTickets";
 import { buildUpdatePromptKey, hasActionableUpdate, useUpdateFlow } from "./hooks/useUpdateFlow";
 import { describeRequiredUpdate } from "./lib/updateState";
+import { readAutoDownloadPreference, writeAutoDownloadPreference } from "./lib/silentUpdate";
 const REMEMBER_CREDENTIALS_KEY = "chordv_remember_credentials";
 const DESKTOP_CLOSE_HINT_KEY = "chordv_desktop_close_hint_ack";
 const RUNTIME_COMPONENT_MIRROR_PREFIX_KEY = "chordv_runtime_component_mirror_prefix";
@@ -293,6 +294,13 @@ export function App() {
     try { localStorage.setItem(UPDATE_CHANNEL_KEY, channel); } catch { /* keep the in-memory choice */ }
     setUpdateChannel(channel);
   };
+  const [autoDownloadUpdates, setAutoDownloadUpdates] = useState(() => {
+    try { return readAutoDownloadPreference(localStorage); } catch { return true; }
+  });
+  const changeAutoDownloadUpdates = (enabled: boolean) => {
+    try { writeAutoDownloadPreference(localStorage, enabled); } catch { /* keep the in-memory choice */ }
+    setAutoDownloadUpdates(enabled);
+  };
   const updateFlow = useUpdateFlow({
     runtimeMirrorPrefix,
     appVersion,
@@ -300,6 +308,10 @@ export function App() {
     accessToken: session?.accessToken ?? null,
     bootstrapVersion: bootstrap?.version ?? null,
     updateChannel,
+    autoDownloadUpdates,
+    // Only download in the background once the main window is up; the login
+    // window has no place for the ready indicator.
+    backgroundDownloadAllowed: !booting && !windowTransitioning && mainLayoutReady && Boolean(session && bootstrap),
     notify: notifications.show,
     showError: showErrorToast,
     onUnauthorized: recoverSessionAfterUnauthorized,
@@ -322,6 +334,8 @@ export function App() {
     updateDialogOpened,
     setUpdateDialogOpened,
     updateDownload,
+    backgroundUpdateDownload,
+    updateReadyToInstall,
     deferredUpdatePromptKeyRef,
     lastUpdatePromptVersionRef,
     runUpdateCheck: runUpdateCheckFromHook,
@@ -1720,11 +1734,11 @@ export function App() {
           message={bootstrap.subscription.meteringMessage ?? null}
         />
       ) : null}
-      {!windowTransitioning && ((runtimeAssets.phase !== "idle" && runtimeAssets.phase !== "ready") || (updateDownload.phase !== "idle" && !updateDialogOpened)) ? (
+      {!windowTransitioning && ((runtimeAssets.phase !== "idle" && runtimeAssets.phase !== "ready") || (updateDownload.phase !== "idle" && !updateDialogOpened && !backgroundUpdateDownload)) ? (
         <div className="desktop-runtime-overlay" data-metering-notice={bootstrap?.subscription.meteringStatus === "degraded" && Boolean(bootstrap.subscription.meteringMessage) || undefined}>
           <div className="desktop-runtime-overlay__inner">
             <RuntimeAssetsBanner onResetLegacyMirror={runtimeMirrorPrefix ? clearLegacyDownloadMirror : null} state={runtimeAssets} onRetry={handleRetryRuntimeAssets} onCancel={handleCancelRuntimeAssets}/>
-            {!updateDialogOpened ? <ClientUpdateProgressPanel onResetLegacyMirror={runtimeMirrorPrefix ? clearLegacyDownloadMirror : null} state={updateDownload} version={effectiveUpdate?.latestVersion} onRetry={()=>void handleUpdateDownload()} onInstall={()=>void handleQuitForUpdate()}/> : null}
+            {!updateDialogOpened && !backgroundUpdateDownload ? <ClientUpdateProgressPanel onResetLegacyMirror={runtimeMirrorPrefix ? clearLegacyDownloadMirror : null} state={updateDownload} version={effectiveUpdate?.latestVersion} onRetry={()=>void handleUpdateDownload()} onInstall={()=>void handleQuitForUpdate()}/> : null}
           </div>
         </div>
       ) : null}
@@ -1891,6 +1905,7 @@ export function App() {
               updateStatusDescription={updateStatusDescription}
               hasUpdate={effectiveUpdateActionable}
               forceUpdate={forceUpdateRequired && effectiveUpdateActionable}
+              updateReady={updateReadyToInstall ? { version: effectiveUpdate?.latestVersion ?? null } : null}
               serverProbe={subscriptionServerProbe}
               serverProbeBusy={serverProbeBusy}
               onRefreshServerProbe={() => void handleManualServerProbe()}
@@ -1898,6 +1913,7 @@ export function App() {
               onOpenTickets={openTicketCenter}
               onRefresh={() => void handleRefresh()}
               onCheckUpdate={() => void handleManualUpdateCheck()}
+              onInstallUpdate={() => void handleQuitForUpdate()}
               onLogout={() => void handleLogout()}
             />
           </Stack>
@@ -2032,6 +2048,8 @@ export function App() {
         onClose={closeUpdateCenter}
         betaChannel={updateChannel === "beta"}
         onBetaChannelChange={(enabled) => changeUpdateChannel(enabled ? "beta" : "stable")}
+        autoDownload={autoDownloadUpdates}
+        onAutoDownloadChange={changeAutoDownloadUpdates}
         onCheckOnly={() => void handleUpdateCenterCheckOnly()}
         onUpdateOne={(key) => void handleUpdateCenterUpdateOne(key)}
       />
