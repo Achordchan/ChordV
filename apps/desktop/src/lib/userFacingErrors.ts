@@ -26,7 +26,8 @@ export type UserErrorContext =
   | "ticket"
   | "announcement"
   | "node_probe"
-  | "server_probe";
+  | "server_probe"
+  | "local_files";
 
 export type UserFacingError = {
   /** 简短标题，适合作为弹窗 / 通知标题。 */
@@ -346,6 +347,12 @@ const CONTEXT_FALLBACK: Record<UserErrorContext, CatalogEntry & { code: string |
     title: "无法连接服务器",
     message: "当前无法连接服务器，请检查网络后重试。",
     action: "重试"
+  },
+  local_files: {
+    code: "local_file_open_failed",
+    title: "无法打开文件位置",
+    message: "暂时无法在文件夹中显示，请复制路径后手动打开。",
+    action: "我知道了"
   }
 };
 

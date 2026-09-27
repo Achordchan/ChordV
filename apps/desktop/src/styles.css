@@ -388,7 +388,6 @@ body {
   min-width: 0;
 }
 
-.subscription-logout,
 .subscription-secondary-button {
   min-width: 0;
 }
@@ -406,6 +405,16 @@ body {
 }
 
 .subscription-toolbar-button[data-variant="default"]:hover {
+  background: var(--cv-surface-hover);
+  border-color: #c3ccd6;
+}
+
+.subscription-toolbar-more[data-variant="default"] {
+  border-color: var(--cv-border-strong);
+  color: var(--cv-text);
+}
+
+.subscription-toolbar-more[data-variant="default"]:hover {
   background: var(--cv-surface-hover);
   border-color: #c3ccd6;
 }
@@ -1625,8 +1634,7 @@ textarea,
     min-width: 0;
   }
 
-  .subscription-secondary-button,
-  .subscription-logout {
+  .subscription-secondary-button {
     min-width: 0;
   }
 

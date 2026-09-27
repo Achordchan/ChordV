@@ -13,6 +13,7 @@
 .row { padding: 10px 0; }
 .row + .row { border-top: 1px solid var(--mantine-color-default-border); }
 .rowMain { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 28px; }
+.rowName { flex-shrink: 0; }
 .rowStatus { min-width: 0; }
 .rowMessage { margin-top: 4px; overflow-wrap: anywhere; }
 .version { min-width: 0; }

@@ -11,6 +11,7 @@ import type {
   RuntimeComponentKind
 } from "./runtimeComponents";
 import type { RuntimeComponentLocalInfo } from "./geoUpdate";
+import type { LocalFileEntry, LocalFileKind } from "./localFiles";
 
 export type RuntimeStatus = {
   status: string;
@@ -651,6 +652,25 @@ export async function getRuntimeComponentLocalInfo(component: RuntimeComponentKi
     return null;
   }
   return invoke<RuntimeComponentLocalInfo>("get_runtime_component_local_info", { component });
+}
+
+/** 本地文件位置：路径由原生端解析，前端不拼接路径。 */
+export async function listLocalFileLocations() {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform()) {
+    return null;
+  }
+  return invoke<LocalFileEntry[]>("list_local_file_locations");
+}
+
+/** 只传固定条目，原生端自行解析并校验路径位于应用数据目录内。 */
+export async function revealLocalFile(kind: LocalFileKind) {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform()) {
+    return false;
+  }
+  await invoke("reveal_local_file", { kind });
+  return true;
 }
 
 export async function fetchRemoteText(url: string) {
