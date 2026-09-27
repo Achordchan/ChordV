@@ -134,8 +134,8 @@ function testSnapshot() {
     ["user_5", "connected"],
     ["user_2", "online"],
     ["user_6", "online"],
-    ["user_4", "offline"],
-    ["user_3", "offline"]
+    ["user_3", "offline"],
+    ["user_4", "offline"]
   ], "已连接在前（在线更久的在前），其次在线，离线按最近在线倒序");
 
   const first = snapshot.users[0];
@@ -145,7 +145,7 @@ function testSnapshot() {
   assert.equal(first.sessions[0].connectionMode, null, "旧连接没有记录模式");
   assert.equal(first.sessions[1].subscription?.usedTrafficGb, 12.346);
   assert.equal(first.sessions[1].subscription?.ownerType, "user");
-  assert.equal(first.onlineSince, ago(3600).toISOString(), "连接早于推送连接记录时，在线起始取更早的一次");
+  assert.equal(first.onlineSince, ago(1800).toISOString(), "有本次在线记录时以它为准，不用更早建立、可能跨过睡眠的节点连接时间");
   assert.equal(first.lastOnlineAt, now.toISOString());
   assert.equal(first.client?.platform, "macos", "客户端取最近使用的平台");
 
@@ -166,8 +166,41 @@ function testSnapshot() {
   assert.equal(staleOnline.lastOnlineAt, ago(PRESENCE_ONLINE_WINDOW_SECONDS + 60).toISOString());
 
   const offline = snapshot.users.find((user) => user.userId === "user_3")!;
-  assert.equal(offline.lastOnlineAt, ago(7200).toISOString(), "心跳已超时的旧连接不再显示为已连接，最近在线取最近在线记录");
+  assert.equal(offline.lastOnlineAt, ago(PRESENCE_CONNECTED_WINDOW_SECONDS + 30).toISOString(), "心跳已超时的旧连接不再显示为已连接，最近在线取它的最后心跳");
   assert.deepEqual(offline.sessions, []);
+
+  // 电脑睡眠 10 分钟后唤醒：节点连接仍是睡眠前建立的，但在线记录已按规则重置，在线时长从唤醒时算起。
+  const woke = buildAdminPresenceSnapshot({
+    now,
+    users: [users[0]],
+    presence: [{ userId: "user_1", onlineSince: ago(60), lastSeenAt: ago(10) }],
+    streams: [{ userId: "user_1", connectedAt: ago(60), lastSeenAt: ago(10) }],
+    leases: [lease({ issuedAt: ago(3600) })],
+    clientVersions: []
+  });
+  assert.equal(woke.users[0].state, "connected");
+  assert.equal(woke.users[0].onlineSince, ago(60).toISOString());
+  // 只有心跳（推送连接没连上）时，同样以心跳维护的在线记录为准。
+  const heartbeatOnly = buildAdminPresenceSnapshot({
+    now,
+    users: [users[0]],
+    presence: [{ userId: "user_1", onlineSince: ago(100), lastSeenAt: ago(30) }],
+    streams: [],
+    leases: [lease({ issuedAt: ago(3600) })],
+    clientVersions: []
+  });
+  assert.equal(heartbeatOnly.users[0].onlineSince, ago(100).toISOString());
+  // 已撤销的连接不算已连接，但它的最后心跳计入最近在线。
+  const revoked = buildAdminPresenceSnapshot({
+    now,
+    users: [users[0]],
+    presence: [{ userId: "user_1", onlineSince: ago(9000), lastSeenAt: ago(7200) }],
+    streams: [],
+    leases: [lease({ status: "revoked", lastHeartbeatAt: ago(900) })],
+    clientVersions: []
+  });
+  assert.equal(revoked.users[0].state, "offline");
+  assert.equal(revoked.users[0].lastOnlineAt, ago(900).toISOString());
 
   const onlyVersion = buildAdminPresenceSnapshot({
     now,
@@ -494,8 +527,10 @@ async function testAdminQuery() {
     userClientPresence: { findMany: async (args: any) => { seen.presence = args; return [{ userId: "user_1", onlineSince: ago(60), lastSeenAt: ago(5) }]; } },
     userClientPresenceStream: { findMany: async (args: any) => { seen.streams = args; return [{ userId: "user_1", connectedAt: ago(60), lastSeenAt: ago(5) }]; } },
     nodeSessionLease: {
-      findMany: async (args: any) => { seen.leases = args; return [lease({ userId: "user_2" })]; },
-      groupBy: async (args: any) => { seen.heartbeats = args; return [{ userId: "user_3", _max: { lastHeartbeatAt: ago(900) } }]; }
+      findMany: async (args: any) => {
+        seen.leases = args;
+        return [lease({ userId: "user_2" }), lease({ sessionId: "session_revoked", userId: "user_3", status: "revoked", lastHeartbeatAt: ago(900) })];
+      }
     },
     userClientVersion: { findMany: async (args: any) => { seen.versions = args; return []; } },
     user: {
@@ -512,12 +547,9 @@ async function testAdminQuery() {
   const service = new ClientPresenceService(prisma as never, { publishPresenceUpdated: () => undefined } as never);
   const snapshot = await service.getAdminPresenceSnapshot(now);
   assert.equal(seen.streams.where.lastSeenAt.gte.getTime(), ago(PRESENCE_ONLINE_WINDOW_SECONDS).getTime(), "推送连接记录只查判定窗口内的");
-  assert.equal(seen.leases.where.status, "active", "只查活跃连接");
-  assert.equal(seen.leases.where.lastHeartbeatAt.gte.getTime(), ago(PRESENCE_CONNECTED_WINDOW_SECONDS).getTime(), "只查心跳窗口内的连接，走 lastHeartbeatAt 索引");
-  assert.deepEqual(seen.heartbeats.by, ["userId"]);
-  assert.equal(seen.heartbeats.where.status, undefined, "最后心跳不限租约状态：已撤销或已超时的连接也算");
-  assert.equal(seen.heartbeats.where.lastHeartbeatAt.gte.getTime(), now.getTime() - PRESENCE_HEARTBEAT_HISTORY_MS, "只聚合近一天的连接，不扫全部历史租约");
-  assert.equal(seen.leases.where.expiresAt.gt.getTime(), ago(LEASE_GRACE_SECONDS).getTime());
+  assert.equal(seen.leases.where.status, undefined, "连接查询不限状态：已撤销或已超时的连接也用来取最后心跳");
+  assert.deepEqual(Object.keys(seen.leases.where), ["lastHeartbeatAt"]);
+  assert.equal(seen.leases.where.lastHeartbeatAt.gte.getTime(), now.getTime() - PRESENCE_HEARTBEAT_HISTORY_MS, "只查近一天有过心跳的连接，走 lastHeartbeatAt 索引，不扫全部历史租约");
   assert.equal(seen.leases.select.node.select.serverHost, undefined, "不向后台列表带出节点连接凭据");
   assert.equal(seen.leases.select.xrayUserUuid, undefined);
   assert.deepEqual([...seen.users.where.id.in].sort(), ["user_1", "user_2", "user_3"], "用户资料一次批量查询，不逐个查");
@@ -530,7 +562,7 @@ async function testAdminQuery() {
   const failing = new ClientPresenceService({
     userClientPresence: { findMany: async () => { throw Object.assign(new Error("connection terminated"), { code: "P1001" }); } },
     userClientPresenceStream: { findMany: async () => [] },
-    nodeSessionLease: { findMany: async () => [], groupBy: async () => [] },
+    nodeSessionLease: { findMany: async () => [] },
     userClientVersion: { findMany: async () => [] },
     user: { findMany: async () => [] }
   } as never, { publishPresenceUpdated: () => undefined } as never);

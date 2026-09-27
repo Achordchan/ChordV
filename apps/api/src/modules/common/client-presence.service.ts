@@ -15,7 +15,7 @@ import { workLifecycle } from "../../work-lifecycle";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { throwLocalReadAsServiceUnavailable } from "./prisma-error.utils";
 import { PrismaService } from "./prisma.service";
-import { getLeaseHardExpireCutoff, isLeaseHardExpired, LEASE_HEARTBEAT_INTERVAL_SECONDS } from "./runtime-session.utils";
+import { isLeaseHardExpired, LEASE_HEARTBEAT_INTERVAL_SECONDS } from "./runtime-session.utils";
 import { readEffectiveSubscriptionState, roundTrafficGb, toAdminUserClientVersion } from "./subscription.utils";
 
 /** 客户端事件推送连接打开期间，每隔这么久刷新一次推送连接记录与最近在线时间。 */
@@ -26,7 +26,7 @@ export const PRESENCE_ONLINE_WINDOW_SECONDS = 150;
 export const PRESENCE_OFFLINE_GRACE_MS = 15_000;
 /** 节点连接超过这么久没有心跳就不再算“已连接”：客户端每 30 秒心跳一次，允许连续错过 3 次。 */
 export const PRESENCE_CONNECTED_WINDOW_SECONDS = Math.max(90, LEASE_HEARTBEAT_INTERVAL_SECONDS * 4);
-/** 后台列表额外按租约查最近这段时间内的最后心跳；更早的心跳已由 noteHeartbeat 写进最近在线记录。 */
+/** 后台列表按租约查这段时间内有过心跳的连接（不限状态）；更早的心跳已由 noteHeartbeat 写进最近在线记录。 */
 export const PRESENCE_HEARTBEAT_HISTORY_MS = 24 * 60 * 60_000;
 /** 进程异常退出留下的推送连接记录，超过这么久未刷新就清理掉。 */
 export const PRESENCE_STREAM_STALE_CLEANUP_MS = 10 * 60_000;
@@ -207,16 +207,18 @@ const STATE_ORDER: Record<AdminPresenceState, number> = { connected: 0, online: 
  * 汇总在线状态：
  * - 已连接：有近期仍在心跳的节点连接（连接必然需要客户端打开，因此同时计入在线）；
  * - 在线：任一 API 进程上保持着近期刷新过的推送连接记录，但没有连接节点；
- * - 离线：以上都不满足；最近在线时间取最近在线记录（含推送连接与节点心跳）、近期连接的最后心跳和检查更新时间中最新的一次。
+ * - 离线：以上都不满足；最近在线时间取最近在线记录（含推送连接与节点心跳）、近期连接（不限状态）的最后心跳和检查更新时间中最新的一次。
+ *
+ * 在线开始时间优先取最近在线记录里本次在线的开始时间（断线超过判定窗口后会重置，例如电脑睡眠后唤醒）；
+ * 没有可用记录时才退回推送连接的建立时间，最后才用节点连接的建立时间。
  */
 export function buildAdminPresenceSnapshot(input: {
   now: Date;
   users: PresenceUserRow[];
   presence: PresenceRow[];
   streams: PresenceStreamRow[];
+  /** 近期有过心跳的连接，不限状态：活跃且仍在心跳的算“已连接”，其余只用来取最后心跳。 */
   leases: PresenceLeaseRow[];
-  /** 每位用户近期（不限租约状态）的最后一次心跳。 */
-  lastHeartbeats?: Array<{ userId: string; lastHeartbeatAt: Date | null }>;
   clientVersions: PresenceClientVersionRow[];
 }): AdminPresenceSnapshotDto {
   const { now } = input;
@@ -224,7 +226,11 @@ export function buildAdminPresenceSnapshot(input: {
   const streamsByUser = groupByUser(input.streams, (row) => isStreamLive(row, now));
   const sessionsByUser = groupByUser(input.leases, (lease) => isLeaseConnected(lease, now));
   const versionsByUser = groupByUser(input.clientVersions);
-  const lastHeartbeatByUser = new Map((input.lastHeartbeats ?? []).map((row) => [row.userId, row.lastHeartbeatAt]));
+  const lastHeartbeatByUser = new Map<string, Date>();
+  for (const lease of input.leases) {
+    const current = lastHeartbeatByUser.get(lease.userId);
+    if (!current || lease.lastHeartbeatAt.getTime() > current.getTime()) lastHeartbeatByUser.set(lease.userId, lease.lastHeartbeatAt);
+  }
 
   const users: AdminUserPresenceDto[] = [];
   for (const user of input.users) {
@@ -245,8 +251,11 @@ export function buildAdminPresenceSnapshot(input: {
       latestVersion?.lastSeenAt
     ]);
     if (state === "offline" && !lastOnlineAt) continue;
-    const clientSince = clientOnline ? presence?.onlineSince ?? minDate(streams.map((stream) => stream.connectedAt)) : null;
-    const onlineSince = state === "offline" ? null : minDate([clientSince, leases[0]?.issuedAt]);
+    // 最近在线记录仍在判定窗口内（推送连接每分钟刷新、节点心跳每分钟推进），它的开始时间就是本次在线的开始。
+    const recordedSince = presence?.onlineSince && isStreamLive(presence, now) ? presence.onlineSince : null;
+    const onlineSince = state === "offline"
+      ? null
+      : recordedSince ?? (clientOnline ? minDate(streams.map((stream) => stream.connectedAt)) : null) ?? leases[0]?.issuedAt ?? null;
     const team = user.teamMemberships[0]?.team ?? null;
     users.push({
       userId: user.id,
@@ -397,9 +406,10 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
 
   async getAdminPresenceSnapshot(now = new Date()): Promise<AdminPresenceSnapshotDto> {
     try {
-      // 最后心跳：近一天内的连接（不论是否已撤销）直接按租约取，走 lastHeartbeatAt 索引；更早的由 noteHeartbeat
-      // 写进了 UserClientPresence.lastSeenAt。不对全部历史租约聚合：租约表没有保留期，而后台每 30 秒会拉一次。
-      const [presence, streams, leases, lastHeartbeats, clientVersions] = await workLifecycle.all([
+      // 连接只查近一天内有过心跳的（不限状态，走 lastHeartbeatAt 索引）：活跃且仍在心跳的是当前连接，
+      // 已撤销或心跳超时的只用来取离线用户的最后心跳。更早的心跳由 noteHeartbeat 写进了 UserClientPresence.lastSeenAt。
+      // 不扫全部历史租约：租约表没有保留期，而后台每 30 秒会拉一次。
+      const [presence, streams, leases, clientVersions] = await workLifecycle.all([
         this.prisma.userClientPresence.findMany({
           select: { userId: true, onlineSince: true, lastSeenAt: true }
         }),
@@ -407,13 +417,8 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
           where: { lastSeenAt: { gte: onlineCutoff(now) } },
           select: { userId: true, connectedAt: true, lastSeenAt: true }
         }),
-        // 当前连接（已连接状态与连接详情）。离线用户的最后心跳不依赖这条查询，见下方按用户聚合的 groupBy。
         this.prisma.nodeSessionLease.findMany({
-          where: {
-            status: "active",
-            lastHeartbeatAt: { gte: new Date(now.getTime() - PRESENCE_CONNECTED_WINDOW_SECONDS * 1000) },
-            expiresAt: { gt: getLeaseHardExpireCutoff(now) }
-          },
+          where: { lastHeartbeatAt: { gte: new Date(now.getTime() - PRESENCE_HEARTBEAT_HISTORY_MS) } },
           select: {
             sessionId: true,
             userId: true,
@@ -441,11 +446,6 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
           },
           orderBy: { issuedAt: "asc" }
         }),
-        this.prisma.nodeSessionLease.groupBy({
-          by: ["userId"],
-          where: { lastHeartbeatAt: { gte: new Date(now.getTime() - PRESENCE_HEARTBEAT_HISTORY_MS) } },
-          _max: { lastHeartbeatAt: true }
-        }),
         this.prisma.userClientVersion.findMany({
           select: { userId: true, platform: true, version: true, build: true, channel: true, lastSeenAt: true }
         })
@@ -455,7 +455,6 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
           ...presence.map((row) => row.userId),
           ...streams.map((row) => row.userId),
           ...leases.map((row) => row.userId),
-          ...lastHeartbeats.map((row) => row.userId),
           ...clientVersions.map((row) => row.userId)
         ])
       );
@@ -470,15 +469,7 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
             }
           })
         : [];
-      return buildAdminPresenceSnapshot({
-        now,
-        users,
-        presence,
-        streams,
-        leases,
-        lastHeartbeats: lastHeartbeats.map((row) => ({ userId: row.userId, lastHeartbeatAt: row._max.lastHeartbeatAt ?? null })),
-        clientVersions
-      });
+      return buildAdminPresenceSnapshot({ now, users, presence, streams, leases, clientVersions });
     } catch (error) {
       throwLocalReadAsServiceUnavailable(error, "在线状态暂时不可用，请稍后重试。");
     }
