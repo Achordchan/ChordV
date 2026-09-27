@@ -74,6 +74,8 @@ export type AdminReleaseArtifactRecordDto = {
   fileName?: string | null;
   fileSizeBytes?: string | null;
   fileHash?: string | null;
+  /** Read by the server from the CI file name (…_build42…); null when absent. */
+  buildNumber?: number | null;
   isPrimary: boolean;
   isFullPackage: boolean;
   createdAt?: string | null;
@@ -217,6 +219,7 @@ function mapArtifact(record: SharedAdminReleaseArtifactDto): AdminReleaseArtifac
     fileName: record.fileName ?? null,
     fileSizeBytes: record.fileSizeBytes ?? null,
     fileHash: record.fileHash ?? null,
+    buildNumber: record.buildNumber ?? null,
     isPrimary: record.isPrimary,
     isFullPackage: record.isFullPackage,
     createdAt: record.createdAt,

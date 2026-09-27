@@ -3,6 +3,7 @@ import { ActionIcon, Badge, Button, Group, Loader, Modal, Switch, Text, Unstyled
 import { IconAlertCircle, IconArrowLeft, IconArrowRight, IconChevronRight, IconCircleCheckFilled, IconClock } from "@tabler/icons-react";
 import appIcon from "../../src-tauri/icons/icon.png";
 import type { UpdateCenterItem, UpdateCenterItemKey, UpdateCenterState } from "../lib/updateCenter";
+import { APP_BUILD_NUMBER, formatVersionWithBuild } from "../lib/buildInfo";
 import { ReleaseHistory } from "./ReleaseHistory";
 import styles from "./UpdateCenterModal.module.css";
 
@@ -57,7 +58,7 @@ export function UpdateCenterModal(props: UpdateCenterModalProps) {
         <div className={styles.clientInfo}>
           <Text className={styles.clientName}>ChordV 客户端</Text>
           <Group gap="xs" mt={4}>
-            <Text size="sm" c="dimmed">当前版本 {app?.localVersion || props.appVersion}</Text>
+            <Text size="sm" c="dimmed">当前版本 {formatVersionWithBuild(app?.localVersion || props.appVersion, APP_BUILD_NUMBER)}</Text>
             {app && <ItemStatus item={app} />}
           </Group>
           {app?.status === "available" && app.remoteVersion && <Text size="sm" c="dimmed" mt={6}>可更新至 {app.remoteVersion}</Text>}

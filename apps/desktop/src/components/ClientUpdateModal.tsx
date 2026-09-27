@@ -5,6 +5,7 @@ import appIcon from "../../src-tauri/icons/icon.png";
 import type { ClientUpdateCheckResult } from "../api/client";
 import { cleanChangelogItem, compareVersion, formatVersionLabel } from "../lib/updateState";
 import { NoticeRow } from "./NoticeRow";
+import { APP_BUILD_NUMBER, formatVersionWithBuild } from "../lib/buildInfo";
 import styles from "./ClientUpdateModal.module.css";
 
 type ClientUpdateModalProps = {
@@ -23,6 +24,8 @@ type ClientUpdateModalProps = {
 export function ClientUpdateModal(props: ClientUpdateModalProps) {
   const update = props.update;
   const latestVersion = update?.latestVersion ?? props.appVersion;
+  // Builds are only worth showing when the version itself does not change.
+  const sameVersion = compareVersion(latestVersion, props.appVersion) === 0;
   const belowMinimum = Boolean(update && compareVersion(update.minimumVersion, props.appVersion) > 0);
   const changelog = (update?.changelog ?? []).map(cleanChangelogItem).filter(Boolean);
   const publishedAt = formatPublishedAt(update?.publishedAt ?? null);
@@ -52,9 +55,9 @@ export function ClientUpdateModal(props: ClientUpdateModalProps) {
             {props.forceRequired ? <Badge size="sm" variant="light" color="red">必须更新</Badge> : null}
           </div>
           <div className={styles.versionRow}>
-            <span>{formatVersionLabel(props.appVersion)}</span>
+            <span>{formatVersionWithBuild(formatVersionLabel(props.appVersion), sameVersion ? APP_BUILD_NUMBER : null)}</span>
             <IconArrowRight size={13} className={styles.arrow} aria-label="更新至" />
-            <span className={styles.versionNext}>{formatVersionLabel(latestVersion)}</span>
+            <span className={styles.versionNext}>{formatVersionWithBuild(formatVersionLabel(latestVersion), sameVersion ? update?.latestBuild : null)}</span>
             {publishedAt ? <span className={styles.published}>{publishedAt} 发布</span> : null}
           </div>
         </div>
