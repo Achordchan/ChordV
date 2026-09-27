@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 import { Subject } from "rxjs";
 import {
   buildAdminPresenceSnapshot,
+  buildOnlineStartResetCondition,
   ClientPresenceService,
   isLeaseConnected,
   isStreamLive,
   normalizeConnectionMode,
   PRESENCE_CONNECTED_WINDOW_SECONDS,
+  PRESENCE_HEARTBEAT_HISTORY_MS,
   PRESENCE_ONLINE_WINDOW_SECONDS,
   PRESENCE_STREAM_STALE_CLEANUP_MS,
   resolveOnlineSince,
@@ -61,6 +63,22 @@ function testDerivation() {
   assert.equal(resolveOnlineSince({ onlineSince: later(10), lastSeenAt: ago(5) }, now), now, "起始时间晚于现在（时钟回拨）时重新计时");
   assert.equal(resolveOnlineSince({ onlineSince: null, lastSeenAt: ago(5) }, now), now, "只有心跳记录（从未打开推送连接）时从现在算起");
   assert.equal(resolveOnlineSince(null, now), now);
+
+  // 数据库条件与 resolveOnlineSince 同一规则：命中条件时重置在线开始时间。
+  const samples = [
+    { onlineSince: since, lastSeenAt: ago(20) },
+    { onlineSince: since, lastSeenAt: ago(PRESENCE_ONLINE_WINDOW_SECONDS) },
+    { onlineSince: since, lastSeenAt: ago(PRESENCE_ONLINE_WINDOW_SECONDS + 1) },
+    { onlineSince: later(10), lastSeenAt: ago(5) },
+    { onlineSince: now, lastSeenAt: ago(5) },
+    { onlineSince: null, lastSeenAt: ago(5) },
+    { onlineSince: since, lastSeenAt: later(30) }
+  ];
+  for (const sample of samples) {
+    const reset = matches({ userId: "user_1", ...sample }, buildOnlineStartResetCondition("user_1", now));
+    assert.equal(reset, resolveOnlineSince(sample, now) === now && sample.onlineSince?.getTime() !== now.getTime(), `条件与规则一致：${JSON.stringify(sample)}`);
+  }
+  assert.equal(matches({ userId: "user_2", onlineSince: null, lastSeenAt: ago(5) }, buildOnlineStartResetCondition("user_1", now)), false, "只作用于指定用户");
 
   assert.equal(normalizeConnectionMode("global"), "global");
   assert.equal(normalizeConnectionMode("rule"), "rule");
@@ -166,21 +184,26 @@ function testSnapshot() {
 type PresenceRowState = { userId: string; onlineSince: Date | null; lastSeenAt: Date };
 type StreamRowState = { userId: string; instanceId: string; connectedAt: Date; lastSeenAt: Date };
 
+// 按 Prisma/SQL 的语义求值条件（NULL 与比较运算不相等），用来验证条件本身而不是测试替身。
 function matchesValue(value: any, condition: any): boolean {
-  if (condition instanceof Date) return value.getTime() === condition.getTime();
+  if (condition instanceof Date) return value instanceof Date && value.getTime() === condition.getTime();
   if (condition === null || typeof condition !== "object") return value === condition;
   if ("in" in condition) return condition.in.includes(value);
-  if ("not" in condition) return value !== condition.not;
+  if ("not" in condition) return value !== null && value !== condition.not;
+  if (value === null || value === undefined) return false;
   const time = value instanceof Date ? value.getTime() : value;
   const bound = (input: any) => (input instanceof Date ? input.getTime() : input);
   if ("lte" in condition) return time <= bound(condition.lte);
   if ("gte" in condition) return time >= bound(condition.gte);
   if ("lt" in condition) return time < bound(condition.lt);
+  if ("gt" in condition) return time > bound(condition.gt);
   throw new Error("unsupported condition");
 }
 
-function matches(row: any, where: any) {
-  return Object.entries(where).every(([key, condition]) => matchesValue(row[key], condition));
+function matches(row: any, where: any): boolean {
+  return Object.entries(where).every(([key, condition]) =>
+    key === "OR" ? (condition as any[]).some((item) => matches(row, item)) : matchesValue(row[key], condition)
+  );
 }
 
 /** 两张表共用的内存库，可以让多个服务实例（模拟多个 API 进程）同时读写。 */
@@ -316,6 +339,12 @@ async function testMultipleInstances() {
   assert.equal(second.events.length, 0, "另一进程已记在线时不重复推送上线");
   assert.equal(store.presence.get("user_m")?.onlineSince?.getTime(), ago(60).getTime(), "第二台设备沿用在线开始时间");
 
+  // 实例二已把最近在线推进到更晚的时间，实例一此后才处理一条更早的上线：最近在线不能倒退。
+  store.presence.get("user_m")!.lastSeenAt = later(5);
+  await (first.service as unknown as { advancePresenceOrThrow(userId: string, at: Date): Promise<void> }).advancePresenceOrThrow("user_m", ago(1));
+  assert.equal(store.presence.get("user_m")?.lastSeenAt.getTime(), later(5).getTime(), "跨进程写入由数据库条件保证只前进不后退");
+  store.presence.get("user_m")!.lastSeenAt = ago(30);
+
   // 实例二上的电脑断开：实例一上的手机仍在线，不能被记成离线。
   second.service.streamClosed("user_m", now);
   await wait(40);
@@ -386,6 +415,7 @@ async function testHeartbeatHistory() {
   service.noteHeartbeat("user_h", ago(30));
   await settle();
   assert.equal(presence.get("user_h")?.lastSeenAt.getTime(), ago(30).getTime(), "心跳时刻计入最近在线");
+  assert.equal(presence.get("user_h")?.onlineSince?.getTime(), ago(30).getTime(), "离线一段时间后恢复心跳，在线开始时间从心跳算起");
   assert.equal(streams.size, 0, "心跳不产生推送连接记录，不会被当成在线");
   const writes = calls.presenceUpdateMany;
   service.noteHeartbeat("user_h", ago(10));
@@ -397,19 +427,39 @@ async function testHeartbeatHistory() {
 
   service.noteHeartbeat("user_new", now);
   await settle();
-  assert.deepEqual(presence.get("user_new"), { userId: "user_new", onlineSince: null, lastSeenAt: now }, "没有记录时补一条");
+  assert.deepEqual(presence.get("user_new"), { userId: "user_new", onlineSince: now, lastSeenAt: now }, "没有记录时补一条");
 
   // 进程异常退出后留下的旧记录同样会被心跳推进（记录里没有在线标记，不存在“卡在在线”的情况）。
   presence.set("user_crash", { userId: "user_crash", onlineSince: ago(9000), lastSeenAt: ago(9000) });
   service.noteHeartbeat("user_crash", now);
   await settle();
   assert.equal(presence.get("user_crash")?.lastSeenAt.getTime(), now.getTime());
+  assert.equal(presence.get("user_crash")?.onlineSince?.getTime(), now.getTime());
 
   // 最近在线时间只前进不后退。
   presence.set("user_ahead", { userId: "user_ahead", onlineSince: null, lastSeenAt: later(5) });
   service.noteHeartbeat("user_ahead", now);
   await settle();
   assert.equal(presence.get("user_ahead")?.lastSeenAt.getTime(), later(5).getTime());
+
+  // 长时间离线后先恢复节点心跳、之后才连上推送连接：在线时长从恢复心跳时算起，不接着几天前的开始时间。
+  presence.set("user_resume", { userId: "user_resume", onlineSince: ago(5 * 86_400), lastSeenAt: ago(4 * 86_400) });
+  service.noteHeartbeat("user_resume", ago(100));
+  await settle();
+  service.streamOpened("user_resume", now);
+  await settle();
+  assert.equal(presence.get("user_resume")?.onlineSince?.getTime(), ago(100).getTime());
+  const resumed = buildAdminPresenceSnapshot({
+    now,
+    users: [{ id: "user_resume", displayName: "恢复", email: "r@example.com", teamMemberships: [] }],
+    presence: [...presence.values()],
+    streams: [...streams.values()],
+    leases: [],
+    clientVersions: []
+  });
+  assert.equal(resumed.users[0].state, "online");
+  assert.equal(resumed.users[0].onlineSince, ago(100).toISOString(), "后台显示的在线时长约 100 秒，而不是几天");
+  service.streamClosed("user_resume", now);
 
   // 本进程保持着推送连接的用户由定时刷新负责，心跳不额外写库。
   service.streamOpened("user_s", ago(5));
@@ -418,7 +468,7 @@ async function testHeartbeatHistory() {
   service.noteHeartbeat("user_s", now);
   await settle();
   assert.equal(calls.presenceUpdateMany, before);
-  assert.equal(events.length, 1, "心跳记录不推送上下线事件");
+  assert.equal(events.length, 2, "心跳记录不推送上下线事件（两次均来自推送连接上线）");
   service.streamClosed("user_s", now);
   service.onModuleDestroy();
 }
@@ -428,14 +478,18 @@ async function testAdminQuery() {
   const prisma = {
     userClientPresence: { findMany: async (args: any) => { seen.presence = args; return [{ userId: "user_1", onlineSince: ago(60), lastSeenAt: ago(5) }]; } },
     userClientPresenceStream: { findMany: async (args: any) => { seen.streams = args; return [{ userId: "user_1", connectedAt: ago(60), lastSeenAt: ago(5) }]; } },
-    nodeSessionLease: { findMany: async (args: any) => { seen.leases = args; return [lease({ userId: "user_2" })]; } },
+    nodeSessionLease: {
+      findMany: async (args: any) => { seen.leases = args; return [lease({ userId: "user_2" })]; },
+      groupBy: async (args: any) => { seen.heartbeats = args; return [{ userId: "user_3", _max: { lastHeartbeatAt: ago(900) } }]; }
+    },
     userClientVersion: { findMany: async (args: any) => { seen.versions = args; return []; } },
     user: {
       findMany: async (args: any) => {
         seen.users = args;
         return [
           { id: "user_1", displayName: "张三", email: "a@example.com", teamMemberships: [] },
-          { id: "user_2", displayName: "李四", email: "b@example.com", teamMemberships: [] }
+          { id: "user_2", displayName: "李四", email: "b@example.com", teamMemberships: [] },
+          { id: "user_3", displayName: "王五", email: "c@example.com", teamMemberships: [] }
         ];
       }
     }
@@ -444,18 +498,24 @@ async function testAdminQuery() {
   const snapshot = await service.getAdminPresenceSnapshot(now);
   assert.equal(seen.streams.where.lastSeenAt.gte.getTime(), ago(PRESENCE_ONLINE_WINDOW_SECONDS).getTime(), "推送连接记录只查判定窗口内的");
   assert.equal(seen.leases.where.status, "active", "只查活跃连接");
-  assert.equal(seen.leases.where.lastHeartbeatAt.gte.getTime(), ago(PRESENCE_CONNECTED_WINDOW_SECONDS).getTime(), "只查心跳窗口内的连接，走 (status, lastHeartbeatAt) 索引");
+  assert.equal(seen.leases.where.lastHeartbeatAt.gte.getTime(), ago(PRESENCE_CONNECTED_WINDOW_SECONDS).getTime(), "只查心跳窗口内的连接，走 lastHeartbeatAt 索引");
+  assert.deepEqual(seen.heartbeats.by, ["userId"]);
+  assert.equal(seen.heartbeats.where.status, undefined, "最后心跳不限租约状态：已撤销或已超时的连接也算");
+  assert.equal(seen.heartbeats.where.lastHeartbeatAt.gte.getTime(), now.getTime() - PRESENCE_HEARTBEAT_HISTORY_MS, "只聚合近一天的连接，不扫全部历史租约");
   assert.equal(seen.leases.where.expiresAt.gt.getTime(), ago(LEASE_GRACE_SECONDS).getTime());
   assert.equal(seen.leases.select.node.select.serverHost, undefined, "不向后台列表带出节点连接凭据");
   assert.equal(seen.leases.select.xrayUserUuid, undefined);
-  assert.deepEqual([...seen.users.where.id.in].sort(), ["user_1", "user_2"], "用户资料一次批量查询，不逐个查");
+  assert.deepEqual([...seen.users.where.id.in].sort(), ["user_1", "user_2", "user_3"], "用户资料一次批量查询，不逐个查");
+  const recentlyDisconnected = snapshot.users.find((user) => user.userId === "user_3")!;
+  assert.equal(recentlyDisconnected.state, "offline");
+  assert.equal(recentlyDisconnected.lastOnlineAt, ago(900).toISOString(), "连接已撤销或超时后，最近在线取最后一次心跳");
   assert.equal(seen.users.select.passwordHash, undefined);
   assert.deepEqual(snapshot.counts, { online: 2, connected: 1, idle: 1 });
 
   const failing = new ClientPresenceService({
     userClientPresence: { findMany: async () => { throw Object.assign(new Error("connection terminated"), { code: "P1001" }); } },
     userClientPresenceStream: { findMany: async () => [] },
-    nodeSessionLease: { findMany: async () => [] },
+    nodeSessionLease: { findMany: async () => [], groupBy: async () => [] },
     userClientVersion: { findMany: async () => [] },
     user: { findMany: async () => [] }
   } as never, { publishPresenceUpdated: () => undefined } as never);

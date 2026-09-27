@@ -620,7 +620,7 @@ model NodeSessionLease {
   @@index([userId, status, expiresAt])
   @@index([subscriptionId, status, expiresAt])
   @@index([nodeId, status, expiresAt])
-  @@index([status, lastHeartbeatAt])
+  @@index([lastHeartbeatAt])
 }
 
 model SecurityEvent {
