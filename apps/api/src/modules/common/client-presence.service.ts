@@ -8,6 +8,7 @@ import type {
   ConnectionMode,
   SubscriptionState
 } from "@chordv/shared";
+import { randomUUID } from "node:crypto";
 import { Observable } from "rxjs";
 import { workLifecycle } from "../../work-lifecycle";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
@@ -16,24 +17,33 @@ import { PrismaService } from "./prisma.service";
 import { getLeaseHardExpireCutoff, isLeaseHardExpired, LEASE_HEARTBEAT_INTERVAL_SECONDS } from "./runtime-session.utils";
 import { readEffectiveSubscriptionState, roundTrafficGb, toAdminUserClientVersion } from "./subscription.utils";
 
-/** 客户端事件推送连接打开期间，每隔这么久刷新一次最近在线时间。 */
+/** 客户端事件推送连接打开期间，每隔这么久刷新一次推送连接记录与最近在线时间。 */
 export const PRESENCE_REFRESH_MS = 60_000;
-/** 超过这么久没有刷新就不再算在线（覆盖进程异常退出、来不及写离线的情况）。 */
+/** 推送连接记录超过这么久没有刷新就不再算在线（覆盖进程异常退出、来不及删除记录的情况）。 */
 export const PRESENCE_ONLINE_WINDOW_SECONDS = 150;
-/** 最后一条推送连接断开后等这么久再记为离线，客户端短暂重连不会闪成离线。 */
+/** 最后一条推送连接断开后等这么久再删除记录，客户端短暂重连不会闪成离线。 */
 export const PRESENCE_OFFLINE_GRACE_MS = 15_000;
 /** 节点连接超过这么久没有心跳就不再算“已连接”：客户端每 30 秒心跳一次，允许连续错过 3 次。 */
 export const PRESENCE_CONNECTED_WINDOW_SECONDS = Math.max(90, LEASE_HEARTBEAT_INTERVAL_SECONDS * 4);
+/** 进程异常退出留下的推送连接记录，超过这么久未刷新就清理掉。 */
+export const PRESENCE_STREAM_STALE_CLEANUP_MS = 10 * 60_000;
 
 const PRESENCE_REFRESH_BATCH_SIZE = 500;
 /** 进程内节点心跳写入节流记录最多保留的用户数，超出后淘汰最久未写的。 */
 const HEARTBEAT_WRITE_THROTTLE_LIMIT = 10_000;
 const CONNECTION_MODES: ReadonlySet<string> = new Set<ConnectionMode>(["global", "rule", "direct"]);
 
+/** 用户的最近在线记录。 */
 export type PresenceRow = {
   userId: string;
-  online: boolean;
   onlineSince: Date | null;
+  lastSeenAt: Date;
+};
+
+/** 某个 API 进程为用户保持着的推送连接记录。 */
+export type PresenceStreamRow = {
+  userId: string;
+  connectedAt: Date;
   lastSeenAt: Date;
 };
 
@@ -87,14 +97,14 @@ function onlineCutoff(now: Date) {
   return new Date(now.getTime() - PRESENCE_ONLINE_WINDOW_SECONDS * 1000);
 }
 
-/** 记录的最近在线时间仍在判定窗口内且未标记离线，才算客户端在线。 */
-export function isPresenceOnline(row: Pick<PresenceRow, "online" | "lastSeenAt"> | null | undefined, now: Date) {
-  return Boolean(row?.online) && row!.lastSeenAt.getTime() >= onlineCutoff(now).getTime();
+/** 推送连接记录仍在判定窗口内刷新过，才算客户端在线。 */
+export function isStreamLive(row: Pick<PresenceStreamRow, "lastSeenAt">, now: Date) {
+  return row.lastSeenAt.getTime() >= onlineCutoff(now).getTime();
 }
 
 /**
- * 本次客户端打开时的“在线起始时间”：距上次在线不超过判定窗口（短暂断线重连、后台重启交接）时沿用原来的起始时间，
- * 否则从现在算起。
+ * 本次客户端打开时的“在线起始时间”：距上次在线不超过判定窗口（短暂断线重连、后台重启交接、另一台设备仍在线）
+ * 时沿用原来的起始时间，否则从现在算起。
  */
 export function resolveOnlineSince(existing: Pick<PresenceRow, "onlineSince" | "lastSeenAt"> | null | undefined, now: Date) {
   if (existing?.onlineSince && existing.lastSeenAt.getTime() >= onlineCutoff(now).getTime() && existing.onlineSince.getTime() <= now.getTime()) {
@@ -118,6 +128,14 @@ function maxDate(values: Array<Date | null | undefined>) {
   let result: Date | null = null;
   for (const value of values) {
     if (value && (!result || value.getTime() > result.getTime())) result = value;
+  }
+  return result;
+}
+
+function minDate(values: Array<Date | null | undefined>) {
+  let result: Date | null = null;
+  for (const value of values) {
+    if (value && (!result || value.getTime() < result.getTime())) result = value;
   }
   return result;
 }
@@ -154,60 +172,59 @@ function toPresenceSession(lease: PresenceLeaseRow): AdminPresenceSessionDto {
   };
 }
 
+function groupByUser<T extends { userId: string }>(rows: T[], keep: (row: T) => boolean = () => true) {
+  const grouped = new Map<string, T[]>();
+  for (const row of rows) {
+    if (!keep(row)) continue;
+    const list = grouped.get(row.userId) ?? [];
+    list.push(row);
+    grouped.set(row.userId, list);
+  }
+  return grouped;
+}
+
 const STATE_ORDER: Record<AdminPresenceState, number> = { connected: 0, online: 1, offline: 2 };
 
 /**
  * 汇总在线状态：
  * - 已连接：有近期仍在心跳的节点连接（连接必然需要客户端打开，因此同时计入在线）；
- * - 在线：客户端已打开、登录并保持着事件推送连接，但没有连接节点；
- * - 离线：以上都不满足；最近在线时间取推送连接、节点心跳和检查更新三者中最新的一次。
+ * - 在线：任一 API 进程上保持着近期刷新过的推送连接记录，但没有连接节点；
+ * - 离线：以上都不满足；最近在线时间取最近在线记录（含推送连接与节点心跳）和检查更新时间中最新的一次。
  */
 export function buildAdminPresenceSnapshot(input: {
   now: Date;
   users: PresenceUserRow[];
   presence: PresenceRow[];
+  streams: PresenceStreamRow[];
   leases: PresenceLeaseRow[];
   clientVersions: PresenceClientVersionRow[];
 }): AdminPresenceSnapshotDto {
   const { now } = input;
   const presenceByUser = new Map(input.presence.map((row) => [row.userId, row]));
-  const sessionsByUser = new Map<string, PresenceLeaseRow[]>();
-  for (const lease of input.leases) {
-    if (!isLeaseConnected(lease, now)) continue;
-    const list = sessionsByUser.get(lease.userId) ?? [];
-    list.push(lease);
-    sessionsByUser.set(lease.userId, list);
-  }
-  const versionsByUser = new Map<string, PresenceClientVersionRow[]>();
-  for (const row of input.clientVersions) {
-    const list = versionsByUser.get(row.userId) ?? [];
-    list.push(row);
-    versionsByUser.set(row.userId, list);
-  }
+  const streamsByUser = groupByUser(input.streams, (row) => isStreamLive(row, now));
+  const sessionsByUser = groupByUser(input.leases, (lease) => isLeaseConnected(lease, now));
+  const versionsByUser = groupByUser(input.clientVersions);
 
   const users: AdminUserPresenceDto[] = [];
   for (const user of input.users) {
     const presence = presenceByUser.get(user.id) ?? null;
+    const streams = streamsByUser.get(user.id) ?? [];
     const leases = (sessionsByUser.get(user.id) ?? []).sort((left, right) => left.issuedAt.getTime() - right.issuedAt.getTime());
-    const versions = versionsByUser.get(user.id) ?? [];
-    const latestVersion = versions.reduce<PresenceClientVersionRow | null>(
+    const latestVersion = (versionsByUser.get(user.id) ?? []).reduce<PresenceClientVersionRow | null>(
       (latest, row) => (!latest || row.lastSeenAt.getTime() > latest.lastSeenAt.getTime() ? row : latest),
       null
     );
-    const clientOnline = isPresenceOnline(presence, now);
+    const clientOnline = streams.length > 0;
     const state: AdminPresenceState = leases.length ? "connected" : clientOnline ? "online" : "offline";
     const lastOnlineAt = maxDate([
       presence?.lastSeenAt,
+      ...streams.map((stream) => stream.lastSeenAt),
       ...leases.map((lease) => lease.lastHeartbeatAt),
       latestVersion?.lastSeenAt
     ]);
     if (state === "offline" && !lastOnlineAt) continue;
-    const earliestLease = leases[0]?.issuedAt ?? null;
-    const onlineSince = state === "offline"
-      ? null
-      : clientOnline && presence?.onlineSince
-        ? earliestLease && earliestLease.getTime() < presence.onlineSince.getTime() ? earliestLease : presence.onlineSince
-        : earliestLease;
+    const clientSince = clientOnline ? presence?.onlineSince ?? minDate(streams.map((stream) => stream.connectedAt)) : null;
+    const onlineSince = state === "offline" ? null : minDate([clientSince, leases[0]?.issuedAt]);
     const team = user.teamMemberships[0]?.team ?? null;
     users.push({
       userId: user.id,
@@ -244,14 +261,17 @@ export function buildAdminPresenceSnapshot(input: {
 /**
  * 客户端在线状态。
  *
- * 已登录的桌面客户端打开期间会一直保持 /client/events/stream 推送连接，这里按用户记录连接数：
- * 第一条连接打开时记为在线，最后一条断开 15 秒后记为离线，期间每分钟刷新一次最近在线时间。
- * 后台 API 为单实例部署；多实例时某实例断开会先记离线，仍保持连接的实例在下一次刷新（1 分钟内）恢复在线。
- * 进程异常退出时来不及记离线，由“超过判定窗口即离线”兜底。
+ * 已登录的桌面客户端打开期间会一直保持 /client/events/stream 推送连接。每个 API 进程为它持有推送连接的用户
+ * 各保留一条 UserClientPresenceStream 记录（按进程区分），每分钟刷新；该进程上这位用户的最后一条推送连接
+ * 断开 15 秒后删除自己的记录。任一进程有近期刷新的记录即为在线，因此一台设备断开不会让连在另一实例上的
+ * 设备显示离线。进程异常退出时来不及删除，由“超过判定窗口即不算在线”兜底，并由其他进程定期清理。
+ * UserClientPresence 另记最近在线时间（推送连接与节点心跳都会推进，只前进不后退）与本次在线开始时间，供离线后展示。
  */
 @Injectable()
 export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ClientPresenceService.name);
+  /** 本进程的标识，重启后变化；旧进程留下的记录会随判定窗口失效并被清理。 */
+  readonly instanceId = randomUUID();
   private readonly streamCounts = new Map<string, number>();
   private readonly offlineTimers = new Map<string, NodeJS.Timeout>();
   /** 同一用户的在线/离线写入在进程内逐个执行，不会互相覆盖。 */
@@ -302,7 +322,7 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
     this.streamCounts.set(userId, count);
     const pendingOffline = this.offlineTimers.get(userId);
     if (pendingOffline) {
-      // 断开后很快重连：取消待写的离线，库里仍是在线。
+      // 断开后很快重连：取消待删除的记录，库里仍是在线。
       clearTimeout(pendingOffline);
       this.offlineTimers.delete(userId);
       return;
@@ -319,7 +339,7 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
       return;
     }
     this.streamCounts.delete(userId);
-    // 后台交接时新实例会接手客户端的重连；来不及交接则由判定窗口兜底为离线。
+    // 后台交接时新进程会接手客户端的重连；来不及交接则由判定窗口兜底为离线。
     if (workLifecycle.isDraining || this.offlineTimers.has(userId)) return;
     const timer = setTimeout(() => {
       this.offlineTimers.delete(userId);
@@ -331,8 +351,8 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * 节点心跳也说明客户端在运行：推送连接已断开、但仍在心跳的用户，把最近在线时间记到心跳时刻，
-   * 连接撤销或心跳超时后“最近在线”仍然准确。只更新已记为离线（或还没有记录）的用户，不改变在线判定；
+   * 节点心跳也说明客户端在运行：推送连接已断开、但仍在心跳的用户，把最近在线时间推进到心跳时刻，
+   * 连接撤销或心跳超时后“最近在线”仍然准确。只推进最近在线时间，不影响在线判定（在线只看推送连接记录）；
    * 本进程仍保持着推送连接的用户由定时刷新负责。每位用户每分钟最多写一次。
    */
   noteHeartbeat(userId: string, at = new Date()) {
@@ -345,7 +365,7 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
       const oldest = this.heartbeatWrites.keys().next().value;
       if (oldest !== undefined) this.heartbeatWrites.delete(oldest);
     }
-    void workLifecycle.track(this.runExclusive(userId, () => this.recordHeartbeat(userId, at)));
+    void workLifecycle.track(this.runExclusive(userId, () => this.touchLastSeen(userId, at)));
   }
 
   /** 当前进程里保持着推送连接的用户数（诊断用）。 */
@@ -355,9 +375,15 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
 
   async getAdminPresenceSnapshot(now = new Date()): Promise<AdminPresenceSnapshotDto> {
     try {
-      const [presence, leases, clientVersions] = await workLifecycle.all([
+      // 心跳历史已由 noteHeartbeat 推进到 UserClientPresence.lastSeenAt（每分钟最多一次），这里不再按用户
+      // 聚合全部历史租约：租约表没有保留期，聚合会随时间变成全表扫描，而后台每 30 秒会拉一次。
+      const [presence, streams, leases, clientVersions] = await workLifecycle.all([
         this.prisma.userClientPresence.findMany({
-          select: { userId: true, online: true, onlineSince: true, lastSeenAt: true }
+          select: { userId: true, onlineSince: true, lastSeenAt: true }
+        }),
+        this.prisma.userClientPresenceStream.findMany({
+          where: { lastSeenAt: { gte: onlineCutoff(now) } },
+          select: { userId: true, connectedAt: true, lastSeenAt: true }
         }),
         this.prisma.nodeSessionLease.findMany({
           where: {
@@ -397,7 +423,12 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
         })
       ]);
       const userIds = Array.from(
-        new Set([...presence.map((row) => row.userId), ...leases.map((row) => row.userId), ...clientVersions.map((row) => row.userId)])
+        new Set([
+          ...presence.map((row) => row.userId),
+          ...streams.map((row) => row.userId),
+          ...leases.map((row) => row.userId),
+          ...clientVersions.map((row) => row.userId)
+        ])
       );
       const users = userIds.length
         ? await this.prisma.user.findMany({
@@ -410,7 +441,7 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
             }
           })
         : [];
-      return buildAdminPresenceSnapshot({ now, users, presence, leases, clientVersions });
+      return buildAdminPresenceSnapshot({ now, users, presence, streams, leases, clientVersions });
     } catch (error) {
       throwLocalReadAsServiceUnavailable(error, "在线状态暂时不可用，请稍后重试。");
     }
@@ -418,19 +449,29 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
 
   private async markOnline(userId: string, now: Date) {
     try {
-      const existing = await this.prisma.userClientPresence.findUnique({
-        where: { userId },
-        select: { online: true, onlineSince: true, lastSeenAt: true }
-      });
+      const [existing, otherLive] = await Promise.all([
+        this.prisma.userClientPresence.findUnique({
+          where: { userId },
+          select: { onlineSince: true, lastSeenAt: true }
+        }),
+        this.prisma.userClientPresenceStream.count({
+          where: { userId, instanceId: { not: this.instanceId }, lastSeenAt: { gte: onlineCutoff(now) } }
+        })
+      ]);
       const onlineSince = resolveOnlineSince(existing, now);
-      // 不让最近在线时间倒退（另一实例或更晚的刷新可能已写过更新的时间）。
+      // 不让最近在线时间倒退（另一进程或节点心跳可能已写过更新的时间）。
       const lastSeenAt = existing && existing.lastSeenAt.getTime() > now.getTime() ? existing.lastSeenAt : now;
       await this.prisma.userClientPresence.upsert({
         where: { userId },
-        create: { userId, online: true, onlineSince, lastSeenAt },
-        update: { online: true, onlineSince, lastSeenAt }
+        create: { userId, onlineSince, lastSeenAt },
+        update: { onlineSince, lastSeenAt }
       });
-      if (!isPresenceOnline(existing, now)) this.notifyChanged();
+      await this.prisma.userClientPresenceStream.upsert({
+        where: { userId_instanceId: { userId, instanceId: this.instanceId } },
+        create: { userId, instanceId: this.instanceId, connectedAt: now, lastSeenAt: now },
+        update: { lastSeenAt: now }
+      });
+      if (otherLive === 0) this.notifyChanged();
     } catch (error) {
       // 下一次定时刷新会补写，这里只记录。
       this.logger.warn(`在线状态记录失败：${readErrorMessage(error)}`);
@@ -439,57 +480,75 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
 
   private async markOffline(userId: string, closedAt: Date) {
     try {
-      // 只在记录不晚于断开时间时写离线：另一实例在此之后刷新过，说明客户端仍在线。
-      const updated = await this.prisma.userClientPresence.updateMany({
-        where: { userId, online: true, lastSeenAt: { lte: closedAt } },
-        data: { online: false, lastSeenAt: closedAt }
+      // 只删除本进程的记录；其他进程仍保持着的推送连接不受影响。
+      const deleted = await this.prisma.userClientPresenceStream.deleteMany({
+        where: { userId, instanceId: this.instanceId }
       });
-      if (updated.count > 0) this.notifyChanged();
+      await this.touchLastSeenOrThrow(userId, closedAt);
+      if (deleted.count > 0) this.notifyChanged();
     } catch (error) {
       this.logger.warn(`离线状态记录失败：${readErrorMessage(error)}`);
     }
   }
 
-  private async recordHeartbeat(userId: string, at: Date) {
+  private async touchLastSeen(userId: string, at: Date) {
     try {
-      const updated = await this.prisma.userClientPresence.updateMany({
-        where: { userId, online: false, lastSeenAt: { lt: at } },
-        data: { lastSeenAt: at }
-      });
-      if (updated.count > 0) return;
-      // 还没有任何记录（例如上线前就已连接、推送连接一直没连上）：补一条离线记录，只用于最近在线时间。
-      await this.prisma.userClientPresence.createMany({
-        data: [{ userId, online: false, onlineSince: null, lastSeenAt: at }],
-        skipDuplicates: true
-      });
+      await this.touchLastSeenOrThrow(userId, at);
     } catch (error) {
-      this.logger.warn(`心跳在线时间记录失败：${readErrorMessage(error)}`);
+      this.logger.warn(`最近在线时间记录失败：${readErrorMessage(error)}`);
     }
   }
 
-  /** 定时刷新本进程保持着推送连接的用户；记录缺失或已超出判定窗口的逐个重新记为在线。 */
+  /** 把最近在线时间推进到 at（只前进不后退）；还没有记录时补一条。 */
+  private async touchLastSeenOrThrow(userId: string, at: Date) {
+    const updated = await this.prisma.userClientPresence.updateMany({
+      where: { userId, lastSeenAt: { lt: at } },
+      data: { lastSeenAt: at }
+    });
+    if (updated.count > 0) return;
+    await this.prisma.userClientPresence.createMany({
+      data: [{ userId, onlineSince: null, lastSeenAt: at }],
+      skipDuplicates: true
+    });
+  }
+
+  /**
+   * 定时刷新本进程保持着推送连接的用户：推送连接记录与最近在线时间各一条批量更新；
+   * 记录缺失（之前写库失败或被当作过期清理）的逐个补回。顺带清理异常退出的进程留下的过期记录。
+   */
   async refreshOnlineUsers(now = new Date()) {
     const userIds = Array.from(this.streamCounts.keys());
     for (let index = 0; index < userIds.length; index += PRESENCE_REFRESH_BATCH_SIZE) {
       const batch = userIds.slice(index, index + PRESENCE_REFRESH_BATCH_SIZE);
       try {
-        const updated = await this.prisma.userClientPresence.updateMany({
-          where: { userId: { in: batch }, online: true, lastSeenAt: { gte: onlineCutoff(now) } },
+        const updated = await this.prisma.userClientPresenceStream.updateMany({
+          where: { instanceId: this.instanceId, userId: { in: batch } },
+          data: { lastSeenAt: now }
+        });
+        await this.prisma.userClientPresence.updateMany({
+          where: { userId: { in: batch }, lastSeenAt: { lt: now } },
           data: { lastSeenAt: now }
         });
         if (updated.count >= batch.length) continue;
-        const fresh = await this.prisma.userClientPresence.findMany({
-          where: { userId: { in: batch }, online: true, lastSeenAt: { gte: now } },
+        const existing = await this.prisma.userClientPresenceStream.findMany({
+          where: { instanceId: this.instanceId, userId: { in: batch } },
           select: { userId: true }
         });
-        const freshIds = new Set(fresh.map((row) => row.userId));
+        const existingIds = new Set(existing.map((row) => row.userId));
         for (const userId of batch) {
-          if (freshIds.has(userId) || !(this.streamCounts.get(userId) ?? 0)) continue;
+          if (existingIds.has(userId) || !(this.streamCounts.get(userId) ?? 0)) continue;
           await this.runExclusive(userId, () => this.markOnline(userId, now));
         }
       } catch (error) {
         this.logger.warn(`在线状态刷新失败：${readErrorMessage(error)}`);
       }
+    }
+    try {
+      await this.prisma.userClientPresenceStream.deleteMany({
+        where: { lastSeenAt: { lt: new Date(now.getTime() - PRESENCE_STREAM_STALE_CLEANUP_MS) } }
+      });
+    } catch (error) {
+      this.logger.warn(`过期在线记录清理失败：${readErrorMessage(error)}`);
     }
   }
 
