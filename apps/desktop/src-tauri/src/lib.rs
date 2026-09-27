@@ -9,6 +9,7 @@ mod process_identity;
 mod exit_gate;
 mod proxy_cleanup;
 mod log_tail;
+mod local_files;
 mod startup_gate;
 static STARTUP_READY: startup_gate::StartupGate = startup_gate::StartupGate::new();
 static EXIT_CLEANUP: exit_gate::ExitGate = exit_gate::ExitGate::new();
@@ -2078,6 +2079,56 @@ fn open_external_url_blocking(url: String) -> Result<CommandResult, String> {
         config_path: None,
         log_path: None,
         active_pid: None,
+    })
+}
+
+#[tauri::command]
+async fn list_local_file_locations(app: AppHandle) -> Result<Vec<local_files::LocalFileEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_local_files_supported()?;
+        Ok(local_files::describe(&local_file_roots(&app)?))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// 只接受固定条目，不接受前端传入的任意路径；解析结果还要再校验一次位于应用数据目录内。
+#[tauri::command]
+async fn reveal_local_file(app: AppHandle, kind: local_files::LocalFileKind) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_local_files_supported()?;
+        let roots = local_file_roots(&app)?;
+        let target = local_files::resolve_reveal_target(&roots.app_data, &roots.path_of(kind))?;
+        local_files::reveal_with_system(&target)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn ensure_local_files_supported() -> Result<(), String> {
+    if cfg!(any(target_os = "macos", windows)) {
+        Ok(())
+    } else {
+        Err("当前平台不提供本地文件入口。".into())
+    }
+}
+
+/// 与组件下载、更新报告使用同一套路径解析，界面显示的就是实际读写的位置。
+fn local_file_roots(app: &AppHandle) -> Result<local_files::LocalFileRoots, String> {
+    let app_data = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))?;
+    let updater = desktop_update_report_path(app)?
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "无法定位更新目录".to_string())?;
+    Ok(local_files::LocalFileRoots {
+        app_data,
+        runtime: ensure_runtime_dir(app)?,
+        bin: installed_runtime_bin_dir(app)?,
+        updater,
+        xray_file_name: runtime_binary_name(),
     })
 }
 
@@ -7330,6 +7381,8 @@ pub fn run() {
             download_desktop_installer,
             open_desktop_installer,
             open_external_url,
+            list_local_file_locations,
+            reveal_local_file,
             test_routing_rule,
             install_windows_update,
             quit_for_update,

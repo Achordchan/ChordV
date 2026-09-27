@@ -30,6 +30,7 @@ import { AppDialog, DialogText } from "./components/AppDialog";
 import { GuidanceDialog } from "./components/GuidanceDialog";
 import { NoticeRow } from "./components/NoticeRow";
 import { ControlPanel } from "./components/ControlPanel";
+import { LocalFilesDialog } from "./components/LocalFilesDialog";
 import { LogDrawer } from "./components/LogDrawer";
 import { LoginScreen } from "./components/LoginScreen";
 import { MeteringFloatingBanner } from "./components/MeteringFloatingBanner";
@@ -44,6 +45,7 @@ import {
   focusDesktopWindow,
   hasActivePlatformRuntime,
   loadActiveRuntimeConfig,
+  revealLocalFile,
   subscribeDesktopShellActions,
   subscribeNativeLeaseHeartbeat,
   subscribeNativeSessionRefreshed,
@@ -53,6 +55,9 @@ import {
   type RuntimeStatus
 } from "./lib/runtime";
 import { resolveDesktopPlatformVersion } from "./lib/platformVersion";
+import { localFileKindForComponent, resolveLocalFileVersions, supportsLocalFiles, type LocalFileKind, type LocalFileVersions } from "./lib/localFiles";
+import { readStoredGeoVersionLabel } from "./lib/geoUpdate";
+import { readStoredXrayInstalledIdentity } from "./lib/xrayInstall";
 import {
   clearResolvedGuidance,
   composeRuntimeFailureText,
@@ -98,7 +103,7 @@ import { createIdleServerProbeState, type ServerProbeState, useClientEvents } fr
 import { useNodeProbe } from "./hooks/useNodeProbe";
 import { useRuntimeActions } from "./hooks/useRuntimeActions";
 import { useComponentVersionSync } from "./hooks/useComponentVersionSync";
-import { useRuntimeAssets } from "./hooks/useRuntimeAssets";
+import { useRuntimeAssets, type RuntimeAssetsCheckSummary } from "./hooks/useRuntimeAssets";
 import { useRuntimeStatus } from "./hooks/useRuntimeStatus";
 import { useSupportTickets } from "./hooks/useSupportTickets";
 import { buildUpdatePromptKey, hasActionableUpdate, useUpdateFlow } from "./hooks/useUpdateFlow";
@@ -152,6 +157,7 @@ export function App() {
   const [connectionGuidance, setConnectionGuidance] = useState<ConnectionGuidance | null>(null);
   const [guidanceDialog, setGuidanceDialog] = useState<ConnectionGuidance | null>(null);
   const [closeHintOpened, setCloseHintOpened] = useState(false);
+  const [localFilesOpened, setLocalFilesOpened] = useState(false);
   const [rememberCloseHint, setRememberCloseHint] = useState(true);
   const [mobileTab, setMobileTab] = useState<"home" | "nodes" | "profile">("home");
   const [serverProbe, setServerProbe] = useState<ServerProbeState>(createIdleServerProbeState());
@@ -956,6 +962,20 @@ export function App() {
     setLogDrawerOpened(true);
     void refreshRuntime({ includeLogs: true }).catch(() => null);
   };
+
+  // 本地文件入口只在 macOS / Windows 提供；Android 没有可浏览的应用目录。
+  const localFilesAvailable = supportsLocalFiles(desktopStatus.platformTarget);
+  const localFileVersions = useMemo(
+    () => (localFilesOpened ? readLocalFileVersions(getLastRuntimeAssetsCheckSummary()) : {}),
+    [getLastRuntimeAssetsCheckSummary, localFilesOpened]
+  );
+  const handleRevealLocalFile = useCallback((kind: LocalFileKind) => {
+    void revealLocalFile(kind).catch((reason) => showErrorToast(reason, "local_files"));
+  }, []);
+  // 退出登录后不保留打开状态，免得重新登录时弹窗自己冒出来。
+  useEffect(() => {
+    if (!session) setLocalFilesOpened(false);
+  }, [session]);
 
   useEffect(() => {
     const needsClock = countdown > 0 || probeCooldownLeft > 0;
@@ -1826,6 +1846,7 @@ export function App() {
                   onOpenTickets={openTicketCenter}
                   onRefresh={() => void handleRefresh()}
                   onCheckUpdate={() => void handleManualUpdateCheck()}
+                  onOpenLocalFiles={localFilesAvailable ? () => setLocalFilesOpened(true) : undefined}
                   onLogout={() => void handleLogout()}
                 />
               </div>
@@ -1898,6 +1919,7 @@ export function App() {
               onOpenTickets={openTicketCenter}
               onRefresh={() => void handleRefresh()}
               onCheckUpdate={() => void handleManualUpdateCheck()}
+              onOpenLocalFiles={localFilesAvailable ? () => setLocalFilesOpened(true) : undefined}
               onLogout={() => void handleLogout()}
             />
           </Stack>
@@ -2034,7 +2056,17 @@ export function App() {
         onBetaChannelChange={(enabled) => changeUpdateChannel(enabled ? "beta" : "stable")}
         onCheckOnly={() => void handleUpdateCenterCheckOnly()}
         onUpdateOne={(key) => void handleUpdateCenterUpdateOne(key)}
+        onRevealComponent={localFilesAvailable ? (key) => handleRevealLocalFile(localFileKindForComponent(key)) : undefined}
       />
+
+      {localFilesAvailable ? (
+        <LocalFilesDialog
+          opened={localFilesOpened && Boolean(session) && !windowTransitioning}
+          versions={localFileVersions}
+          onClose={() => setLocalFilesOpened(false)}
+          onReveal={handleRevealLocalFile}
+        />
+      ) : null}
 
       <ClientUpdateModal
         opened={updateDialogOpened && effectiveUpdate !== null && !windowTransitioning}
@@ -2089,6 +2121,24 @@ export function App() {
       </AppDialog>
     </div>
   );
+}
+
+/** 版本只用已有的组件检查结果与本地记录，不额外请求服务端。 */
+function readLocalFileVersions(summary: RuntimeAssetsCheckSummary | null): LocalFileVersions {
+  let storedXray: string | null = null;
+  let storedGeo: string | null = null;
+  try {
+    storedXray = readStoredXrayInstalledIdentity()?.versionLabel ?? null;
+    storedGeo = readStoredGeoVersionLabel();
+  } catch {
+    // 本地记录不可读时只是不显示版本。
+  }
+  return resolveLocalFileVersions({
+    summaryXray: summary?.xray.localVersion,
+    summaryGeo: summary?.geo.localVersion,
+    storedXray,
+    storedGeo
+  });
 }
 
 function isEditableContextTarget(target: EventTarget | null) {

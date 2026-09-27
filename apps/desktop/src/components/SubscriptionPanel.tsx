@@ -20,6 +20,7 @@ import {
   IconBell,
   IconChevronRight,
   IconDots,
+  IconFolderOpen,
   IconLifebuoy,
   IconLogout,
   IconRefresh,
@@ -49,6 +50,8 @@ type SubscriptionPanelProps = {
   onRefreshServerProbe?: () => void;
   onRefresh: () => void;
   onCheckUpdate: () => void;
+  /** 只在 macOS / Windows 传入；不传时不显示“本地文件”入口。 */
+  onOpenLocalFiles?: () => void;
   onLogout: () => void;
 };
 
@@ -123,6 +126,11 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
                 >
                   {props.forceUpdate ? "必须更新" : props.hasUpdate ? "有新版本" : "检查更新"}
                 </Menu.Item>
+                {props.onOpenLocalFiles ? (
+                  <Menu.Item leftSection={<IconFolderOpen size={14} />} onClick={props.onOpenLocalFiles}>
+                    本地文件
+                  </Menu.Item>
+                ) : null}
                 <Menu.Divider />
                 <Menu.Item color="red" leftSection={<IconLogout size={14} />} onClick={props.onLogout}>
                   退出登录
@@ -330,17 +338,6 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
               </Button>
             </Indicator>
             <Button
-              variant={isTeam ? "white" : "default"}
-              color={isTeam ? "dark" : "gray"}
-              size="xs"
-              leftSection={<IconRefresh size={14} />}
-              className="subscription-secondary-button subscription-toolbar-button"
-              loading={props.refreshing}
-              onClick={props.onRefresh}
-            >
-              刷新
-            </Button>
-            <Button
               variant={props.forceUpdate ? "filled" : props.hasUpdate ? "filled" : isTeam ? "white" : "default"}
               color={props.forceUpdate ? "orange" : props.hasUpdate ? "blue" : isTeam ? "dark" : "gray"}
               size="xs"
@@ -352,16 +349,34 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
             >
               {props.forceUpdate ? "必须更新" : props.hasUpdate ? "有新版本" : "检查更新"}
             </Button>
-            <Button
-              variant={isTeam ? "white" : "default"}
-              color={isTeam ? "dark" : "gray"}
-              size="xs"
-              leftSection={<IconLogout size={14} />}
-              className="subscription-secondary-button subscription-logout subscription-toolbar-button"
-              onClick={props.onLogout}
-            >
-              退出登录
-            </Button>
+            {/* 刷新订阅与退出登录收进“更多操作”，给低频工具入口腾出位置；顺序与手机版菜单一致。 */}
+            <Menu shadow="md" width={160} position="bottom-end">
+              <Menu.Target>
+                <ActionIcon
+                  variant={isTeam ? "white" : "default"}
+                  color={isTeam ? "dark" : "gray"}
+                  size={30}
+                  className="subscription-toolbar-more"
+                  aria-label="更多操作"
+                >
+                  <IconDots size={16} />
+                </ActionIcon>
+              </Menu.Target>
+              <Menu.Dropdown>
+                <Menu.Item leftSection={<IconRefresh size={14} />} onClick={props.onRefresh} disabled={props.refreshing}>
+                  刷新订阅
+                </Menu.Item>
+                {props.onOpenLocalFiles ? (
+                  <Menu.Item leftSection={<IconFolderOpen size={14} />} onClick={props.onOpenLocalFiles}>
+                    本地文件
+                  </Menu.Item>
+                ) : null}
+                <Menu.Divider />
+                <Menu.Item color="red" leftSection={<IconLogout size={14} />} onClick={props.onLogout}>
+                  退出登录
+                </Menu.Item>
+              </Menu.Dropdown>
+            </Menu>
           </Group>
         </div>
 

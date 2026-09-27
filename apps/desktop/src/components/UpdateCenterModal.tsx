@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { ActionIcon, Badge, Button, Group, Loader, Modal, Switch, Text, UnstyledButton } from "@mantine/core";
-import { IconAlertCircle, IconArrowLeft, IconArrowRight, IconChevronRight, IconCircleCheckFilled, IconClock } from "@tabler/icons-react";
+import { ActionIcon, Badge, Button, Group, Loader, Modal, Switch, Text, Tooltip, UnstyledButton } from "@mantine/core";
+import { IconAlertCircle, IconArrowLeft, IconArrowRight, IconChevronRight, IconCircleCheckFilled, IconClock, IconFolderOpen } from "@tabler/icons-react";
 import appIcon from "../../src-tauri/icons/icon.png";
 import type { UpdateCenterItem, UpdateCenterItemKey, UpdateCenterState } from "../lib/updateCenter";
 import { APP_BUILD_NUMBER, formatVersionWithBuild } from "../lib/buildInfo";
@@ -20,6 +20,8 @@ type UpdateCenterModalProps = {
   onClose: () => void;
   onCheckOnly: () => void;
   onUpdateOne: (key: UpdateCenterItemKey) => void;
+  /** 只在 macOS / Windows 传入：在文件夹中显示组件文件。 */
+  onRevealComponent?: (key: "xray" | "geo") => void;
 };
 
 export function UpdateCenterModal(props: UpdateCenterModalProps) {
@@ -90,7 +92,22 @@ export function UpdateCenterModal(props: UpdateCenterModalProps) {
             return (
               <div key={item.key} className={styles.row}>
                 <div className={styles.rowMain}>
-                  <Text size="sm" fw={600}>{item.key === "xray" ? "Xray 内核" : "GEO 数据"}</Text>
+                  <Group gap={4} wrap="nowrap" className={styles.rowName}>
+                    <Text size="sm" fw={600}>{item.key === "xray" ? "Xray 内核" : "GEO 数据"}</Text>
+                    {props.onRevealComponent && item.key !== "app" ? (
+                      <Tooltip label="在文件夹中显示" withArrow openDelay={200}>
+                        <ActionIcon
+                          variant="subtle"
+                          color="gray"
+                          size="sm"
+                          aria-label={`在文件夹中显示${item.key === "xray" ? " Xray 内核" : " GEO 数据"}`}
+                          onClick={() => props.onRevealComponent?.(item.key === "xray" ? "xray" : "geo")}
+                        >
+                          <IconFolderOpen size={15} />
+                        </ActionIcon>
+                      </Tooltip>
+                    ) : null}
+                  </Group>
                   <Group gap="sm" justify="flex-end" wrap="nowrap" className={styles.rowStatus}>
                     {runtimeChecking ? <Group gap={6} wrap="nowrap"><Loader size={14} /><Text size="sm" c="dimmed">{props.state.checking ? "正在检查" : "正在同步"}</Text></Group>
                       : <RuntimeVersion item={item} waiting={waiting} />}
