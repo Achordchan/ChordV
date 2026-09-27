@@ -131,14 +131,18 @@ try {
   # A newer build of the same version is installed with the same updater flags
   # while the client runs; it must replace the files and restart like an upgrade.
   Write-Host 'PHASE: applying same-version build over a running client'
+  # NSIS keeps the packaged file timestamp, so reinstalling identical files would
+  # leave LastWriteTime unchanged. Backdate the installed executable first: only a
+  # real re-extraction restores the packaged (build-time) timestamp.
+  $marker = [DateTime]::new(2001, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
+  (Get-Item $exe).LastWriteTimeUtc = $marker
+  if ((Get-Item $exe).LastWriteTimeUtc -ne $marker) { throw 'Could not backdate the installed executable for the reinstall check' }
   $sameVersionClient = Start-Process -FilePath $exe -PassThru
   Start-Sleep -Seconds 3
-  $before = (Get-Item $exe).LastWriteTimeUtc
-  Start-Sleep -Seconds 2
   Run-Installer (Resolve-Path $Installer).Path '/P /UPDATE /R'
   $sameVersionClient.Refresh()
   if (!$sameVersionClient.HasExited) { throw 'Same-version install did not close the running client' }
-  if (!((Get-Item $exe).LastWriteTimeUtc -gt $before)) { throw 'Same-version install did not replace the executable' }
+  if (!((Get-Item $exe).LastWriteTimeUtc -gt $marker)) { throw 'Same-version install did not replace the executable' }
   if (![Diagnostics.FileVersionInfo]::GetVersionInfo($exe).ProductVersion.StartsWith($ExpectedVersion)) { throw 'Same-version install changed the installed version' }
   $deadline = (Get-Date).AddSeconds(45)
   $running = $null
