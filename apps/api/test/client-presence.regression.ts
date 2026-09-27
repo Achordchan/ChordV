@@ -193,7 +193,17 @@ function createService() {
         }
         return { count };
       },
-      findMany: async ({ where }: any) => [...rows.values()].filter((row) => matches(row, where)).map((row) => ({ userId: row.userId }))
+      findMany: async ({ where }: any) => [...rows.values()].filter((row) => matches(row, where)).map((row) => ({ userId: row.userId })),
+      createMany: async ({ data, skipDuplicates }: any) => {
+        assert.equal(skipDuplicates, true);
+        let count = 0;
+        for (const row of data) {
+          if (rows.has(row.userId)) continue;
+          rows.set(row.userId, { ...row });
+          count += 1;
+        }
+        return { count };
+      }
     }
   };
   const service = new ClientPresenceService(prisma as never, { publishPresenceUpdated: () => events.push("presence_updated") } as never);
@@ -291,6 +301,44 @@ async function testRefresh() {
   service.onModuleDestroy();
 }
 
+async function testHeartbeatHistory() {
+  const { service, rows, calls, events } = createService();
+  // 推送连接断开后仍在用节点：离线记录的最近在线时间跟随心跳前进，但不改成在线。
+  rows.set("user_h", { userId: "user_h", online: false, onlineSince: ago(3600), lastSeenAt: ago(600) });
+  service.noteHeartbeat("user_h", ago(30));
+  await settle();
+  assert.equal(rows.get("user_h")?.lastSeenAt.getTime(), ago(30).getTime(), "心跳时刻计入最近在线");
+  assert.equal(rows.get("user_h")?.online, false, "心跳不改变在线判定");
+  const writes = calls.updateMany;
+  service.noteHeartbeat("user_h", ago(10));
+  await settle();
+  assert.equal(calls.updateMany, writes, "每位用户每分钟最多写一次");
+  service.noteHeartbeat("user_h", later(40));
+  await settle();
+  assert.equal(rows.get("user_h")?.lastSeenAt.getTime(), later(40).getTime());
+
+  service.noteHeartbeat("user_new", now);
+  await settle();
+  assert.deepEqual(rows.get("user_new"), { userId: "user_new", online: false, onlineSince: null, lastSeenAt: now }, "没有记录时补一条离线记录");
+
+  // 在线记录由推送连接维护，心跳不去动它。
+  rows.set("user_o", { userId: "user_o", online: true, onlineSince: ago(100), lastSeenAt: ago(50) });
+  service.noteHeartbeat("user_o", now);
+  await settle();
+  assert.equal(rows.get("user_o")?.lastSeenAt.getTime(), ago(50).getTime());
+
+  // 本进程保持着推送连接的用户由定时刷新负责，心跳不额外写库。
+  service.streamOpened("user_s", ago(5));
+  await settle();
+  const before = calls.updateMany;
+  service.noteHeartbeat("user_s", now);
+  await settle();
+  assert.equal(calls.updateMany, before);
+  assert.equal(events.length, 1, "心跳记录不推送上下线事件");
+  service.streamClosed("user_s", now);
+  service.onModuleDestroy();
+}
+
 async function testAdminQuery() {
   const seen: Record<string, any> = {};
   const prisma = {
@@ -329,15 +377,20 @@ async function testAdminQuery() {
 
 async function testRuntimeSessionRecordsModeAndNotifies() {
   const leases: any[] = [];
+  const heartbeats: Array<[string, Date]> = [];
   let presenceEvents = 0;
   const service = Object.assign(Object.create(RuntimeSessionService.prototype), {
     logger: { warn: () => undefined, log: () => undefined },
     prisma: {
       nodeSessionLease: {
         create: async ({ data }: any) => { leases.push({ ...data }); return data; },
-        findUnique: async ({ where }: any) => leases.find((row) => row.id === where.id) ?? null,
+        findUnique: async ({ where }: any) => {
+          const row = leases.find((item) => (where.id ? item.id === where.id : item.sessionId === where.sessionId));
+          return row ? { ...row, node: { id: row.nodeId, flow: "xtls-rprx-vision" } } : null;
+        },
         updateMany: async ({ where, data }: any) => {
-          const row = leases.find((item) => item.id === where.id && where.status.in.includes(item.status));
+          const statuses = typeof where.status === "string" ? [where.status] : where.status.in;
+          const row = leases.find((item) => item.id === where.id && statuses.includes(item.status));
           if (!row) return { count: 0 };
           Object.assign(row, data);
           return { count: 1 };
@@ -346,6 +399,10 @@ async function testRuntimeSessionRecordsModeAndNotifies() {
       securityEvent: { create: async () => undefined }
     },
     adminRuntimeEventsService: { publishPresenceUpdated: () => { presenceEvents += 1; } },
+    clientPresenceService: { noteHeartbeat: (userId: string, at: Date) => heartbeats.push([userId, at]) },
+    resolveActiveUserFromToken: async () => ({ id: "user_1" }),
+    assertLeaseCanHeartbeat: async () => undefined,
+    refreshActiveRuntimeLease: () => undefined,
     clientRuntimeEventsService: { publishToUser: () => undefined },
     ensurePanelClientBinding: async () => ({ panelClientEmail: "user_1@lease", panelClientId: "uuid-1" }),
     readConnectInboundRuntimeBestEffort: async (node: any) => ({ ok: true, ...node }),
@@ -363,6 +420,10 @@ async function testRuntimeSessionRecordsModeAndNotifies() {
   assert.equal(runtime.mode, "global");
   assert.equal(presenceEvents, 1, "建立连接通知后台刷新在线列表");
 
+  await service.heartbeatSession(leases[0].sessionId, "Bearer token");
+  assert.equal(heartbeats.length, 1, "心跳成功后记录最近在线时间");
+  assert.equal(heartbeats[0][0], "user_1");
+
   await service.revokeLease(leases[0].id, { id: "node_hk", flow: "xtls-rprx-vision" }, "revoked_by_client");
   assert.equal(leases[0].status, "revoked");
   assert.equal(presenceEvents, 2, "断开或撤销连接通知后台刷新在线列表");
@@ -376,6 +437,7 @@ async function main() {
   await testStreamTracking();
   await testTrackStream();
   await testRefresh();
+  await testHeartbeatHistory();
   await testAdminQuery();
   await testRuntimeSessionRecordsModeAndNotifies();
   console.log("client presence regression checks passed");

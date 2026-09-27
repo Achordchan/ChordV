@@ -1,10 +1,12 @@
-import type { AdminPresenceSnapshotDto } from "@chordv/shared";
+import type { AdminPresenceSnapshotDto, AdminUserPresenceDto } from "@chordv/shared";
 
 /** 页面可见时每 30 秒拉一次：客户端超时掉线不会产生事件，只能靠轮询发现。 */
 export const PRESENCE_POLL_MS = 30_000;
 
 export type PresenceStoreState = {
   snapshot: AdminPresenceSnapshotDto | null;
+  /** 按用户 id 的查找表，每份快照只建一次，列表里每一行共用。 */
+  byUser: ReadonlyMap<string, AdminUserPresenceDto>;
   loading: boolean;
   error: string | null;
 };
@@ -23,7 +25,7 @@ type PresenceStoreDeps = {
  * 有组件在用时才轮询；收到后台的 presence_updated 事件立即刷新；同一时间只有一个请求，期间再次触发会在结束后补一次。
  */
 export function createPresenceStore(deps: PresenceStoreDeps) {
-  let state: PresenceStoreState = { snapshot: null, loading: false, error: null };
+  let state: PresenceStoreState = { snapshot: null, byUser: new Map(), loading: false, error: null };
   const listeners = new Set<() => void>();
   let users = 0;
   let inFlight = false;
@@ -47,7 +49,7 @@ export function createPresenceStore(deps: PresenceStoreDeps) {
     emit({ loading: true });
     try {
       const snapshot = await deps.fetch();
-      if (current === generation) emit({ snapshot, error: null });
+      if (current === generation) emit({ snapshot, byUser: new Map(snapshot.users.map((entry) => [entry.userId, entry])), error: null });
     } catch {
       if (current === generation) emit({ error: "在线状态暂时不可用，稍后会自动重试。" });
     } finally {

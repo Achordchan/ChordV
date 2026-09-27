@@ -1,17 +1,13 @@
-import { useMemo } from "react";
 import { Text } from "@mantine/core";
 import type { AdminTeamRecordDto } from "@chordv/shared";
-import { formatPresenceBrief, presenceByUserId, summarizeTeamPresence } from "../../utils/presence";
+import { formatPresenceBrief, summarizeTeamPresence } from "../../utils/presence";
 import { PresenceDetails, PresenceStatus, TeamPresenceStatus } from "../presence/Presence";
 import { usePresence } from "../presence/usePresence";
 import type { CustomerRecord } from "./customer-model";
 import styles from "./CustomerWorkspace.module.css";
 
-function usePresenceMap() {
-  const presence = usePresence();
-  const byUser = useMemo(() => presenceByUserId(presence.snapshot), [presence.snapshot]);
-  return { ...presence, byUser };
-}
+/** 查找表由共享数据源按快照建一次，各行直接取用。 */
+const usePresenceMap = usePresence;
 
 function teamMemberIds(team: AdminTeamRecordDto) {
   return team.members.map(member => member.userId);

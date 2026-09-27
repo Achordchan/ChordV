@@ -85,7 +85,7 @@ export type TeamPresenceSummary = {
 /** 团队成员在线人数；已连接的成员同时计入在线。 */
 export function summarizeTeamPresence(
   memberUserIds: string[],
-  presence: Map<string, AdminUserPresenceDto>
+  presence: ReadonlyMap<string, AdminUserPresenceDto>
 ): TeamPresenceSummary {
   let online = 0;
   let connected = 0;

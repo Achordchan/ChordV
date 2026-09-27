@@ -137,6 +137,9 @@ async function testStore() {
   resolveFetch!(snapshot);
   await flush();
   assert.equal(store.getState().snapshot, snapshot);
+  const lookup = store.getState().byUser;
+  assert.equal(lookup.get("u_idle")?.state, "online", "查找表随快照建好，列表各行直接取用");
+  assert.equal(store.getState().byUser, lookup, "同一份快照只建一次查找表");
   assert.equal(fetches, 2, "请求期间的在线变化在结束后补拉一次");
   resolveFetch!(snapshot);
   await flush();

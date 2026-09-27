@@ -26,6 +26,8 @@ export const PRESENCE_OFFLINE_GRACE_MS = 15_000;
 export const PRESENCE_CONNECTED_WINDOW_SECONDS = Math.max(90, LEASE_HEARTBEAT_INTERVAL_SECONDS * 4);
 
 const PRESENCE_REFRESH_BATCH_SIZE = 500;
+/** 进程内节点心跳写入节流记录最多保留的用户数，超出后淘汰最久未写的。 */
+const HEARTBEAT_WRITE_THROTTLE_LIMIT = 10_000;
 const CONNECTION_MODES: ReadonlySet<string> = new Set<ConnectionMode>(["global", "rule", "direct"]);
 
 export type PresenceRow = {
@@ -254,6 +256,8 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
   private readonly offlineTimers = new Map<string, NodeJS.Timeout>();
   /** 同一用户的在线/离线写入在进程内逐个执行，不会互相覆盖。 */
   private readonly writeQueues = new Map<string, Promise<void>>();
+  /** 每位用户最近一次因节点心跳写入最近在线时间的时刻，用于每分钟最多写一次。 */
+  private readonly heartbeatWrites = new Map<string, number>();
   private refreshTimer: NodeJS.Timeout | null = null;
   private refreshing: Promise<void> | null = null;
   /** 可在测试中调短。 */
@@ -324,6 +328,24 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
     }, this.offlineGraceMs);
     timer.unref?.();
     this.offlineTimers.set(userId, timer);
+  }
+
+  /**
+   * 节点心跳也说明客户端在运行：推送连接已断开、但仍在心跳的用户，把最近在线时间记到心跳时刻，
+   * 连接撤销或心跳超时后“最近在线”仍然准确。只更新已记为离线（或还没有记录）的用户，不改变在线判定；
+   * 本进程仍保持着推送连接的用户由定时刷新负责。每位用户每分钟最多写一次。
+   */
+  noteHeartbeat(userId: string, at = new Date()) {
+    if ((this.streamCounts.get(userId) ?? 0) > 0 || workLifecycle.isDraining) return;
+    const last = this.heartbeatWrites.get(userId);
+    if (last !== undefined && at.getTime() - last < PRESENCE_REFRESH_MS) return;
+    this.heartbeatWrites.delete(userId);
+    this.heartbeatWrites.set(userId, at.getTime());
+    if (this.heartbeatWrites.size > HEARTBEAT_WRITE_THROTTLE_LIMIT) {
+      const oldest = this.heartbeatWrites.keys().next().value;
+      if (oldest !== undefined) this.heartbeatWrites.delete(oldest);
+    }
+    void workLifecycle.track(this.runExclusive(userId, () => this.recordHeartbeat(userId, at)));
   }
 
   /** 当前进程里保持着推送连接的用户数（诊断用）。 */
@@ -425,6 +447,23 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
       if (updated.count > 0) this.notifyChanged();
     } catch (error) {
       this.logger.warn(`离线状态记录失败：${readErrorMessage(error)}`);
+    }
+  }
+
+  private async recordHeartbeat(userId: string, at: Date) {
+    try {
+      const updated = await this.prisma.userClientPresence.updateMany({
+        where: { userId, online: false, lastSeenAt: { lt: at } },
+        data: { lastSeenAt: at }
+      });
+      if (updated.count > 0) return;
+      // 还没有任何记录（例如上线前就已连接、推送连接一直没连上）：补一条离线记录，只用于最近在线时间。
+      await this.prisma.userClientPresence.createMany({
+        data: [{ userId, online: false, onlineSince: null, lastSeenAt: at }],
+        skipDuplicates: true
+      });
+    } catch (error) {
+      this.logger.warn(`心跳在线时间记录失败：${readErrorMessage(error)}`);
     }
   }
 
