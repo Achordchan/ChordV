@@ -58,15 +58,24 @@ function matches(row: any, where: any): boolean {
   });
 }
 
-function createRecorder(options: { failAuth?: boolean; failWrite?: boolean; beforeReadReturns?: () => Promise<void> } = {}) {
-  const rows = new Map<string, any>();
+function createRecorder(options: {
+  failAuth?: boolean;
+  failWrite?: boolean;
+  rows?: Map<string, any>;
+  beforeAuthReturns?: (authorization: string) => Promise<void>;
+  beforeReadReturns?: () => Promise<void>;
+} = {}) {
+  const rows = options.rows ?? new Map<string, any>();
   const calls = { auth: 0, reads: 0, writes: [] as any[] };
   const service = Object.assign(Object.create(ClientVersionReportService.prototype), {
     logger: { warn: () => undefined },
+    reportWatermarks: new Map(),
+    reportQueues: new Map(),
     authSessionService: {
       authenticateAccessToken: async (authorization: string) => {
         calls.auth += 1;
-        if (options.failAuth || authorization !== "Bearer good") throw new Error("登录状态已过期");
+        await options.beforeAuthReturns?.(authorization);
+        if (options.failAuth || !["Bearer good", "Bearer slow"].includes(authorization)) throw new Error("登录状态已过期");
         return { id: "user-1" };
       }
     },
@@ -104,47 +113,91 @@ function createRecorder(options: { failAuth?: boolean; failWrite?: boolean; befo
   return { service, rows, calls };
 }
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+
 async function testOutOfOrder() {
   const t0 = new Date("2026-09-27T10:00:00Z");
-  const t1 = new Date(t0.getTime() + 60 * 60_000);
-  const t2 = new Date(t1.getTime() + 1_000);
-  const older = { platform: "macos" as const, version: "1.1.9", build: null, channel: "stable" as const };
-  const newer = { ...older, version: "1.1.10", build: 4 };
+  const t1 = new Date(t0.getTime() + 60_000);
+  const t2 = new Date(t0.getTime() + 2 * 60_000);
+  const versionA = { platform: "macos" as const, version: "1.1.10", build: 4, channel: "stable" as const };
+  const versionB = { ...versionA, version: "1.1.9", build: null };
+  const storedA = () => ({ userId: "user-1", platform: "macos", version: "1.1.10", build: 4, channel: "stable", lastSeenAt: t0 });
 
-  // 两台设备都读到了 t0 的旧记录；较新的上报先写完，较早的上报随后才写。
-  let release!: () => void;
-  const gate = new Promise<void>((resolve) => { release = resolve; });
-  let gated = true;
-  const racing = createRecorder({ beforeReadReturns: () => (gated ? gate : Promise.resolve()) });
-  racing.rows.set("user-1:macos", { userId: "user-1", platform: "macos", version: "1.1.8", build: null, channel: "stable", lastSeenAt: t0 });
-  const slow = racing.service.record("Bearer good", older, t1);
-  await new Promise((resolve) => setImmediate(resolve));
-  gated = false;
-  assert.equal(await racing.service.record("Bearer good", newer, t2), true);
-  release();
-  assert.equal(await slow, false, "更早发生的上报晚到时，数据库条件拒绝覆盖");
-  assert.equal(racing.rows.get("user-1:macos").version, "1.1.10");
-  assert.equal(racing.rows.get("user-1:macos").lastSeenAt.getTime(), t2.getTime(), "最近使用时间不会倒退");
+  // 审查场景：A 在 10:00 已记录；B 在 10:01 上报但鉴权很慢；A 在 10:02 再次上报（未变化，被节流不写库）；
+  // B 随后处理完，也不能把最新版本改回 B。
+  {
+    const auth = deferred();
+    const { service, rows } = createRecorder({ beforeAuthReturns: (authorization) => (authorization === "Bearer slow" ? auth.promise : Promise.resolve()) });
+    rows.set("user-1:macos", storedA());
+    const slow = service.record("Bearer slow", versionB, t1);
+    await tick();
+    assert.equal(await service.record("Bearer good", versionA, t2), false, "未变化的上报在刷新间隔内不写库");
+    auth.resolve();
+    assert.equal(await slow, false, "比已见过的上报更早的变化上报被丢弃");
+    assert.equal(rows.get("user-1:macos").version, "1.1.10");
+  }
 
-  // 首次上报并发到达：较新的先建行，较早的建行冲突后走条件更新，同样被拒绝。
-  let releaseFirst!: () => void;
-  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
-  let firstGated = true;
-  const first = createRecorder({ beforeReadReturns: () => (firstGated ? firstGate : Promise.resolve()) });
-  const slowFirst = first.service.record("Bearer good", older, t1);
-  await new Promise((resolve) => setImmediate(resolve));
-  firstGated = false;
-  assert.equal(await first.service.record("Bearer good", newer, t2), true);
-  releaseFirst();
-  assert.equal(await slowFirst, false);
-  assert.equal(first.rows.get("user-1:macos").version, "1.1.10");
+  // B 先过鉴权、正在读库时 A 到达：同一用户平台逐个处理，B 写完后 A 再按最新记录写入。
+  {
+    const read = deferred();
+    let gated = true;
+    const { service, rows } = createRecorder({ beforeReadReturns: () => (gated ? read.promise : Promise.resolve()) });
+    rows.set("user-1:macos", storedA());
+    const slow = service.record("Bearer good", versionB, t1);
+    await tick();
+    gated = false;
+    const fast = service.record("Bearer good", versionA, t2);
+    await tick();
+    read.resolve();
+    assert.equal(await slow, true);
+    assert.equal(await fast, true, "A 发现库里已变成 B，立即写回 A");
+    assert.equal(rows.get("user-1:macos").version, "1.1.10");
+    assert.equal(rows.get("user-1:macos").lastSeenAt.getTime(), t2.getTime());
+  }
 
-  // 反过来较早的先写完，较新的仍能覆盖。
-  const ordered = createRecorder();
-  assert.equal(await ordered.service.record("Bearer good", older, t1), true);
-  assert.equal(await ordered.service.record("Bearer good", newer, t2), true);
-  assert.equal(ordered.rows.get("user-1:macos").version, "1.1.10");
-  assert.equal(await ordered.service.record("Bearer good", older, t1), false, "已记录更新的上报后，更早的上报不再写");
+  // 两个实例（或重启前后）共用数据库：都读到旧记录，较新的先写完，较早的由数据库条件拒绝。
+  {
+    const rows = new Map<string, any>([["user-1:macos", { ...storedA(), version: "1.1.8", build: null }]]);
+    const read = deferred();
+    const slowInstance = createRecorder({ rows, beforeReadReturns: () => read.promise });
+    const fastInstance = createRecorder({ rows });
+    const slow = slowInstance.service.record("Bearer good", versionB, t1);
+    await tick();
+    assert.equal(await fastInstance.service.record("Bearer good", versionA, t2), true);
+    read.resolve();
+    assert.equal(await slow, false, "数据库条件拒绝更早的上报");
+    assert.equal(rows.get("user-1:macos").version, "1.1.10");
+    assert.equal(rows.get("user-1:macos").lastSeenAt.getTime(), t2.getTime(), "最近使用时间不会倒退");
+  }
+
+  // 两个实例的首次上报同时建行：较早的建行冲突后走条件更新，同样被拒绝。
+  {
+    const rows = new Map<string, any>();
+    const read = deferred();
+    const slowInstance = createRecorder({ rows, beforeReadReturns: () => read.promise });
+    const fastInstance = createRecorder({ rows });
+    const slow = slowInstance.service.record("Bearer good", versionB, t1);
+    await tick();
+    assert.equal(await fastInstance.service.record("Bearer good", versionA, t2), true);
+    read.resolve();
+    assert.equal(await slow, false);
+    assert.equal(rows.get("user-1:macos").version, "1.1.10");
+  }
+
+  // 正常先后顺序：较新的覆盖较早的，之后到达的更早上报不再写。
+  {
+    const { service, rows } = createRecorder();
+    assert.equal(await service.record("Bearer good", versionB, t1), true);
+    assert.equal(await service.record("Bearer good", versionA, t2), true);
+    assert.equal(rows.get("user-1:macos").version, "1.1.10");
+    assert.equal(await service.record("Bearer good", versionB, t1), false);
+  }
 }
 
 async function testRecord() {
