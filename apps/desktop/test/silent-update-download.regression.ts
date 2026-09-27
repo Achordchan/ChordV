@@ -70,13 +70,14 @@ function testCandidateOnlyForOfferedOptionalUpdates() {
 }
 
 function testStartOncePerArtifact() {
-  const base = { enabled: true, allowed: true, candidate: true, phase: "idle" as const, artifactIdentity: "1.1.11|50|abc", attemptedIdentity: null };
+  const base = { enabled: true, allowed: true, candidate: true, phase: "idle" as const, artifactIdentity: "1.1.11|50|abc", attemptedIdentities: new Set<string>() };
   assert.equal(shouldStartSilentUpdateDownload(base), true);
   assert.equal(shouldStartSilentUpdateDownload({ ...base, enabled: false }), false, "toggle off disables background downloads");
   assert.equal(shouldStartSilentUpdateDownload({ ...base, allowed: false }), false, "login / window transition waits");
   assert.equal(shouldStartSilentUpdateDownload({ ...base, candidate: false }), false);
-  assert.equal(shouldStartSilentUpdateDownload({ ...base, attemptedIdentity: base.artifactIdentity }), false, "the same artifact is not retried");
-  assert.equal(shouldStartSilentUpdateDownload({ ...base, attemptedIdentity: "1.1.11|49|old" }), true, "a new artifact is tried once");
+  assert.equal(shouldStartSilentUpdateDownload({ ...base, attemptedIdentities: new Set([base.artifactIdentity]) }), false, "the same artifact is not retried");
+  assert.equal(shouldStartSilentUpdateDownload({ ...base, attemptedIdentities: new Set(["1.1.11|49|old"]) }), true, "a new artifact is tried once");
+  assert.equal(shouldStartSilentUpdateDownload({ ...base, attemptedIdentities: new Set(["beta|1.1.12", base.artifactIdentity]) }), false, "every attempted artifact is remembered, not just the latest");
   for (const phase of ["preparing", "downloading", "verifying", "completed", "failed"] as const) {
     assert.equal(shouldStartSilentUpdateDownload({ ...base, phase }), false, `${phase}: reuse the existing download state`);
   }
@@ -241,7 +242,7 @@ function testTriggerEffectRunsOncePerArtifact() {
   const starts: unknown[] = [];
   const context: Record<string, any> = {
     silentDownloadInFlightRef: { current: false },
-    silentAttemptedIdentityRef: { current: null },
+    silentAttemptedIdentitiesRef: { current: new Set<string>() },
     shouldStartSilentUpdateDownload,
     options: { autoDownloadUpdates: true, backgroundDownloadAllowed: true },
     silentUpdateCandidate: true,
@@ -265,6 +266,14 @@ function testTriggerEffectRunsOncePerArtifact() {
   context.options = { autoDownloadUpdates: false, backgroundDownloadAllowed: true };
   trigger();
   assert.equal(starts.length, 2, "turning the toggle off stops background downloads");
+  // 稳定版失败 → 切到测试版失败 → 切回稳定版：原来的包不会再自动下载。
+  context.options = { autoDownloadUpdates: true, backgroundDownloadAllowed: true };
+  context.updateArtifactIdentity = "artifact-a";
+  trigger();
+  assert.equal(starts.length, 2, "switching back to an earlier artifact does not download it again");
+  context.updateArtifactIdentity = "artifact-c";
+  trigger();
+  assert.equal(starts.length, 3);
 }
 
 function testWiring() {

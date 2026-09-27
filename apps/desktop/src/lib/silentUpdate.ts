@@ -47,14 +47,17 @@ export function isSilentUpdateCandidate(input: {
   return update.deliveryMode === "desktop_installer_download" && Boolean(update.downloadUrl);
 }
 
-/** 同一个更新包在本次运行里只自动尝试一次；已在下载、已下载完成或失败过都不再触发。 */
+/**
+ * 同一个更新包在本次运行里只自动尝试一次；已在下载、已下载完成或失败过都不再触发。
+ * attemptedIdentities 记录本次运行尝试过的所有更新包（来回切换通道也不会重下）。
+ */
 export function shouldStartSilentUpdateDownload(input: {
   enabled: boolean;
   allowed: boolean;
   candidate: boolean;
   phase: UpdateDownloadState["phase"];
   artifactIdentity: string | null;
-  attemptedIdentity: string | null;
+  attemptedIdentities: ReadonlySet<string>;
 }) {
   return (
     input.enabled &&
@@ -62,7 +65,7 @@ export function shouldStartSilentUpdateDownload(input: {
     input.candidate &&
     input.phase === "idle" &&
     Boolean(input.artifactIdentity) &&
-    input.attemptedIdentity !== input.artifactIdentity
+    !input.attemptedIdentities.has(input.artifactIdentity as string)
   );
 }
 

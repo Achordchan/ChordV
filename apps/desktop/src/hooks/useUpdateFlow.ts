@@ -216,7 +216,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
   const [backgroundUpdateDownload, setBackgroundUpdateDownload] = useState(false);
   const backgroundDownloadRef = useRef(false);
   const silentDownloadInFlightRef = useRef(false);
-  const silentAttemptedIdentityRef = useRef<string | null>(null);
+  const silentAttemptedIdentitiesRef = useRef<Set<string>>(new Set());
   const [silentReadyIdentity, setSilentReadyIdentity] = useState<string | null>(null);
   const markBackgroundDownload = useCallback((value: boolean) => {
     backgroundDownloadRef.current = value;
@@ -507,12 +507,12 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       candidate: silentUpdateCandidate,
       phase: updateDownload.phase,
       artifactIdentity: updateArtifactIdentity,
-      attemptedIdentity: silentAttemptedIdentityRef.current
+      attemptedIdentities: silentAttemptedIdentitiesRef.current
     })) {
       return;
     }
-    // 同一个更新包本次运行只自动尝试一次，失败后不反复重试。
-    silentAttemptedIdentityRef.current = updateArtifactIdentity;
+    // 同一个更新包本次运行只自动尝试一次，失败后不反复重试（切换通道再切回来也不重下）。
+    if (updateArtifactIdentity) silentAttemptedIdentitiesRef.current.add(updateArtifactIdentity);
     void handleUpdateDownload({ silent: true });
   }, [
     handleUpdateDownload,
