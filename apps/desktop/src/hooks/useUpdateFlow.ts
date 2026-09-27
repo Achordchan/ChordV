@@ -51,11 +51,15 @@ import {
   type UpdateCenterState
 } from "../lib/updateCenter";
 import {
+  FORCED_INSTALL_COUNTDOWN_SECONDS,
   formatSilentUpdateFailureLog,
+  isForcedAutoUpdateCandidate,
   isSilentUpdateCandidate,
   isUpdateReadyIndicatorVisible,
-  shouldStartSilentUpdateDownload,
-  SILENT_UPDATE_LOG_CATEGORY
+  shouldStartAutoUpdateDownload,
+  shouldStartForcedInstallCountdown,
+  SILENT_UPDATE_LOG_CATEGORY,
+  stepForcedInstallCountdown
 } from "../lib/silentUpdate";
 
 type NoticeInput = {
@@ -109,6 +113,8 @@ type UseUpdateFlowOptions = {
   autoDownloadUpdates?: boolean;
   /** 当前是否适合开始后台下载（已进入主界面、窗口没有在切换）。 */
   backgroundDownloadAllowed?: boolean;
+  /** 强制更新能否自动下载并倒计时安装（启动完成、窗口没有在切换；登录界面也会执行）。 */
+  forcedUpdateAllowed?: boolean;
   notify?: (notice: NoticeInput) => void;
   showError?: (reason: unknown, context?: UserErrorContext) => void;
   onUnauthorized?: () => Promise<unknown> | unknown;
@@ -217,7 +223,12 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
   const backgroundDownloadRef = useRef(false);
   const silentDownloadInFlightRef = useRef(false);
   const silentAttemptedIdentitiesRef = useRef<Set<string>>(new Set());
-  const [silentReadyIdentity, setSilentReadyIdentity] = useState<string | null>(null);
+  // 强制更新：自动下载、倒计时自动安装，每个更新包各只自动执行一次。
+  const forcedDownloadAttemptedRef = useRef<Set<string>>(new Set());
+  const forcedInstallAttemptedRef = useRef<Set<string>>(new Set());
+  const [forcedInstallCountdown, setForcedInstallCountdown] = useState<number | null>(null);
+  // 最近一次下载完成（已校验）时对应的更新包身份
+  const [readyIdentity, setReadyIdentity] = useState<string | null>(null);
   const markBackgroundDownload = useCallback((value: boolean) => {
     backgroundDownloadRef.current = value;
     setBackgroundUpdateDownload(value);
@@ -279,7 +290,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     }
   }, [updateCheckResult?.artifact]);
 
-  const handleUpdateDownload = useCallback(async (request: { silent?: boolean } = {}) => {
+  const handleUpdateDownload = useCallback(async (request: { silent?: boolean; keepDialogOpen?: boolean } = {}) => {
     const silent = request.silent === true;
     const resolvedDownloadUrl = resolveUpdateDownloadUrl(effectiveUpdate?.downloadUrl ?? null);
     const originDownloadUrl = resolveUpdateDownloadUrl(effectiveUpdate?.artifact?.originDownloadUrl ?? null);
@@ -359,13 +370,14 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       inferInstallerFileName(resolvedDownloadUrl, effectiveUpdate.artifact?.fileType ?? preferredArtifactType(updatePlatform));
 
     const targetIdentity = updateArtifactIdentity;
-    setSilentReadyIdentity(null);
+    setReadyIdentity(null);
     if (silent) {
       silentDownloadInFlightRef.current = true;
       markBackgroundDownload(true);
     } else {
       markBackgroundDownload(false);
-      setUpdateDialogOpened(false);
+      // 强制更新自动下载时保留“需要更新”弹窗，进度直接显示在弹窗里。
+      if (!request.keepDialogOpen) setUpdateDialogOpened(false);
     }
     setUpdateDownload({
       phase: "preparing",
@@ -439,16 +451,17 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
             : "更新包已下载完成。请点击“安装并重启”，应用退出后自动完成替换安装。"
         }));
       }
+      // 下载期间更新包已变化（例如切换了测试版通道）：旧包不能再拿来安装。
+      const stillCurrent = artifactIdentityRef.current === targetIdentity;
+      if (stillCurrent) setReadyIdentity(targetIdentity);
       if (silent && backgroundDownloadRef.current) {
-        // 下载期间更新包已变化（例如切换了测试版通道）：旧包不能再拿来安装，交给新一轮判断。
-        if (artifactIdentityRef.current !== targetIdentity) {
+        if (!stillCurrent) {
           completedDownloadIdentityRef.current = null;
           markBackgroundDownload(false);
           setUpdateDownload(createIdleUpdateDownloadState());
           return false;
         }
-        // 后台下载完成：不弹窗、不提示，只点亮“新版本已就绪 · 重启更新”标记。
-        setSilentReadyIdentity(targetIdentity);
+        // 后台下载完成：不弹窗、不提示，“检查更新”按钮变为“重启更新”。
         void recordClientDiagnosticLog(SILENT_UPDATE_LOG_CATEGORY, `background download ready version=${effectiveUpdate.latestVersion}`);
         return true;
       }
@@ -491,17 +504,35 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     }
   }, [effectiveUpdate, markBackgroundDownload, options, updateArtifactIdentity, updateDownload, updatePlatform]);
 
-  const silentUpdateCandidate = isSilentUpdateCandidate({
+  const autoUpdateInput = {
     update: effectiveUpdate,
     channel: updateChannel,
     appVersion: options.appVersion,
     actionable: hasActionableUpdate(effectiveUpdate, options.appVersion),
     platform: updatePlatform
-  });
+  };
+  const silentUpdateCandidate = isSilentUpdateCandidate(autoUpdateInput);
+  const forcedAutoUpdateCandidate = isForcedAutoUpdateCandidate(autoUpdateInput);
 
   useEffect(() => {
     if (silentDownloadInFlightRef.current) return;
-    if (!shouldStartSilentUpdateDownload({
+    if (forcedAutoUpdateCandidate) {
+      // 强制更新：不受“自动在后台下载更新”开关影响，直接下载；失败后回到原有的强制更新界面手动重试。
+      if (!shouldStartAutoUpdateDownload({
+        enabled: true,
+        allowed: options.forcedUpdateAllowed === true,
+        candidate: true,
+        phase: updateDownload.phase,
+        artifactIdentity: updateArtifactIdentity,
+        attemptedIdentities: forcedDownloadAttemptedRef.current
+      })) {
+        return;
+      }
+      if (updateArtifactIdentity) forcedDownloadAttemptedRef.current.add(updateArtifactIdentity);
+      void handleUpdateDownload({ keepDialogOpen: true });
+      return;
+    }
+    if (!shouldStartAutoUpdateDownload({
       enabled: options.autoDownloadUpdates === true,
       allowed: options.backgroundDownloadAllowed === true,
       candidate: silentUpdateCandidate,
@@ -515,9 +546,11 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     if (updateArtifactIdentity) silentAttemptedIdentitiesRef.current.add(updateArtifactIdentity);
     void handleUpdateDownload({ silent: true });
   }, [
+    forcedAutoUpdateCandidate,
     handleUpdateDownload,
     options.autoDownloadUpdates,
     options.backgroundDownloadAllowed,
+    options.forcedUpdateAllowed,
     silentUpdateCandidate,
     updateArtifactIdentity,
     updateDownload.phase
@@ -531,13 +564,49 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     }
   }, [markBackgroundDownload, updateDialogOpened, updateDownload.phase]);
 
-  const updateReadyToInstall = isUpdateReadyIndicatorVisible({
+  const readyInput = {
     download: updateDownload,
-    readyIdentity: silentReadyIdentity,
+    readyIdentity,
     artifactIdentity: updateArtifactIdentity,
-    forceUpdateRequired
+    resultChannel: effectiveUpdate?.channel ?? null,
+    channel: updateChannel
+  };
+  const updateReadyToInstall = isUpdateReadyIndicatorVisible({ ...readyInput, forceUpdateRequired });
+  const forcedInstallDue = shouldStartForcedInstallCountdown({
+    ...readyInput,
+    forcedCandidate: forcedAutoUpdateCandidate,
+    allowed: options.forcedUpdateAllowed === true,
+    attemptedIdentities: forcedInstallAttemptedRef.current
   });
+  // 倒计时期间更新包仍有效（仍是强制更新、仍是这个已下载的包）
+  const forcedInstallStillValid = forcedAutoUpdateCandidate && isUpdateReadyIndicatorVisible({ ...readyInput, forceUpdateRequired: false });
 
+  useEffect(() => {
+    if (!forcedInstallDue || forcedInstallCountdown !== null || !updateArtifactIdentity) return;
+    // 强制更新已下载校验：弹出不可取消的倒计时提示，结束后自动安装并重启。
+    forcedInstallAttemptedRef.current.add(updateArtifactIdentity);
+    setForcedInstallCountdown(FORCED_INSTALL_COUNTDOWN_SECONDS);
+    setUpdateDialogOpened(true);
+  }, [forcedInstallCountdown, forcedInstallDue, updateArtifactIdentity]);
+
+  const installForcedUpdateNowRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    const step = stepForcedInstallCountdown({
+      countdown: forcedInstallCountdown,
+      valid: forcedInstallStillValid,
+      // 提示看不到时（弹窗被关、窗口切换中）暂停，避免毫无预兆地退出。
+      visible: updateDialogOpened && options.forcedUpdateAllowed === true
+    });
+    if (step.type === "cancel") {
+      setForcedInstallCountdown(null);
+    } else if (step.type === "install") {
+      installForcedUpdateNowRef.current();
+    } else if (step.type === "tick") {
+      const timer = window.setTimeout(() => setForcedInstallCountdown(step.next), 1000);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, [forcedInstallCountdown, forcedInstallStillValid, options.forcedUpdateAllowed, updateDialogOpened]);
 
   const openUpdateCenter = useCallback(() => {
     setUpdateCenter((current) => ({
@@ -898,6 +967,13 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     }
   }, [effectiveUpdate, options, updateDownload, updatePlatform]);
 
+  // “立即更新”或倒计时结束：走原有的安装流程；失败时停在强制更新界面由用户手动重试。
+  const installForcedUpdateNow = useCallback(() => {
+    setForcedInstallCountdown(null);
+    void handleQuitForUpdate();
+  }, [handleQuitForUpdate]);
+  installForcedUpdateNowRef.current = installForcedUpdateNow;
+
   const consumeUpdateInstallReport = useCallback(async () => {
     try {
       const report = await consumeDesktopUpdateInstallReport();
@@ -936,6 +1012,8 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     setUpdateDownload,
     backgroundUpdateDownload,
     updateReadyToInstall,
+    forcedInstallCountdown,
+    installForcedUpdateNow,
     deferredUpdatePromptKeyRef,
     lastUpdatePromptVersionRef,
     runUpdateCheck,

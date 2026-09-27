@@ -19,6 +19,9 @@ type UpdateCenterModalProps = {
   onBetaChannelChange: (enabled: boolean) => void;
   autoDownload: boolean;
   onAutoDownloadChange: (enabled: boolean) => void;
+  /** 新版本已下载并校验完成，可以直接安装。 */
+  appReady?: boolean;
+  onInstallApp?: () => void;
   onClose: () => void;
   onCheckOnly: () => void;
   onUpdateOne: (key: UpdateCenterItemKey) => void;
@@ -63,12 +66,15 @@ export function UpdateCenterModal(props: UpdateCenterModalProps) {
             <Text size="sm" c="dimmed">当前版本 {formatVersionWithBuild(app?.localVersion || props.appVersion, APP_BUILD_NUMBER)}</Text>
             {app && <ItemStatus item={app} />}
           </Group>
-          {app?.status === "available" && app.remoteVersion && <Text size="sm" c="dimmed" mt={6}>可更新至 {app.remoteVersion}</Text>}
+          {props.appReady ? <Text size="sm" c="teal.7" mt={6}>新版本已下载，可立即安装</Text>
+            : app?.status === "available" && app.remoteVersion && <Text size="sm" c="dimmed" mt={6}>可更新至 {app.remoteVersion}</Text>}
           <UnstyledButton className={styles.historyLink} onClick={() => setView("history")}>
             查看更新日志<IconChevronRight size={14} aria-hidden="true" />
           </UnstyledButton>
         </div>
-        {app?.canUpdate && <Button size="xs" disabled={props.busy} onClick={() => props.onUpdateOne("app")}>查看更新</Button>}
+        {props.appReady && props.onInstallApp
+          ? <Button size="xs" color="teal" onClick={props.onInstallApp}>立即安装</Button>
+          : app?.canUpdate && <Button size="xs" disabled={props.busy} onClick={() => props.onUpdateOne("app")}>查看更新</Button>}
       </div>
 
       <Switch
@@ -88,8 +94,8 @@ export function UpdateCenterModal(props: UpdateCenterModalProps) {
         onChange={(event) => props.onAutoDownloadChange(event.currentTarget.checked)}
         label="自动在后台下载更新"
         description={props.autoDownload
-          ? "有新版本时在后台下载，完成后提示重启更新，不会自动安装。"
-          : "有新版本时弹窗提醒，由你决定何时下载。"}
+          ? "有新版本时在后台下载，完成后点“重启更新”即可安装。必须更新的版本会自动下载并安装。"
+          : "有新版本时弹窗提醒，由你决定何时下载。必须更新的版本仍会自动下载并安装。"}
       />
 
       <section className={styles.components} aria-labelledby="runtime-components-heading">

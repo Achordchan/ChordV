@@ -312,6 +312,8 @@ export function App() {
     // Only download in the background once the main window is up; the login
     // window has no place for the ready indicator.
     backgroundDownloadAllowed: !booting && !windowTransitioning && mainLayoutReady && Boolean(session && bootstrap),
+    // Forced updates install on their own (after a visible countdown), even from the login window.
+    forcedUpdateAllowed: !booting && !windowTransitioning,
     notify: notifications.show,
     showError: showErrorToast,
     onUnauthorized: recoverSessionAfterUnauthorized,
@@ -336,6 +338,8 @@ export function App() {
     updateDownload,
     backgroundUpdateDownload,
     updateReadyToInstall,
+    forcedInstallCountdown,
+    installForcedUpdateNow,
     deferredUpdatePromptKeyRef,
     lastUpdatePromptVersionRef,
     runUpdateCheck: runUpdateCheckFromHook,
@@ -2050,6 +2054,8 @@ export function App() {
         onBetaChannelChange={(enabled) => changeUpdateChannel(enabled ? "beta" : "stable")}
         autoDownload={autoDownloadUpdates}
         onAutoDownloadChange={changeAutoDownloadUpdates}
+        appReady={updateReadyToInstall}
+        onInstallApp={() => void handleQuitForUpdate()}
         onCheckOnly={() => void handleUpdateCenterCheckOnly()}
         onUpdateOne={(key) => void handleUpdateCenterUpdateOne(key)}
       />
@@ -2059,6 +2065,7 @@ export function App() {
         update={effectiveUpdate}
         appVersion={appVersion}
         forceRequired={forceUpdateRequired}
+        autoInstallCountdown={forcedInstallCountdown}
         downloadBusy={updateDownload.phase === "preparing" || updateDownload.phase === "downloading" || updateDownload.phase === "verifying"}
         onClose={() => {
           if (!forceUpdateRequired) {
@@ -2066,13 +2073,19 @@ export function App() {
           }
         }}
         progress={updateDownload.phase === "idle" ? null : (
-          <ClientUpdateProgressPanel onResetLegacyMirror={runtimeMirrorPrefix ? clearLegacyDownloadMirror : null} state={updateDownload} version={effectiveUpdate?.latestVersion} onRetry={()=>void handleUpdateDownload()} onInstall={()=>void handleQuitForUpdate()}/>
+          <ClientUpdateProgressPanel onResetLegacyMirror={runtimeMirrorPrefix ? clearLegacyDownloadMirror : null} state={updateDownload} version={effectiveUpdate?.latestVersion} onRetry={()=>void handleUpdateDownload()} onInstall={forcedInstallCountdown !== null ? installForcedUpdateNow : ()=>void handleQuitForUpdate()}/>
         )}
         primaryAction={effectiveUpdate?.downloadUrl ? (
           updateDownload.phase === "completed" ? (
-            <Button color="green" data-autofocus onClick={() => void handleQuitForUpdate()}>
-              安装并重启
-            </Button>
+            forcedInstallCountdown !== null ? (
+              <Button color="orange" data-autofocus onClick={installForcedUpdateNow}>
+                立即更新（{forcedInstallCountdown} 秒）
+              </Button>
+            ) : (
+              <Button color="green" data-autofocus onClick={() => void handleQuitForUpdate()}>
+                安装并重启
+              </Button>
+            )
           ) : (
             <Button
               data-autofocus
