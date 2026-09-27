@@ -452,15 +452,24 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         }));
       }
       // 下载期间更新包已变化（例如切换了测试版通道）：旧包不能再拿来安装。
+      // 不论是后台下载还是用户接管后的前台下载，都直接丢弃，回到空闲状态重新判断。
       const stillCurrent = artifactIdentityRef.current === targetIdentity;
-      if (stillCurrent) setReadyIdentity(targetIdentity);
-      if (silent && backgroundDownloadRef.current) {
-        if (!stillCurrent) {
-          completedDownloadIdentityRef.current = null;
-          markBackgroundDownload(false);
-          setUpdateDownload(createIdleUpdateDownloadState());
-          return false;
+      const shownInBackground = silent && backgroundDownloadRef.current;
+      if (!stillCurrent) {
+        completedDownloadIdentityRef.current = null;
+        markBackgroundDownload(false);
+        setUpdateDownload(createIdleUpdateDownloadState());
+        if (!shownInBackground) {
+          options.notify?.({
+            color: "yellow",
+            title: "可用版本已变化",
+            message: "下载期间可用的新版本发生了变化，请重新下载。"
+          });
         }
+        return false;
+      }
+      setReadyIdentity(targetIdentity);
+      if (shownInBackground) {
         // 后台下载完成：不弹窗、不提示，“检查更新”按钮变为“重启更新”。
         void recordClientDiagnosticLog(SILENT_UPDATE_LOG_CATEGORY, `background download ready version=${effectiveUpdate.latestVersion}`);
         return true;

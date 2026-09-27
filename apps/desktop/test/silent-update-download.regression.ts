@@ -290,6 +290,23 @@ async function testStalePackageDiscarded() {
   assert.equal(run.state().phase, "idle", "a package for an outdated release is not offered for install");
   assert.equal(run.context.completedDownloadIdentityRef.current, null);
   assert.deepEqual(run.calls.ready, [null]);
+  assert.deepEqual(run.calls.notify, [], "a background download is discarded quietly");
+  // 用户中途打开弹窗接管了后台下载、随后又切换了通道：旧包同样丢弃，不能在新版本的弹窗里被安装。
+  const takenOver = await runDownload({ silent: true, outcome: "success", duringDownload: (context: any) => {
+    context.backgroundDownloadRef.current = false;
+    context.artifactIdentityRef.current = "artifact-b";
+  } });
+  assert.equal(takenOver.result, false);
+  assert.equal(takenOver.state().phase, "idle", "a taken-over stale download is discarded too");
+  assert.equal(takenOver.context.completedDownloadIdentityRef.current, null);
+  assert.deepEqual(takenOver.calls.ready, [null]);
+  assert.equal(takenOver.calls.notify.length, 1, "the user who is watching is told to download again");
+  for (const keepDialogOpen of [false, true]) {
+    const foreground = await runDownload({ silent: false, keepDialogOpen, outcome: "success", duringDownload: (context: any) => { context.artifactIdentityRef.current = "artifact-b"; } });
+    assert.equal(foreground.result, false);
+    assert.equal(foreground.state().phase, "idle", "user-started and forced downloads of an outdated package are discarded");
+    assert.deepEqual(foreground.calls.ready, [null], "an outdated package never becomes ready or auto-installs");
+  }
 }
 
 async function testSilentNeverOpensExternalPages() {
