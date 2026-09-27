@@ -3,6 +3,7 @@ import type { AdminNodeRecordDto, AdminSnapshotDto } from "@chordv/shared";
 import { IconArrowRight, IconChevronRight } from "@tabler/icons-react";
 import { CountryFlag } from "../components/CountryFlag";
 import { sumNodeCommandSummaries } from "../utils/node-command-summary";
+import { CLIENT_VERSION_ACTIVE_DAYS, summarizeClientVersions } from "../utils/client-versions";
 import { translateAgentStatus, translateProbeStatus, translateSubscriptionState } from "../utils/admin-translate";
 import styles from "../features/dashboard/Dashboard.module.css";
 
@@ -33,6 +34,7 @@ export function OverviewPage(props: OverviewPageProps) {
   const nodeList = [...snapshot.nodes].sort((a,b)=>nodeAttention(a)-nodeAttention(b)||a.name.localeCompare(b.name)).slice(0,4);
   const subscriptions = snapshot.subscriptions.filter(item=>["active","paused"].includes(item.state)&&Date.parse(item.expireAt)>now)
     .sort((a,b)=>Date.parse(a.expireAt)-Date.parse(b.expireAt)).slice(0,4);
+  const clientVersions = summarizeClientVersions(snapshot.users, now);
   const metrics = [
     {label:"客户",value:snapshot.dashboard.users,open:props.onOpenCustomers},
     {label:"团队",value:snapshot.dashboard.teams,open:props.onOpenTeams},
@@ -63,5 +65,16 @@ export function OverviewPage(props: OverviewPageProps) {
         {!nodeList.length?<Text className={styles.empty}>尚未添加节点</Text>:null}
       </section>
     </div>
+    <section className={styles.clientVersions} aria-label="客户端版本">
+      <div className={styles.sectionHeading}><div><h2>客户端版本</h2><Text size="sm" c="dimmed" mt={6}>{clientVersions.activeUsers ? `近 ${CLIENT_VERSION_ACTIVE_DAYS} 天有 ${clientVersions.activeUsers} 位用户使用过客户端` : `近 ${CLIENT_VERSION_ACTIVE_DAYS} 天暂无客户端使用记录`}</Text></div>
+        <button onClick={props.onOpenCustomers}>查看客户<IconChevronRight size={16}/></button></div>
+      {clientVersions.versions.map(item=><div key={item.version} className={styles.versionRow}>
+        <strong>{item.version}</strong>
+        <span className={styles.versionPlatforms}>{item.platforms.map(platform=>`${platform.label} ${platform.users} 人`).join(" · ")}</span>
+        <div className={styles.versionBar} aria-hidden="true"><span style={{width:`${Math.round(item.users/Math.max(1,clientVersions.activeUsers)*100)}%`}}/></div>
+        <span className={styles.versionCount}>{item.users} 人</span>
+      </div>)}
+      {!clientVersions.versions.length?<Text className={styles.empty}>客户端登录后检查更新时会自动记录版本</Text>:null}
+    </section>
   </section>;
 }

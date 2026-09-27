@@ -54,8 +54,8 @@ export class ClientService {
     return this.devDataService.pingClient(token);
   }
 
-  checkUpdate(input: ClientUpdateCheckDto) {
-    return this.devDataService.checkClientUpdate(input);
+  checkUpdate(input: ClientUpdateCheckDto, token?: string) {
+    return this.devDataService.checkClientUpdate(input, token);
   }
 
   listReleaseHistory(input: { platform: PlatformTarget; channel?: ReleaseChannel | null; limit?: number | null }) {

@@ -12,6 +12,7 @@ import { ClientEventsPublisher } from "./client-events.publisher";
 import { ClientRoutingRuleService } from "./client-routing-rule.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { ClientTicketService } from "./client-ticket.service";
+import { ClientVersionReportService } from "./client-version-report.service";
 import { DevDataBootstrapService } from "./dev-data-bootstrap.service";
 import { Global, Module } from "@nestjs/common";
 import { SiteAddressService } from "./site-address.service";
@@ -46,6 +47,7 @@ import { MeteringRetentionService } from "./metering-retention.service";
     AuthSessionService,
     ClientRuntimeEventsService,
     ClientTicketService,
+    ClientVersionReportService,
     DevDataBootstrapService,
     ImageBedService,
     DownloadMirrorService,
@@ -73,6 +75,7 @@ import { MeteringRetentionService } from "./metering-retention.service";
     AuthSessionService,
     ClientRuntimeEventsService,
     ClientTicketService,
+    ClientVersionReportService,
     DevDataBootstrapService,
     ImageBedService,
     DownloadMirrorService,

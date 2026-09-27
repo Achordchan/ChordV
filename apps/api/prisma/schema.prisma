@@ -293,6 +293,24 @@ model User {
   supportTicketMessages SupportTicketMessage[] @relation("SupportTicketMessageAuthor")
   announcementReadStates AnnouncementReadState[]
   supportTicketReadStates SupportTicketReadState[]
+  clientVersions       UserClientVersion[]
+}
+
+// 每位用户在各平台最近一次上报的客户端版本（来自已登录客户端的检查更新请求）。
+// 同一平台只保留最新一条；版本未变时最多每 10 分钟刷新一次 lastSeenAt。
+model UserClientVersion {
+  userId     String
+  platform   ReleasePlatform
+  version    String
+  build      Int?
+  channel    ReleaseChannel // 检查更新时请求的更新通道，不代表已安装包的发布通道
+  lastSeenAt DateTime
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+  user       User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, platform])
+  @@index([lastSeenAt])
 }
 
 model ClientRoutingRule {

@@ -481,6 +481,18 @@ export interface AdminUserRecordDto extends UserProfileDto {
   panelSyncMessage?: string | null;
   panelSyncSummary?: AdminPanelSyncSummaryDto | null;
   message?: string | null;
+  /** 各平台最近一次上报的客户端版本，按最近活跃时间倒序；旧版后台接口不返回该字段。 */
+  clientVersions?: AdminUserClientVersionDto[];
+}
+
+/** 已登录客户端在检查更新时上报的版本，每个平台保留最新一条。 */
+export interface AdminUserClientVersionDto {
+  platform: PlatformTarget;
+  version: string;
+  build: number | null;
+  /** 检查更新时请求的更新通道（用户是否接收测试版更新），不代表已安装包的发布通道。 */
+  channel: ReleaseChannel;
+  lastSeenAt: string;
 }
 
 export interface AdminPlanRecordDto {

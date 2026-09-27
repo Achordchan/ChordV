@@ -64,6 +64,7 @@ import {
   summarizeTeamUsageRecords,
   toAdminSubscriptionRecord,
   toAdminTeamRecord,
+  toAdminUserClientVersion,
   toAdminUserRecord,
   toUserSubscriptionSummary
 } from "./subscription.utils";
@@ -195,6 +196,9 @@ export class AdminSubscriptionService {
                 }
               }
             }
+          },
+          clientVersions: {
+            orderBy: { lastSeenAt: "desc" }
           }
         },
         orderBy: { createdAt: "asc" }
@@ -218,7 +222,8 @@ export class AdminSubscriptionService {
           : row.subscriptions.filter((item) => readEffectiveSubscriptionState(item) === "active").length,
         currentSubscription: currentSubscription
           ? toUserSubscriptionSummary(currentSubscription, membership?.team ?? null)
-          : null
+          : null,
+        clientVersions: (row.clientVersions ?? []).map(toAdminUserClientVersion)
       });
     });
   }
