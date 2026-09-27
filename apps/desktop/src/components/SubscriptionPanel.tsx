@@ -73,6 +73,7 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
   const serverColor = probeColor(props.serverProbe.status);
   // 强制更新有自己的倒计时安装流程，按钮保持“必须更新”。
   const updateReady = Boolean(props.updateReady && props.onInstallUpdate && !props.forceUpdate);
+  const updateReadyTitle = `ChordV ${props.updateReady?.version ?? "新版本"} 已下载并校验完成。点击后应用会退出并自动安装，完成后重新打开。`;
 
   if (isMobile) {
     return (
@@ -125,11 +126,12 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
                 </Menu.Item>
                 <Menu.Item
                   leftSection={<IconRosetteDiscountCheck size={14} />}
-                  onClick={props.onCheckUpdate}
+                  color={updateReady ? "teal" : undefined}
+                  onClick={updateReady ? props.onInstallUpdate : props.onCheckUpdate}
                   disabled={props.updateBusy}
-                  title={props.updateStatusDescription}
+                  title={updateReady ? updateReadyTitle : props.updateStatusDescription}
                 >
-                  {props.forceUpdate ? "必须更新" : props.hasUpdate ? "有新版本" : "检查更新"}
+                  {props.forceUpdate ? "必须更新" : updateReady ? "重启更新" : props.hasUpdate ? "有新版本" : "检查更新"}
                 </Menu.Item>
                 {props.onOpenLocalFiles ? (
                   <Menu.Item leftSection={<IconFolderOpen size={14} />} onClick={props.onOpenLocalFiles}>
@@ -349,9 +351,7 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
               leftSection={<IconRosetteDiscountCheck size={14} />}
               className="subscription-secondary-button subscription-toolbar-button"
               loading={props.updateBusy}
-              title={updateReady
-                ? `ChordV ${props.updateReady?.version ?? "新版本"} 已下载并校验完成。点击后应用会退出并自动安装，完成后重新打开。`
-                : props.updateStatusDescription}
+              title={updateReady ? updateReadyTitle : props.updateStatusDescription}
               onClick={updateReady ? props.onInstallUpdate : props.onCheckUpdate}
             >
               {props.forceUpdate ? "必须更新" : updateReady ? "重启更新" : props.hasUpdate ? "有新版本" : "检查更新"}

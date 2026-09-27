@@ -470,7 +470,8 @@ function testWiring() {
   assert.match(app, /readAutoDownloadPreference\(localStorage\)/);
   const panel = readFileSync(new URL("../src/components/SubscriptionPanel.tsx", import.meta.url), "utf8");
   assert.match(panel, /onClick=\{updateReady \? props\.onInstallUpdate : props\.onCheckUpdate\}/, "the existing update button becomes 重启更新; no new toolbar element");
-  assert.match(panel, /updateReady \? "重启更新"/);
+  assert.equal(panel.match(/onClick=\{updateReady \? props\.onInstallUpdate : props\.onCheckUpdate\}/g)?.length, 2, "the narrow layout menu item also becomes 重启更新");
+  assert.equal(panel.match(/updateReady \? "重启更新"/g)?.length, 2);
   assert.doesNotMatch(panel, /新版本已就绪 · 重启更新/);
   const center = readFileSync(new URL("../src/components/UpdateCenterModal.tsx", import.meta.url), "utf8");
   assert.match(center, /label="自动在后台下载更新"/);
