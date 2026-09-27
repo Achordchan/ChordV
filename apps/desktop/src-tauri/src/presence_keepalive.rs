@@ -139,11 +139,15 @@ pub fn spawn_presence_keepalive(
             }
         };
         let mut nudges = nudges;
+        // 定期上报按固定节奏进行，补报不推迟下一次定期上报：服务端写库有节流，被节流的补报不能让
+        // 数据库里的上报时间出现比“每 60 秒一次”更大的空档（上报与推送连接落在不同实例上时靠它判断）。
         let mut last = Instant::now();
+        let mut due = last + config.interval;
         loop {
-            let due = last + config.interval;
             tokio::select! {
-                _ = tokio::time::sleep_until(due) => {}
+                _ = tokio::time::sleep_until(due) => {
+                    due = Instant::now() + config.interval;
+                }
                 changed = next_nudge(&mut nudges) => {
                     if !changed {
                         // 补报通道已关闭，之后只按间隔上报。
@@ -374,5 +378,30 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(count.load(Ordering::SeqCst), 1, "短时间内多次补报请求只报一次");
         drop(keepalive);
+    }
+
+    #[tokio::test]
+    async fn nudges_do_not_postpone_periodic_pings() {
+        let (base, _requests, count) = fake_server(200).await;
+        let (_logs, log) = capture_logs();
+        let nudges = PresenceNudges::new();
+        let mut config = test_config(&base);
+        config.interval = Duration::from_millis(600);
+        config.nudge_min_gap = Duration::from_millis(100);
+        let started = Instant::now();
+        let keepalive = spawn_presence_keepalive(
+            config,
+            Some(nudges.subscribe()),
+            Arc::new(Mutex::new(PingFailureLog::default())),
+            log,
+        );
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        nudges.nudge();
+        assert!(wait_for_hits(&count, 1).await);
+        assert!(wait_for_hits(&count, 2).await);
+        let elapsed = started.elapsed();
+        drop(keepalive);
+        // 定期上报仍在第 600 毫秒左右；若被补报推迟会到第 1000 毫秒。
+        assert!(elapsed < Duration::from_millis(850), "补报后定期上报按原节奏进行：{elapsed:?}");
     }
 }

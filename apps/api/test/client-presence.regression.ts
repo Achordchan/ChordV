@@ -787,6 +787,41 @@ async function testKeepaliveAcrossInstances() {
   other.service.onModuleDestroy();
 }
 
+async function testThrottledPingsAreFlushedForOtherInstances() {
+  const store = createStore();
+  const holder = createService(store);
+  const receiver = createService(store);
+  const base = Date.now();
+  const at = (seconds: number) => new Date(base + seconds * 1000);
+  // 推送连接在实例一；上报落在实例二：第 0 秒定期上报写库，第 40 秒窗口重新显示的补报被节流。
+  const declared = openStream(holder.service, "user_flush", true);
+  await settle();
+  receiver.service.notePing("user_flush", at(0));
+  receiver.service.notePing("user_flush", at(40));
+  await settle();
+  assert.equal(store.presence.get("user_flush")?.lastPingAt?.getTime(), at(0).getTime(), "节流期内不写库");
+
+  receiver.service.flushThrottledPings(at(45));
+  await settle();
+  assert.equal(store.presence.get("user_flush")?.lastPingAt?.getTime(), at(0).getTime(), "节流期未满不补写");
+  const writes = store.calls.presenceUpdateMany;
+  receiver.service.flushThrottledPings(at(60));
+  await settle();
+  assert.equal(store.presence.get("user_flush")?.lastPingAt?.getTime(), at(40).getTime(), "节流期满后补写被节流的最新上报");
+  assert.equal(store.calls.presenceUpdateMany, writes + 1);
+  receiver.service.flushThrottledPings(at(120));
+  await settle();
+  assert.equal(store.calls.presenceUpdateMany, writes + 1, "没有待补写的上报时不写库");
+
+  // 第 100 秒的定期上报失败：实例一在第 151 秒检查时，数据库里是第 40 秒的上报，连接保持打开（只错过了一次）。
+  await holder.service.checkKeepaliveStreams(at(151));
+  assert.equal(declared.completed, false, "被节流的补报不会让其他实例提前判定失效");
+  await holder.service.checkKeepaliveStreams(at(40 + PRESENCE_PING_TIMEOUT_SECONDS + 1));
+  assert.equal(declared.completed, true);
+  holder.service.onModuleDestroy();
+  receiver.service.onModuleDestroy();
+}
+
 async function testPingWritesAreThrottledAndForwardOnly() {
   const { service, presence, calls } = createService();
   presence.set("user_t", { userId: "user_t", onlineSince: ago(600), lastSeenAt: ago(10) });
@@ -873,6 +908,7 @@ async function main() {
   await testKeepalivePingsKeepStreamAlive();
   await testKeepaliveMixedDevices();
   await testKeepaliveAcrossInstances();
+  await testThrottledPingsAreFlushedForOtherInstances();
   await testPingWritesAreThrottledAndForwardOnly();
   await testPingEndpointAndDeclarationWiring();
   console.log("client presence regression checks passed");

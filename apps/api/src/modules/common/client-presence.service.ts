@@ -360,8 +360,11 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
   private readonly heartbeatWrites = new Map<string, number>();
   /** 本进程上声明了定期上报的推送连接，按用户分组。 */
   private readonly keepaliveStreams = new Map<string, Set<KeepaliveStream>>();
-  /** 本进程收到的每位用户最近一次上报时刻，以及最近一次因上报写库的时刻（节流用）。 */
-  private readonly pings = new Map<string, { at: number; writtenAt: number | null }>();
+  /**
+   * 本进程收到的每位用户最近一次上报时刻、最近一次因上报写库的时刻（节流用），
+   * 以及是否有被节流、还没写进数据库的更新上报（pending）。
+   */
+  private readonly pings = new Map<string, { at: number; writtenAt: number | null; pending: boolean }>();
   private lastPingWriteWarnAt = 0;
   private refreshTimer: NodeJS.Timeout | null = null;
   private refreshing: Promise<void> | null = null;
@@ -384,7 +387,9 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
     }, PRESENCE_REFRESH_MS);
     this.refreshTimer.unref?.();
     this.pingCheckTimer = setInterval(() => {
-      if (workLifecycle.isDraining || this.checkingPings || this.keepaliveStreams.size === 0) return;
+      if (workLifecycle.isDraining) return;
+      this.flushThrottledPings();
+      if (this.checkingPings || this.keepaliveStreams.size === 0) return;
       this.checkingPings = workLifecycle.track(this.checkKeepaliveStreams()).finally(() => {
         this.checkingPings = null;
       });
@@ -481,16 +486,20 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
    * 新版客户端的在线上报（/client/ping）：本进程内存记下上报时刻（每次都记，供本进程检查推送连接），
    * 同时把 UserClientPresence.lastPingAt 推进到上报时刻，供持有推送连接的其他进程判断。
    * 写库按用户节流（本进程内至少间隔 50 秒），带条件只前进不后退；写库失败不影响接口响应。
+   * 被节流的上报不会丢：节流期满后由 flushThrottledPings 把最新的上报时间补写进数据库。
    */
   notePing(userId: string, at = new Date()) {
     const time = at.getTime();
     const previous = this.pings.get(userId);
     const shouldWrite = !workLifecycle.isDraining &&
       (previous?.writtenAt == null || time - previous.writtenAt >= PRESENCE_PING_WRITE_THROTTLE_MS);
+    const latest = Math.max(time, previous?.at ?? 0);
     this.pings.delete(userId);
     this.pings.set(userId, {
-      at: Math.max(time, previous?.at ?? 0),
-      writtenAt: shouldWrite ? time : previous?.writtenAt ?? null
+      at: latest,
+      writtenAt: shouldWrite ? time : previous?.writtenAt ?? null,
+      // 这次写库的时间之后还有（乱序到达的）更新上报，或这次被节流：留待节流期满后补写。
+      pending: shouldWrite ? latest > time : latest > (previous?.writtenAt ?? 0)
     });
     if (this.pings.size > PING_RECORD_LIMIT) {
       const oldest = this.pings.keys().next().value;
@@ -498,6 +507,23 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
     }
     if (!shouldWrite) return;
     void workLifecycle.track(this.runExclusive(userId, () => this.recordPing(userId, at)));
+  }
+
+  /**
+   * 补写被节流的上报：节流期满的用户把本进程记下的最新上报时间写进数据库（随检查定时器每 30 秒运行一次）。
+   * 例如 0 秒写库后第 40 秒又来一次补报被节流，第 50～80 秒会补写第 40 秒这次，数据库里的上报时间
+   * 最多比实际落后约 80 秒，持有推送连接的其他进程仍能容忍错过一次定期上报。每位用户每 50 秒最多写一次不变。
+   */
+  flushThrottledPings(now = new Date()) {
+    const nowMs = now.getTime();
+    for (const [userId, entry] of this.pings) {
+      if (!entry.pending) continue;
+      if (entry.writtenAt !== null && nowMs - entry.writtenAt < PRESENCE_PING_WRITE_THROTTLE_MS) continue;
+      entry.pending = false;
+      entry.writtenAt = nowMs;
+      const at = new Date(entry.at);
+      void workLifecycle.track(this.runExclusive(userId, () => this.recordPing(userId, at)));
+    }
   }
 
   /**

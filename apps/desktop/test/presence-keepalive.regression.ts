@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 import { startPresenceNudges } from "../src/lib/presenceNudges";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const read = (path: string) => readFileSync(resolve(root, path), "utf8");
+// Windows 检出时可能是 CRLF 换行，统一成 LF 再匹配。
+const read = (path: string) => readFileSync(resolve(root, path), "utf8").replace(/\r\n/g, "\n");
 
 class FakeTarget {
   readonly listeners = new Map<string, Set<() => void>>();
