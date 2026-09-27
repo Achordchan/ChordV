@@ -7,12 +7,8 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { PromotionAdmission, promotionAdmission } from "../src/promotion-admission";
 import { RuntimeSessionService } from "../src/modules/common/runtime-session.service";
+import { LEFT_HEALTHY_PATH, SKIPPED_HELD_STEP, waitForSupervisor } from "./supervisor-wait";
 
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-async function until(test: () => boolean, describe: () => string) {
-  const deadline = Date.now() + 20_000;
-  while (!test()) { assert.ok(Date.now() < deadline, describe()); await sleep(50); }
-}
 async function directAdmission() {
   const root = mkdtempSync(path.join(tmpdir(), "chordv-admission-"));
   const file = path.join(root, "approved-generation");
@@ -59,6 +55,9 @@ async function supervisorApproval() {
   const address = portServer.address(); assert.ok(address && typeof address === "object");
   const port = address.port; await new Promise<void>(resolve => portServer.close(() => resolve()));
   const blocker = path.join(root, "block-approval"), launches = path.join(root, "launches"), mutations = path.join(root, "mutations");
+  // One line per SUPERVISOR health probe (only it sends X-Forwarded-Proto): the
+  // generation's token and the gate's own admission decision at that probe.
+  const probes = path.join(root, "gate-probes");
   const approval = path.join(state, "approved-generation");
   writeFileSync(blocker, "blocked");
   writeFileSync(approval, "old-token");
@@ -73,7 +72,10 @@ const {PromotionAdmission}=require(${JSON.stringify(path.resolve(__dirname, "../
 const gate=new PromotionAdmission(),http=require('http'),fs=require('fs');
 const token=process.env.CHORDV_SYSTEM_APPROVAL_TOKEN;
 http.createServer((req,res)=>gate.middleware(req,res,()=>{
- if(req.url==='/api/health/ready'){res.end(JSON.stringify({token}));return;}
+ if(req.url==='/api/health/ready'){
+  if(req.headers['x-forwarded-proto'])fs.appendFileSync(${JSON.stringify(probes)},token+' '+gate.isApproved()+'\\n');
+  res.end(JSON.stringify({token}));return;
+ }
  if(req.url==='/exit'){res.end('exit');setTimeout(()=>process.exit(0),20);return;}
  fs.appendFileSync(${JSON.stringify(mutations)},'mutation\\n');res.end('ok');
 })).listen(Number(process.env.CHORDV_API_PORT),'127.0.0.1',()=>fs.appendFileSync(${JSON.stringify(launches)},JSON.stringify({token})+'\\n'));
@@ -97,21 +99,35 @@ exec /bin/mv "$@"
   });
   let logs = ""; child.stderr.on("data", chunk => { logs += chunk; });
   const url = `http://127.0.0.1:${port}`;
+  const until = (what: string, done: () => boolean, failOn = SKIPPED_HELD_STEP) => waitForSupervisor(child, what, done, () => logs, failOn);
+  const launchCount = () => existsSync(launches) ? readFileSync(launches, "utf8").trim().split("\n").length : 0;
+  const gateProbes = (token: string) => readFileSync(probes, "utf8").trim().split("\n")
+    .filter(line => line.startsWith(token + " ")).map(line => line.slice(token.length + 1));
   try {
-    await until(() => logs.includes("cannot approve current process"), () => logs);
+    await until("first generation held at approval", () => logs.includes("cannot approve current process"));
     const first = await (await fetch(url + "/api/health/ready")).json() as { token: string };
     assert.ok(first.token && first.token !== "old-token");
     assert.equal((await fetch(url + "/api/business", { method: "POST" })).status, 503);
     assert.equal(existsSync(mutations), false);
     rmSync(blocker);
-    await until(() => readFileSync(approval, "utf8") === first.token, () => logs);
+    await until("first generation approval", () => readFileSync(approval, "utf8") === first.token);
     assert.equal((await fetch(url + "/api/business", { method: "POST" })).status, 200);
+    // The relaunch is NOT held, so an approval issued before its gate completes would
+    // be visible. Rather than racing a request against stabilization, the stub records
+    // its admission decision at every supervisor probe: the first generation's approval
+    // (still on disk throughout the relaunch's gate) must admit none of them. That
+    // generation's own "healthy + stable" line may still be in flight, so only real
+    // detours fail fast here.
     await fetch(url + "/exit");
-    await until(() => readFileSync(launches, "utf8").trim().split("\n").length === 2, () => logs);
+    await until("relaunch", () => launchCount() === 2, LEFT_HEALTHY_PATH);
     const second = await (await fetch(url + "/api/health/ready")).json() as { token: string };
     assert.notEqual(second.token, first.token);
-    assert.equal((await fetch(url + "/api/business", { method: "POST" })).status, 503);
-    await until(() => readFileSync(approval, "utf8") === second.token, () => logs);
+    await until("relaunched generation approval", () => readFileSync(approval, "utf8") === second.token, LEFT_HEALTHY_PATH);
+    for (const token of [first.token, second.token]) {
+      // The readiness probe plus one per stabilization second, all before approval.
+      assert.ok(gateProbes(token).length >= 1 + 2, `gate probes for ${token}: ${gateProbes(token)}`);
+      assert.deepEqual([...new Set(gateProbes(token))], ["false"], "no generation may be admitted before its gate completes");
+    }
     assert.equal((await fetch(url + "/api/business", { method: "POST" })).status, 200);
     assert.equal(readFileSync(mutations, "utf8"), "mutation\nmutation\n");
   } finally {

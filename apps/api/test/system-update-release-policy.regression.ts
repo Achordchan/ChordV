@@ -7,8 +7,8 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, writeFileSync, readdi
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { SystemUpdateService } from "../src/modules/common/system-update.service";
+import { TEST_HEALTH_TIMEOUT_SECONDS, waitForSupervisor } from "./supervisor-wait";
 
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function signedChannel() {
   const state = mkdtempSync(path.join(tmpdir(), "chordv-channel-"));
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -87,13 +87,12 @@ async function supervisorRetention(healthy: boolean) {
       CHORDV_SYSTEM_NODE_BIN: process.execPath, CHORDV_SYSTEM_RELEASES_DIR: releases, CHORDV_SYSTEM_STATE_DIR: state,
       CHORDV_SYSTEM_PUBLIC_STATE_DIR: path.join(root, "public"), CHORDV_SYSTEM_CURRENT_LINK: path.join(root, "current"),
       CHORDV_API_PORT: String(port), CHORDV_SUPERVISOR_MIGRATE: "false", CHORDV_SYSTEM_UPDATE_KEEP_RELEASES: "3",
-      CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1", CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "8"
+      CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1", CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: TEST_HEALTH_TIMEOUT_SECONDS
     }
   });
   let logs = ""; child.stderr.on("data", chunk => { logs += chunk; });
   try {
-    const deadline = Date.now() + 20_000;
-    while (!logs.includes("healthy + stable (last-good)")) { assert.ok(Date.now() < deadline, logs); await sleep(50); }
+    await waitForSupervisor(child, "promotion to finalize", () => logs.includes("healthy + stable (last-good)"), () => logs);
     assert.deepEqual(readdirSync(releases).sort(), healthy ? ["1.0.1", "1.0.2", "1.0.3"] : ["1.0.0", "1.0.1", "1.0.2"]);
     const result = JSON.parse(readFileSync(path.join(state, "operation-result.sysop-retention.json"), "utf8"));
     assert.equal(result.status, healthy ? "success" : "rolledback");
