@@ -63,5 +63,7 @@ const customers = ["CustomerWorkspace.tsx", "CustomerMembers.tsx"].map((file) =>
 assert.match(customers, /<ClientVersionBrief user=\{customer\.user\}\/>/, "客户列表显示客户端版本");
 assert.match(customers, /<ClientVersionFacts user=\{customer\.user\}\/>/, "账号资料显示客户端版本");
 assert.match(customers, /<Table\.Th>客户端<\/Table\.Th>/, "团队成员表显示客户端版本");
+const members = readFileSync(resolve(import.meta.dirname, "../src/features/customers/CustomerMembers.tsx"), "utf8");
+assert.match(members, /<ClientVersionFacts user=\{user\}\/>/, "团队成员详情显示该成员的客户端版本");
 
 console.log("admin client version checks passed");
