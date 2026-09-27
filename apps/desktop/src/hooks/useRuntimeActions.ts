@@ -967,8 +967,9 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           await options.forceStopLocalRuntime();
         } catch (stopReason) {
           if (config?.sessionId) void disconnectSession(configAccessToken,config.sessionId).catch(()=>null);
-          const stopMessage=stopReason instanceof Error?options.readError(stopReason.message):"本机连接停止失败";
-          options.showErrorToast(`${earlyMessage}\n${stopMessage}`, "connect");
+          // 连接失败与本机停止失败分别映射：后者必须单独提醒“本机连接没有停下来”。
+          options.showErrorToast(reason || earlyMessage, "connect");
+          options.showErrorToast(stopReason || "本机连接停止失败", "local_stop");
           return;
         }
         if (runtimeStatus?.status === "error") {

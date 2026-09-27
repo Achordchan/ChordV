@@ -18,6 +18,7 @@ export type UserErrorContext =
   | "refresh"
   | "connect"
   | "disconnect"
+  | "local_stop"
   | "runtime_assets"
   | "update_check"
   | "update_download"
@@ -292,6 +293,12 @@ const CONTEXT_FALLBACK: Record<UserErrorContext, CatalogEntry & { code: string |
     message: "断开连接时出现问题，请重试；如仍无法断开，请退出并重新打开 ChordV。",
     action: "重试"
   },
+  local_stop: {
+    code: "local_stop_failed",
+    title: "本机连接未能停止",
+    message: "本机连接没有完全停止，网络可能仍在使用 ChordV。请退出并重新打开 ChordV；如仍异常，请联系客服并提供错误编号。",
+    action: "重新打开"
+  },
   runtime_assets: {
     code: "unknown",
     title: "组件准备未完成",
@@ -409,9 +416,10 @@ export function isCustomerSafeText(text: string | null | undefined): boolean {
     return false;
   }
   if (
-    /https?:\/\//i.test(value) ||
-    /[A-Za-z]:\\/.test(value) ||
-    /(^|[\s(（:：=])(?:~|\.{1,2})?\/[\w.-]+\/[\w./-]*/.test(value) ||
+    /\b[a-z][a-z0-9+.-]*:\/\//i.test(value) ||
+    /[A-Za-z]:[\\/]/.test(value) ||
+    /(?:^|[^\w.])(?:~|\.{1,2})?\/[\w.-]+\/[\w./-]*/.test(value) ||
+    /(?:^|[^\w.])\/[\w-]+\.[A-Za-z0-9]{1,6}\b/.test(value) ||
     /[{}[\]<>`\\|]/.test(value) ||
     /\bat\s+[\w.$<>]+\s*\(/.test(value) ||
     /\b[A-Za-z]+_[A-Za-z0-9_]+\b/.test(value) ||
@@ -551,6 +559,17 @@ export function describeUserError(
   options: { context?: UserErrorContext } = {}
 ): UserFacingError {
   const context = options.context ?? "general";
+  if (context === "local_stop") {
+    // 本机停止失败必须明确告诉客户“连接没有停下来”，不能被识别出的网络 / 权限类说明覆盖；
+    // 识别出的机器码仍作为错误编号保留。
+    const fallback = CONTEXT_FALLBACK.local_stop;
+    const classified = describeUserErrorInContext(reason, "general");
+    return { ...fallback, code: classified.code ?? fallback.code, detail: classified.detail, known: true };
+  }
+  return describeUserErrorInContext(reason, context);
+}
+
+function describeUserErrorInContext(reason: unknown, context: UserErrorContext): UserFacingError {
   const fallback = CONTEXT_FALLBACK[context];
   const parts = readReason(reason);
   const { code: existingCode, lines } = splitCodeLines(parts.text);

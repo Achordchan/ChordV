@@ -445,10 +445,10 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
         await forceStopLocalRuntime();
       }
     } catch (reason) {
-      let message=reason instanceof Error ? readError(reason.message) : "刷新失败";
+      showErrorToast(reason || "刷新失败", "refresh");
+      // 本机停止失败单独提醒，不与刷新失败合并成一条。
       try { await forceStopLocalRuntime(); }
-      catch (stopReason) {message+=`\n${stopReason instanceof Error?readError(stopReason.message):"本机连接停止失败"}`;}
-      showErrorToast(message, "refresh");
+      catch (stopReason) { showErrorToast(stopReason || "本机连接停止失败", "local_stop"); }
     } finally {
       setRefreshing(false);
     }

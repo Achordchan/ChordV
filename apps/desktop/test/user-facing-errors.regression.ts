@@ -227,6 +227,22 @@ function formatUserErrorText(message: string, code: string | null) {
   return code ? `${message}\n错误编号：${code}` : message;
 }
 
+function testLocalStopFailuresKeepExplicitWarning() {
+  for (const raw of ["cleanup failed", "Failed to fetch", "停止连接失败：Permission denied (os error 13)", "本机连接停止失败，请重试。"]) {
+    const described = describeUserError(new Error(raw), { context: "local_stop" });
+    assert.match(described.message, /本机连接没有完全停止/, `cleanup warning must stay explicit: ${raw}`);
+    assertNoLeak(formatUserErrorText(described.message, described.code), `local_stop ${raw}`);
+    assert.ok(described.detail.includes(raw), "raw cleanup failure retained for diagnostics");
+  }
+  // 识别出的机器码保留为编号，未识别时用 local_stop_failed
+  assert.equal(describeUserError(new Error("Failed to fetch"), { context: "local_stop" }).code, "network_offline");
+  assert.equal(describeUserError(new Error("停止连接失败：Permission denied (os error 13)"), { context: "local_stop" }).code, "permission_denied");
+  assert.equal(describeUserError(new Error("cleanup failed"), { context: "local_stop" }).code, "local_stop_failed");
+  const auth = readFileSync(resolve(import.meta.dirname, "../src/hooks/useAuthBootstrap.ts"), "utf8");
+  assert.match(auth, /showErrorToast\(stopReason \|\| "本机连接停止失败", "local_stop"\)/, "refresh reports local stop failures separately");
+  assert.doesNotMatch(auth, /message\+=`\\n/, "refresh no longer merges failures into one line");
+}
+
 function testMixedLinesKeepSafeOnesOnly() {
   const text = toUserMessage("当前节点已离线\n当前节点已离线");
   assert.equal(text, "当前节点已离线", "duplicate safe lines collapse");
@@ -264,7 +280,9 @@ function testSafeTextDetection() {
     "ChordV 1.1.10 已发布。",
     "Windows 未能设置系统代理，请重试。",
     "Xray 内核已准备完成",
-    "macOS 需要授权后才能连接"
+    "macOS 需要授权后才能连接",
+    "订阅/流量信息已更新",
+    "问题类型：忘记密码 / 修改密码"
   ]) {
     assert.ok(isCustomerSafeText(safe), `should be safe: ${safe}`);
   }
@@ -275,9 +293,20 @@ function testSafeTextDetection() {
     "读取组件文件状态失败：/Users/me/Library/xray",
     "external_vpn_conflict: 已有 VPN 正在运行",
     "TLS 握手失败：bad cert",
+    "无法读取文件/tmp/xray.dat",
+    "无法打开 file:///Users/alice/image.png",
+    "无法写入C:/Users/alice/ChordV/xray.exe",
+    "无法读取/xray.dat",
     "璇锋眰瓒呮椂" // 乱码也不应原样出现：虽然是 CJK，但无法通过兜底之外的识别，这里只验证不会误判为网络码
-  ].slice(0, 6)) {
+  ].slice(0, 10)) {
     assert.ok(!isCustomerSafeText(unsafe), `should be unsafe: ${unsafe}`);
+  }
+  // 中文紧贴路径、file:// 链接不会被原样展示
+  for (const raw of ["无法读取文件/tmp/xray.dat", "无法打开 file:///Users/alice/image.png"]) {
+    const described = describeUserError(new Error(raw), { context: "ticket" });
+    assert.notEqual(described.message, raw);
+    assert.doesNotMatch(described.message, /\/tmp\/|file:\/\//);
+    assert.equal(described.detail, raw, "path stays in diagnostics only");
   }
 }
 
@@ -359,6 +388,7 @@ testServerBusinessMessagesStayVerbatimWithoutCode();
 testNetworkErrorsAreMapped();
 testUpdateErrorsAreMapped();
 testUnknownRawErrorsNeverLeak();
+testLocalStopFailuresKeepExplicitWarning();
 testMixedLinesKeepSafeOnesOnly();
 testIdempotentAndCodePreserved();
 testSafeTextDetection();
