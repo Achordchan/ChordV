@@ -3,10 +3,12 @@ import { useEffect, useRef } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import {
   isAccessTokenExpiredApiError,
+  nudgeClientPresence as nudgeClientPresenceRequest,
   probeClientServerLatency,
   recordClientDiagnosticLog,
   subscribeClientEvents as subscribeClientEventsRequest
 } from "../api/client";
+import { startPresenceNudges } from "../lib/presenceNudges";
 
 export type ServerProbeState = {
   status: "idle" | "checking" | "healthy" | "failed";
@@ -70,6 +72,7 @@ export type UseClientEventsOptions = {
   recoverSessionAfterUnauthorized: () => Promise<AuthSessionDto | null> | AuthSessionDto | null;
   readError: (reason: unknown) => string;
   subscribeClientEvents?: typeof subscribeClientEventsRequest;
+  nudgeClientPresence?: typeof nudgeClientPresenceRequest;
   isUnauthorizedError?: (reason: unknown) => boolean;
 };
 
@@ -83,6 +86,7 @@ export function useClientEvents(options: UseClientEventsOptions) {
     recoverSessionAfterUnauthorized,
     readError,
     subscribeClientEvents = subscribeClientEventsRequest,
+    nudgeClientPresence = nudgeClientPresenceRequest,
     isUnauthorizedError = isAccessTokenExpiredApiError
   } = options;
   const handleRuntimeEventRef = useRef(handleRuntimeEvent);
@@ -122,6 +126,14 @@ export function useClientEvents(options: UseClientEventsOptions) {
   useEffect(() => {
     setServerProbeRef.current = setServerProbe;
   }, [setServerProbe]);
+
+  // 登录期间窗口重新显示、网络恢复时补报一次在线；定期上报在原生推送连接里进行，退出登录后随连接停止。
+  useEffect(() => {
+    if (!session?.accessToken || typeof window === "undefined" || typeof document === "undefined") {
+      return;
+    }
+    return startPresenceNudges({ windowTarget: window, documentTarget: document, nudge: nudgeClientPresence });
+  }, [session?.accessToken, nudgeClientPresence]);
 
   useEffect(() => {
     if (!session?.accessToken) {

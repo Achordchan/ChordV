@@ -11,6 +11,7 @@ import type {
   UploadedSupportTicketAttachmentReferenceInputDto,
   UpdateClientRoutingRuleInputDto
 } from "@chordv/shared";
+import type { ClientEventStreamOptions } from "../common/client-presence.service";
 import { DevDataService } from "../common/dev-data.service";
 import type { UploadedTicketAttachmentFile } from "../common/image-bed.service";
 
@@ -90,8 +91,8 @@ export class ClientService {
     return this.devDataService.disconnect(sessionId, token);
   }
 
-  streamEvents(token?: string, lastEventId?: string | null) {
-    return this.devDataService.streamRuntimeEvents(token, lastEventId);
+  streamEvents(token?: string, lastEventId?: string | null, options?: ClientEventStreamOptions) {
+    return this.devDataService.streamRuntimeEvents(token, lastEventId, options);
   }
 
   getRuntime(sessionId?: string, token?: string) {

@@ -5,18 +5,25 @@ import {
   buildAdminPresenceSnapshot,
   buildOnlineStartResetCondition,
   ClientPresenceService,
+  isKeepaliveStreamExpired,
   isLeaseConnected,
+  isPresencePingDeclared,
   isStreamLive,
   normalizeConnectionMode,
   PRESENCE_CONNECTED_WINDOW_SECONDS,
   PRESENCE_HEARTBEAT_HISTORY_MS,
   PRESENCE_ONLINE_WINDOW_SECONDS,
+  PRESENCE_PING_INTERVAL_SECONDS,
+  PRESENCE_PING_TIMEOUT_SECONDS,
+  PRESENCE_PING_WRITE_THROTTLE_MS,
   PRESENCE_STREAM_STALE_CLEANUP_MS,
   resolveOnlineSince,
   type PresenceLeaseRow
 } from "../src/modules/common/client-presence.service";
 import { LEASE_GRACE_SECONDS } from "../src/modules/common/runtime-session.utils";
 import { RuntimeSessionService } from "../src/modules/common/runtime-session.service";
+import { ClientAccessService } from "../src/modules/common/client-access.service";
+import { ClientController } from "../src/modules/client/client.controller";
 
 const now = new Date("2026-09-27T12:00:00Z");
 const ago = (seconds: number) => new Date(now.getTime() - seconds * 1000);
@@ -214,13 +221,14 @@ function testSnapshot() {
     "上线前没有在线记录的用户，用检查更新时间作为最近在线；从未出现过的用户不列出");
 }
 
-type PresenceRowState = { userId: string; onlineSince: Date | null; lastSeenAt: Date };
+type PresenceRowState = { userId: string; onlineSince: Date | null; lastSeenAt: Date; lastPingAt?: Date | null };
 type StreamRowState = { userId: string; instanceId: string; connectedAt: Date; lastSeenAt: Date };
 
 // 按 Prisma/SQL 的语义求值条件（NULL 与比较运算不相等），用来验证条件本身而不是测试替身。
 function matchesValue(value: any, condition: any): boolean {
   if (condition instanceof Date) return value instanceof Date && value.getTime() === condition.getTime();
-  if (condition === null || typeof condition !== "object") return value === condition;
+  if (condition === null) return value === null || value === undefined;
+  if (typeof condition !== "object") return value === condition;
   if ("in" in condition) return condition.in.includes(value);
   if ("not" in condition) return value !== null && value !== condition.not;
   if (value === null || value === undefined) return false;
@@ -243,9 +251,17 @@ function matches(row: any, where: any): boolean {
 function createStore() {
   const presence = new Map<string, PresenceRowState>();
   const streams = new Map<string, StreamRowState>();
-  const calls = { presenceUpserts: 0, presenceUpdateMany: 0, streamUpserts: 0, streamUpdateMany: 0 };
+  const calls = { presenceUpserts: 0, presenceUpdateMany: 0, presenceFindMany: 0, streamUpserts: 0, streamUpdateMany: 0 };
+  const failures = { presenceFindMany: false };
   const prisma = {
     userClientPresence: {
+      findMany: async ({ where, select }: any) => {
+        calls.presenceFindMany += 1;
+        if (failures.presenceFindMany) throw new Error("connection terminated");
+        return [...presence.values()]
+          .filter((row) => matches(row, where))
+          .map((row) => Object.fromEntries(Object.keys(select).map((key) => [key, (row as any)[key] ?? null])));
+      },
       findUnique: async ({ where }: any) => {
         const row = presence.get(where.userId);
         return row ? { ...row } : null;
@@ -307,13 +323,13 @@ function createStore() {
     }
   };
   const liveStreams = (userId: string, at: Date) => [...streams.values()].filter((row) => row.userId === userId && isStreamLive(row, at));
-  return { prisma, presence, streams, calls, liveStreams };
+  return { prisma, presence, streams, calls, failures, liveStreams };
 }
 
 function createService(store = createStore()) {
   const events: string[] = [];
   const service = new ClientPresenceService(store.prisma as never, { publishPresenceUpdated: () => events.push("presence_updated") } as never);
-  (service as unknown as { logger: { warn(): void } }).logger = { warn: () => undefined };
+  (service as unknown as { logger: { warn(): void; log(): void } }).logger = { warn: () => undefined, log: () => undefined };
   service.offlineGraceMs = 20;
   return { service, events, ...store };
 }
@@ -508,15 +524,18 @@ async function testHeartbeatHistory() {
   assert.equal(resumed.users[0].state, "online");
   assert.equal(resumed.users[0].onlineSince, ago(100).toISOString(), "后台显示的在线时长约 100 秒，而不是几天");
   service.streamClosed("user_resume", now);
+  // 等上一位用户的离线写入（宽限期 20 毫秒）完成，免得它落进下面的写库计数。
+  await wait(40);
 
   // 本进程保持着推送连接的用户由定时刷新负责，心跳不额外写库。
   service.streamOpened("user_s", ago(5));
   await settle();
   const before = calls.presenceUpdateMany;
+  const eventsBefore = events.length;
   service.noteHeartbeat("user_s", now);
   await settle();
   assert.equal(calls.presenceUpdateMany, before);
-  assert.equal(events.length, 2, "心跳记录不推送上下线事件（两次均来自推送连接上线）");
+  assert.equal(events.length, eventsBefore, "心跳记录不推送上下线事件");
   service.streamClosed("user_s", now);
   service.onModuleDestroy();
 }
@@ -627,6 +646,218 @@ async function testRuntimeSessionRecordsModeAndNotifies() {
   assert.equal(presenceEvents, 2, "重复撤销不重复通知");
 }
 
+function testKeepaliveRules() {
+  assert.equal(isPresencePingDeclared("ping"), true, "新版客户端带 presence=ping 声明");
+  for (const value of [undefined, "", "1", "PING", ["ping", "ping"], null]) {
+    assert.equal(isPresencePingDeclared(value), false, `其他值按旧客户端处理：${JSON.stringify(value)}`);
+  }
+  const opened = now.getTime();
+  const timeoutMs = PRESENCE_PING_TIMEOUT_SECONDS * 1000;
+  assert.equal(isKeepaliveStreamExpired(opened, null, opened + timeoutMs), false, "连接建立本身算一次证明");
+  assert.equal(isKeepaliveStreamExpired(opened, null, opened + timeoutMs + 1), true);
+  assert.equal(isKeepaliveStreamExpired(opened, opened + 100_000, opened + timeoutMs + 1), false, "最近一次上报推迟失效时间");
+  assert.equal(isKeepaliveStreamExpired(opened + 100_000, opened - 1_000_000, opened + timeoutMs + 1), false, "连接比上报更新时以连接时间为准");
+  assert.ok(PRESENCE_PING_TIMEOUT_SECONDS >= PRESENCE_PING_INTERVAL_SECONDS * 2, "允许错过一次上报");
+  assert.ok(PRESENCE_PING_WRITE_THROTTLE_MS < PRESENCE_PING_INTERVAL_SECONDS * 1000, "按 60 秒上报时每次都能写库，节流只挡住额外的补报");
+}
+
+/** 模拟推送流：记录服务端是否主动结束了这条连接。 */
+function openStream(service: ClientPresenceService, userId: string, presencePing: boolean) {
+  const state = { completed: false, subscription: null as { unsubscribe(): void } | null };
+  state.subscription = service.trackStream(userId, new Subject<string>().asObservable(), { presencePing }).subscribe({
+    complete: () => { state.completed = true; }
+  });
+  return state;
+}
+
+async function testKeepaliveStreamExpires() {
+  const { service, streams, presence, calls, events, liveStreams } = createService();
+  service.offlineGraceMs = 60_000;
+  const base = Date.now();
+  const at = (seconds: number) => new Date(base + seconds * 1000);
+
+  const legacy = openStream(service, "user_old", false);
+  const declared = openStream(service, "user_new", true);
+  await settle();
+  assert.equal(liveStreams("user_new", new Date()).length, 1);
+
+  await service.checkKeepaliveStreams(at(PRESENCE_PING_TIMEOUT_SECONDS - 10));
+  assert.equal(calls.presenceFindMany, 0, "连接建立不久、本进程内存足以判断时不查库");
+  assert.equal(declared.completed, false);
+
+  // 电脑睡眠：超过 150 秒没有上报，连接被主动结束，且不等 15 秒宽限期直接记为离线。
+  const beforeEvents = events.length;
+  await service.checkKeepaliveStreams(at(PRESENCE_PING_TIMEOUT_SECONDS + 1));
+  assert.equal(calls.presenceFindMany, 1, "本进程没有足够新的上报时查库确认（上报可能落在其他进程）");
+  assert.equal(declared.completed, true, "声明了上报却超时的推送连接被服务端主动结束");
+  await settle();
+  await settle();
+  assert.equal(liveStreams("user_new", new Date()).length, 0, "立即删除推送连接记录，不等宽限期");
+  assert.equal(events.length, beforeEvents + 1, "通知后台刷新在线列表");
+  assert.ok(presence.get("user_new"), "最近在线记录保留，后台显示为离线");
+
+  // 旧客户端不声明，行为与原来一致：再久也不会被这一机制断开。
+  assert.equal(legacy.completed, false, "旧客户端的推送连接不受影响");
+  assert.equal(liveStreams("user_old", new Date()).length, 1);
+  const queries = calls.presenceFindMany;
+  await service.checkKeepaliveStreams(at(3600));
+  assert.equal(legacy.completed, false);
+  assert.equal(calls.presenceFindMany, queries, "只有旧客户端连接时检查不查库");
+
+  // 客户端其实还活着（例如短暂断网后恢复）：重新打开推送连接即恢复在线。
+  const reopened = openStream(service, "user_new", true);
+  await settle();
+  assert.equal(liveStreams("user_new", new Date()).length, 1, "重新连接后恢复在线");
+  reopened.subscription?.unsubscribe();
+  legacy.subscription?.unsubscribe();
+  service.onModuleDestroy();
+  void streams;
+}
+
+async function testKeepalivePingsKeepStreamAlive() {
+  const { service, presence, calls } = createService();
+  const base = Date.now();
+  const at = (seconds: number) => new Date(base + seconds * 1000);
+  presence.set("user_p", { userId: "user_p", onlineSince: at(0), lastSeenAt: at(0) });
+  const declared = openStream(service, "user_p", true);
+  await settle();
+
+  for (const second of [60, 120, 180, 240]) {
+    service.notePing("user_p", at(second));
+    await settle();
+  }
+  const queries = calls.presenceFindMany;
+  await service.checkKeepaliveStreams(at(300));
+  assert.equal(declared.completed, false, "持续上报的连接保持打开");
+  assert.equal(calls.presenceFindMany, queries, "本进程收到了足够新的上报，不查库（单实例稳定状态零查询）");
+  assert.equal(presence.get("user_p")?.lastPingAt?.getTime(), at(240).getTime(), "上报时间写入数据库，供其他进程判断");
+
+  // 错过一次上报仍在允许范围内。
+  await service.checkKeepaliveStreams(at(240 + PRESENCE_PING_TIMEOUT_SECONDS));
+  assert.equal(declared.completed, false, "错过一次上报不断开");
+  await service.checkKeepaliveStreams(at(240 + PRESENCE_PING_TIMEOUT_SECONDS + 1));
+  assert.equal(declared.completed, true, "上报中断超过 150 秒后断开");
+  service.onModuleDestroy();
+}
+
+async function testKeepaliveMixedDevices() {
+  const { service, liveStreams } = createService();
+  service.offlineGraceMs = 60_000;
+  const base = Date.now();
+  // 同一账号一台旧版设备、一台新版设备：新版设备睡眠后它的连接被断开，旧版设备仍在线，用户保持在线。
+  const legacy = openStream(service, "user_mix", false);
+  const declared = openStream(service, "user_mix", true);
+  await settle();
+  await service.checkKeepaliveStreams(new Date(base + (PRESENCE_PING_TIMEOUT_SECONDS + 1) * 1000));
+  assert.equal(declared.completed, true);
+  assert.equal(legacy.completed, false);
+  await settle();
+  assert.equal(service.localOnlineUserCount(), 1, "还有一条连接时保持在线");
+  assert.equal(liveStreams("user_mix", new Date()).length, 1);
+  legacy.subscription?.unsubscribe();
+  service.onModuleDestroy();
+}
+
+async function testKeepaliveAcrossInstances() {
+  const store = createStore();
+  const holder = createService(store);
+  const other = createService(store);
+  const base = Date.now();
+  const at = (seconds: number) => new Date(base + seconds * 1000);
+  // 推送连接在实例一，上报经负载均衡落在实例二。
+  const declared = openStream(holder.service, "user_x", true);
+  await settle();
+  other.service.notePing("user_x", at(100));
+  await settle();
+  assert.equal(store.presence.get("user_x")?.lastPingAt?.getTime(), at(100).getTime(), "上报写入数据库");
+
+  await holder.service.checkKeepaliveStreams(at(PRESENCE_PING_TIMEOUT_SECONDS + 30));
+  assert.equal(store.calls.presenceFindMany, 1, "持有连接的进程查库拿到其他进程记下的上报");
+  assert.equal(declared.completed, false, "上报落在另一个进程上时连接保持打开");
+
+  // 查库失败：这一轮不断开任何连接（退回原来的行为）。
+  store.failures.presenceFindMany = true;
+  await holder.service.checkKeepaliveStreams(at(100 + PRESENCE_PING_TIMEOUT_SECONDS + 60));
+  assert.equal(declared.completed, false, "查不到上报时间时不误断");
+  store.failures.presenceFindMany = false;
+
+  await holder.service.checkKeepaliveStreams(at(100 + PRESENCE_PING_TIMEOUT_SECONDS + 60));
+  assert.equal(declared.completed, true, "各进程都没有新的上报时断开");
+  holder.service.onModuleDestroy();
+  other.service.onModuleDestroy();
+}
+
+async function testPingWritesAreThrottledAndForwardOnly() {
+  const { service, presence, calls } = createService();
+  presence.set("user_t", { userId: "user_t", onlineSince: ago(600), lastSeenAt: ago(10) });
+  service.notePing("user_t", now);
+  await settle();
+  assert.equal(calls.presenceUpdateMany, 1);
+  assert.equal(presence.get("user_t")?.lastPingAt?.getTime(), now.getTime());
+  assert.equal(presence.get("user_t")?.lastSeenAt.getTime(), ago(10).getTime(), "上报只记上报时间，不改最近在线与在线开始时间");
+
+  // 窗口重新显示、网络恢复时的补报：本进程内 50 秒内不重复写库，但内存里记下最新时间。
+  service.notePing("user_t", later(20));
+  await settle();
+  assert.equal(calls.presenceUpdateMany, 1, "50 秒内的额外上报不写库");
+  service.notePing("user_t", new Date(now.getTime() + PRESENCE_PING_WRITE_THROTTLE_MS));
+  await settle();
+  assert.equal(calls.presenceUpdateMany, 2, "按 60 秒上报时每次写一次（每位用户约每分钟一条）");
+
+  // 另一进程已写入更晚的上报时间：只前进不后退。
+  presence.get("user_t")!.lastPingAt = later(3600);
+  service.notePing("user_t", later(120));
+  await settle();
+  assert.equal(presence.get("user_t")?.lastPingAt?.getTime(), later(3600).getTime(), "上报时间只前进不后退");
+  assert.deepEqual(Object.keys(presence.get("user_t")!).sort(), ["lastPingAt", "lastSeenAt", "onlineSince", "userId"]);
+
+  // 还没有在线记录（推送连接的上线写入尚未完成或失败）：补一条。
+  service.notePing("user_fresh", now);
+  await settle();
+  assert.deepEqual(presence.get("user_fresh"), { userId: "user_fresh", onlineSince: now, lastSeenAt: now, lastPingAt: now });
+
+  // 写库失败不影响接口，也不抛出。
+  const failing = new ClientPresenceService({
+    userClientPresence: { updateMany: async () => { throw new Error("connection terminated"); } }
+  } as never, { publishPresenceUpdated: () => undefined } as never);
+  let warnings = 0;
+  (failing as unknown as { logger: { warn(): void } }).logger = { warn: () => { warnings += 1; } };
+  failing.notePing("user_f", now);
+  failing.notePing("user_g", now);
+  await settle();
+  await settle();
+  assert.equal(warnings, 1, "数据库故障时日志每分钟最多一条");
+  service.onModuleDestroy();
+}
+
+async function testPingEndpointAndDeclarationWiring() {
+  const pings: string[] = [];
+  const access = Object.assign(Object.create(ClientAccessService.prototype), {
+    authSessionService: { authenticateAccessToken: async () => ({ id: "user_ping" }) },
+    clientPresenceService: { notePing: (userId: string) => pings.push(userId) }
+  }) as ClientAccessService;
+  const result = await access.pingClient("Bearer token");
+  assert.equal(result.ok, true);
+  assert.deepEqual(pings, ["user_ping"], "/client/ping 记录上报");
+
+  const tracked: Array<{ presencePing: boolean }> = [];
+  const streaming = Object.assign(Object.create(ClientAccessService.prototype), {
+    authSessionService: { authenticateAccessToken: async () => ({ id: "user_ping" }) },
+    clientRuntimeEventsService: { streamForUser: () => new Subject().asObservable() },
+    clientPresenceService: { trackStream: (_userId: string, stream: unknown, options: { presencePing: boolean }) => { tracked.push(options); return stream; } }
+  }) as ClientAccessService;
+  await streaming.streamRuntimeEvents("Bearer token", null, { presencePing: true });
+  await streaming.streamRuntimeEvents("Bearer token", null);
+  assert.deepEqual(tracked, [{ presencePing: true }, { presencePing: false }], "声明透传到在线跟踪，旧客户端默认不声明");
+
+  const calls: unknown[][] = [];
+  const controller = new ClientController({ streamEvents: (...args: unknown[]) => { calls.push(args); return null; } } as never, {} as never, {} as never);
+  controller.streamEvents("Bearer token", "1-1", "ping");
+  controller.streamEvents("Bearer token", undefined, undefined);
+  controller.streamEventsAlias("Bearer token", undefined, "ping");
+  assert.deepEqual(calls.map((args) => args[2]), [{ presencePing: true }, { presencePing: false }, { presencePing: true }], "推送流地址上的 presence=ping 才算声明");
+}
+
 async function main() {
   testDerivation();
   testSnapshot();
@@ -637,6 +868,13 @@ async function main() {
   await testHeartbeatHistory();
   await testAdminQuery();
   await testRuntimeSessionRecordsModeAndNotifies();
+  testKeepaliveRules();
+  await testKeepaliveStreamExpires();
+  await testKeepalivePingsKeepStreamAlive();
+  await testKeepaliveMixedDevices();
+  await testKeepaliveAcrossInstances();
+  await testPingWritesAreThrottledAndForwardOnly();
+  await testPingEndpointAndDeclarationWiring();
   console.log("client presence regression checks passed");
 }
 

@@ -25,6 +25,7 @@ import { RuntimeComponentsService } from "../common/runtime-components.service";
 import { UploadedTempFileCleanupInterceptor } from "../common/uploaded-temp-file-cleanup.interceptor";
 import { SUPPORT_TICKET_ATTACHMENT_MAX_BYTES } from "../common/upload-limits";
 import { ClientService } from "./client.service";
+import { isPresencePingDeclared } from "../common/client-presence.service";
 
 type UploadedTicketAttachmentFile = {
   path: string;
@@ -575,15 +576,27 @@ export class ClientController {
     return this.clientService.disconnect(body.sessionId, authorization);
   }
 
+  /**
+   * 客户端事件推送流。新版客户端带 `?presence=ping` 声明：保持这条连接期间会约每 60 秒调用一次 /client/ping，
+   * 服务端据此在客户端睡眠或断网（TCP 未正常关闭）后约 2～3 分钟内断开这条连接并记为离线；不带声明的旧客户端行为不变。
+   */
   @Sse("events/stream")
   @UseGuards(ClientAuthGuard)
-  streamEvents(@Headers("authorization") authorization?: string, @Headers("last-event-id") lastEventId?: string) {
-    return this.clientService.streamEvents(authorization, lastEventId);
+  streamEvents(
+    @Headers("authorization") authorization?: string,
+    @Headers("last-event-id") lastEventId?: string,
+    @Query("presence") presence?: string
+  ) {
+    return this.clientService.streamEvents(authorization, lastEventId, { presencePing: isPresencePingDeclared(presence) });
   }
 
   @Sse("events")
   @UseGuards(ClientAuthGuard)
-  streamEventsAlias(@Headers("authorization") authorization?: string, @Headers("last-event-id") lastEventId?: string) {
-    return this.clientService.streamEvents(authorization, lastEventId);
+  streamEventsAlias(
+    @Headers("authorization") authorization?: string,
+    @Headers("last-event-id") lastEventId?: string,
+    @Query("presence") presence?: string
+  ) {
+    return this.clientService.streamEvents(authorization, lastEventId, { presencePing: isPresencePingDeclared(presence) });
   }
 }
