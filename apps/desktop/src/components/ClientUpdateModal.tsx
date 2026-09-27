@@ -13,6 +13,8 @@ type ClientUpdateModalProps = {
   update: ClientUpdateCheckResult | null;
   appVersion: string;
   forceRequired: boolean;
+  /** 强制更新已下载：自动安装前的剩余秒数；null 表示没有在倒计时。 */
+  autoInstallCountdown?: number | null;
   downloadBusy: boolean;
   /** Download progress panel; rendered between the header and the changelog. */
   progress: ReactNode;
@@ -29,8 +31,9 @@ export function ClientUpdateModal(props: ClientUpdateModalProps) {
   const belowMinimum = Boolean(update && compareVersion(update.minimumVersion, props.appVersion) > 0);
   const changelog = (update?.changelog ?? []).map(cleanChangelogItem).filter(Boolean);
   const publishedAt = formatPublishedAt(update?.publishedAt ?? null);
-  const installHint = update?.deliveryMode === "desktop_full_replace"
-    ? "下载完成后会自动替换并重启。"
+  const counting = props.forceRequired && typeof props.autoInstallCountdown === "number";
+  const installHint = update?.deliveryMode === "desktop_full_replace" || props.forceRequired
+    ? "下载完成后会自动安装并重启。"
     : "下载完成后点击“安装并重启”即可完成更新。";
   return (
     <Modal
@@ -63,7 +66,11 @@ export function ClientUpdateModal(props: ClientUpdateModalProps) {
         </div>
       </div>
 
-      {props.forceRequired ? (
+      {counting ? (
+        <NoticeRow tone="danger" role="alert" className={styles.notice}>
+          {`必须更新：${props.autoInstallCountdown} 秒后自动安装并重启，期间连接会断开。`}
+        </NoticeRow>
+      ) : props.forceRequired ? (
         <NoticeRow tone="danger" role="alert" className={styles.notice}>
           {belowMinimum
             ? `当前版本低于最低支持版本 ${formatVersionLabel(update?.minimumVersion ?? "")}，更新后才能继续使用。`

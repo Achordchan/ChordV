@@ -43,6 +43,8 @@ type SubscriptionPanelProps = {
   updateStatusDescription?: string;
   hasUpdate: boolean;
   forceUpdate?: boolean;
+  /** 新版本已下载并校验完成：按钮变为“重启更新”，点击直接安装。 */
+  updateReady?: { version: string | null } | null;
   serverProbe: SubscriptionServerProbe;
   serverProbeBusy?: boolean;
   onOpenAnnouncements: () => void;
@@ -50,6 +52,7 @@ type SubscriptionPanelProps = {
   onRefreshServerProbe?: () => void;
   onRefresh: () => void;
   onCheckUpdate: () => void;
+  onInstallUpdate?: () => void;
   /** 只在 macOS / Windows 传入；不传时不显示“本地文件”入口。 */
   onOpenLocalFiles?: () => void;
   onLogout: () => void;
@@ -68,6 +71,9 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
     ...(isTeam ? [{ label: "我已使用", value: `${formatTrafficGb(props.bootstrap.subscription.memberUsedTrafficGb ?? 0)} GB` }] : [])
   ];
   const serverColor = probeColor(props.serverProbe.status);
+  // 强制更新有自己的倒计时安装流程，按钮保持“必须更新”。
+  const updateReady = Boolean(props.updateReady && props.onInstallUpdate && !props.forceUpdate);
+  const updateReadyTitle = `ChordV ${props.updateReady?.version ?? "新版本"} 已下载并校验完成。点击后应用会退出并自动安装，完成后重新打开。`;
 
   if (isMobile) {
     return (
@@ -120,11 +126,12 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
                 </Menu.Item>
                 <Menu.Item
                   leftSection={<IconRosetteDiscountCheck size={14} />}
-                  onClick={props.onCheckUpdate}
+                  color={updateReady ? "teal" : undefined}
+                  onClick={updateReady ? props.onInstallUpdate : props.onCheckUpdate}
                   disabled={props.updateBusy}
-                  title={props.updateStatusDescription}
+                  title={updateReady ? updateReadyTitle : props.updateStatusDescription}
                 >
-                  {props.forceUpdate ? "必须更新" : props.hasUpdate ? "有新版本" : "检查更新"}
+                  {props.forceUpdate ? "必须更新" : updateReady ? "重启更新" : props.hasUpdate ? "有新版本" : "检查更新"}
                 </Menu.Item>
                 {props.onOpenLocalFiles ? (
                   <Menu.Item leftSection={<IconFolderOpen size={14} />} onClick={props.onOpenLocalFiles}>
@@ -338,16 +345,16 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
               </Button>
             </Indicator>
             <Button
-              variant={props.forceUpdate ? "filled" : props.hasUpdate ? "filled" : isTeam ? "white" : "default"}
-              color={props.forceUpdate ? "orange" : props.hasUpdate ? "blue" : isTeam ? "dark" : "gray"}
+              variant={props.forceUpdate || updateReady || props.hasUpdate ? "filled" : isTeam ? "white" : "default"}
+              color={props.forceUpdate ? "orange" : updateReady ? "teal" : props.hasUpdate ? "blue" : isTeam ? "dark" : "gray"}
               size="xs"
               leftSection={<IconRosetteDiscountCheck size={14} />}
               className="subscription-secondary-button subscription-toolbar-button"
               loading={props.updateBusy}
-              title={props.updateStatusDescription}
-              onClick={props.onCheckUpdate}
+              title={updateReady ? updateReadyTitle : props.updateStatusDescription}
+              onClick={updateReady ? props.onInstallUpdate : props.onCheckUpdate}
             >
-              {props.forceUpdate ? "必须更新" : props.hasUpdate ? "有新版本" : "检查更新"}
+              {props.forceUpdate ? "必须更新" : updateReady ? "重启更新" : props.hasUpdate ? "有新版本" : "检查更新"}
             </Button>
             {/* 刷新订阅与退出登录收进“更多操作”，给低频工具入口腾出位置；顺序与手机版菜单一致。 */}
             <Menu shadow="md" width={160} position="bottom-end">

@@ -39,7 +39,7 @@ async function main() {
     assert.deepEqual(await openExternalUrl("https://example.com/setup.exe"), { ok: true });
 
     const source = readFileSync(new URL("../src/hooks/useUpdateFlow.ts", import.meta.url), "utf8");
-    const callback = source.match(/const handleUpdateDownload = useCallback\((async \(\) => \{[\s\S]*?\n  \}), \[/)?.[1];
+    const callback = source.match(/const handleUpdateDownload = useCallback\((async \([^)]*\) => \{[\s\S]*?\n  \}), \[/)?.[1];
     assert.ok(callback, "Production download action must be exercised");
     const compiled = ts.transpileModule(`const action = ${callback};`, {
       compilerOptions: { target: ts.ScriptTarget.ES2022 }
