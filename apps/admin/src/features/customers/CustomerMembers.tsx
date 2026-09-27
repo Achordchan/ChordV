@@ -10,7 +10,7 @@ import { translateUserStatus } from "../../utils/admin-translate";
 import { findNodeCommandSummary } from "../../utils/node-command-summary";
 import { PanelSyncInlineStatus, LeaseRevocationInlineStatus, isTeamMemberLeaseRevocationJob } from "./CustomerTaskStatus";
 import { TeamMemberEditorPanel } from "./TeamEditors";
-import { ClientVersionBrief } from "./CustomerClientVersions";
+import { ClientVersionBrief, ClientVersionFacts } from "./CustomerClientVersions";
 import { latestClientVersion } from "../../utils/client-versions";
 import type { UsersPageProps } from "./types";
 import dialogStyles from "../editors/EditorDialog.module.css";
@@ -51,6 +51,7 @@ export function CustomerMembers({ team, actions }: { team: AdminTeamRecordDto; a
     {!team.members.length && <div className={styles.empty}><IconUsers size={28}/><p>暂无成员，添加后可共用团队订阅。</p></div>}
     <Modal opened={Boolean(member) && actions.teamMemberInlineEditor?.teamId !== team.id} onClose={() => setMemberId(null)} title="成员详情" centered size={620} overlayProps={{ backgroundOpacity: .35, blur: 2 }} classNames={{ content: dialogStyles.content, header: dialogStyles.header, title: dialogStyles.title, body: dialogStyles.body }}>
       {member && <Stack gap="lg" className={dialogStyles.memberDetail}><section><Text fw={700} size="lg">{member.displayName}</Text><Text c="dimmed" size="sm">{member.email}</Text><Badge mt="sm" variant="light" color="gray">{member.role === "owner" ? "负责人" : "成员"}</Badge></section>
+        <section><Text fw={600} mb="sm">客户端</Text><Text size="sm" component="div">{user ? <ClientVersionFacts user={user}/> : "暂无记录"}</Text></section>
         <Tabs key={member.id} defaultValue="usage" keepMounted={false} color="teal.9">
           <Tabs.List className={styles.tabs} aria-label="成员详情"><Tabs.Tab value="usage">用量详情</Tabs.Tab><Tabs.Tab value="routing">自定义规则</Tabs.Tab></Tabs.List>
           <Tabs.Panel value="usage" pt="lg"><Stack gap="lg" className={dialogStyles.memberDetail}>
