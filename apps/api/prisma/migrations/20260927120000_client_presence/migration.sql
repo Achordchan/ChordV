@@ -35,7 +35,3 @@ ALTER TABLE "UserClientPresenceStream" ADD CONSTRAINT "UserClientPresenceStream_
 -- 连接时选择的模式；已有连接保持为空。
 -- AlterTable
 ALTER TABLE "NodeSessionLease" ADD COLUMN "connectionMode" TEXT;
-
--- 后台在线列表按“近期有心跳”的连接查询（当前连接与近一天的最后心跳）。
--- CreateIndex
-CREATE INDEX "NodeSessionLease_lastHeartbeatAt_idx" ON "NodeSessionLease"("lastHeartbeatAt");
