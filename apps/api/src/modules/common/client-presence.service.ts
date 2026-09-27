@@ -120,9 +120,9 @@ export function resolveOnlineSince(existing: Pick<PresenceRow, "onlineSince" | "
  * 与 resolveOnlineSince 同一规则的数据库条件：命中时把在线开始时间重置为 at。
  * 条件随更新语句一起执行，多个进程同时写同一用户时不依赖先读后写。
  */
-export function buildOnlineStartResetCondition(userId: string, at: Date): Prisma.UserClientPresenceWhereInput {
+export function buildOnlineStartResetCondition(userIds: string | string[], at: Date): Prisma.UserClientPresenceWhereInput {
   return {
-    userId,
+    userId: typeof userIds === "string" ? userIds : { in: userIds },
     OR: [
       { onlineSince: null },
       { onlineSince: { gt: at } },
@@ -407,6 +407,7 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
           where: { lastSeenAt: { gte: onlineCutoff(now) } },
           select: { userId: true, connectedAt: true, lastSeenAt: true }
         }),
+        // 当前连接（已连接状态与连接详情）。离线用户的最后心跳不依赖这条查询，见下方按用户聚合的 groupBy。
         this.prisma.nodeSessionLease.findMany({
           where: {
             status: "active",
@@ -559,20 +560,28 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
           where: { instanceId: this.instanceId, userId: { in: batch } },
           data: { lastSeenAt: now }
         });
+        if (updated.count < batch.length) {
+          // 先补回缺失的推送连接记录（markOnline 会按规则处理在线开始时间），再统一推进最近在线时间。
+          const existing = await this.prisma.userClientPresenceStream.findMany({
+            where: { instanceId: this.instanceId, userId: { in: batch } },
+            select: { userId: true }
+          });
+          const existingIds = new Set(existing.map((row) => row.userId));
+          for (const userId of batch) {
+            if (existingIds.has(userId) || !(this.streamCounts.get(userId) ?? 0)) continue;
+            await this.runExclusive(userId, () => this.markOnline(userId, now));
+          }
+        }
+        // 与 advancePresenceOrThrow 相同的顺序：先按规则重置过期的在线开始时间，再推进最近在线时间。
+        // 例如之前的上线写入失败、记录还停在几天前，刷新时不会把整段离线时间算进在线时长。
+        await this.prisma.userClientPresence.updateMany({
+          where: buildOnlineStartResetCondition(batch, now),
+          data: { onlineSince: now }
+        });
         await this.prisma.userClientPresence.updateMany({
           where: { userId: { in: batch }, lastSeenAt: { lt: now } },
           data: { lastSeenAt: now }
         });
-        if (updated.count >= batch.length) continue;
-        const existing = await this.prisma.userClientPresenceStream.findMany({
-          where: { instanceId: this.instanceId, userId: { in: batch } },
-          select: { userId: true }
-        });
-        const existingIds = new Set(existing.map((row) => row.userId));
-        for (const userId of batch) {
-          if (existingIds.has(userId) || !(this.streamCounts.get(userId) ?? 0)) continue;
-          await this.runExclusive(userId, () => this.markOnline(userId, now));
-        }
       } catch (error) {
         this.logger.warn(`在线状态刷新失败：${readErrorMessage(error)}`);
       }

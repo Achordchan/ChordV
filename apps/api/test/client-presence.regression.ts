@@ -402,9 +402,24 @@ async function testRefresh() {
   calls.streamUpdateMany = 0;
   calls.presenceUpdateMany = 0;
   await service.refreshOnlineUsers(later(60));
-  assert.equal(calls.streamUpdateMany, 1, "稳定状态下每次刷新只有两条批量更新");
-  assert.equal(calls.presenceUpdateMany, 1);
+  assert.equal(calls.streamUpdateMany, 1, "稳定状态下每次刷新只有三条批量更新");
+  assert.equal(calls.presenceUpdateMany, 2);
   assert.equal(calls.streamUpserts, 0);
+  assert.equal(presence.get("user_a")?.onlineSince?.getTime(), ago(120).getTime(), "连续在线的用户刷新不重置在线开始时间");
+
+  // 用户离线几天后回来，但上线写入失败（推送连接记录缺失、最近在线记录还停在几天前）：
+  // 定时刷新补回记录时，在线开始时间从现在算起，不把整段离线时间算进在线时长。
+  presence.set("user_c", { userId: "user_c", onlineSince: ago(5 * 86_400), lastSeenAt: ago(4 * 86_400) });
+  (service as unknown as { streamCounts: Map<string, number> }).streamCounts.set("user_c", 1);
+  await service.refreshOnlineUsers(later(120));
+  assert.equal(presence.get("user_c")?.onlineSince?.getTime(), later(120).getTime());
+  assert.equal(presence.get("user_c")?.lastSeenAt.getTime(), later(120).getTime());
+  assert.ok(streams.has(`user_c:${service.instanceId}`));
+
+  // 推送连接记录还在、但最近在线记录因写库失败停在很久以前：同样按规则重置。
+  presence.set("user_a", { userId: "user_a", onlineSince: ago(5 * 86_400), lastSeenAt: ago(4 * 86_400) });
+  await service.refreshOnlineUsers(later(180));
+  assert.equal(presence.get("user_a")?.onlineSince?.getTime(), later(180).getTime());
   service.onModuleDestroy();
 }
 
