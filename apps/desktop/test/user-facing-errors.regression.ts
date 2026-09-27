@@ -159,6 +159,17 @@ function testServerBusinessMessagesStayVerbatimWithoutCode() {
   assert.equal(described.title, "登录未成功");
   assert.equal(toUserMessage(loginFailure, { context: "login" }), "邮箱或密码错误");
 
+  // 明确的 HTTP 状态优先于网络类文字猜测：这是服务端故障，不是客户断网。
+  const gatewayTimeout = describeUserError(Object.assign(new Error("Gateway Timeout"), { status: 504 }));
+  assert.equal(gatewayTimeout.code, "http_504");
+  assert.notEqual(gatewayTimeout.code, "network_timeout");
+  assertNoLeak(formatUserErrorText(gatewayTimeout.message, gatewayTimeout.code), "gateway timeout");
+  const upstreamRefused = describeUserError(Object.assign(new Error("upstream connect error: connection refused"), { status: 503 }), { context: "update_check" });
+  assert.equal(upstreamRefused.code, "http_503");
+  assert.equal(describeUserError(new Error("HTTP 502 Bad Gateway: tcp connect error")).code, "http_502");
+  // 明确的运行时机器码仍然优先
+  assert.equal(describeUserError(Object.assign(new Error("runtime_component_error:write_failed:写入失败"), { status: 500 })).code, "write_failed");
+
   const serverDown = Object.assign(new Error("节点暂时不可用，请稍后重试"), { status: 503 });
   assert.equal(describeUserError(serverDown).message, "节点暂时不可用，请稍后重试");
   assert.equal(describeUserError(serverDown).code, "http_503");
@@ -191,6 +202,20 @@ function testUpdateErrorsAreMapped() {
   assertNoLeak(install.message, "update_install");
   const noSpace = describeUserError(new Error("保存安装包失败：No space left on device (os error 28)"), { context: "update_download" });
   assert.equal(noSpace.code, "disk_full");
+
+  // os error 数字按平台解读：5 在 Windows 是拒绝访问，在 macOS 是 I/O 错误。
+  const ioError = "保存安装包失败：Input/output error (os error 5)";
+  assert.equal(detectErrorCode(ioError, "update_download", "unix"), null);
+  assert.equal(detectErrorCode(ioError, "update_download", null), null);
+  assert.notEqual(describeUserError(new Error(ioError), { context: "update_download" }).code, "permission_denied");
+  assert.equal(detectErrorCode("保存安装包失败：存取被拒。 (os error 5)", "update_download", "windows"), "permission_denied");
+  assert.equal(detectErrorCode("写入失败 (os error 13)", "update_download", "unix"), "permission_denied");
+  assert.equal(detectErrorCode("写入失败 (os error 13)", "update_download", "windows"), null);
+  assert.equal(detectErrorCode("写入失败 (os error 112)", "update_download", "windows"), "disk_full");
+  assert.equal(detectErrorCode("写入失败 (os error 28)", "update_download", "windows"), null);
+  // 名称明确时不依赖平台
+  assert.equal(detectErrorCode("Access is denied. (os error 5)", "update_download", null), "permission_denied");
+  assert.equal(detectErrorCode("Permission denied (os error 13)", "update_download", null), "permission_denied");
 }
 
 function testUnknownRawErrorsNeverLeak() {

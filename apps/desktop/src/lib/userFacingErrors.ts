@@ -479,8 +479,31 @@ function readReason(reason: unknown): ReasonParts {
   return { text, detail: text, status: null };
 }
 
-/** 从原始文本里识别稳定的技术错误码；识别不到返回 null。 */
-export function detectErrorCode(text: string, context: UserErrorContext = "general"): string | null {
+export type OsFamily = "windows" | "unix";
+
+/** 当前系统类别；拿不到（非浏览器环境）时返回 null，只按错误名称判断。 */
+export function detectOsFamily(): OsFamily | null {
+  const agent = (globalThis as { navigator?: { userAgent?: string } }).navigator?.userAgent;
+  if (!agent) {
+    return null;
+  }
+  return /Windows/i.test(agent) ? "windows" : "unix";
+}
+
+// 同一个 os error 数字在不同系统含义不同（5 在 Windows 是拒绝访问、在 macOS 是 I/O 错误；
+// 28 在 Unix 是磁盘已满、在 Windows 是缺纸），只能按平台解读。
+const OS_ERROR_CODES: Record<OsFamily, { permission: number[]; diskFull: number[] }> = {
+  windows: { permission: [5], diskFull: [39, 112] },
+  unix: { permission: [1, 13], diskFull: [28] }
+};
+
+function osErrorNumber(text: string) {
+  const match = text.match(/os error (\d+)\b/i);
+  return match ? Number(match[1]) : null;
+}
+
+/** 运行时 / 服务端明确给出的机器码，优先级高于任何文字猜测。 */
+function detectMachineErrorCode(text: string): string | null {
   const prefixed = text.match(RUNTIME_COMPONENT_PREFIX)?.[1]?.toLowerCase();
   if (prefixed) {
     return prefixed;
@@ -493,13 +516,25 @@ export function detectErrorCode(text: string, context: UserErrorContext = "gener
   }
   // 已识别的运行时机器码即使没有专门文案也要原样保留，客服依赖它定位问题。
   const runtimeCode = RUNTIME_REASON_CODES.find((code) => text.includes(code));
-  if (runtimeCode) {
-    return runtimeCode;
+  return runtimeCode ?? null;
+}
+
+/** 从原始文本里识别稳定的技术错误码；识别不到返回 null。 */
+export function detectErrorCode(
+  text: string,
+  context: UserErrorContext = "general",
+  osFamily: OsFamily | null = detectOsFamily()
+): string | null {
+  const machineCode = detectMachineErrorCode(text);
+  if (machineCode) {
+    return machineCode;
   }
-  if (/No space left|os error 28\b|ENOSPC|There is not enough space|磁盘空间不足/i.test(text)) {
+  const osError = osErrorNumber(text);
+  const osCodes = osFamily && osError !== null ? OS_ERROR_CODES[osFamily] : null;
+  if (/No space left|ENOSPC|There is not enough space|磁盘空间不足/i.test(text) || osCodes?.diskFull.includes(osError!)) {
     return "disk_full";
   }
-  if (/Permission denied|Access is denied|os error (?:5|13)\b|EACCES|EPERM|拒绝访问/i.test(text)) {
+  if (/Permission denied|Access is denied|Operation not permitted|EACCES|EPERM|拒绝访问/i.test(text) || osCodes?.permission.includes(osError!)) {
     return "permission_denied";
   }
   // 网络类要先于签名判断：Windows 更新器的“下载或签名校验失败”在断网时也会出现。
@@ -578,7 +613,11 @@ function describeUserErrorInContext(reason: unknown, context: UserErrorContext):
   const detail = normalizeWhitespace(parts.detail);
   const status = parts.status ?? statusFromText(`${body}\n${detail}`);
 
-  const technicalCode = detectErrorCode(`${body}\n${detail}`, context);
+  // 服务端明确返回了 HTTP 错误时，以状态码为准：“Gateway Timeout”、上游“connection refused”
+  // 是服务端故障，不能被文字猜测成客户的网络问题。只有明确的机器码仍然优先。
+  const technicalCode = status !== null && status >= 400
+    ? detectMachineErrorCode(`${body}\n${detail}`)
+    : detectErrorCode(`${body}\n${detail}`, context);
   if (technicalCode && USER_ERROR_CATALOG[technicalCode]) {
     const entry = USER_ERROR_CATALOG[technicalCode];
     return { ...entry, code: existingCode ?? technicalCode, detail, known: true };
