@@ -40,9 +40,25 @@ function testThrottle() {
   assert.equal(shouldRecordClientVersion({ ...stored, version: "1.1.9" }, next, now), true);
   assert.equal(shouldRecordClientVersion({ ...stored, build: null }, next, now), true);
   assert.equal(shouldRecordClientVersion({ ...stored, channel: "beta" }, next, now), true);
+  assert.equal(shouldRecordClientVersion({ ...stored, version: "1.1.11", lastSeenAt: new Date(now.getTime() + 1) }, next, now), false, "比已记录更早的上报不覆盖");
 }
 
-function createRecorder(options: { failAuth?: boolean; failWrite?: boolean } = {}) {
+// 按 Prisma 的语义求值更新条件（含 SQL 中 NULL 与 not 比较的行为），用来验证条件本身而不是测试替身。
+function matches(row: any, where: any): boolean {
+  return Object.entries(where).every(([key, condition]: [string, any]) => {
+    if (key === "OR") return condition.some((item: any) => matches(row, item));
+    const value = row[key];
+    const comparable = (input: any) => (input instanceof Date ? input.getTime() : input);
+    if (condition === null) return value === null;
+    if (typeof condition !== "object" || condition instanceof Date) return comparable(value) === comparable(condition);
+    if ("not" in condition) return condition.not === null ? value !== null : value !== null && comparable(value) !== comparable(condition.not);
+    if ("lt" in condition) return comparable(value) < comparable(condition.lt);
+    if ("lte" in condition) return comparable(value) <= comparable(condition.lte);
+    throw new Error(`unsupported condition ${key}`);
+  });
+}
+
+function createRecorder(options: { failAuth?: boolean; failWrite?: boolean; beforeReadReturns?: () => Promise<void> } = {}) {
   const rows = new Map<string, any>();
   const calls = { auth: 0, reads: 0, writes: [] as any[] };
   const service = Object.assign(Object.create(ClientVersionReportService.prototype), {
@@ -58,14 +74,29 @@ function createRecorder(options: { failAuth?: boolean; failWrite?: boolean } = {
       userClientVersion: {
         findUnique: async ({ where }: any) => {
           calls.reads += 1;
-          return rows.get(`${where.userId_platform.userId}:${where.userId_platform.platform}`) ?? null;
+          const row = rows.get(`${where.userId_platform.userId}:${where.userId_platform.platform}`);
+          const snapshot = row ? { ...row } : null;
+          await options.beforeReadReturns?.();
+          return snapshot;
         },
-        upsert: async (input: any) => {
+        create: async ({ data }: any) => {
           if (options.failWrite) throw new Error("数据库不可用");
-          calls.writes.push(input);
-          const key = `${input.where.userId_platform.userId}:${input.where.userId_platform.platform}`;
-          rows.set(key, { ...(rows.get(key) ?? input.create), ...input.update });
-          return rows.get(key);
+          const key = `${data.userId}:${data.platform}`;
+          if (rows.has(key)) throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+          calls.writes.push({ op: "create", data });
+          rows.set(key, { ...data });
+          return data;
+        },
+        updateMany: async ({ where, data }: any) => {
+          if (options.failWrite) throw new Error("数据库不可用");
+          let count = 0;
+          for (const [key, row] of rows) {
+            if (!matches(row, where)) continue;
+            rows.set(key, { ...row, ...data });
+            count += 1;
+          }
+          if (count) calls.writes.push({ op: "update", where, data });
+          return { count };
         }
       }
     }
@@ -73,13 +104,56 @@ function createRecorder(options: { failAuth?: boolean; failWrite?: boolean } = {
   return { service, rows, calls };
 }
 
+async function testOutOfOrder() {
+  const t0 = new Date("2026-09-27T10:00:00Z");
+  const t1 = new Date(t0.getTime() + 60 * 60_000);
+  const t2 = new Date(t1.getTime() + 1_000);
+  const older = { platform: "macos" as const, version: "1.1.9", build: null, channel: "stable" as const };
+  const newer = { ...older, version: "1.1.10", build: 4 };
+
+  // 两台设备都读到了 t0 的旧记录；较新的上报先写完，较早的上报随后才写。
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let gated = true;
+  const racing = createRecorder({ beforeReadReturns: () => (gated ? gate : Promise.resolve()) });
+  racing.rows.set("user-1:macos", { userId: "user-1", platform: "macos", version: "1.1.8", build: null, channel: "stable", lastSeenAt: t0 });
+  const slow = racing.service.record("Bearer good", older, t1);
+  await new Promise((resolve) => setImmediate(resolve));
+  gated = false;
+  assert.equal(await racing.service.record("Bearer good", newer, t2), true);
+  release();
+  assert.equal(await slow, false, "更早发生的上报晚到时，数据库条件拒绝覆盖");
+  assert.equal(racing.rows.get("user-1:macos").version, "1.1.10");
+  assert.equal(racing.rows.get("user-1:macos").lastSeenAt.getTime(), t2.getTime(), "最近使用时间不会倒退");
+
+  // 首次上报并发到达：较新的先建行，较早的建行冲突后走条件更新，同样被拒绝。
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  let firstGated = true;
+  const first = createRecorder({ beforeReadReturns: () => (firstGated ? firstGate : Promise.resolve()) });
+  const slowFirst = first.service.record("Bearer good", older, t1);
+  await new Promise((resolve) => setImmediate(resolve));
+  firstGated = false;
+  assert.equal(await first.service.record("Bearer good", newer, t2), true);
+  releaseFirst();
+  assert.equal(await slowFirst, false);
+  assert.equal(first.rows.get("user-1:macos").version, "1.1.10");
+
+  // 反过来较早的先写完，较新的仍能覆盖。
+  const ordered = createRecorder();
+  assert.equal(await ordered.service.record("Bearer good", older, t1), true);
+  assert.equal(await ordered.service.record("Bearer good", newer, t2), true);
+  assert.equal(ordered.rows.get("user-1:macos").version, "1.1.10");
+  assert.equal(await ordered.service.record("Bearer good", older, t1), false, "已记录更新的上报后，更早的上报不再写");
+}
+
 async function testRecord() {
   const t0 = new Date("2026-09-27T10:00:00Z");
   const report = { platform: "macos" as const, version: "1.1.9", build: null, channel: "stable" as const };
   const { service, rows, calls } = createRecorder();
   assert.equal(await service.record("Bearer good", report, t0), true);
-  assert.equal(calls.writes[0].create.userId, "user-1");
-  assert.equal(calls.writes[0].create.platform, "macos");
+  assert.equal(calls.writes[0].data.userId, "user-1");
+  assert.equal(calls.writes[0].data.platform, "macos");
   assert.equal(rows.get("user-1:macos").version, "1.1.9");
   assert.equal(await service.record("Bearer good", report, new Date(t0.getTime() + 5 * 60_000)), false, "10 分钟内同版本不写");
   assert.equal(calls.writes.length, 1);
@@ -110,7 +184,7 @@ async function testBackground() {
   service.recordInBackground("Bearer good", valid);
   for (let index = 0; index < 20 && calls.writes.length === 0; index += 1) await new Promise((resolve) => setImmediate(resolve));
   assert.equal(calls.writes.length, 1);
-  assert.equal(calls.writes[0].create.build, 2);
+  assert.equal(calls.writes[0].data.build, 2);
   const failing = createRecorder({ failAuth: true });
   assert.doesNotThrow(() => failing.service.recordInBackground("Bearer good", valid));
   await new Promise((resolve) => setImmediate(resolve));
@@ -172,6 +246,7 @@ async function main() {
   testNormalize();
   testThrottle();
   await testRecord();
+  await testOutOfOrder();
   await testBackground();
   await testUpdateCheckWiring();
   await testAdminUsers();

@@ -1,7 +1,9 @@
 import { Injectable, Logger } from "@nestjs/common";
+import type { Prisma } from "@prisma/client";
 import type { ClientUpdateCheckDto, PlatformTarget, ReleaseChannel } from "@chordv/shared";
 import { workLifecycle } from "../../work-lifecycle";
 import { AuthSessionService } from "./auth-session.service";
+import { isPrismaCodedError } from "./prisma-error.utils";
 import { PrismaService } from "./prisma.service";
 
 /** 版本、构建号、通道都没变时，最近活跃时间最多每 10 分钟写一次，避免检查更新放大写入。 */
@@ -39,8 +41,31 @@ export function normalizeClientVersionReport(input: Partial<ClientUpdateCheckDto
 
 export function shouldRecordClientVersion(existing: StoredClientVersion | null, next: ClientVersionReport, now: Date) {
   if (!existing) return true;
+  // 晚到的旧上报（比已记录的更早发生）一律不覆盖。
+  if (existing.lastSeenAt.getTime() >= now.getTime()) return false;
   if (existing.version !== next.version || (existing.build ?? null) !== next.build || existing.channel !== next.channel) return true;
   return now.getTime() - existing.lastSeenAt.getTime() >= CLIENT_VERSION_SEEN_REFRESH_MS;
+}
+
+/**
+ * 与 shouldRecordClientVersion 同一规则的数据库条件：只有比已记录的更新，且（内容有变化或已到刷新间隔）才写。
+ * 条件随更新语句一起执行，并发上报时由数据库保证不会被更早的上报覆盖。
+ */
+export function buildClientVersionWriteCondition(userId: string, report: ClientVersionReport, now: Date): Prisma.UserClientVersionWhereInput {
+  const buildChanged: Prisma.UserClientVersionWhereInput[] = report.build === null
+    ? [{ build: { not: null } }]
+    : [{ build: null }, { build: { not: report.build } }];
+  return {
+    userId,
+    platform: report.platform,
+    lastSeenAt: { lt: now },
+    OR: [
+      { version: { not: report.version } },
+      { channel: { not: report.channel } },
+      ...buildChanged,
+      { lastSeenAt: { lte: new Date(now.getTime() - CLIENT_VERSION_SEEN_REFRESH_MS) } }
+    ]
+  };
 }
 
 function readClientBuild(value: unknown) {
@@ -65,10 +90,11 @@ export class ClientVersionReportService {
     if (!authorization?.trim() || workLifecycle.isDraining) return;
     const report = normalizeClientVersionReport(input);
     if (!report) return;
-    void workLifecycle.track(this.record(authorization, report));
+    // 以收到请求的时刻为准，而不是后台写完的时刻，这样慢的旧请求不会被当成更新的上报。
+    void workLifecycle.track(this.record(authorization, report, new Date()));
   }
 
-  /** 返回是否实际写库；凭证无效、版本未变且未到刷新间隔、或数据库异常时返回 false，不抛错。 */
+  /** 返回是否实际写库；凭证无效、版本未变且未到刷新间隔、上报比已记录的更早、或数据库异常时返回 false，不抛错。 */
   async record(authorization: string, report: ClientVersionReport, now = new Date()): Promise<boolean> {
     let userId: string;
     try {
@@ -77,19 +103,26 @@ export class ClientVersionReportService {
       return false;
     }
     try {
-      const where = { userId_platform: { userId, platform: report.platform } };
       const existing = await this.prisma.userClientVersion.findUnique({
-        where,
+        where: { userId_platform: { userId, platform: report.platform } },
         select: { version: true, build: true, channel: true, lastSeenAt: true }
       });
       if (!shouldRecordClientVersion(existing, report, now)) return false;
       const data = { version: report.version, build: report.build, channel: report.channel, lastSeenAt: now };
-      await this.prisma.userClientVersion.upsert({
-        where,
-        create: { userId, platform: report.platform, ...data },
-        update: data
+      if (!existing) {
+        try {
+          await this.prisma.userClientVersion.create({ data: { userId, platform: report.platform, ...data } });
+          return true;
+        } catch (error) {
+          // 同一用户同一平台的首次上报并发到达：另一条已先写入，改走下面的条件更新。
+          if (!isPrismaCodedError(error) || error.code !== "P2002") throw error;
+        }
+      }
+      const updated = await this.prisma.userClientVersion.updateMany({
+        where: buildClientVersionWriteCondition(userId, report, now),
+        data
       });
-      return true;
+      return updated.count > 0;
     } catch (error) {
       this.logger.warn(`客户端版本记录失败：${error instanceof Error ? error.message : String(error)}`);
       return false;
