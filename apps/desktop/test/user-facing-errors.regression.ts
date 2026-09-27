@@ -12,6 +12,7 @@ import {
   toUserMessage,
   type UserErrorContext
 } from "../src/lib/userFacingErrors";
+import { describeUpdateDownloadFailure, type UpdateDownloadState } from "../src/lib/updateState";
 import { deriveGuidanceFromConnectFailure, deriveGuidanceFromRuntimeFailure, formatGuidanceMessage } from "../src/lib/connectionGuidance";
 
 /** 客户可见文本中绝不允许出现的内容。 */
@@ -392,12 +393,26 @@ function testGuidanceSourceHasNoDeveloperJargon() {
   }
 }
 
+function testStoredUpdateFailureIsNotRemapped() {
+  const base: UpdateDownloadState = { phase: "failed", fileName: "ChordV.dmg", downloadedBytes: 0, totalBytes: null, localPath: null, message: null };
+  // useUpdateFlow 映射一次后存下：403 业务提示没有编号
+  const denied = describeUserError(Object.assign(new Error("拒绝访问该更新包，请联系客服"), { status: 403, rawMessage: "拒绝访问该更新包，请联系客服" }), { context: "update_download" });
+  const stored = describeUpdateDownloadFailure({ ...base, message: denied.message, errorCode: denied.code });
+  assert.deepEqual(stored, { message: "拒绝访问该更新包，请联系客服", code: null }, "stored failure is shown as-is, no invented code");
+  assert.deepEqual(describeUpdateDownloadFailure({ ...base, message: "下载连接中断，请重试。", errorCode: "http_503" }), { message: "下载连接中断，请重试。", code: "http_503" });
+  // 旧状态（没有 errorCode 字段）仍按原文映射，不泄露原文
+  const legacy = describeUpdateDownloadFailure({ ...base, message: "error sending request for url (https://x)" });
+  assert.equal(legacy?.code, "network_offline");
+  assert.equal(describeUpdateDownloadFailure({ ...base, phase: "downloading" }), null);
+}
+
 function testDisplaySurfacesUseErrorNumber() {
   const banner = readFileSync(resolve(import.meta.dirname, "../src/components/RuntimeAssetsBanner.tsx"), "utf8");
   assert.match(banner, /errorCode=\{failed && !view\.cancelled \? state\.errorCode : null\}/);
   assert.doesNotMatch(banner, /错误编号：/, "panels show the code through ErrorCodeHint, not a text line");
   const updatePanel = readFileSync(resolve(import.meta.dirname, "../src/components/ClientUpdateProgressPanel.tsx"), "utf8");
-  assert.match(updatePanel, /errorCode=\{failure \?/);
+  assert.match(updatePanel, /errorCode=\{failure \? failure\.code : null\}/);
+  assert.match(updatePanel, /describeUpdateDownloadFailure\(state\)/);
   const downloadPanel = readFileSync(resolve(import.meta.dirname, "../src/components/DownloadProgressPanel.tsx"), "utf8");
   assert.match(downloadPanel, /<ErrorCodeHint code=\{errorCode\}\/>/);
   const routing = readFileSync(resolve(import.meta.dirname, "../src/components/RoutingRulesModal.tsx"), "utf8");
@@ -441,4 +456,5 @@ testSafeTextDetection();
 testGuidanceUsesErrorNumberAndStaysPlain();
 testGuidanceSourceHasNoDeveloperJargon();
 testDisplaySurfacesUseErrorNumber();
+testStoredUpdateFailureIsNotRemapped();
 console.log("user-facing error mapping regression checks passed");

@@ -1,6 +1,7 @@
 import type { ClientVersionDto, PlatformTarget } from "@chordv/shared";
 import type { ClientUpdateArtifact, ClientUpdateCheckResult, ReleaseArtifactType, ReleaseChannel } from "../api/client";
 import { detectRuntimePlatform, type DesktopUpdateDownloadProgress, type RuntimeStatus } from "./runtime";
+import { describeUserError } from "./userFacingErrors";
 
 export type UpdateDownloadState = {
   phase: "idle" | "preparing" | "downloading" | "verifying" | "completed" | "failed";
@@ -12,6 +13,23 @@ export type UpdateDownloadState = {
   /** 失败时的稳定错误码，只作为「错误编号」次要展示。 */
   errorCode?: string | null;
 };
+
+/**
+ * 下载失败的展示内容。useUpdateFlow 已经映射并存下了文案和编号（errorCode 字段存在，可能为 null），
+ * 直接沿用，不能再映射一次（否则 403 业务提示会被改判成本机权限问题、凭空多出编号）；
+ * 只有没有 errorCode 字段的旧状态才按原文映射。
+ */
+export function describeUpdateDownloadFailure(state: UpdateDownloadState): { message: string; code: string | null } | null {
+  if (state.phase !== "failed") {
+    return null;
+  }
+  if (state.errorCode !== undefined) {
+    const message = state.message?.trim();
+    return { message: message || describeUserError("", { context: "update_download" }).message, code: state.errorCode };
+  }
+  const failure = describeUserError(state.message ?? "", { context: "update_download" });
+  return { message: failure.message, code: failure.code };
+}
 
 export type ResolvedUpdatePlatform = Extract<PlatformTarget, "macos" | "windows" | "android">;
 
