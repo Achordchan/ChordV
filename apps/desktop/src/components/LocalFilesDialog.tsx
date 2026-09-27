@@ -18,6 +18,7 @@ type LocalFilesDialogProps = {
 export function LocalFilesDialog(props: LocalFilesDialogProps) {
   const [entries, setEntries] = useState<LocalFileEntry[] | null>(null);
   const [failed, setFailed] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const { opened, versions } = props;
   const rows = useMemo(() => (entries ? buildLocalFileRows(entries, versions) : null), [entries, versions]);
@@ -26,6 +27,7 @@ export function LocalFilesDialog(props: LocalFilesDialogProps) {
     if (!opened) return;
     let cancelled = false;
     setFailed(false);
+    setLoading(true);
     // 每次打开都重新读取，刚下载完的组件也能立刻看到。
     void listLocalFileLocations()
       .then((result) => {
@@ -37,6 +39,9 @@ export function LocalFilesDialog(props: LocalFilesDialogProps) {
         if (cancelled) return;
         setEntries([]);
         setFailed(true);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
@@ -53,7 +58,7 @@ export function LocalFilesDialog(props: LocalFilesDialogProps) {
       footerStart="用于排查组件与配置问题。登录凭据不会在这里显示。"
       actions={<Button data-autofocus onClick={props.onClose}>关闭</Button>}
     >
-      {rows === null ? (
+      {rows === null || (loading && rows.length === 0) ? (
         <div className={styles.state}><Loader size={16} /><Text size="sm" c="dimmed">正在读取文件位置…</Text></div>
       ) : failed ? (
         <div className={styles.state}>
