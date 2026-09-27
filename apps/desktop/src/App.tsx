@@ -68,6 +68,7 @@ import {
   readError,
   shouldAutoHandleRuntimeGuidance
 } from "./lib/connectionGuidance";
+import { toUserMessage } from "./lib/userFacingErrors";
 import {
   clearRememberedCredentials as clearRememberedCredentialsStorage,
   loadRememberedCredentials as loadRememberedCredentialsFromStorage,
@@ -76,6 +77,7 @@ import {
   resolveDefaultMode,
   saveRememberedCredentials as saveRememberedCredentialsToStorage,
   showErrorToast,
+  createLoggedUserErrorReader,
   toSubscriptionServerProbe,
   formatTrayTrafficLine
 } from "./lib/appState";
@@ -119,6 +121,12 @@ declare global {
 
 const DownloadProgressDebug = (import.meta.env.DEV || import.meta.env.VITE_CHORDV_LOCAL_PREVIEW === "1")
   ? lazy(() => import("./dev/DownloadProgressDebug").then(module => ({ default: module.DownloadProgressDebug }))) : null;
+// 只负责展示的 hook 使用面向客户的错误读取器：原始错误不会直接出现在界面上。
+// 读取器接收完整错误对象（保留 HTTP 状态），被隐藏的原文会写入诊断日志。
+const readAnnouncementError = createLoggedUserErrorReader("announcement");
+const readTicketError = createLoggedUserErrorReader("ticket");
+const readNodeProbeError = createLoggedUserErrorReader("node_probe");
+const readServerProbeError = createLoggedUserErrorReader("server_probe");
 
 export function App() {
   const [session, setSessionState] = useState<AuthSessionDto | null>(null);
@@ -218,7 +226,7 @@ export function App() {
       setBootstrap((current) => (current ? { ...current, announcements: updater(current.announcements) } : current));
     },
     onUnauthorized: recoverSessionAfterUnauthorized,
-    readError,
+    readError: readAnnouncementError,
     notify: notifications.show
   });
   const {
@@ -257,7 +265,7 @@ export function App() {
   } = useSupportTickets({
     accessToken: session?.accessToken ?? null,
     onUnauthorized: recoverSessionAfterUnauthorized,
-    readError,
+    readError: readTicketError,
     notify: notifications.show
   });
   const runtimeComponentsCheckRef = useRef<
@@ -292,7 +300,6 @@ export function App() {
     accessToken: session?.accessToken ?? null,
     bootstrapVersion: bootstrap?.version ?? null,
     updateChannel,
-    readError,
     notify: notifications.show,
     showError: showErrorToast,
     onUnauthorized: recoverSessionAfterUnauthorized,
@@ -390,9 +397,10 @@ export function App() {
     accessToken: session?.accessToken ?? null,
     nowMs: now,
     selectedNodeId: selectedNodeId ?? runtime?.node.id ?? null,
-    readError,
+    readError: readNodeProbeError,
     onUnauthorized: recoverSessionAfterUnauthorized,
-    onError: showErrorToast,
+    // 用原始错误映射一次：4xx 业务提示（如“拒绝访问该节点”）没有编号，二次映射会被误判为本机权限问题。
+    onError: (message, reason) => showErrorToast(reason || message, "node_probe"),
     pickNodeId: (targetNodes, preferredId, results) => pickNode(targetNodes, preferredId, results)?.id ?? null,
     pickAlternativeNodeId: (targetNodes, currentNodeId, results) =>
       pickAlternativeNode(targetNodes, currentNodeId, results)?.id ?? null,
@@ -425,10 +433,10 @@ export function App() {
       return null;
     }
     const runtimeFailureText = composeRuntimeFailureText(desktopStatus);
+    const rawFailure = desktopStatus.recoveryHint ?? desktopStatus.lastError;
     return (
       deriveGuidanceFromRuntimeFailure(runtimeFailureText, fallbackNode?.id ?? null)?.message ??
-      desktopStatus.recoveryHint ??
-      (desktopStatus.lastError ? readError(desktopStatus.lastError) : null)
+      (rawFailure ? toUserMessage(readError(rawFailure), { context: "connect" }) : null)
     );
   }, [desktopStatus, fallbackNode?.id]);
   const canAttemptConnect =
@@ -585,7 +593,7 @@ export function App() {
       });
     },
     recoverSessionAfterUnauthorized,
-    readError
+    readError: readServerProbeError
   });
 
   useEffect(() => {
@@ -810,7 +818,7 @@ export function App() {
         status: "failed",
         elapsedMs: null,
         checkedAt: Date.now(),
-        errorMessage: reason instanceof Error ? readError(reason.message) : "当前无法连接服务器"
+        errorMessage: readServerProbeError(reason)
       });
     } finally {
       setServerProbeBusy(false);
@@ -1457,8 +1465,8 @@ export function App() {
     void handleForcedGuidance({
       code: "node_access_revoked",
       tone: "warning",
-      title: "当前节点已撤权",
-      message: "当前节点已被取消授权，请切换其他可用节点后重新连接。",
+      title: "节点已不可用",
+      message: "当前节点已不在你的订阅范围内，请切换其他节点后重新连接。",
       actionLabel: "切换节点后重连",
       recommendedNodeId: fallbackNode?.id ?? null
     });
@@ -1476,8 +1484,8 @@ export function App() {
     void handleForcedGuidance({
       code: "node_unavailable",
       tone: "warning",
-      title: "当前节点暂不可用",
-      message: "当前节点无法连通，请切换其他可用节点后重新连接。",
+      title: "节点暂不可用",
+      message: "当前节点暂时无法连接，请切换其他节点后重新连接。",
       actionLabel: "切换节点后重连",
       recommendedNodeId: fallbackNode?.id ?? null
     });
@@ -1565,7 +1573,7 @@ export function App() {
       return;
     }
 
-    showErrorToast(desktopStatus.lastError);
+    showErrorToast(desktopStatus.lastError, "connect");
   }, [booting, windowTransitioning, actionBusy, desktopStatus.lastError, desktopStatus.status]);
 
   useEffect(() => {

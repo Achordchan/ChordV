@@ -765,6 +765,11 @@ body {
   box-shadow: var(--cv-shadow-lg);
 }
 
+/* 错误通知的「错误编号：xxx」在换行之后，需要单独成行。 */
+.cv-notification .mantine-Notification-description {
+  white-space: pre-line;
+}
+
 input,
 textarea,
 [contenteditable],

@@ -34,6 +34,7 @@ import {
   refreshDesktopSessionWithFallback
 } from "../lib/desktopSessionRecovery";
 import { buildProtectedAccessNotice, resolveProtectedAccessReason } from "../lib/sessionLeaseState";
+import type { UserErrorContext } from "../lib/userFacingErrors";
 
 export type GuidanceTone = "danger" | "warning" | "info";
 
@@ -116,7 +117,7 @@ export type UseAuthBootstrapOptions = {
     subscription: SubscriptionStatusDto,
     nodes: NodeSummaryDto[]
   ) => ConnectionGuidanceLike | null;
-  showErrorToast: (message: string) => void;
+  showErrorToast: (reason: unknown, context?: UserErrorContext) => void;
   readError: (message: string) => string;
   saveRememberedCredentials: (email: string, password: string) => void;
   clearRememberedCredentials: () => void;
@@ -231,7 +232,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
         }
         setError(null);
         if (nextNodes.length === 0) {
-          showErrorToast("当前订阅未分配节点，请联系服务商处理");
+          showErrorToast("当前订阅暂未分配可用节点，请联系客服处理。", "session");
         }
 
         const preferred = pickNode(nextNodes, null);
@@ -241,7 +242,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
           try {
             await runProbe(nextNodes, true, nextSession.accessToken);
           } catch (reason) {
-            showErrorToast(reason instanceof Error ? readError(reason.message) : "节点测速失败");
+            showErrorToast(reason || "节点测速没有完成，请稍后重试。", "node_probe");
           }
         } else if (nextNodes.length > 0) {
           setProbeResults((current) =>
@@ -263,7 +264,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
               includeRuntimeComponents: false
             });
           } catch (reason) {
-            showErrorToast(reason instanceof Error ? readError(reason.message) : "更新信息同步失败");
+            showErrorToast(reason || "暂时无法检查更新，请稍后重试。", "update_check");
           }
         }
 
@@ -286,7 +287,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
           } catch (refreshReason) {
             if (isUnauthorizedApiError(refreshReason)) {
               await clearSession(true);
-              showErrorToast("登录态已失效");
+              showErrorToast("登录状态已失效，请重新登录。", "session");
               return false;
             }
             if (isForbiddenApiError(refreshReason)) {
@@ -296,27 +297,27 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
               if (accessReason) {
                 const notice = buildProtectedAccessNotice(accessReason);
                 await clearSession(true);
-                showErrorToast(notice.message);
+                showErrorToast(notice.message, "session");
                 return false;
               }
               await clearSession(true);
-              showErrorToast(refreshReason instanceof Error ? readError(refreshReason.message) : "登录失败");
+              showErrorToast(refreshReason || "登录未成功，请稍后重试。", "login");
               return false;
             }
             if (session) {
               setSession(nextSession);
               await saveStoredSession(nextSession).catch(() => null);
-              showErrorToast("同步账号信息失败，已保留当前登录态");
+              showErrorToast("账号信息暂时无法同步，已保留当前登录状态，请稍后刷新。", "session");
               return true;
             }
-            showErrorToast("登录失败");
+            showErrorToast("登录未成功，请稍后重试。", "login");
             return false;
           }
         }
 
         if (isUnauthorizedApiError(reason)) {
           await clearSession(true);
-          showErrorToast(reason instanceof Error ? readError(reason.message) : "登录态已失效");
+          showErrorToast(reason || "登录状态已失效，请重新登录。", "session");
           return false;
         }
 
@@ -327,13 +328,13 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
           if (accessReason) {
             const notice = buildProtectedAccessNotice(accessReason);
             await clearSession(true);
-            showErrorToast(notice.message);
+            showErrorToast(notice.message, "session");
             return false;
           }
           const message = reason instanceof Error ? readError(reason.message) : "当前账号无法继续使用";
           if (message.includes("当前没有可用订阅") || message.includes("失去可用订阅")) {
             await clearSession(true);
-            showErrorToast("当前账号没有可用订阅，请联系管理员恢复订阅后再使用。");
+            showErrorToast("当前账号暂无可用订阅，请续费或联系客服后再使用。", "session");
             return false;
           }
         }
@@ -342,7 +343,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
           const message = reason instanceof Error ? readError(reason.message) : "";
           if (message.includes("当前没有可用订阅")) {
             await clearSession(true);
-            showErrorToast("当前账号没有可用订阅，请联系管理员恢复订阅后再使用。");
+            showErrorToast("当前账号暂无可用订阅，请续费或联系客服后再使用。", "session");
             return false;
           }
         }
@@ -350,11 +351,11 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
         if (session) {
           setSession(nextSession);
           await saveStoredSession(nextSession).catch(() => null);
-          showErrorToast(reason instanceof Error ? readError(reason.message) : "同步账号信息失败，已保留当前登录态");
+          showErrorToast(reason || "账号信息暂时无法同步，已保留当前登录状态，请稍后刷新。", "session");
           return true;
         }
 
-        showErrorToast(reason instanceof Error ? readError(reason.message) : "登录失败");
+        showErrorToast(reason || "登录未成功，请稍后重试。", "login");
         return false;
       }
     },
@@ -411,7 +412,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
         await clearStoredSession().catch(() => null);
       }
     } catch (reason) {
-      showErrorToast(reason instanceof Error ? readError(reason.message) : "登录失败");
+      showErrorToast(reason || "登录未成功，请稍后重试。", "login");
     } finally {
       setAuthBusy(false);
     }
@@ -444,10 +445,10 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
         await forceStopLocalRuntime();
       }
     } catch (reason) {
-      let message=reason instanceof Error ? readError(reason.message) : "刷新失败";
+      showErrorToast(reason || "刷新失败", "refresh");
+      // 本机停止失败单独提醒，不与刷新失败合并成一条。
       try { await forceStopLocalRuntime(); }
-      catch (stopReason) {message+=`\n${stopReason instanceof Error?readError(stopReason.message):"本机连接停止失败"}`;}
-      showErrorToast(message);
+      catch (stopReason) { showErrorToast(stopReason || "本机连接停止失败", "local_stop"); }
     } finally {
       setRefreshing(false);
     }
@@ -472,7 +473,13 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
       setLogoutBusy(true);
       invalidateSessionOperations?.();
       const accessToken = session?.accessToken ?? null;
-      await forceStopLocalRuntime();
+      try {
+        await forceStopLocalRuntime();
+      } catch (stopReason) {
+        // 本机连接没停下来时不清除会话：明确告诉用户连接可能仍在运行，而不是泛泛的“退出失败”。
+        showErrorToast(stopReason || "本机连接停止失败", "local_stop");
+        return;
+      }
       if (session) {
         void logoutSession(accessToken ?? session.accessToken, session.refreshToken).catch(() => null);
       }
@@ -481,7 +488,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
         setCredentials((current) => ({ ...current, password: "" }));
       }
     } catch (reason) {
-      showErrorToast(reason instanceof Error ? readError(reason.message) : "退出失败，请重试。");
+      showErrorToast(reason || "退出失败，请重试。", "logout");
     } finally {
       setLogoutBusy(false);
     }

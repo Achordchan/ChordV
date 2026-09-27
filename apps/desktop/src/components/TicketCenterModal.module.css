@@ -150,9 +150,6 @@
 .previewHeader { padding: 12px 16px 8px; }
 .previewBody { padding: 0 16px 14px; }
 .previewError { margin-bottom: 10px; }
-.errorDetails { margin-top: 4px; font-size: 12px; color: var(--cv-text-muted); }
-.errorDetails summary { cursor: pointer; }
-.errorDetails code { display: block; margin-top: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .previewFrame { display: flex; align-items: center; justify-content: center; max-height: min(calc(100dvh - 170px), 760px); overflow: auto; border: 1px solid var(--cv-border); border-radius: var(--cv-radius-md); background: var(--cv-surface-muted); }
 .previewFrame img { max-width: 100%; max-height: min(calc(100dvh - 172px), 740px); object-fit: contain; }
 .previewFoot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }

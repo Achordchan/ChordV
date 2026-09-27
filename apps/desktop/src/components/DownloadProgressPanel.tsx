@@ -1,19 +1,22 @@
 import { useId, useState } from "react";
 import { Button, Loader, Progress } from "@mantine/core";
 import { IconAlertTriangle, IconCheck, IconChevronDown, IconDownload } from "@tabler/icons-react";
+import { ErrorCodeHint } from "./AppDialog";
 import styles from "./DownloadProgressPanel.module.css";
 
 type Props = {
   label: string; title: string; amount: string; percent: number | null;
   completed?: boolean; failed?: boolean; waiting?: boolean;
   details: string[];
+  /** 失败时的稳定错误码，以「错误编号 + 复制」的次要形式展示在详情里。 */
+  errorCode?: string | null;
   onResetLegacyMirror?: (() => void) | null;
   onCancel?: (() => void) | null;
   action?: { label: string; onClick: () => void } | null;
 };
 
 /** Shared presentation for every application-managed download. */
-export function DownloadProgressPanel({label,title,amount,percent,completed,failed,waiting,details,onCancel,action,onResetLegacyMirror}: Props) {
+export function DownloadProgressPanel({label,title,amount,percent,completed,failed,waiting,details,errorCode,onCancel,action,onResetLegacyMirror}: Props) {
   const percentLabel = percent === null ? null : percent >= 100 ? 100 : Math.min(99, Math.round(percent));
   const [expanded, setExpanded] = useState(false);
   const detailsId = useId();
@@ -36,6 +39,7 @@ export function DownloadProgressPanel({label,title,amount,percent,completed,fail
     </div>
     {expanded ? <div id={detailsId} className={styles.details}>
       {details.map((line,index)=><p key={index}>{line}</p>)}
+      {errorCode ? <p><ErrorCodeHint code={errorCode}/></p> : null}
       {failed && onResetLegacyMirror ? <Button size="compact-xs" variant="subtle" onClick={onResetLegacyMirror}>清除旧下载镜像</Button> : null}
     </div> : null}
   </section>;

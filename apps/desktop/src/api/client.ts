@@ -152,7 +152,7 @@ async function requestWithMeta<T>(path: string, init?: RequestInit): Promise<Req
   const startedAt = performance.now();
   const controller = new AbortController();
   const timeout = window.setTimeout(() => {
-    controller.abort(new Error("璇锋眰瓒呮椂"));
+    controller.abort(new Error("请求超时"));
   }, JSON_REQUEST_TIMEOUT_MS);
   let response: Response;
   try {
@@ -234,7 +234,7 @@ function normalizeNetworkRequestError(error: unknown) {
     return new ApiRequestError(null, "请求超时，请检查网络后重试。", message);
   }
   if (/Failed to fetch|NetworkError|fetch failed|Load failed/i.test(message)) {
-    return new ApiRequestError(null, "网络请求失败，请检查后台服务或网络连接后重试。", message);
+    return new ApiRequestError(null, "网络连接失败，请检查网络后重试。", message);
   }
   return error;
 }
@@ -637,18 +637,18 @@ export function uploadSupportTicketAttachment(
         try {
           const body = xhr.responseText ? (JSON.parse(xhr.responseText) as UploadedSupportTicketAttachmentReferenceInputDto) : null;
           if (!body?.uploadToken || !body?.url || !body.fileName || !body.mimeType) {
-            reject(new ApiRequestError(xhr.status, "附件上传响应异常，请重新上传。"));
+            reject(new ApiRequestError(xhr.status, "附件上传失败，请重新上传。"));
             return;
           }
           onProgress?.(100);
           resolve(body);
         } catch (error) {
-          reject(error instanceof Error ? error : new ApiRequestError(xhr.status, "附件上传响应解析失败。"));
+          reject(error instanceof Error ? error : new ApiRequestError(xhr.status, "附件上传失败，请重新上传。"));
         }
       });
     };
     xhr.onerror = () => {
-      settle(() => reject(new ApiRequestError(null, "网络请求失败，请检查后台服务或网络连接后重试。")));
+      settle(() => reject(new ApiRequestError(null, "网络连接失败，请检查网络后重试。")));
     };
     xhr.ontimeout = () => {
       settle(() => reject(new ApiRequestError(null, "附件上传超时，请检查网络后重试。")));

@@ -7,13 +7,15 @@ function load(name:string,modules:Record<string,unknown>={}){
  const exports:any={};const code=ts.transpileModule(readFileSync(new URL(`../src/hooks/${name}.ts`,import.meta.url),"utf8"),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
  vm.runInNewContext(code,{exports,Error,require:(key:string)=>key==="react"?react:modules[key]??{}});return exports;
 }
+// Toasts now receive the original Error (so HTTP status and raw text reach the user-facing mapper).
+const noticeText=(value:unknown)=>value instanceof Error?value.message:String(value);
 async function actions(reconnect:boolean){
- let requests=0,revoked=0;const notices:string[]=[];const node={id:"node"};
+ let requests=0,revoked=0;const notices:unknown[]=[];const contexts:unknown[]=[];const node={id:"node"};
  const options=new Proxy({session:{accessToken:"token"},selectedNode:node,selectedNodeId:"node",nodesRef:{current:[node]},mode:"rule",
   desktopStatus:{platformTarget:"macos",status:reconnect?"connected":"idle",activePid:reconnect?1:null},
   canAttemptConnect:true,runtimeAssetsReady:true,runtimeAssets:{phase:"ready"},forceUpdateRequired:false,
   getCurrentSessionIdentity:()=>"login",getCurrentAccessToken:()=>"token",readError:(value:string)=>value,
-  forceStopLocalRuntime:async()=>{throw Error("cleanup failed");},showErrorToast:(value:string)=>notices.push(value),
+  forceStopLocalRuntime:async()=>{throw Error("cleanup failed");},showErrorToast:(value:unknown,context?:unknown)=>{notices.push(value);contexts.push(context);},
   runtimeRef:{current:null},isRuntimeStopping:()=>false,getRuntimeSyncEpoch:()=>0,
   runtime:reconnect?{sessionId:"old",node}:null,
  } as Record<string,unknown>,{get:(target,key:string)=>key in target?target[key]:()=>{}});
@@ -25,22 +27,29 @@ async function actions(reconnect:boolean){
  const hook=useRuntimeActions(options);
  if(reconnect){assert.equal(await hook.handleReconnect(),false);assert.equal(requests,0);}
  else {await hook.handlePrimaryAction();assert.equal(requests,1);assert.equal(revoked,1);}
- assert.equal(notices.length,1);assert.match(notices[0],/cleanup failed/);
+ if(reconnect){assert.equal(notices.length,1);assert.match(noticeText(notices[0]),/cleanup failed/);return;}
+ // A failed start followed by a failed local stop is reported as two separate notices,
+ // so the "connection could not be stopped" warning is never hidden behind the connect failure.
+ assert.equal(notices.length,2);
+ assert.match(noticeText(notices[0]),/native startup failed/);assert.equal(contexts[0],"connect");
+ assert.match(noticeText(notices[1]),/cleanup failed/);assert.equal(contexts[1],"local_stop");
 }
 await actions(false);await actions(true);
-let cleared=0,revoked=0;const notices:string[]=[];
+let cleared=0,revoked=0;const notices:unknown[]=[];const logoutContexts:unknown[]=[];
 const authOptions=new Proxy({session:{accessToken:"token",refreshToken:"refresh"},logoutBusy:false,
  forceStopLocalRuntime:async()=>{throw Error("cleanup failed");},clearStoredSession:async()=>{cleared++;},
- logoutSession:async()=>{revoked++;},showErrorToast:(message:string)=>notices.push(message),readError:(message:string)=>message,
+ logoutSession:async()=>{revoked++;},showErrorToast:(message:unknown,context?:unknown)=>{notices.push(message);logoutContexts.push(context);},readError:(message:string)=>message,
 } as Record<string,unknown>,{get:(target,key:string)=>key in target?target[key]:()=>{}});
 await load("useAuthBootstrap").useAuthBootstrap(authOptions).handleLogout();
-assert.equal(cleared,0);assert.equal(revoked,0);assert.match(notices[0],/cleanup failed/);
+assert.equal(cleared,0);assert.equal(revoked,0);assert.match(noticeText(notices[0]),/cleanup failed/);
+// 退出时本机停止失败要用 local_stop 提醒“连接可能仍在运行”，而不是泛泛的退出失败。
+assert.deepEqual(logoutContexts,["local_stop"]);
 console.log("cleanup errors are handled; reconnect and logout never continue after failed local stop");
 
-let signedOut=0;const clearErrors:string[]=[];
+let signedOut=0;const clearErrors:unknown[]=[];
 const clearFailure=new Proxy({session:{accessToken:"token",refreshToken:"refresh"},logoutBusy:false,
  forceStopLocalRuntime:async()=>{},clearStoredSession:async()=>{throw Error("credential removal failed");},
- logoutSession:async()=>{},setSession:()=>{signedOut++;},showErrorToast:(message:string)=>clearErrors.push(message),readError:(message:string)=>message,
+ logoutSession:async()=>{},setSession:()=>{signedOut++;},showErrorToast:(message:unknown)=>clearErrors.push(message),readError:(message:string)=>message,
 } as Record<string,unknown>,{get:(target,key:string)=>key in target?target[key]:()=>{}});
 await load("useAuthBootstrap").useAuthBootstrap(clearFailure).handleLogout();
-assert.equal(signedOut,0);assert.match(clearErrors[0],/credential removal failed/);
+assert.equal(signedOut,0);assert.match(noticeText(clearErrors[0]),/credential removal failed/);

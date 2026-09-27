@@ -1,5 +1,13 @@
 import { initialUpdateCheckState, reduceUpdateCheckState } from "../lib/updateCheckState";
 import { APP_BUILD_NUMBER } from "../lib/buildInfo";
+import { describeUserError, formatUserError, isCustomerSafeText, shouldRecordDiagnostic, type UserErrorContext, type UserFacingError } from "../lib/userFacingErrors";
+
+/** 被映射 / 隐藏的原始错误写入诊断日志，客服可据此还原真实原因。 */
+function recordUpdateDiagnostic(error: UserFacingError, context: UserErrorContext) {
+  if (shouldRecordDiagnostic(error)) {
+    void recordClientDiagnosticLog("user-error", `[${context}] code=${error.code ?? "-"} detail=${error.detail}`);
+  }
+}
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { ClientVersionDto } from "@chordv/shared";
 import {
@@ -7,6 +15,7 @@ import {
   type ClientUpdateArtifact,
   type ClientUpdateCheckResult,
   isUnauthorizedApiError,
+  recordClientDiagnosticLog,
   type ReleaseChannel
 } from "../api/client";
 import {
@@ -89,9 +98,8 @@ type UseUpdateFlowOptions = {
   accessToken?: string | null;
   bootstrapVersion?: ClientVersionDto | null;
   updateChannel?: ReleaseChannel;
-  readError?: (message: string) => string;
   notify?: (notice: NoticeInput) => void;
-  showError?: (message: string) => void;
+  showError?: (reason: unknown, context?: UserErrorContext) => void;
   onUnauthorized?: () => Promise<unknown> | unknown;
   isPromptBlocked?: () => boolean;
   checkRuntimeComponents?: (input: {
@@ -101,10 +109,6 @@ type UseUpdateFlowOptions = {
     targets?: Array<"xray" | "geo">;
   }) => Promise<RuntimeAssetsCheckSummary | null | void>;
 };
-
-function defaultReadError(message: string) {
-  return message;
-}
 
 function isDesktopManagedUpdate(mode: ClientUpdateCheckResult["deliveryMode"], platform: ResolvedUpdatePlatform) {
   return mode === "desktop_installer_download";
@@ -260,7 +264,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       options.notify?.({
         color: "yellow",
         title: "暂无下载地址",
-        message: "当前版本没有配置可用下载地址，请联系管理员补充发布产物。"
+        message: "当前版本暂时无法下载，请稍后重试，或前往官网下载最新版本。"
       });
       return false;
     }
@@ -274,7 +278,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         options.notify?.({
           color: "red",
           title: "无法打开下载链接",
-          message: reason instanceof Error ? reason.message : "请检查默认浏览器设置后重试。"
+          message: reason instanceof Error && isCustomerSafeText(reason.message) ? reason.message : "请检查默认浏览器设置后重试。"
         });
         return false;
       }
@@ -310,10 +314,14 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         return true;
       } catch (reason) {
         setUpdateDownload(createIdleUpdateDownloadState());
+        const failure = describeUserError(reason, { context: "update_install" });
+        recordUpdateDiagnostic(failure, "update_install");
         options.notify?.({
           color: "yellow",
           title: "本地更新包不可用",
-          message: reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "已切换为重新下载安装器。"
+          message: reason instanceof Error
+            ? `${formatUserError(failure)}\n已切换为重新下载安装器。`
+            : "已切换为重新下载安装器。"
         });
       }
     }
@@ -402,16 +410,20 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       });
       return true;
     } catch (reason) {
-      const message = reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "更新包下载失败";
+      const failure = describeUserError(
+        reason,
+        { context: "update_download" }
+      );
       setUpdateDownload((current) => ({
         phase: "failed",
         fileName: current.fileName,
         downloadedBytes: current.downloadedBytes,
         totalBytes: current.totalBytes,
         localPath: current.localPath,
-        message
+        message: failure.message,
+        errorCode: failure.code
       }));
-      options.showError?.(message);
+      options.showError?.(reason || failure.message, "update_download");
       return false;
     }
   }, [effectiveUpdate, options, updateDownload, updatePlatform]);
@@ -468,7 +480,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           accessToken: runOptions.accessToken ?? options.accessToken ?? undefined
         });
         if (updatePlatform === "windows" && checkedUpdate?.hasUpdate && checkedUpdate.deliveryMode === "desktop_full_replace") {
-          throw new Error("更新服务尚未提供签名安装包，请联系管理员更新发布配置。");
+          throw new Error("当前版本的更新包暂时不可用，请稍后再试，或前往官网下载最新版本。");
         }
         const result =
           checkedUpdate ??
@@ -619,7 +631,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           return null;
         }
         if (!runOptions.openUpdateCenter && (!runOptions.silent || runOptions.source === "manual")) {
-          options.showError?.(reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "检查更新失败");
+          options.showError?.(reason || "暂时无法检查更新，请稍后重试。", "update_check");
         }
         return null;
       } finally {
@@ -756,8 +768,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       dispatchUpdateCheck({ type: "reset" });
       return true;
     } catch (reason) {
-      const message = reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "启动安装失败";
-      options.showError?.(message);
+      options.showError?.(reason || "更新安装没有成功启动，请重试。", "update_install");
       return false;
     }
   }, [effectiveUpdate, options, updateDownload, updatePlatform]);
@@ -768,7 +779,9 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       if (!report || report.ok) {
         return null;
       }
-      const summary = report.summary?.trim() || "自动替换安装未成功，已改为打开安装包。";
+      const reportedSummary = report.summary?.trim();
+      // 报告原文不可展示时不能推断安装包已打开（例如 Start-Process 本身失败），只给中性的失败说明和可操作的下一步。
+      const summary = reportedSummary && isCustomerSafeText(reportedSummary) ? reportedSummary : "更新没有安装完成。请重新检查更新后再试，或到官网下载安装包手动安装。";
       options.notify?.({
         color: "yellow",
         title: "更新安装未完全成功",
@@ -779,7 +792,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       options.notify?.({
         color: "yellow",
         title: "无法读取更新结果",
-        message: "更新结果报告读取失败，报告已保留，请联系支持人员检查。"
+        message: "暂时无法读取上次更新的结果。如果更新后使用异常，请联系客服。"
       });
       return null;
     }

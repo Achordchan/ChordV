@@ -38,6 +38,7 @@ import {
 import type { RuntimeAssetsUiState } from "../lib/runtimeComponents";
 import { toneToToastColor } from "../lib/appState";
 import { buildProtectedAccessNotice, resolveProtectedAccessReason } from "../lib/sessionLeaseState";
+import type { UserErrorContext } from "../lib/userFacingErrors";
 import {
   composeRuntimeFailureText,
   deriveGuidanceFromConnectFailure,
@@ -125,7 +126,7 @@ type UseRuntimeActionsOptions = {
   guidanceDialog: ConnectionGuidance | null;
   setGuidanceDialog: Dispatch<SetStateAction<ConnectionGuidance | null>>;
   readError: (message: string) => string;
-  showErrorToast: (message: string) => void;
+  showErrorToast: (reason: unknown, context?: UserErrorContext) => void;
   notify: (notice: NoticeInput) => void;
   setServerProbe: Dispatch<SetStateAction<ServerProbeState>>;
   mergeSubscriptionState: (subscription: SubscriptionStatusDto) => void;
@@ -236,7 +237,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         }
         return true;
       } catch (reason) {
-        options.showErrorToast(reason instanceof Error ? options.readError(reason.message) : "断开失败");
+        options.showErrorToast(reason || "断开连接时出现问题，请重试。", "disconnect");
         return false;
       } finally {
         disconnectInFlight.current = false;
@@ -285,7 +286,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           options.notify({
             color: "yellow",
             title: "订阅不可用",
-            message: "当前账号没有可用订阅，请联系管理员恢复订阅后再使用。"
+            message: "当前账号暂无可用订阅，请续费或联系客服后再使用。"
           });
         }
       }
@@ -348,7 +349,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           options.notify({
             color: "yellow",
             title: "订阅不可用",
-            message: "当前账号没有可用订阅，请联系管理员恢复订阅后再使用。"
+            message: "当前账号暂无可用订阅，请续费或联系客服后再使用。"
           });
         }
       }
@@ -431,7 +432,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           options.notify({
             color: "yellow",
             title: "订阅不可用",
-            message: "当前账号没有可用订阅，请联系管理员恢复订阅后再使用。"
+            message: "当前账号暂无可用订阅，请续费或联系客服后再使用。"
           });
           return;
         }
@@ -444,7 +445,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           options.notify({
             color: "yellow",
             title: "订阅不可用",
-            message: "当前账号没有可用订阅，请联系管理员恢复订阅后再使用。"
+            message: "当前账号暂无可用订阅，请续费或联系客服后再使用。"
           });
           return;
         }
@@ -746,7 +747,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           options.setServerProbe((current) => ({
             ...current,
             checkedAt: Date.now(),
-            errorMessage: "节点事件已收到，但节点列表刷新失败"
+            errorMessage: "节点列表暂时无法刷新，请稍后重试。"
           }));
         }
       }
@@ -826,7 +827,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         const message = reason instanceof Error ? options.readError(reason.message) : options.readError(String(reason));
         const guidance = deriveGuidanceFromConnectFailure(message, options.fallbackNodeId, options.desktopStatus.platformTarget);
         if (guidance) applyGuidance(guidance, true, false);
-        else options.showErrorToast(message);
+        else options.showErrorToast(reason || message, "connect");
         return;
       }
       if (!isCurrentLogin()) return;
@@ -966,8 +967,9 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           await options.forceStopLocalRuntime();
         } catch (stopReason) {
           if (config?.sessionId) void disconnectSession(configAccessToken,config.sessionId).catch(()=>null);
-          const stopMessage=stopReason instanceof Error?options.readError(stopReason.message):"本机连接停止失败";
-          options.showErrorToast(`${earlyMessage}\n${stopMessage}`);
+          // 连接失败与本机停止失败分别映射：后者必须单独提醒“本机连接没有停下来”。
+          options.showErrorToast(reason || earlyMessage, "connect");
+          options.showErrorToast(stopReason || "本机连接停止失败", "local_stop");
           return;
         }
         if (runtimeStatus?.status === "error") {
@@ -990,7 +992,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         if (connectGuidance) {
           applyGuidance(connectGuidance, true, true);
         } else {
-          options.showErrorToast(message);
+          options.showErrorToast(reason || message, "connect");
         }
       } finally {
         debugAndroidConnect("handleConnect:finish");
@@ -1080,7 +1082,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           : "登录态缺失时，已优先停止本地内核并恢复系统代理。"
       });
     } catch (reason) {
-      options.showErrorToast(reason instanceof Error ? options.readError(reason.message) : "断开失败");
+      options.showErrorToast(reason || "断开连接时出现问题，请重试。", "disconnect");
     } finally {
       setActionBusy(null);
     }

@@ -43,12 +43,12 @@ function createOpenedServerProbeState(elapsedMs: number | null): ServerProbeStat
   };
 }
 
-function createFailedServerProbeState(readError: (message: string) => string, reason: unknown): ServerProbeState {
+function createFailedServerProbeState(readError: (reason: unknown) => string, reason: unknown): ServerProbeState {
   return {
     status: "failed",
     elapsedMs: null,
     checkedAt: Date.now(),
-    errorMessage: reason instanceof Error ? readError(reason.message) : "当前无法连接服务端"
+    errorMessage: reason ? readError(reason) : "当前无法连接服务器，请检查网络后重试。"
   };
 }
 
@@ -68,7 +68,7 @@ export type UseClientEventsOptions = {
   syncConnectedState?: (accessToken: string) => Promise<void> | void;
   runUpdateCheckOnOpen?: () => Promise<void> | void;
   recoverSessionAfterUnauthorized: () => Promise<AuthSessionDto | null> | AuthSessionDto | null;
-  readError: (message: string) => string;
+  readError: (reason: unknown) => string;
   subscribeClientEvents?: typeof subscribeClientEventsRequest;
   isUnauthorizedError?: (reason: unknown) => boolean;
 };

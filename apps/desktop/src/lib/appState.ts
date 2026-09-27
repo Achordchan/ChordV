@@ -1,5 +1,15 @@
 import type { ClientBootstrapDto, NodeSummaryDto, SubscriptionStatusDto } from "@chordv/shared";
 import { notifications } from "./notifications";
+import {
+  createUserErrorReader,
+  describeUserError,
+  formatUserError,
+  shouldRecordDiagnostic,
+  splitUserErrorText,
+  type UserErrorContext,
+  type UserFacingError
+} from "./userFacingErrors";
+import { recordClientDiagnosticLog } from "../api/client";
 import type { SubscriptionServerProbe } from "../components/SubscriptionPanel";
 import type { GuidanceTone, ConnectionGuidance } from "./connectionGuidance";
 import type { RuntimeNodeProbeResult, RuntimePlatform } from "./runtime";
@@ -127,7 +137,8 @@ export function toSubscriptionServerProbe(serverProbe: ServerProbeState): Subscr
       return {
         status: "failed",
         label: "无法连接服务器",
-        detail: serverProbe.errorMessage ?? "当前无法连接服务器，请检查网络或服务端状态"
+        // 状态栏空间有限，只显示说明，不带错误编号行。
+        detail: splitUserErrorText(serverProbe.errorMessage).message || "当前无法连接服务器，请检查网络后重试。"
       };
     default:
       return {
@@ -138,11 +149,32 @@ export function toSubscriptionServerProbe(serverProbe: ServerProbeState): Subscr
   }
 }
 
-export function showErrorToast(message: string) {
+/**
+ * 所有错误通知的统一出口：先经过面向客户的错误映射，原始文本只写入诊断日志，
+ * 通知里只出现中文说明和可选的「错误编号」。
+ */
+/** 被映射或隐藏的原始错误写入本地诊断日志，客服可以通过日志还原真实原因。 */
+export function logUserErrorDiagnostic(error: UserFacingError, context: UserErrorContext) {
+  void recordClientDiagnosticLog("user-error", `[${context}] code=${error.code ?? "-"} detail=${error.detail}`);
+}
+
+/** 只负责展示的 hook 使用：接收完整错误对象，映射成客户文案，并记录被隐藏的原文。 */
+export function createLoggedUserErrorReader(context: UserErrorContext) {
+  return createUserErrorReader(context, { onDiagnostic: logUserErrorDiagnostic });
+}
+
+/**
+ * 接收完整的错误对象（保留 HTTP 状态和服务端原文）或已经处理过的文本。
+ */
+export function showErrorToast(reason: unknown, context: UserErrorContext = "general") {
+  const error = describeUserError(reason ?? "", { context });
+  if (shouldRecordDiagnostic(error)) {
+    logUserErrorDiagnostic(error, context);
+  }
   notifications.show({
     color: "red",
-    title: "操作失败",
-    message
+    title: error.title,
+    message: formatUserError(error)
   });
 }
 
