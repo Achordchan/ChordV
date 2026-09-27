@@ -39,7 +39,7 @@ import { isPrismaTransientError, throwLocalReadAsServiceUnavailable } from "./pr
 import { PrismaService } from "./prisma.service";
 import { readMemberUsedTrafficGb } from "./member-traffic-usage";
 import { ReleaseCenterService } from "./release-center.service";
-import { ClientPresenceService } from "./client-presence.service";
+import { ClientPresenceService, type ClientEventStreamOptions } from "./client-presence.service";
 import {
   pickCurrentSubscription,
   toSubscriptionStatusDto
@@ -131,7 +131,7 @@ export class ClientAccessService {
     return { ok: true };
   }
 
-  async streamRuntimeEvents(token?: string, lastEventId?: string | null) {
+  async streamRuntimeEvents(token?: string, lastEventId?: string | null, options?: ClientEventStreamOptions) {
     const user = await this.authSessionService.authenticateAccessToken(token);
     const stream = this.clientRuntimeEventsService.streamForUser(user.id, {
       lastEventId,
@@ -140,7 +140,7 @@ export class ClientAccessService {
       }
     });
     // 推送连接保持期间即“客户端已打开”，后台据此显示在线状态。
-    return this.clientPresenceService.trackStream(user.id, stream);
+    return this.clientPresenceService.trackStream(user.id, stream, { presencePing: options?.presencePing === true });
   }
 
   async getBootstrap(token?: string, platform?: PlatformTarget): Promise<ClientBootstrapDto> {
@@ -379,7 +379,9 @@ export class ClientAccessService {
   }
 
   async pingClient(token?: string): Promise<ClientPingDto> {
-    await this.authSessionService.authenticateAccessToken(token);
+    const user = await this.authSessionService.authenticateAccessToken(token);
+    // 新版客户端保持推送连接期间定期调用，证明客户端仍在运行；只记时间，写库节流且不影响响应。
+    this.clientPresenceService.notePing(user.id);
     return {
       ok: true,
       serverTime: new Date().toISOString()

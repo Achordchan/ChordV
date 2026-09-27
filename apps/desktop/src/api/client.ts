@@ -272,6 +272,19 @@ export async function recordClientDiagnosticLog(category: string, message: strin
   }
 }
 
+/** 请求原生推送连接尽快补报一次在线（窗口重新显示、网络恢复时）；网页预览或不支持的旧原生壳直接忽略。 */
+export async function nudgeClientPresence() {
+  try {
+    const invoke = await loadTauriInvoke();
+    if (!invoke) {
+      return;
+    }
+    await invoke("nudge_client_presence");
+  } catch {
+    // 在线上报只是尽力而为，失败不影响客户端。
+  }
+}
+
 function normalizeHeaders(headers?: HeadersInit) {
   const result: Record<string, string> = {};
   if (!headers) {
@@ -1084,6 +1097,8 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
       }
     };
     try {
+      // 网页兜底连接不带 presence=ping 声明：定期在线上报只在原生推送连接里进行（不受网页定时器节流影响），
+      // 这里声明了却不上报会被服务端当成失效连接断开。
       const response = await fetch(`${API_BASE}/api/client/events/stream`, {
         method: "GET",
         headers: {

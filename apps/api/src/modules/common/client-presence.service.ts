@@ -30,11 +30,53 @@ export const PRESENCE_CONNECTED_WINDOW_SECONDS = Math.max(90, LEASE_HEARTBEAT_IN
 export const PRESENCE_HEARTBEAT_HISTORY_MS = 24 * 60 * 60_000;
 /** 进程异常退出留下的推送连接记录，超过这么久未刷新就清理掉。 */
 export const PRESENCE_STREAM_STALE_CLEANUP_MS = 10 * 60_000;
+/** 新版客户端保持推送连接期间，约每隔这么久调用一次 /client/ping，证明客户端仍在运行。 */
+export const PRESENCE_PING_INTERVAL_SECONDS = 60;
+/**
+ * 声明了定期上报（?presence=ping）的推送连接，超过这么久既没有收到该用户的上报、连接也不是这段时间内建立的，
+ * 就当作客户端已睡眠或断网（TCP 没有正常关闭，服务端自己发现不了）：主动结束这条连接并立即记为离线。
+ * 允许错过一次上报，再留 30 秒余量。
+ */
+export const PRESENCE_PING_TIMEOUT_SECONDS = 150;
+/** 每隔这么久检查一次本进程上声明了定期上报的推送连接。 */
+export const PRESENCE_PING_CHECK_MS = 30_000;
+/** 同一用户的上报在本进程内至少间隔这么久才写一次库：客户端每 60 秒上报一次，正常情况下每次上报写一次。 */
+export const PRESENCE_PING_WRITE_THROTTLE_MS = 50_000;
 
 const PRESENCE_REFRESH_BATCH_SIZE = 500;
 /** 进程内节点心跳写入节流记录最多保留的用户数，超出后淘汰最久未写的。 */
 const HEARTBEAT_WRITE_THROTTLE_LIMIT = 10_000;
+/** 进程内在线上报记录最多保留的用户数，超出后淘汰最久未上报的（被淘汰的用户改以数据库里的上报时间为准）。 */
+const PING_RECORD_LIMIT = 10_000;
+/** 在线上报写库失败的日志每隔这么久最多记一条，数据库故障时不刷屏。 */
+const PING_WRITE_WARN_INTERVAL_MS = 60_000;
 const CONNECTION_MODES: ReadonlySet<string> = new Set<ConnectionMode>(["global", "rule", "direct"]);
+
+export type ClientEventStreamOptions = {
+  /** 客户端声明保持这条推送连接期间会定期调用 /client/ping（新版客户端才会带上）。 */
+  presencePing?: boolean;
+};
+
+/** 推送流请求里的 `presence=ping` 声明：只认这一个值，其他值与缺省一样按旧客户端处理。 */
+export function isPresencePingDeclared(value: unknown) {
+  return value === "ping";
+}
+
+/**
+ * 声明了定期上报的推送连接是否已失效：连接建立和该用户最近一次上报都算客户端仍在运行的证明，
+ * 取较晚的一次，超过上报超时即失效。时间均为毫秒时间戳。
+ */
+export function isKeepaliveStreamExpired(openedAt: number, lastPingAt: number | null | undefined, now: number) {
+  return now - Math.max(openedAt, lastPingAt ?? 0) > PRESENCE_PING_TIMEOUT_SECONDS * 1000;
+}
+
+/** 本进程上一条声明了定期上报的推送连接。 */
+type KeepaliveStream = {
+  openedAt: number;
+  /** 因上报超时被服务端主动结束。 */
+  expired: boolean;
+  end: () => void;
+};
 
 /** 用户的最近在线记录。 */
 export type PresenceRow = {
@@ -297,6 +339,13 @@ export function buildAdminPresenceSnapshot(input: {
  * 断开 15 秒后删除自己的记录。任一进程有近期刷新的记录即为在线，因此一台设备断开不会让连在另一实例上的
  * 设备显示离线。进程异常退出时来不及删除，由“超过判定窗口即不算在线”兜底，并由其他进程定期清理。
  * UserClientPresence 另记最近在线时间（推送连接与节点心跳都会推进，只前进不后退）与本次在线开始时间，供离线后展示。
+ *
+ * 电脑睡眠或断网时 TCP 往往不会正常关闭，服务端要等连接超时（最坏十几分钟）才发现推送连接已断。新版客户端打开推送连接时
+ * 带上 `?presence=ping` 声明，之后每 60 秒调用一次 /client/ping；本进程每 30 秒检查一次这类连接，超过 150 秒既没有该用户的
+ * 上报、连接也不是这段时间内建立的，就主动结束连接并立即记为离线（约 2～3 分钟内）。上报可能落在另一个进程上，所以上报时间
+ * 同时记在本进程内存与 UserClientPresence.lastPingAt（带条件只前进不后退，每位用户每进程约每分钟最多写一次），本进程内存
+ * 里没有足够新的上报时才查库。上报按用户记，同一账号任一台新版设备仍在上报时，其他设备的推送连接不会被这一机制断开；
+ * 不带声明的旧客户端（1.1.10 及更早）行为不变。
  */
 @Injectable()
 export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
@@ -309,8 +358,18 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
   private readonly writeQueues = new Map<string, Promise<void>>();
   /** 每位用户最近一次因节点心跳写入最近在线时间的时刻，用于每分钟最多写一次。 */
   private readonly heartbeatWrites = new Map<string, number>();
+  /** 本进程上声明了定期上报的推送连接，按用户分组。 */
+  private readonly keepaliveStreams = new Map<string, Set<KeepaliveStream>>();
+  /**
+   * 本进程收到的每位用户最近一次上报时刻、最近一次因上报写库的时刻（节流用），
+   * 以及是否有被节流、还没写进数据库的更新上报（pending）。
+   */
+  private readonly pings = new Map<string, { at: number; writtenAt: number | null; pending: boolean }>();
+  private lastPingWriteWarnAt = 0;
   private refreshTimer: NodeJS.Timeout | null = null;
   private refreshing: Promise<void> | null = null;
+  private pingCheckTimer: NodeJS.Timeout | null = null;
+  private checkingPings: Promise<void> | null = null;
   /** 可在测试中调短。 */
   offlineGraceMs = PRESENCE_OFFLINE_GRACE_MS;
 
@@ -327,23 +386,42 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
       });
     }, PRESENCE_REFRESH_MS);
     this.refreshTimer.unref?.();
+    this.pingCheckTimer = setInterval(() => {
+      if (workLifecycle.isDraining) return;
+      this.flushThrottledPings();
+      if (this.checkingPings || this.keepaliveStreams.size === 0) return;
+      this.checkingPings = workLifecycle.track(this.checkKeepaliveStreams()).finally(() => {
+        this.checkingPings = null;
+      });
+    }, PRESENCE_PING_CHECK_MS);
+    this.pingCheckTimer.unref?.();
   }
 
   onModuleDestroy() {
     if (this.refreshTimer) clearInterval(this.refreshTimer);
     this.refreshTimer = null;
+    if (this.pingCheckTimer) clearInterval(this.pingCheckTimer);
+    this.pingCheckTimer = null;
     for (const timer of this.offlineTimers.values()) clearTimeout(timer);
     this.offlineTimers.clear();
   }
 
-  /** 包装用户的事件推送流：订阅期间计为在线，取消订阅（客户端断开、退出登录、后台交接）时计为断开。 */
-  trackStream<T>(userId: string, stream: Observable<T>): Observable<T> {
+  /**
+   * 包装用户的事件推送流：订阅期间计为在线，取消订阅（客户端断开、退出登录、后台交接）时计为断开。
+   * 客户端声明了定期上报（presencePing）的连接，上报中断超过 150 秒会被主动结束，并且不等宽限期直接记为离线。
+   */
+  trackStream<T>(userId: string, stream: Observable<T>, options: ClientEventStreamOptions = {}): Observable<T> {
     return new Observable<T>((subscriber) => {
+      const keepalive: KeepaliveStream | null = options.presencePing
+        ? { openedAt: Date.now(), expired: false, end: () => subscriber.complete() }
+        : null;
+      if (keepalive) this.addKeepaliveStream(userId, keepalive);
       this.streamOpened(userId);
       const subscription = stream.subscribe(subscriber);
       return () => {
         subscription.unsubscribe();
-        this.streamClosed(userId);
+        if (keepalive) this.removeKeepaliveStream(userId, keepalive);
+        this.streamClosed(userId, new Date(), { immediate: keepalive?.expired === true });
       };
     });
   }
@@ -363,7 +441,8 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  streamClosed(userId: string, now = new Date()) {
+  /** immediate：连接因上报超时被服务端结束，客户端早已不在，不再等宽限期。 */
+  streamClosed(userId: string, now = new Date(), options: { immediate?: boolean } = {}) {
     const count = (this.streamCounts.get(userId) ?? 0) - 1;
     if (count > 0) {
       this.streamCounts.set(userId, count);
@@ -372,6 +451,10 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
     this.streamCounts.delete(userId);
     // 后台交接时新进程会接手客户端的重连；来不及交接则由判定窗口兜底为离线。
     if (workLifecycle.isDraining || this.offlineTimers.has(userId)) return;
+    if (options.immediate) {
+      void workLifecycle.track(this.runExclusive(userId, () => this.markOffline(userId, now)));
+      return;
+    }
     const timer = setTimeout(() => {
       this.offlineTimers.delete(userId);
       if ((this.streamCounts.get(userId) ?? 0) > 0 || workLifecycle.isDraining) return;
@@ -397,6 +480,97 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
       if (oldest !== undefined) this.heartbeatWrites.delete(oldest);
     }
     void workLifecycle.track(this.runExclusive(userId, () => this.touchLastSeen(userId, at)));
+  }
+
+  /**
+   * 新版客户端的在线上报（/client/ping）：本进程内存记下上报时刻（每次都记，供本进程检查推送连接），
+   * 同时把 UserClientPresence.lastPingAt 推进到上报时刻，供持有推送连接的其他进程判断。
+   * 写库按用户节流（本进程内至少间隔 50 秒），带条件只前进不后退；写库失败不影响接口响应。
+   * 被节流的上报不会丢：节流期满后由 flushThrottledPings 把最新的上报时间补写进数据库。
+   */
+  notePing(userId: string, at = new Date()) {
+    const time = at.getTime();
+    const previous = this.pings.get(userId);
+    const shouldWrite = !workLifecycle.isDraining &&
+      (previous?.writtenAt == null || time - previous.writtenAt >= PRESENCE_PING_WRITE_THROTTLE_MS);
+    const latest = Math.max(time, previous?.at ?? 0);
+    this.pings.delete(userId);
+    this.pings.set(userId, {
+      at: latest,
+      writtenAt: shouldWrite ? time : previous?.writtenAt ?? null,
+      // 这次写库的时间之后还有（乱序到达的）更新上报，或这次被节流：留待节流期满后补写。
+      pending: shouldWrite ? latest > time : latest > (previous?.writtenAt ?? 0)
+    });
+    if (this.pings.size > PING_RECORD_LIMIT) {
+      const oldest = this.pings.keys().next().value;
+      if (oldest !== undefined) this.pings.delete(oldest);
+    }
+    if (!shouldWrite) return;
+    void workLifecycle.track(this.runExclusive(userId, () => this.recordPing(userId, at)));
+  }
+
+  /**
+   * 补写被节流的上报：节流期满的用户把本进程记下的最新上报时间写进数据库（随检查定时器每 30 秒运行一次）。
+   * 例如 0 秒写库后第 40 秒又来一次补报被节流，第 50～80 秒会补写第 40 秒这次，数据库里的上报时间
+   * 最多比实际落后约 80 秒，持有推送连接的其他进程仍能容忍错过一次定期上报。每位用户每 50 秒最多写一次不变。
+   */
+  flushThrottledPings(now = new Date()) {
+    const nowMs = now.getTime();
+    for (const [userId, entry] of this.pings) {
+      if (!entry.pending) continue;
+      if (entry.writtenAt !== null && nowMs - entry.writtenAt < PRESENCE_PING_WRITE_THROTTLE_MS) continue;
+      entry.pending = false;
+      entry.writtenAt = nowMs;
+      const at = new Date(entry.at);
+      void workLifecycle.track(this.runExclusive(userId, () => this.recordPing(userId, at)));
+    }
+  }
+
+  /**
+   * 检查本进程上声明了定期上报的推送连接：连接建立与该用户最近一次上报都已超过 150 秒的，主动结束并立即记为离线。
+   * 本进程内存里的上报足够新时不查库（单实例部署下稳定状态零查询）；否则按批查 UserClientPresence.lastPingAt，
+   * 覆盖上报落在其他进程上的情况。查库失败时这一轮不断开任何连接（退回原来的行为），下一轮再查。
+   */
+  async checkKeepaliveStreams(now = new Date()) {
+    const nowMs = now.getTime();
+    const pending: string[] = [];
+    for (const [userId, streams] of this.keepaliveStreams) {
+      const localPing = this.pings.get(userId)?.at;
+      for (const stream of streams) {
+        if (isKeepaliveStreamExpired(stream.openedAt, localPing, nowMs)) {
+          pending.push(userId);
+          break;
+        }
+      }
+    }
+    let ended = 0;
+    for (let index = 0; index < pending.length; index += PRESENCE_REFRESH_BATCH_SIZE) {
+      const batch = pending.slice(index, index + PRESENCE_REFRESH_BATCH_SIZE);
+      let stored: Map<string, number | null>;
+      try {
+        const rows = await this.prisma.userClientPresence.findMany({
+          where: { userId: { in: batch } },
+          select: { userId: true, lastPingAt: true }
+        });
+        stored = new Map(rows.map((row) => [row.userId, row.lastPingAt?.getTime() ?? null]));
+      } catch (error) {
+        this.logger.warn(`在线上报检查失败：${readErrorMessage(error)}`);
+        continue;
+      }
+      for (const userId of batch) {
+        // 查库期间可能又收到了上报，这里重新读本进程的记录。
+        const lastPing = Math.max(this.pings.get(userId)?.at ?? 0, stored.get(userId) ?? 0) || null;
+        for (const stream of Array.from(this.keepaliveStreams.get(userId) ?? [])) {
+          if (!isKeepaliveStreamExpired(stream.openedAt, lastPing, nowMs)) continue;
+          stream.expired = true;
+          stream.end();
+          ended += 1;
+        }
+      }
+    }
+    if (ended > 0) {
+      this.logger.log(`已断开 ${ended} 条超过 ${PRESENCE_PING_TIMEOUT_SECONDS} 秒未上报在线的推送连接`);
+    }
   }
 
   /** 当前进程里保持着推送连接的用户数（诊断用）。 */
@@ -503,6 +677,44 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
       if (deleted.count > 0) this.notifyChanged();
     } catch (error) {
       this.logger.warn(`离线状态记录失败：${readErrorMessage(error)}`);
+    }
+  }
+
+  private addKeepaliveStream(userId: string, stream: KeepaliveStream) {
+    const streams = this.keepaliveStreams.get(userId) ?? new Set<KeepaliveStream>();
+    streams.add(stream);
+    this.keepaliveStreams.set(userId, streams);
+  }
+
+  private removeKeepaliveStream(userId: string, stream: KeepaliveStream) {
+    const streams = this.keepaliveStreams.get(userId);
+    if (!streams) return;
+    streams.delete(stream);
+    if (streams.size === 0) this.keepaliveStreams.delete(userId);
+  }
+
+  /**
+   * 把最近一次上报时间推进到 at（只前进不后退，多个进程同时写同一用户也不会倒退）。
+   * 没有记录（推送连接的上线写入还没完成或失败过）时补一条，这次上报同样说明客户端在 at 时刻仍在运行。
+   */
+  private async recordPing(userId: string, at: Date) {
+    try {
+      const updated = await this.prisma.userClientPresence.updateMany({
+        where: { userId, OR: [{ lastPingAt: null }, { lastPingAt: { lt: at } }] },
+        data: { lastPingAt: at }
+      });
+      if (updated.count > 0) return;
+      await this.prisma.userClientPresence.createMany({
+        data: [{ userId, onlineSince: at, lastSeenAt: at, lastPingAt: at }],
+        skipDuplicates: true
+      });
+    } catch (error) {
+      // 本进程内存里已记下上报时间，本进程上的推送连接不受影响；日志每分钟最多一条。
+      const nowMs = Date.now();
+      if (nowMs - this.lastPingWriteWarnAt >= PING_WRITE_WARN_INTERVAL_MS) {
+        this.lastPingWriteWarnAt = nowMs;
+        this.logger.warn(`在线上报记录失败：${readErrorMessage(error)}`);
+      }
     }
   }
 

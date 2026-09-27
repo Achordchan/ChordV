@@ -40,6 +40,6 @@ export function OnlineUsersPanel({ onOpenCustomers }: { onOpenCustomers: () => v
     </Table></Table.ScrollContainer>}
     {snapshot && !users.length && <Text className={styles.empty}>当前没有用户在线</Text>}
     {snapshot && error && <Text className={styles.footnote} c="orange.8">{error}</Text>}
-    <Text className={styles.footnote}>“已连接”指节点连接近 {connectedMinutes} 分钟内仍有心跳；“在线”指客户端已打开并登录。约 30 秒自动刷新，上下线时即时更新。</Text>
+    <Text className={styles.footnote}>“已连接”指节点连接近 {connectedMinutes} 分钟内仍有心跳；“在线”指客户端已打开并登录；电脑睡眠或断网后，新版客户端约 3 分钟内显示离线，1.1.10 及更早版本要等连接超时，可能长达十几分钟。约 30 秒自动刷新，上下线时即时更新。</Text>
   </section>;
 }

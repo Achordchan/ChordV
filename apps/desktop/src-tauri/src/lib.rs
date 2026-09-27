@@ -17,6 +17,17 @@ static EXIT_CLEANUP: exit_gate::ExitGate = exit_gate::ExitGate::new();
 mod tls_fingerprint;
 mod session_store;
 static NATIVE_SESSION_STORE: session_store::SessionStore = session_store::SessionStore::new();
+static PRESENCE_NUDGES: OnceLock<presence_keepalive::PresenceNudges> = OnceLock::new();
+static PRESENCE_PING_FAILURES: OnceLock<std::sync::Arc<Mutex<presence_keepalive::PingFailureLog>>> = OnceLock::new();
+
+fn presence_nudges() -> &'static presence_keepalive::PresenceNudges {
+    PRESENCE_NUDGES.get_or_init(presence_keepalive::PresenceNudges::new)
+}
+
+/// 在线上报失败日志的状态跨推送连接共享：重连不会让同一次故障反复记日志。
+fn presence_ping_failures() -> std::sync::Arc<Mutex<presence_keepalive::PingFailureLog>> {
+    PRESENCE_PING_FAILURES.get_or_init(Default::default).clone()
+}
 mod bounded_command;
 use bounded_command::{ChildGuard, CommandDeadlineExt, with_command_budget};
 mod connection_generation;
@@ -25,6 +36,7 @@ mod android_mobile_plugin;
 mod android_runtime;
 mod routing_diagnostics;
 mod window_transition;
+mod presence_keepalive;
 #[cfg(not(target_os = "android"))]
 mod tray_menu;
 
@@ -879,6 +891,12 @@ fn stop_client_event_stream(
     })
 }
 
+/// 窗口重新显示、网络恢复时由前端调用：正在保持的推送连接尽快补报一次在线（有最小间隔，不会频繁请求）。
+#[tauri::command]
+fn nudge_client_presence() {
+    presence_nudges().nudge();
+}
+
 #[tauri::command]
 async fn record_client_diagnostic(app: AppHandle, input: ClientDiagnosticInput) -> Result<CommandResult, String> {
     tauri::async_runtime::spawn_blocking(move || record_client_diagnostic_blocking(app,input))
@@ -906,10 +924,8 @@ async fn run_client_event_stream(
     last_event_id: Option<String>,
     mut stop_rx: oneshot::Receiver<()>,
 ) {
-    let url = format!(
-        "{}/api/client/events/stream",
-        api_base_url().trim_end_matches('/')
-    );
+    // 带上 presence=ping 声明：这条连接保持期间会定期上报在线（见下方 spawn_presence_keepalive）。
+    let url = presence_keepalive::event_stream_url(&api_base_url());
     append_download_diagnostic_log(&app, "client-sse", format!("starting stream {stream_id}"));
     let client = match Client::builder()
         .no_proxy()
@@ -987,6 +1003,16 @@ async fn run_client_event_stream(
         return;
     }
     emit_client_event_stream_opened(&app, &stream_id);
+    // 连接建立后开始定期上报在线；本函数返回（停止、结束、出错）时随 _presence 一起停止，与声明同生共死。
+    let presence_log_app = app.clone();
+    let _presence = presence_keepalive::spawn_presence_keepalive(
+        presence_keepalive::PresenceKeepaliveConfig::new(&api_base_url(), &access_token),
+        Some(presence_nudges().subscribe()),
+        presence_ping_failures(),
+        std::sync::Arc::new(move |line: String| {
+            append_download_diagnostic_log(&presence_log_app, "client-presence", line)
+        }),
+    );
 
     let mut buffer = Vec::<u8>::new();
     let idle_timeout = Duration::from_secs(CLIENT_EVENT_STREAM_IDLE_TIMEOUT_SECS);
@@ -7369,6 +7395,7 @@ pub fn run() {
             api_request,
             start_client_event_stream,
             stop_client_event_stream,
+            nudge_client_presence,
             record_client_diagnostic,
             refresh_session_native,
             load_session,

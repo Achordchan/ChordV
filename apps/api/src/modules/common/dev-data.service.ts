@@ -120,7 +120,7 @@ import { ClientRoutingRuleService } from "./client-routing-rule.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { ClientTicketService } from "./client-ticket.service";
 import { ClientVersionReportService } from "./client-version-report.service";
-import { ClientPresenceService } from "./client-presence.service";
+import { ClientPresenceService, type ClientEventStreamOptions } from "./client-presence.service";
 import { ImageBedService, type UploadedTicketAttachmentFile } from "./image-bed.service";
 import { dedupeNodeAccessRows } from "./dev-data.utils";
 import { normalizeTags, probeNodeConnectivity, toAdminNodeRecord, toNodeSummary } from "./node-import.utils";
@@ -227,8 +227,8 @@ export class DevDataService implements OnModuleInit {
     return this.clientAccessService.logout(token, refreshToken);
   }
 
-  async streamRuntimeEvents(token?: string, lastEventId?: string | null) {
-    return this.clientAccessService.streamRuntimeEvents(token, lastEventId);
+  async streamRuntimeEvents(token?: string, lastEventId?: string | null, options?: ClientEventStreamOptions) {
+    return this.clientAccessService.streamRuntimeEvents(token, lastEventId, options);
   }
 
   async getBootstrap(token?: string, platform?: PlatformTarget): Promise<ClientBootstrapDto> {
