@@ -22,7 +22,7 @@ function entry(overrides: Partial<AdminUserClientVersionDto>): AdminUserClientVe
 
 assert.equal(formatClientVersion(entry({})), "1.1.10 · macOS");
 assert.equal(formatClientVersion(entry({ platform: "windows", version: "1.1.9" })), "1.1.9 · Windows");
-assert.equal(formatClientVersionDetail(entry({ build: 3, channel: "beta" })), "1.1.10 · 构建 3 · macOS · 测试版");
+assert.equal(formatClientVersionDetail(entry({ build: 3, channel: "beta" })), "1.1.10 · 构建 3 · macOS · 接收测试版更新", "通道是更新偏好，不当作安装包类型展示");
 assert.equal(formatClientVersionDetail(entry({})), "1.1.10 · macOS");
 
 assert.equal(formatClientLastSeen(ago(10_000), now), "刚刚");

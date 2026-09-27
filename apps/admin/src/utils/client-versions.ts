@@ -30,9 +30,12 @@ export function formatClientVersion(entry: AdminUserClientVersionDto) {
   return `${entry.version} · ${formatClientPlatform(entry.platform)}`;
 }
 
-/** 详情里的完整写法，带构建号与测试版标记，例如「1.1.10 · 构建 3 · macOS · 测试版」。 */
+/**
+ * 详情里的完整写法，带构建号与更新通道，例如「1.1.10 · 构建 3 · macOS · 接收测试版更新」。
+ * 通道取自检查更新请求，表示用户选择接收哪类更新，不代表当前安装的包是测试版。
+ */
 export function formatClientVersionDetail(entry: AdminUserClientVersionDto) {
-  return [entry.version, entry.build ? `构建 ${entry.build}` : null, formatClientPlatform(entry.platform), entry.channel === "beta" ? "测试版" : null]
+  return [entry.version, entry.build ? `构建 ${entry.build}` : null, formatClientPlatform(entry.platform), entry.channel === "beta" ? "接收测试版更新" : null]
     .filter(Boolean)
     .join(" · ");
 }

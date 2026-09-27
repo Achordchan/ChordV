@@ -490,6 +490,7 @@ export interface AdminUserClientVersionDto {
   platform: PlatformTarget;
   version: string;
   build: number | null;
+  /** 检查更新时请求的更新通道（用户是否接收测试版更新），不代表已安装包的发布通道。 */
   channel: ReleaseChannel;
   lastSeenAt: string;
 }

@@ -303,7 +303,7 @@ model UserClientVersion {
   platform   ReleasePlatform
   version    String
   build      Int?
-  channel    ReleaseChannel
+  channel    ReleaseChannel // 检查更新时请求的更新通道，不代表已安装包的发布通道
   lastSeenAt DateTime
   createdAt  DateTime        @default(now())
   updatedAt  DateTime        @updatedAt
