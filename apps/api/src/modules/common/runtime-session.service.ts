@@ -1702,9 +1702,11 @@ export class RuntimeSessionService {
         status: "active",
         issuedAt: now,
         expiresAt: leaseExpiresAt,
-        lastHeartbeatAt: now
+        lastHeartbeatAt: now,
+        connectionMode: request.mode
       }
     });
+    this.adminRuntimeEventsService?.publishPresenceUpdated();
 
     const runtime: GeneratedRuntimeConfigDto = {
       sessionId,
@@ -2432,6 +2434,7 @@ export class RuntimeSessionService {
     if (revoked.count === 0) {
       return;
     }
+    this.adminRuntimeEventsService?.publishPresenceUpdated();
 
     try {
       await this.prisma.securityEvent.create({

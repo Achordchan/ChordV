@@ -495,6 +495,78 @@ export interface AdminUserClientVersionDto {
   lastSeenAt: string;
 }
 
+/**
+ * 用户在线状态：
+ * - connected：客户端正在使用节点（有活跃连接且近期仍在心跳）；
+ * - online：客户端已打开并登录，但没有连接节点；
+ * - offline：客户端未打开或已超过判定窗口没有消息。
+ */
+export type AdminPresenceState = "connected" | "online" | "offline";
+
+/** 一条正在使用中的节点连接（一台设备一条）。 */
+export interface AdminPresenceSessionDto {
+  /** 仅用作列表键，不在界面展示。 */
+  sessionId: string;
+  connectedAt: string;
+  lastHeartbeatAt: string;
+  /** 建立连接时选择的模式；旧连接没有记录时为 null。 */
+  connectionMode: ConnectionMode | null;
+  node: {
+    id: string;
+    name: string;
+    region: string;
+    countryCode: string | null;
+    provider: string;
+    protocol: string;
+    security: string;
+  };
+  subscription: {
+    id: string;
+    ownerType: "user" | "team";
+    teamName: string | null;
+    planName: string;
+    state: SubscriptionState;
+    usedTrafficGb: number;
+    totalTrafficGb: number;
+    remainingTrafficGb: number;
+    expireAt: string;
+  } | null;
+}
+
+export interface AdminUserPresenceDto {
+  userId: string;
+  displayName: string;
+  email: string;
+  teamId: string | null;
+  teamName: string | null;
+  state: AdminPresenceState;
+  /** 本次连续在线的开始时间（客户端打开时间）；离线时为 null。 */
+  onlineSince: string | null;
+  /** 最近一次确认客户端在线的时间；在线时接近当前时间。从未记录时为 null。 */
+  lastOnlineAt: string | null;
+  /** 最近使用的客户端版本与平台。 */
+  client: AdminUserClientVersionDto | null;
+  /** 正在使用的节点连接，按连接时间先后排列；未连接时为空。 */
+  sessions: AdminPresenceSessionDto[];
+}
+
+export interface AdminPresenceSnapshotDto {
+  generatedAt: string;
+  /** 节点连接超过这么久没有心跳就不再算“已连接”。 */
+  connectedWindowSeconds: number;
+  /** 客户端超过这么久没有消息就不再算“在线”。 */
+  onlineWindowSeconds: number;
+  counts: {
+    /** 在线总人数（含已连接）。 */
+    online: number;
+    connected: number;
+    /** 在线但未连接节点。 */
+    idle: number;
+  };
+  /** 已连接在前，其次在线，最后离线（按最近在线时间倒序）；从未有在线记录的用户不在列表中。 */
+  users: AdminUserPresenceDto[];
+}
+
 export interface AdminPlanRecordDto {
   id: string;
   name: string;

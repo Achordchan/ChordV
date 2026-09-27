@@ -63,6 +63,9 @@ const devDataServiceStub = {
     calls.push({ route: "user-disconnect", value: userId });
     return { userId };
   },
+  getAdminPresence: async () => {
+    return { generatedAt: "2026-09-27T00:00:00.000Z", counts: { online: 1, connected: 1, idle: 0 }, users: [] };
+  },
   updateUser: async (userId: string, body: unknown) => {
     calls.push({ route: "user-update", value: userId, body });
     return { id: userId, body };
@@ -727,6 +730,14 @@ async function main() {
     assert.match(adminSse.body, /event: sync_queue_updated/);
     assert.match(adminSse.body, /data: .*"nodeId":"node_1"/);
     assert.equal(adminSseObservedLastEventId, "admin_event_0");
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/presence", { method: "GET" }),
+      {
+        status: 200,
+        body: { generatedAt: "2026-09-27T00:00:00.000Z", counts: { online: 1, connected: 1, idle: 0 }, users: [] }
+      },
+      "后台在线状态接口走管理员鉴权并转发到在线状态查询"
+    );
     assert.deepEqual(
       await requestJson(baseUrl, "/api/admin/image-bed/config", {
         method: "GET"

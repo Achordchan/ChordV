@@ -20,6 +20,7 @@ import type {
   AdminNodeRecordDto,
   AdminPlanRecordDto,
   AdminPolicyRecordDto,
+  AdminPresenceSnapshotDto,
   AdminReleaseRecordDto,
   AdminSecurityUpdateResultDto,
   AdminSnapshotDto,
@@ -119,6 +120,7 @@ import { ClientRoutingRuleService } from "./client-routing-rule.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { ClientTicketService } from "./client-ticket.service";
 import { ClientVersionReportService } from "./client-version-report.service";
+import { ClientPresenceService } from "./client-presence.service";
 import { ImageBedService, type UploadedTicketAttachmentFile } from "./image-bed.service";
 import { dedupeNodeAccessRows } from "./dev-data.utils";
 import { normalizeTags, probeNodeConnectivity, toAdminNodeRecord, toNodeSummary } from "./node-import.utils";
@@ -201,7 +203,8 @@ export class DevDataService implements OnModuleInit {
     private readonly adminSubscriptionService: AdminSubscriptionService,
     private readonly imageBedService: ImageBedService,
     private readonly runtimeSessionService: RuntimeSessionService,
-    private readonly clientVersionReportService: ClientVersionReportService
+    private readonly clientVersionReportService: ClientVersionReportService,
+    private readonly clientPresenceService: ClientPresenceService
   ) {}
 
   async onModuleInit() {
@@ -628,6 +631,11 @@ export class DevDataService implements OnModuleInit {
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
     }
+  }
+
+  /** 后台在线状态：已连接节点、客户端在线与最近在线时间。 */
+  getAdminPresence(): Promise<AdminPresenceSnapshotDto> {
+    return this.clientPresenceService.getAdminPresenceSnapshot();
   }
 
   async getAdminDashboard(): Promise<DashboardSnapshotDto> {

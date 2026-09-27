@@ -124,7 +124,8 @@ export type AdminRuntimeEventDto = {
     | "announcement_updated"
     | "announcement_read_state_updated"
     | "policy_updated"
-    | "sync_queue_updated";
+    | "sync_queue_updated"
+    | "presence_updated";
   occurredAt: string;
   ticketId?: string | null;
   ticketStatus?: SupportTicketStatus | null;

@@ -1,0 +1,29 @@
+.status { display: inline-flex; align-items: center; gap: 7px; min-width: 0; font-size: 13px; color: #6f7a70; }
+.status > i { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: #b7bdb3; }
+.status[data-state=connected] { color: #2f6b45; }
+.status[data-state=connected] > i { background: #2f8a55; box-shadow: 0 0 0 3px rgba(47, 138, 85, .16); }
+.status[data-state=online] { color: #3d6a85; }
+.status[data-state=online] > i { background: #4a86b0; }
+.status > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sessions { display: flex; flex-direction: column; gap: 12px; }
+.session { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; align-items: start; padding: 12px 14px; border: 1px solid #e4e7de; border-radius: 6px; background: #fbfcf9; }
+.session > :global(.country-flag) { width: 24px; height: 18px; border-radius: 2px; margin-top: 2px; grid-row: span 4; }
+.session strong { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.session small { font-size: 12px; color: #6f7a70; overflow-wrap: anywhere; }
+.facts { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #3f4b42; }
+.facts small { font-size: 12px; color: #6f7a70; }
+.panel { border-top: 1px solid #dfe5d8; padding: 28px 0; }
+.counts { display: flex; flex-wrap: wrap; gap: 10px 28px; margin: -4px 0 18px; font-size: 14px; color: #586653; }
+.counts strong { font-size: 22px; font-weight: 600; color: #23372b; margin-left: 8px; font-variant-numeric: tabular-nums; }
+.nodeLoad { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-bottom: 16px; font-size: 13px; color: #586653; }
+.nodeLoad span { display: inline-flex; align-items: center; gap: 6px; }
+.nodeLoad :global(.country-flag) { width: 18px; height: 13px; border-radius: 2px; }
+.table :global(th) { font-size: 13px; font-weight: 500; padding: 12px 10px; background: #f0f3eb; color: #586653; white-space: nowrap; }
+.table :global(td) { padding: 14px 10px; font-size: 13px; border-color: #e0e6d9; vertical-align: top; }
+.cellLines { display: flex; flex-direction: column; gap: 8px; }
+.cellLines > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cellLines small, .muted { font-size: 12px; color: #6f7a70; }
+.nodeName { display: inline-flex; align-items: center; gap: 6px; font-weight: 550; }
+.nodeName :global(.country-flag) { width: 18px; height: 13px; border-radius: 2px; flex-shrink: 0; }
+.footnote { margin-top: 12px; font-size: 12px; color: #6f7a70; }
+.empty { text-align: center; padding: 28px 0; font-size: 14px; color: #586653; }

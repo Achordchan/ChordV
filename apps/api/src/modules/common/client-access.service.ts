@@ -39,6 +39,7 @@ import { isPrismaTransientError, throwLocalReadAsServiceUnavailable } from "./pr
 import { PrismaService } from "./prisma.service";
 import { readMemberUsedTrafficGb } from "./member-traffic-usage";
 import { ReleaseCenterService } from "./release-center.service";
+import { ClientPresenceService } from "./client-presence.service";
 import {
   pickCurrentSubscription,
   toSubscriptionStatusDto
@@ -90,7 +91,8 @@ export class ClientAccessService {
     private readonly announcementPolicyService: AnnouncementPolicyService,
     private readonly clientRoutingRuleService: ClientRoutingRuleService,
     private readonly clientTicketService: ClientTicketService,
-    private readonly releaseCenterService: ReleaseCenterService
+    private readonly releaseCenterService: ReleaseCenterService,
+    private readonly clientPresenceService: ClientPresenceService
   ) {}
 
   async login(account: string, password: string, clientIp = "unknown"): Promise<AuthSessionDto> {
@@ -131,12 +133,14 @@ export class ClientAccessService {
 
   async streamRuntimeEvents(token?: string, lastEventId?: string | null) {
     const user = await this.authSessionService.authenticateAccessToken(token);
-    return this.clientRuntimeEventsService.streamForUser(user.id, {
+    const stream = this.clientRuntimeEventsService.streamForUser(user.id, {
       lastEventId,
       validate: async () => {
         await this.authSessionService.authenticateAccessToken(token);
       }
     });
+    // 推送连接保持期间即“客户端已打开”，后台据此显示在线状态。
+    return this.clientPresenceService.trackStream(user.id, stream);
   }
 
   async getBootstrap(token?: string, platform?: PlatformTarget): Promise<ClientBootstrapDto> {

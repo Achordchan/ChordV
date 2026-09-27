@@ -11,6 +11,7 @@ import { findNodeCommandSummary } from "../../utils/node-command-summary";
 import { PanelSyncInlineStatus, LeaseRevocationInlineStatus, isTeamMemberLeaseRevocationJob } from "./CustomerTaskStatus";
 import { TeamMemberEditorPanel } from "./TeamEditors";
 import { ClientVersionBrief, ClientVersionFacts } from "./CustomerClientVersions";
+import { MemberPresenceBrief, MemberPresenceDetails } from "./CustomerPresence";
 import { latestClientVersion } from "../../utils/client-versions";
 import type { UsersPageProps } from "./types";
 import dialogStyles from "../editors/EditorDialog.module.css";
@@ -33,7 +34,7 @@ export function CustomerMembers({ team, actions }: { team: AdminTeamRecordDto; a
       <Button variant="default" leftSection={<IconPlus size={16}/>} onClick={() => actions.onOpenTeamMemberInlineEditor(team.id)}>添加成员</Button></div>
     {actions.teamMemberInlineEditor?.teamId === team.id && <TeamMemberEditorPanel {...actions}/>}
     {error && <Group mt="md"><Text size="sm" c="red">{error}</Text><Button size="compact-xs" variant="default" onClick={() => actions.onLoadTeamUsage(team.id, { force: true })}>重新加载</Button></Group>}
-    <Table.ScrollContainer minWidth={640}><Table verticalSpacing="md" className={styles.memberTable}><Table.Thead><Table.Tr><Table.Th>成员</Table.Th><Table.Th>角色</Table.Th><Table.Th>本期已用</Table.Th><Table.Th>客户端</Table.Th><Table.Th>账号状态</Table.Th><Table.Th>操作</Table.Th></Table.Tr></Table.Thead><Table.Tbody>
+    <Table.ScrollContainer minWidth={640}><Table verticalSpacing="md" className={styles.memberTable}><Table.Thead><Table.Tr><Table.Th>成员</Table.Th><Table.Th>角色</Table.Th><Table.Th>本期已用</Table.Th><Table.Th>客户端</Table.Th><Table.Th>在线状态</Table.Th><Table.Th>账号状态</Table.Th><Table.Th>操作</Table.Th></Table.Tr></Table.Thead><Table.Tbody>
       {team.members.map(item => {
         const account = actions.allUsers.find(u => u.id === item.userId);
         const itemUsage = usage.find(u => u.userId === item.userId);
@@ -42,6 +43,7 @@ export function CustomerMembers({ team, actions }: { team: AdminTeamRecordDto; a
         return <Table.Tr key={item.id}><Table.Td><Text fw={600}>{item.displayName}</Text><Text size="xs" c="dimmed">{item.email}</Text></Table.Td><Table.Td>{item.role === "owner" ? "负责人" : "成员"}</Table.Td>
           <Table.Td>{!loaded && !error ? <DataSkeleton variant="line"/> : !loaded ? "未加载" : itemUsage ? `${formatTrafficGb(itemUsage.totalUsedTrafficGb)} GB` : "暂无用量"}</Table.Td>
           <Table.Td>{latestClientVersion(account) ? <ClientVersionBrief user={account} className={styles.memberClientVersion}/> : <Text size="sm" c="dimmed">暂无记录</Text>}</Table.Td>
+          <Table.Td><MemberPresenceBrief userId={item.userId}/></Table.Td>
           <Table.Td><Text size="sm" c={account?.status === "active" ? "#3b734d" : "dimmed"}>{account ? translateUserStatus(account.status) : "待同步"}</Text>
             {((pendingCommands?.total ?? 0) > 0 || pendingRevocation) && <Text size="xs" c="orange.7">操作待确认</Text>}
           </Table.Td>
@@ -52,6 +54,7 @@ export function CustomerMembers({ team, actions }: { team: AdminTeamRecordDto; a
     <Modal opened={Boolean(member) && actions.teamMemberInlineEditor?.teamId !== team.id} onClose={() => setMemberId(null)} title="成员详情" centered size={620} overlayProps={{ backgroundOpacity: .35, blur: 2 }} classNames={{ content: dialogStyles.content, header: dialogStyles.header, title: dialogStyles.title, body: dialogStyles.body }}>
       {member && <Stack gap="lg" className={dialogStyles.memberDetail}><section><Text fw={700} size="lg">{member.displayName}</Text><Text c="dimmed" size="sm">{member.email}</Text><Badge mt="sm" variant="light" color="gray">{member.role === "owner" ? "负责人" : "成员"}</Badge></section>
         <section><Text fw={600} mb="sm">客户端</Text><Text size="sm" component="div">{user ? <ClientVersionFacts user={user}/> : "暂无记录"}</Text></section>
+        <section><Text fw={600} mb="sm">在线状态</Text><MemberPresenceDetails userId={member.userId}/></section>
         <Tabs key={member.id} defaultValue="usage" keepMounted={false} color="teal.9">
           <Tabs.List className={styles.tabs} aria-label="成员详情"><Tabs.Tab value="usage">用量详情</Tabs.Tab><Tabs.Tab value="routing">自定义规则</Tabs.Tab></Tabs.List>
           <Tabs.Panel value="usage" pt="lg"><Stack gap="lg" className={dialogStyles.memberDetail}>

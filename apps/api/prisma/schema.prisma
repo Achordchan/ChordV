@@ -294,6 +294,7 @@ model User {
   announcementReadStates AnnouncementReadState[]
   supportTicketReadStates SupportTicketReadState[]
   clientVersions       UserClientVersion[]
+  clientPresence       UserClientPresence?
 }
 
 // 每位用户在各平台最近一次上报的客户端版本（来自已登录客户端的检查更新请求）。
@@ -311,6 +312,19 @@ model UserClientVersion {
 
   @@id([userId, platform])
   @@index([lastSeenAt])
+}
+
+// 客户端在线状态：已登录客户端打开期间会一直保持事件推送连接，后台据此判断“在线（客户端已打开）”。
+// 每位用户一条；连接期间每分钟刷新一次 lastSeenAt，全部断开后 online 置为 false，lastSeenAt 即最近在线时间。
+// 进程异常退出来不及写 online=false 时，lastSeenAt 超过判定窗口也按离线处理。
+model UserClientPresence {
+  userId      String    @id
+  online      Boolean   @default(false)
+  onlineSince DateTime? // 本次连续在线的开始时间；短暂断线重连不重置
+  lastSeenAt  DateTime
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model ClientRoutingRule {
@@ -577,6 +591,8 @@ model NodeSessionLease {
   issuedAt       DateTime
   expiresAt      DateTime
   lastHeartbeatAt DateTime
+  /// 建立连接时选择的模式（rule / global / direct）；早于该字段的连接为空。
+  connectionMode String?
   revokedAt      DateTime?
   revokedReason  String?
   createdAt      DateTime             @default(now())
@@ -589,6 +605,7 @@ model NodeSessionLease {
   @@index([userId, status, expiresAt])
   @@index([subscriptionId, status, expiresAt])
   @@index([nodeId, status, expiresAt])
+  @@index([status, lastHeartbeatAt])
 }
 
 model SecurityEvent {
