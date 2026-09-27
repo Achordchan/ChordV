@@ -1,7 +1,7 @@
 import "reflect-metadata";
 import assert from "node:assert/strict";
 import { ReleaseCenterService } from "../src/modules/common/release-center.service";
-import { normalizeReleaseChannel, releaseChannelsVisibleTo } from "../src/modules/common/release-center.utils";
+import { normalizeReleaseChannel, parseArtifactBuildNumber, releaseChannelsVisibleTo } from "../src/modules/common/release-center.utils";
 
 type Row = {
   id: string;
@@ -173,7 +173,7 @@ async function main() {
   // Release history follows update-check visibility, newest first, published only.
   const history = createService([
     { ...release("stable-8", "stable", "1.1.8"), changelog: ["旧版本"] },
-    { ...release("stable-9", "stable", "1.1.9"), displayTitle: "", changelog: ["修复下载状态条"] },
+    { ...release("stable-9", "stable", "1.1.9"), displayTitle: "", changelog: ["修复下载状态条"], artifacts: [{ id: "a9", isPrimary: true, type: "dmg", fileName: "ChordV_1.1.9_build7.dmg" }] },
     release("beta-10", "beta", "1.1.10"),
     release("stable-11-draft", "stable", "1.1.11", "draft")
   ]);
@@ -181,8 +181,40 @@ async function main() {
   assert.deepEqual(stableHistory.map((item: any) => item.version), ["1.1.9", "1.1.8"], "stable history hides betas and drafts");
   assert.equal(stableHistory[0].title, "1.1.9", "an empty title falls back to the version");
   assert.deepEqual(stableHistory[0].changelog, ["修复下载状态条"]);
+  assert.equal(stableHistory[0].build, 7, "history shows the primary installer's build");
+  assert.equal(stableHistory[1].build, null);
   const testerHistory = await history.service.listClientReleaseHistory({ platform: "macos", channel: "beta", limit: 2 });
   assert.deepEqual(testerHistory.map((item: any) => [item.version, item.releaseChannel]), [["1.1.10", "beta"], ["1.1.9", "stable"]]);
+
+  // Build numbers: a newer installer of the same version reaches clients that report
+  // their build; older clients and 1.1.9 users keep the plain version comparison.
+  assert.equal(parseArtifactBuildNumber({ fileName: "ChordV_1.1.10_build42.dmg" }), 42);
+  assert.equal(parseArtifactBuildNumber({ fileName: "ChordV_1.1.10_build43_x64-setup.exe" }), 43);
+  assert.equal(parseArtifactBuildNumber({ fileName: null, sourceUrl: "https://github.com/a/b/releases/download/v1.1.10/ChordV_1.1.10_build44.dmg?x=1" }), 44);
+  assert.equal(parseArtifactBuildNumber({ fileName: "ChordV_1.1.10.dmg" }), null, "installers without a build keep working");
+  assert.equal(parseArtifactBuildNumber({ fileName: "ChordV_1.1.10_build0.dmg" }), null);
+
+  const builds = createService([release("stable-9", "stable", "1.1.9"), release("beta-10", "beta", "1.1.10")]);
+  const usable = builds.service.pickClientUsableArtifact;
+  let offeredName = "ChordV_1.1.10_build42.dmg";
+  builds.service.pickClientUsableArtifact = async (...args: any[]) => ({ ...(await usable(...args)), fileName: offeredName });
+  const withBuild = (currentVersion: string, currentBuild: number | undefined, channel: "stable" | "beta") =>
+    builds.service.checkClientUpdate({ currentVersion, currentBuild, platform: "macos", channel, artifactType: "dmg" });
+
+  const tester41 = await withBuild("1.1.10", 41, "beta");
+  assert.equal(tester41.hasUpdate, true, "a tester on build 41 receives build 42 of the same version");
+  assert.equal(tester41.latestVersion, "1.1.10");
+  assert.equal(tester41.latestBuild, 42);
+  assert.equal(tester41.forceUpgrade, false, "a newer build alone never forces");
+  assert.equal((await withBuild("1.1.10", 42, "beta")).hasUpdate, false, "the same build is not offered again");
+  assert.equal((await withBuild("1.1.10", 50, "beta")).hasUpdate, false, "an older build is never offered");
+  assert.equal((await withBuild("1.1.10", undefined, "beta")).hasUpdate, false, "clients that do not report a build keep today's behaviour");
+  const fromOld = await withBuild("1.1.9", undefined, "beta");
+  assert.equal(fromOld.hasUpdate, true);
+  assert.equal(fromOld.latestVersion, "1.1.10", "1.1.9 moves straight to 1.1.10");
+  offeredName = "ChordV_1.1.10.dmg";
+  assert.equal((await withBuild("1.1.10", 41, "beta")).hasUpdate, false, "an installer without a build is not treated as newer");
+  assert.equal((await withBuild("1.1.10", 41, "beta")).latestBuild, null);
 
   // Guard rails around promotion.
   await assert.rejects(service.promoteRelease("stable-11"), /只有测试版/);
@@ -225,7 +257,7 @@ async function main() {
   assert.match(String((lower as PromiseRejectedResult).reason?.message), /正式版已是 1\.1\.13/);
   assert.ok(race.lockKeys.every(key => key === "chordv:release-line:macos"), "promotion locks the platform release line");
 
-  console.log("Release beta channel: release history, tester visibility, beta never forced, no-downgrade opt-out, promotion guard rails and stable rollout passed");
+  console.log("Release beta channel: build numbers, release history, tester visibility, beta never forced, no-downgrade opt-out, promotion guard rails and stable rollout passed");
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });

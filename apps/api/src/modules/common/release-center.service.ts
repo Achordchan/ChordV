@@ -41,6 +41,7 @@ import {
   normalizeOptionalBoolean,
   normalizePublishedAt,
   normalizeReleaseChannel,
+  parseArtifactBuildNumber,
   normalizeVersion,
   pickPrimaryReleaseArtifact,
   releaseChannelsVisibleTo,
@@ -1095,8 +1096,14 @@ export class ReleaseCenterService {
         resolvedArtifact = { ...resolvedArtifact, type: "external", deliveryMode: "external_download" };
       }
       const latestVersionComparison = compareSemver(release.version, input.currentVersion);
+      const latestBuild = parseArtifactBuildNumber(resolvedArtifact);
+      // Only clients that report their build can take a newer build of the same
+      // version; everyone else keeps the version-only comparison.
+      const newerBuild = latestVersionComparison === 0
+        && typeof input.currentBuild === "number" && input.currentBuild > 0
+        && latestBuild !== null && latestBuild > input.currentBuild;
 
-      if (latestVersionComparison <= 0 && !mustUpgrade) {
+      if (latestVersionComparison <= 0 && !mustUpgrade && !newerBuild) {
         return {
           hasUpdate: false,
           forceUpgrade: false,
@@ -1109,6 +1116,7 @@ export class ReleaseCenterService {
           platform: input.platform,
           channel: effectiveChannel,
           releaseChannel,
+          latestBuild,
           changelog: release.changelog,
           deliveryMode: (resolvedArtifact?.deliveryMode as ClientUpdateCheckResultDto["deliveryMode"] | undefined)
             ?? fallbackDeliveryMode,
@@ -1122,7 +1130,7 @@ export class ReleaseCenterService {
       }
 
       return {
-        hasUpdate: latestVersionComparison > 0,
+        hasUpdate: latestVersionComparison > 0 || newerBuild,
         forceUpgrade: mustUpgrade || forcedByRelease,
         blockedByMinimumVersion: mustUpgrade,
         forcedByRelease,
@@ -1133,6 +1141,7 @@ export class ReleaseCenterService {
         platform: input.platform,
         channel: effectiveChannel,
         releaseChannel,
+        latestBuild,
         changelog: release.changelog,
         deliveryMode: (resolvedArtifact?.deliveryMode as ClientUpdateCheckResultDto["deliveryMode"] | undefined)
           ?? fallbackDeliveryMode,
@@ -1176,6 +1185,7 @@ export class ReleaseCenterService {
       version: release.version,
       releaseChannel: normalizeReleaseChannel(release.channel),
       title: release.displayTitle?.trim() || release.version,
+      build: (() => { const primary = pickPrimaryReleaseArtifact(release.artifacts, null); return primary ? parseArtifactBuildNumber(primary) : null; })(),
       changelog: release.changelog,
       publishedAt: release.publishedAt?.toISOString() ?? null
     }));

@@ -7,6 +7,7 @@ import {
   buildWindowsArtifactNames,
   desktopRoot,
   normalizeDesktopPlatform,
+  resolveDesktopBuildNumber,
   resolveDesktopPlatformVersion
 } from "./platform-version.mjs";
 
@@ -23,6 +24,7 @@ if (platform !== "macos" && platform !== "windows") {
 }
 
 const version = resolveDesktopPlatformVersion(platform);
+const buildNumber = resolveDesktopBuildNumber();
 const extraArgs = process.argv.slice(3);
 const projectRoot = path.resolve(desktopRoot, "..", "..");
 const baseConfigPath = path.join(desktopRoot, "src-tauri", "tauri.conf.json");
@@ -78,7 +80,7 @@ buildArgs.push(...extraArgs);
 
 cleanupBundleOutput(platform);
 
-console.log(`执行打包命令：${pnpmCommand} ${buildArgs.join(" ")}`);
+console.log(`执行打包命令：${pnpmCommand} ${buildArgs.join(" ")}（版本 ${version}${buildNumber ? `，构建 ${buildNumber}` : "，无构建号"}）`);
 
 const buildStartedAt = Date.now();
 const result = spawnSync(pnpmCommand, buildArgs, {
@@ -87,7 +89,10 @@ const result = spawnSync(pnpmCommand, buildArgs, {
   shell: process.platform === "win32",
   env: {
     ...process.env,
-    VITE_APP_VERSION: version
+    VITE_APP_VERSION: version,
+    // Rust reads CHORDV_BUILD_NUMBER at compile time; the frontend gets the same value.
+    CHORDV_BUILD_NUMBER: buildNumber ? String(buildNumber) : "",
+    VITE_APP_BUILD_NUMBER: buildNumber ? String(buildNumber) : ""
   }
 });
 

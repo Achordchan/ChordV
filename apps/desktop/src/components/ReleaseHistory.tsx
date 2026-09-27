@@ -3,6 +3,7 @@ import { Badge, Button, Loader, Text } from "@mantine/core";
 import type { ClientReleaseHistoryItemDto } from "@chordv/shared";
 import { fetchReleaseHistory, type ReleaseChannel } from "../api/client";
 import { cleanChangelogItem, compareVersion, formatVersionLabel } from "../lib/updateState";
+import { APP_BUILD_NUMBER } from "../lib/buildInfo";
 import styles from "./UpdateCenterModal.module.css";
 
 type HistoryState =
@@ -45,12 +46,15 @@ export function ReleaseHistory({ channel, appVersion }: { channel: ReleaseChanne
     <ol className={styles.history} aria-label="更新日志">
       {state.items.map((item) => {
         const changelog = item.changelog.map(cleanChangelogItem).filter(Boolean);
-        const current = compareVersion(item.version, appVersion) === 0;
+        // With builds on both sides, only the installed build is the current one.
+        const current = compareVersion(item.version, appVersion) === 0
+          && (!item.build || !APP_BUILD_NUMBER || item.build === APP_BUILD_NUMBER);
         const title = item.title.trim() && item.title.trim() !== item.version ? item.title.trim() : null;
         return (
           <li key={item.version} className={styles.release}>
             <div className={styles.releaseHead}>
               <Text className={styles.releaseVersion}>{formatVersionLabel(item.version)}</Text>
+              {item.build ? <Text size="xs" c="dimmed">构建 {item.build}</Text> : null}
               {item.releaseChannel === "beta" ? <Badge size="sm" variant="light" color="orange">测试版</Badge> : null}
               {current ? <Badge size="sm" variant="light" color="cyan">当前版本</Badge> : null}
               {item.publishedAt ? <Text size="xs" c="dimmed" className={styles.releaseDate}>{formatReleaseDate(item.publishedAt)}</Text> : null}

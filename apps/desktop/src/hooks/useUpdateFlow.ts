@@ -1,4 +1,5 @@
 import { initialUpdateCheckState, reduceUpdateCheckState } from "../lib/updateCheckState";
+import { APP_BUILD_NUMBER } from "../lib/buildInfo";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { ClientVersionDto } from "@chordv/shared";
 import {
@@ -110,12 +111,15 @@ function isDesktopManagedUpdate(mode: ClientUpdateCheckResult["deliveryMode"], p
 }
 
 
-export function hasActionableUpdate(result: ClientUpdateCheckResult | null, appVersion: string) {
+export function hasActionableUpdate(result: ClientUpdateCheckResult | null, appVersion: string, appBuild: number | null = APP_BUILD_NUMBER) {
   if (!result) {
     return false;
   }
+  // Same version, newer installer: only when both builds are known.
+  const newerBuild = compareVersion(result.latestVersion, appVersion) === 0
+    && appBuild !== null && (result.latestBuild ?? 0) > appBuild;
   return (
-    (result.hasUpdate && compareVersion(result.latestVersion, appVersion) > 0) ||
+    (result.hasUpdate && (compareVersion(result.latestVersion, appVersion) > 0 || newerBuild)) ||
     result.forceUpgrade ||
     compareVersion(result.minimumVersion, appVersion) > 0
   );
@@ -128,6 +132,7 @@ function buildUpdateArtifactIdentity(update: ClientUpdateCheckResult | null) {
   const artifact = update.artifact;
   return [
     update.latestVersion,
+    update.latestBuild ?? "",
     update.deliveryMode,
     update.downloadUrl ?? "",
     artifact?.originDownloadUrl ?? "",

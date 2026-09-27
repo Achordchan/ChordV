@@ -1104,6 +1104,20 @@ export function assertFullUpdateDownloadUrlAllowed(rawUrl: string) {
   }
 }
 
+// CI names installers like ChordV_1.1.10_build42.dmg. The build tells apart
+// successive installers of the same version; the version itself stays plain.
+export function parseArtifactBuildNumber(artifact: { fileName?: string | null; sourceUrl?: string | null; downloadUrl?: string | null }) {
+  for (const candidate of [artifact.fileName, artifact.sourceUrl, artifact.downloadUrl]) {
+    const name = candidate?.split(/[?#]/)[0]?.split("/").pop() ?? "";
+    const match = /_build(\d{1,9})(?=[_.])/i.exec(name);
+    if (match) {
+      const value = Number(match[1]);
+      if (value > 0) return value;
+    }
+  }
+  return null;
+}
+
 export function toAdminReleaseArtifactRecord(row: ReleaseArtifactRowLike, includeSource = true): AdminReleaseArtifactDto {
   const downloadUrl = row.source === "uploaded" ? buildReleaseArtifactDownloadUrl(row.id) : row.downloadUrl;
   return {
@@ -1126,6 +1140,7 @@ export function toAdminReleaseArtifactRecord(row: ReleaseArtifactRowLike, includ
     fileName: row.fileName,
     fileSizeBytes: row.fileSizeBytes?.toString() ?? null,
     fileHash: row.fileHash,
+    buildNumber: parseArtifactBuildNumber(row),
     updaterSignature: row.updaterSignature ?? null,
     isPrimary: row.isPrimary,
     isFullPackage: row.isFullPackage,
