@@ -9,7 +9,6 @@ import { PrismaService } from "./prisma.service";
 type EventSink = (event: MessageEvent) => void;
 type AdminRuntimeEventDto = Pick<
   ClientRuntimeEventDto,
-  | "type"
   | "occurredAt"
   | "ticketId"
   | "ticketStatus"
@@ -21,7 +20,10 @@ type AdminRuntimeEventDto = Pick<
   | "channel"
   | "latestVersion"
   | "announcementId"
->;
+> & {
+  /** presence_updated 只推给后台：用户上下线、连接或断开节点。 */
+  type: ClientRuntimeEventDto["type"] | "presence_updated";
+};
 type ClusterEnvelope = {
   originInstanceId: string;
   eventId: string;
@@ -30,6 +32,8 @@ type ClusterEnvelope = {
 
 const ADMIN_RUNTIME_EVENTS_CHANNEL = "chordv_admin_runtime_events";
 const MAX_REPLAY_EVENTS = 100;
+/** 在线状态变化合并推送：大量用户同时上下线时，后台最多每秒刷新一次在线列表。 */
+const PRESENCE_EVENT_COALESCE_MS = 1_000;
 
 @Injectable()
 export class AdminRuntimeEventsService implements OnModuleInit, OnModuleDestroy {
@@ -41,6 +45,7 @@ export class AdminRuntimeEventsService implements OnModuleInit, OnModuleDestroy 
   private listener: PgClient | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private destroyed = false;
+  private presenceEventTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -50,6 +55,10 @@ export class AdminRuntimeEventsService implements OnModuleInit, OnModuleDestroy 
 
   async onModuleDestroy() {
     this.destroyed = true;
+    if (this.presenceEventTimer) {
+      clearTimeout(this.presenceEventTimer);
+      this.presenceEventTimer = null;
+    }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -163,6 +172,24 @@ export class AdminRuntimeEventsService implements OnModuleInit, OnModuleDestroy 
     });
   }
 
+  /** 用户上下线或连接变化；同一秒内的多次变化只推送一次。 */
+  publishPresenceUpdated() {
+    if (this.presenceEventTimer || this.destroyed || workLifecycle.isDraining) {
+      return;
+    }
+    this.presenceEventTimer = setTimeout(() => {
+      this.presenceEventTimer = null;
+      if (this.destroyed || workLifecycle.isDraining) {
+        return;
+      }
+      this.publish({
+        type: "presence_updated",
+        occurredAt: new Date().toISOString()
+      });
+    }, PRESENCE_EVENT_COALESCE_MS);
+    this.presenceEventTimer.unref?.();
+  }
+
   publishImageBedUpdated() {
     this.publish({
       type: "image_bed_updated",
@@ -242,7 +269,8 @@ export class AdminRuntimeEventsService implements OnModuleInit, OnModuleDestroy 
       { type: "image_bed_updated", occurredAt },
       { type: "announcement_updated", occurredAt },
       { type: "policy_updated", occurredAt },
-      { type: "sync_queue_updated", occurredAt }
+      { type: "sync_queue_updated", occurredAt },
+      { type: "presence_updated", occurredAt }
     ];
   }
 

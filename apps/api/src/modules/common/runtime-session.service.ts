@@ -60,6 +60,7 @@ import { createOrRefreshLeaseRevocationJob } from "./lease-revocation-job.utils"
 import { createOrRefreshNodeCommandJob } from "./node-command-job.utils";
 import { trafficGbNumberToBytes } from "./traffic-bytes.utils";
 import { AgentEventsService } from "../agent/agent-events.service";
+import { ClientPresenceService } from "./client-presence.service";
 
 type ResolvedSubscriptionAccess = {
   subscription: {
@@ -138,7 +139,8 @@ export class RuntimeSessionService {
     private readonly clientRuntimeEventsService: ClientRuntimeEventsService,
     private readonly clientRoutingRuleService: ClientRoutingRuleService,
     private readonly adminRuntimeEventsService: AdminRuntimeEventsService,
-    private readonly agentEventsService: AgentEventsService
+    private readonly agentEventsService: AgentEventsService,
+    private readonly clientPresenceService: ClientPresenceService
   ) {}
 
   private async runWithUserLeaseLock<T>(userId: string, task: () => Promise<T>) {
@@ -383,6 +385,8 @@ export class RuntimeSessionService {
       throw new ForbiddenException("当前连接已失效，请重新连接");
     }
     this.refreshActiveRuntimeLease(sessionId, nextExpiresAt);
+    // 心跳时刻也计入最近在线时间（推送连接断开但仍在使用节点时，离线后显示的最近在线才准确）。
+    this.clientPresenceService?.noteHeartbeat(user.id, now);
 
     return {
       sessionId,
@@ -1702,9 +1706,13 @@ export class RuntimeSessionService {
         status: "active",
         issuedAt: now,
         expiresAt: leaseExpiresAt,
-        lastHeartbeatAt: now
+        lastHeartbeatAt: now,
+        connectionMode: request.mode
       }
     });
+    // 建立连接本身也说明客户端在线：即使推送连接没连上、第一次心跳前就断开，这次访问也会留在最近在线记录里。
+    this.clientPresenceService?.noteHeartbeat(user.id, now);
+    this.adminRuntimeEventsService?.publishPresenceUpdated();
 
     const runtime: GeneratedRuntimeConfigDto = {
       sessionId,
@@ -2432,6 +2440,7 @@ export class RuntimeSessionService {
     if (revoked.count === 0) {
       return;
     }
+    this.adminRuntimeEventsService?.publishPresenceUpdated();
 
     try {
       await this.prisma.securityEvent.create({

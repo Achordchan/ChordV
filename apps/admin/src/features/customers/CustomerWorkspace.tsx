@@ -10,6 +10,7 @@ import { CustomerNodes } from "./CustomerNodes";
 import { CustomerMembers } from "./CustomerMembers";
 import { CustomerActivity, customerTasks } from "./CustomerActivity";
 import { ClientVersionBrief, ClientVersionFacts } from "./CustomerClientVersions";
+import { CustomerPresenceBrief, CustomerPresenceFacts } from "./CustomerPresence";
 import { TeamProfileEditorPanel } from "./TeamEditors";
 import type { UsersPageProps } from "./types";
 import styles from "./CustomerWorkspace.module.css";
@@ -46,7 +47,7 @@ export function CustomerWorkspace(props: UsersPageProps) {
       <div className={styles.customerList}>{rows.map(customer => <button key={customer.key} className={`${styles.customerRow} ${selected?.key === customer.key ? styles.selected : ""}`}
         aria-pressed={selected?.key === customer.key} onClick={() => { setSelectedKey(customer.key); setMobileDetail(true); }}>
         <Avatar size={44} radius="xl" color="#1c4d37" className={styles.listAvatar}>{Array.from(customer.name)[0]}</Avatar>
-        <span className={styles.rowIdentity}><strong>{customer.name}</strong><small title={customer.email}>{customer.email}</small>{customer.user && <ClientVersionBrief user={customer.user}/>}{!customer.enabled && <small className={styles.disabledLabel}>{customer.team ? "团队已停用" : "账号已停用"}</small>}</span>
+        <span className={styles.rowIdentity}><strong>{customer.name}</strong><small title={customer.email}>{customer.email}</small>{customer.user && <ClientVersionBrief user={customer.user}/>}<CustomerPresenceBrief customer={customer}/>{!customer.enabled && <small className={styles.disabledLabel}>{customer.team ? "团队已停用" : "账号已停用"}</small>}</span>
         <span className={styles.rowState}><span style={{ color: customer.summary?.state === "active" ? "#427653" : customer.summary?.state === "expired" || customer.summary?.state === "exhausted" ? "#b22c40" : "#858578" }}>
           {customer.summary ? translateSubscriptionState(customer.summary.state) : "未开通"}</span>
           <small>{customer.summary ? `${new Date(customer.summary.expireAt).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })} 到期` : "暂无订阅"}</small>
@@ -75,7 +76,8 @@ function CustomerDetail({ customer, actions, onBack }: { customer: CustomerRecor
     <button className={styles.backButton} onClick={onBack}><IconArrowLeft size={17}/>返回列表</button>
     <header className={styles.identityHeader}><div className={styles.identity}>
       <Avatar size={96} radius="xl" color="#1c4d37" className={styles.heroAvatar}>{Array.from(customer.name)[0]}</Avatar>
-      <div><h1>{customer.name}</h1><p>{customer.email}</p><span className={`${styles.accountState} ${customer.enabled ? styles.enabled : ""}`}><span/>{customer.team ? "团队" : "账号"}{customer.enabled ? "已启用" : "已停用"}</span></div>
+      <div><h1>{customer.name}</h1><p>{customer.email}</p><span className={`${styles.accountState} ${customer.enabled ? styles.enabled : ""}`}><span/>{customer.team ? "团队" : "账号"}{customer.enabled ? "已启用" : "已停用"}</span>
+        <CustomerPresenceBrief customer={customer} className={styles.headerPresence}/></div>
     </div><Group gap="sm" className={styles.headerActions}>
       <Button color="#1c4d37" size="md" disabled={Boolean(subscription && customer.subscription?.renewable === false)} onClick={() => subscription ? actions.onOpenRenewDrawer(subscription.id) : create()}>
         {subscription ? customer.subscription ? getRenewActionText(customer.subscription.renewable) : "续期" : "开通订阅"}
@@ -112,6 +114,7 @@ function CustomerProfile({ customer, actions }: { customer: CustomerRecord; acti
     <Button variant="default" leftSection={<IconPencil size={16}/>} onClick={() => customer.user ? actions.onOpenUserDrawer(customer.user.id) : actions.onOpenTeamInlineEditor(customer.team!.id)}>编辑资料</Button></div>
     <dl className={styles.profileFacts}><div><dt>名称</dt><dd>{customer.name}</dd></div><div><dt>{customer.team ? "负责人邮箱" : "邮箱"}</dt><dd>{customer.email}</dd></div>
       <div><dt>状态</dt><dd>{customer.enabled ? "已启用" : "已停用"}</dd></div>
+      <div><dt>{customer.team ? "在线成员" : "在线状态"}</dt><dd><CustomerPresenceFacts customer={customer}/></dd></div>
       {customer.user && <><div><dt>账号角色</dt><dd>{translateRole(customer.user.role)}</dd></div><div><dt>订阅数量</dt><dd>{customer.user.subscriptionCount}</dd></div>
         <div><dt>客户端</dt><dd><ClientVersionFacts user={customer.user}/></dd></div></>}
       {customer.team && <><div><dt>负责人</dt><dd>{customer.team.ownerDisplayName}</dd></div><div><dt>团队成员</dt><dd>{customer.team.memberCount} 人</dd></div><div><dt>创建时间</dt><dd>{formatDateTime(customer.team.createdAt)}</dd></div></>}

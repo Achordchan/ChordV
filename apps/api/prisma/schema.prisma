@@ -294,6 +294,8 @@ model User {
   announcementReadStates AnnouncementReadState[]
   supportTicketReadStates SupportTicketReadState[]
   clientVersions       UserClientVersion[]
+  clientPresence       UserClientPresence?
+  clientPresenceStreams UserClientPresenceStream[]
 }
 
 // 每位用户在各平台最近一次上报的客户端版本（来自已登录客户端的检查更新请求）。
@@ -310,6 +312,33 @@ model UserClientVersion {
   user       User            @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@id([userId, platform])
+  @@index([lastSeenAt])
+}
+
+// 客户端最近在线记录：每位用户一条。推送连接打开、每分钟刷新、断开以及节点心跳（每分钟最多一次）都会推进 lastSeenAt，
+// 即离线后显示的“最近在线时间”；onlineSince 为本次连续在线的开始时间，短暂断线重连不重置。
+model UserClientPresence {
+  userId      String    @id
+  onlineSince DateTime?
+  lastSeenAt  DateTime
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// 当前保持着的客户端推送连接：每个 API 进程为它持有推送连接的每位用户保留一条，每分钟刷新 lastSeenAt，
+// 该进程上这位用户的最后一条连接断开 15 秒后删除。任一进程有近期刷新的记录即为“在线”；
+// 进程异常退出留下的记录超过判定窗口即不再算在线，并由其他进程定期清理。
+model UserClientPresenceStream {
+  userId      String
+  instanceId  String
+  connectedAt DateTime
+  lastSeenAt  DateTime
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, instanceId])
   @@index([lastSeenAt])
 }
 
@@ -577,6 +606,8 @@ model NodeSessionLease {
   issuedAt       DateTime
   expiresAt      DateTime
   lastHeartbeatAt DateTime
+  /// 建立连接时选择的模式（rule / global / direct）；早于该字段的连接为空。
+  connectionMode String?
   revokedAt      DateTime?
   revokedReason  String?
   createdAt      DateTime             @default(now())
@@ -589,6 +620,7 @@ model NodeSessionLease {
   @@index([userId, status, expiresAt])
   @@index([subscriptionId, status, expiresAt])
   @@index([nodeId, status, expiresAt])
+  @@index([lastHeartbeatAt])
 }
 
 model SecurityEvent {

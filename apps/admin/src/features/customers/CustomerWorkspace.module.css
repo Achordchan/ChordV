@@ -149,3 +149,7 @@
   .taskNotice { flex-wrap: wrap; }
   .empty { min-height: 280px; padding: 25px 10px; }
 }
+.rowIdentity .rowPresence { font-size: 12px; }
+.headerPresence { margin-top: 8px; font-size: 14px; }
+.memberPresence { max-width: 220px; }
+.presenceFacts { display: flex; flex-direction: column; gap: 6px; }

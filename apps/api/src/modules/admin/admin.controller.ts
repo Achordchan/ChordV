@@ -114,6 +114,11 @@ export class AdminController {
     return this.devDataService.getAdminDashboard();
   }
 
+  @Get("presence")
+  getPresence() {
+    return this.devDataService.getAdminPresence();
+  }
+
   @Get("upload-limits")
   getUploadLimits() {
     return getAdminUploadLimits();

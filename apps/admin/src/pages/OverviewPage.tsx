@@ -5,6 +5,7 @@ import { CountryFlag } from "../components/CountryFlag";
 import { sumNodeCommandSummaries } from "../utils/node-command-summary";
 import { CLIENT_VERSION_ACTIVE_DAYS, summarizeClientVersions } from "../utils/client-versions";
 import { translateAgentStatus, translateProbeStatus, translateSubscriptionState } from "../utils/admin-translate";
+import { OnlineUsersPanel } from "../features/presence/OnlineUsersPanel";
 import styles from "../features/dashboard/Dashboard.module.css";
 
 type OverviewPageProps = {
@@ -50,6 +51,7 @@ export function OverviewPage(props: OverviewPageProps) {
       {pendingNodes.length>0?<span>{pendingNodes.length} 个节点状态待确认</span>:null}
     </div>
     <div className={styles.metrics}>{metrics.map(metric=><button key={metric.label} onClick={metric.open}><span>{metric.label}</span><strong>{metric.value.toLocaleString("zh-CN")}</strong></button>)}</div>
+    <OnlineUsersPanel onOpenCustomers={props.onOpenCustomers}/>
     <div className={styles.columns}>
       <section className={styles.subscriptions}><div className={styles.sectionHeading}><h2>最近到期订阅</h2><button onClick={props.onOpenSubscriptions}>查看全部<IconChevronRight size={16}/></button></div>
         <Table.ScrollContainer minWidth={520}><Table className={styles.table}>

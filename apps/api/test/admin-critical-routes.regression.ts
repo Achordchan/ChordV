@@ -143,6 +143,7 @@ function assertAllAdminHttpRoutesCovered() {
 const devDataServiceStub = {
   getAdminSnapshot: async () => record("snapshot-get", "snapshot"),
   getAdminDashboard: async () => record("dashboard-get", "dashboard"),
+  getAdminPresence: async () => record("presence-get", "presence"),
   updateCurrentAdminSecurity: async (authorization: string | undefined, body: unknown) =>
     record("admin-security", "me", { ...toPlainJson(body) as Record<string, unknown>, authorization }),
   listAdminUsers: async () => [record("users-list", "all")],
@@ -515,6 +516,7 @@ async function main() {
 
     assert.equal((await requestJson(baseUrl, "/api/admin/snapshot", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/dashboard", { method: "GET" })).status, 200);
+    assert.equal((await requestJson(baseUrl, "/api/admin/presence", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/upload-limits", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/image-bed/config", { method: "GET" })).status, 200);
     assert.equal(
@@ -869,6 +871,7 @@ async function main() {
       [
         { route: "snapshot-get", value: "snapshot" },
         { route: "dashboard-get", value: "dashboard" },
+        { route: "presence-get", value: "presence" },
         { route: "image-bed-config-get", value: "config" },
         { route: "image-bed-config-update", value: "config", body: { apiToken: "imgbed_test_token" } },
         { route: "download-mirror-config-get", value: "config" },
