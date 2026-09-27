@@ -92,7 +92,10 @@ function testPlatformsAndEntries() {
   assert.equal(app.match(/onOpenLocalFiles=\{localFilesAvailable \? /g)?.length, 2, "both menus are gated by platform");
   assert.match(app, /onRevealComponent=\{localFilesAvailable \? /);
   assert.match(panel, /检查更新"\}\s*<\/Menu\.Item>\s*\{props\.onOpenLocalFiles \?[\s\S]*?本地文件/, "“本地文件” sits below “检查更新” in the ⋯ menu");
-  assert.match(panel, /aria-label="更多操作"[\s\S]*?本地文件/);
+  const desktopToolbar = panel.slice(panel.indexOf("subscription-actions--toolbar"));
+  assert.match(desktopToolbar, /检查更新"\}\s*<\/Button>/, "检查更新 stays outside the menu");
+  assert.doesNotMatch(desktopToolbar.slice(0, desktopToolbar.indexOf('aria-label="更多操作"')), />\s*(刷新|退出登录)\s*<\/Button>/,"refresh and logout moved into the menu");
+  assert.match(desktopToolbar, /aria-label="更多操作"[\s\S]*?刷新订阅[\s\S]*?本地文件[\s\S]*?<Menu\.Divider \/>[\s\S]*?color="red"[\s\S]*?退出登录/, "desktop ⋯ menu order: 刷新订阅, 本地文件, divider, 退出登录");
   assert.match(center, /在文件夹中显示/);
   assert.match(runtime, /invoke\("reveal_local_file", \{ kind \}\)/, "the frontend sends a fixed kind, never a path");
   assert.match(native, /async fn reveal_local_file\(app: AppHandle, kind: local_files::LocalFileKind\)/, "no general-purpose open-any-path command");
