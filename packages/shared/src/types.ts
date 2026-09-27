@@ -239,6 +239,8 @@ export interface AdminReleaseArtifactDto {
   fileName: string | null;
   fileSizeBytes: string | null;
   fileHash: string | null;
+  /** Build number read from the CI file name (ChordV_1.1.10_build42.dmg); null when absent. */
+  buildNumber?: number | null;
   isPrimary: boolean;
   isFullPackage: boolean;
   createdAt: string;
@@ -355,6 +357,8 @@ export interface ClientRuntimeComponentsPlanDto {
 
 export interface ClientUpdateCheckDto {
   currentVersion: string;
+  /** Build number of the running client; old clients omit it and keep version-only comparison. */
+  currentBuild?: number | null;
   platform: PlatformTarget;
   channel: ReleaseChannel;
   artifactType?: ReleaseArtifactType | null;
@@ -364,6 +368,7 @@ export interface ClientUpdateCheckDto {
 /** One published client release as shown in the update center's history. */
 export interface ClientReleaseHistoryItemDto {
   version: string;
+  build?: number | null;
   releaseChannel: ReleaseChannel;
   title: string;
   changelog: string[];
@@ -384,6 +389,8 @@ export interface ClientUpdateCheckResultDto {
   channel: ReleaseChannel;
   /** Channel of the offered release; beta builds are never required updates. */
   releaseChannel?: ReleaseChannel;
+  /** Build number of the offered installer, when known. */
+  latestBuild?: number | null;
   changelog: string[];
   deliveryMode: UpdateDeliveryMode;
   downloadUrl?: string | null;

@@ -78,12 +78,25 @@ class TauriUpdateQueryDto {
   @IsOptional()
   @IsIn(["stable", "beta"])
   channel?: ReleaseChannel;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(999_999_999)
+  currentBuild?: number;
 }
 
 class UpdateCheckDto {
   @IsString()
   @IsNotEmpty()
   currentVersion!: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(999_999_999)
+  currentBuild?: number | null;
 
   @IsString()
   @IsIn(["macos", "windows", "android", "ios"])
@@ -367,7 +380,7 @@ export class ClientController {
 
   @Get("update/tauri")
   async tauriUpdate(@Query() query: TauriUpdateQueryDto, @Req() request: Request, @Res() response: Response) {
-    const result = await this.clientService.checkUpdate({ currentVersion: query.currentVersion, platform: "windows", channel: query.channel ?? "stable", artifactType: "setup.exe" });
+    const result = await this.clientService.checkUpdate({ currentVersion: query.currentVersion, currentBuild: query.currentBuild ?? null, platform: "windows", channel: query.channel ?? "stable", artifactType: "setup.exe" });
     const artifact = result.recommendedArtifact;
     response.setHeader("Cache-Control", "no-store");
     if (!result.hasUpdate || !artifact?.updaterSignature || !result.downloadUrl) {
@@ -376,7 +389,10 @@ export class ClientController {
     const origin = publicSiteOrigin() || `${request.protocol}://${request.get("host")}`;
     const downloadUrl = new URL(result.downloadUrl, origin).toString();
     const originDownloadUrl = new URL(artifact.originDownloadUrl ?? result.downloadUrl, origin).toString();
-    return response.json({ version: result.latestVersion, notes: result.changelog.join("\n"),
+    // Build metadata only for clients that reported a build: their comparator
+    // understands it, and older updaters keep seeing the plain version.
+    const version = query.currentBuild && result.latestBuild ? `${result.latestVersion}+${result.latestBuild}` : result.latestVersion;
+    return response.json({ version, notes: result.changelog.join("\n"),
       url: downloadUrl, originDownloadUrl,
       signature: artifact.updaterSignature,
       fileSizeBytes: result.fileSizeBytes, fileHash: result.fileHash });

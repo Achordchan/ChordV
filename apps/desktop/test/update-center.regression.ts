@@ -6,6 +6,8 @@ import {
   formatUpdateCenterItemMessage
 } from "../src/lib/updateCenter.ts";
 import { cleanChangelogItem } from "../src/lib/updateState.ts";
+import { formatVersionWithBuild, parseBuildNumber } from "../src/lib/buildInfo.ts";
+import { hasActionableUpdate } from "../src/hooks/useUpdateFlow.ts";
 
 function testChangelogDropsGithubAttribution() {
   assert.equal(cleanChangelogItem("修复客户端更新缓存与异常下载残留清理 by @Achordchan in #59"), "修复客户端更新缓存与异常下载残留清理");
@@ -22,6 +24,22 @@ function testReleaseHistoryEntry() {
   assert.match(history, /cleanChangelogItem/, "history strips GitHub attribution like the update dialog");
   assert.match(client, /\/client\/releases\/history\?/);
   assert.match(client, /fetchReleaseHistory[\s\S]*?isApiStatusError\(reason, 404, 405\)\) \{\s*return null;/, "older servers degrade to an explanatory message");
+}
+
+function testSameVersionBuilds() {
+  const update = { hasUpdate: true, forceUpgrade: false, currentVersion: "1.1.10", latestVersion: "1.1.10", latestBuild: 42, minimumVersion: "0.0.0" } as any;
+  assert.equal(hasActionableUpdate(update, "1.1.10", 41), true, "a newer build of the installed version is an update");
+  assert.equal(hasActionableUpdate(update, "1.1.10", 42), false, "the installed build is not offered again");
+  assert.equal(hasActionableUpdate(update, "1.1.10", null), false, "without a local build only versions count");
+  assert.equal(hasActionableUpdate({ ...update, latestBuild: null }, "1.1.10", 41), false);
+  assert.equal(hasActionableUpdate({ ...update, latestVersion: "1.1.10" }, "1.1.9", null), true, "1.1.9 still moves to 1.1.10");
+  assert.equal(parseBuildNumber("42"), 42);
+  assert.equal(parseBuildNumber(""), null);
+  assert.equal(parseBuildNumber("0"), null);
+  assert.equal(formatVersionWithBuild("1.1.10", 42), "1.1.10 · 构建 42");
+  assert.equal(formatVersionWithBuild("1.1.10", null), "1.1.10");
+  const item = buildAppUpdateCenterItem({ appVersion: "1.1.10", update, hasActionableUpdate: true });
+  assert.equal(item.remoteVersion, "1.1.10 · 构建 42", "same-version updates are labelled by build");
 }
 
 function testDefaultItems() {
@@ -80,6 +98,7 @@ function main() {
   testAppItemCurrent();
   testChangelogDropsGithubAttribution();
   testReleaseHistoryEntry();
+  testSameVersionBuilds();
   console.log("desktop update center regression checks passed");
 }
 

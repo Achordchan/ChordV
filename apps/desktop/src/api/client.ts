@@ -30,6 +30,7 @@ import type {
   RuntimeComponentFailureReportInput
 } from "../lib/runtimeComponents";
 import { loadDesktopRuntimeEnvironment } from "../lib/runtime";
+import { APP_BUILD_NUMBER } from "../lib/buildInfo";
 
 import { normalizeSha256Hex } from "../lib/checksum";
 const API_BASE = readApiBaseUrl();
@@ -60,6 +61,8 @@ export type ClientUpdateCheckResult = {
   channel: ReleaseChannel;
   /** Channel of the offered build; older servers omit it. */
   releaseChannel?: ReleaseChannel | null;
+  /** Build number of the offered installer; null when unknown or from older servers. */
+  latestBuild?: number | null;
   currentVersion: string;
   latestVersion: string;
   minimumVersion: string;
@@ -452,6 +455,7 @@ export async function checkClientUpdate(input: {
       },
       body: JSON.stringify({
         currentVersion: input.currentVersion,
+        ...(APP_BUILD_NUMBER ? { currentBuild: APP_BUILD_NUMBER } : {}),
         platform,
         channel,
         artifactType,
@@ -482,7 +486,8 @@ export async function fetchReleaseHistory(input: { channel: ReleaseChannel }) {
       releaseChannel: readChannel(item.releaseChannel) ?? "stable",
       title: typeof item.title === "string" ? item.title : item.version,
       changelog: readStringArray(item.changelog),
-      publishedAt: typeof item.publishedAt === "string" ? item.publishedAt : null
+      publishedAt: typeof item.publishedAt === "string" ? item.publishedAt : null,
+      build: typeof item.build === "number" && item.build > 0 ? item.build : null
     }));
   } catch (reason) {
     if (isApiStatusError(reason, 404, 405)) {
@@ -1330,6 +1335,7 @@ export function normalizeUpdateCheckResult(
     platform: readPlatform(record.platform) ?? fallback.platform,
     channel: readChannel(record.channel) ?? fallback.channel,
     releaseChannel: readChannel(record.releaseChannel),
+    latestBuild: readNumber(record.latestBuild),
     currentVersion: fallback.currentVersion,
     latestVersion,
     minimumVersion,

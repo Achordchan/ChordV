@@ -40,8 +40,25 @@ export function buildAndroidArtifactNames(version, release = false) {
   };
 }
 
-export function buildWindowsArtifactNames(version) {
-  const baseName = `ChordV_${version}_x64`;
+// CI sets CHORDV_BUILD_NUMBER (the workflow run number). It never changes the
+// version; it only tells successive installers of the same version apart.
+export function resolveDesktopBuildNumber(raw = process.env.CHORDV_BUILD_NUMBER) {
+  const value = String(raw ?? "").trim();
+  if (!value) {
+    return null;
+  }
+  if (!/^[1-9]\d{0,8}$/.test(value)) {
+    throw new Error(`CHORDV_BUILD_NUMBER 必须是正整数：${value}`);
+  }
+  return Number(value);
+}
+
+function buildSuffix(build) {
+  return build ? `_build${build}` : "";
+}
+
+export function buildWindowsArtifactNames(version, build = resolveDesktopBuildNumber()) {
+  const baseName = `ChordV_${version}${buildSuffix(build)}_x64`;
   return {
     exe: `${baseName}.exe`,
     setup: `${baseName}-setup.exe`,
@@ -49,9 +66,9 @@ export function buildWindowsArtifactNames(version) {
   };
 }
 
-export function buildMacArtifactNames(version) {
+export function buildMacArtifactNames(version, build = resolveDesktopBuildNumber()) {
   return {
-    dmg: `ChordV_${version}.dmg`
+    dmg: `ChordV_${version}${buildSuffix(build)}.dmg`
   };
 }
 

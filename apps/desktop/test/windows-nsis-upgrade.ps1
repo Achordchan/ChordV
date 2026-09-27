@@ -128,6 +128,33 @@ try {
   if (!$legacyRunning) { throw 'Legacy shortcut could not launch the updated client' }
   Stop-TestClient
 
+  # A newer build of the same version is installed with the same updater flags
+  # while the client runs; it must replace the files and restart like an upgrade.
+  Write-Host 'PHASE: applying same-version build over a running client'
+  # NSIS keeps the packaged file timestamp, so reinstalling identical files would
+  # leave LastWriteTime unchanged. Backdate the installed executable first: only a
+  # real re-extraction restores the packaged (build-time) timestamp.
+  $marker = [DateTime]::new(2001, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
+  (Get-Item $exe).LastWriteTimeUtc = $marker
+  if ((Get-Item $exe).LastWriteTimeUtc -ne $marker) { throw 'Could not backdate the installed executable for the reinstall check' }
+  $sameVersionClient = Start-Process -FilePath $exe -PassThru
+  Start-Sleep -Seconds 3
+  Run-Installer (Resolve-Path $Installer).Path '/P /UPDATE /R'
+  $sameVersionClient.Refresh()
+  if (!$sameVersionClient.HasExited) { throw 'Same-version install did not close the running client' }
+  if (!((Get-Item $exe).LastWriteTimeUtc -gt $marker)) { throw 'Same-version install did not replace the executable' }
+  if (![Diagnostics.FileVersionInfo]::GetVersionInfo($exe).ProductVersion.StartsWith($ExpectedVersion)) { throw 'Same-version install changed the installed version' }
+  $deadline = (Get-Date).AddSeconds(45)
+  $running = $null
+  do {
+    $running = Get-Process -Name ChordV -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+    if ($running) { break }
+    Start-Sleep -Milliseconds 250
+  } while ((Get-Date) -lt $deadline)
+  if (!$running) { throw 'Same-version install did not restart the client' }
+  Write-Output 'PASS: same-version build reinstall replaces files and restarts'
+  Stop-TestClient
+
   $gate = New-Object Threading.Mutex($false, 'Local\ChordV.Update.InProgress')
   try {
     $blocked = Start-Process -FilePath $exe -PassThru

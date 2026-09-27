@@ -1,3 +1,5 @@
+import { compareVersion } from "./updateState";
+import { formatVersionWithBuild } from "./buildInfo";
 import type { ClientUpdateCheckResult } from "../api/client";
 
 export type UpdateCenterItemKey = "app" | "xray" | "geo";
@@ -105,7 +107,9 @@ export function buildAppUpdateCenterItem(input: {
   update: ClientUpdateCheckResult | null;
   hasActionableUpdate: boolean;
 }): UpdateCenterItem {
-  const remote = input.update?.latestVersion ?? input.appVersion;
+  const sameVersion = input.update ? compareVersion(input.update.latestVersion, input.appVersion) === 0 : false;
+  // A newer installer of the same version is labelled by its build.
+  const remote = formatVersionWithBuild(input.update?.latestVersion ?? input.appVersion, sameVersion ? input.update?.latestBuild : null);
   if (!input.update) {
     return {
       key: "app",

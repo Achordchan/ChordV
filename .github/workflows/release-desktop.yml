@@ -60,6 +60,8 @@ jobs:
         shell: bash
     env:
       CHORDV_PUBLIC_BASE_URL: https://v.achord.cn
+      # Monotonic per workflow; tells successive installers of the same version apart.
+      CHORDV_BUILD_NUMBER: ${{ github.run_number }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -124,7 +126,8 @@ jobs:
         shell: powershell
         run: |
           $version = (Get-Content apps/desktop/config/platform-versions.json | ConvertFrom-Json).windows
-          ./apps/desktop/test/windows-nsis-upgrade.ps1 -Installer "output/release/windows/ChordV_${version}_x64-setup.exe" -ExpectedVersion $version
+          $installer = (Get-ChildItem output/release/windows -Filter "ChordV_${version}*_x64-setup.exe" | Select-Object -First 1).FullName
+          ./apps/desktop/test/windows-nsis-upgrade.ps1 -Installer $installer -ExpectedVersion $version
 
       - name: Verify macOS bundle
         if: matrix.platform == 'macos'

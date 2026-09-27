@@ -25,6 +25,9 @@ jobs:
     name: Native checks (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    env:
+      # Exercise build-numbered installer names and same-version reinstall like releases do.
+      CHORDV_BUILD_NUMBER: ${{ github.run_number }}
     strategy:
       fail-fast: false
       matrix:
@@ -102,4 +105,5 @@ jobs:
         shell: powershell
         run: |
           $version = (Get-Content apps/desktop/config/platform-versions.json | ConvertFrom-Json).windows
-          ./apps/desktop/test/windows-nsis-upgrade.ps1 -Installer "output/release/windows/ChordV_${version}_x64-setup.exe" -ExpectedVersion $version
+          $installer = (Get-ChildItem output/release/windows -Filter "ChordV_${version}*_x64-setup.exe" | Select-Object -First 1).FullName
+          ./apps/desktop/test/windows-nsis-upgrade.ps1 -Installer $installer -ExpectedVersion $version
