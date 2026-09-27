@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { LEFT_HEALTHY_PATH, SKIPPED_HELD_STEP, TEST_HEALTH_TIMEOUT_SECONDS, waitForSupervisor, waitForSupervisorExit } from "./supervisor-wait";
 
 /**
  * Integration test for the supervisor's central failure mode: a promoted release
@@ -57,10 +58,6 @@ function writeRelease(root: string, version: string, kind: "good" | "bad", port:
   return dir;
 }
 
-async function sleep(ms: number) {
-  await new Promise((r) => setTimeout(r, ms));
-}
-
 type ResultMarker = { operationId?: string; status?: string; version?: string; reason?: string; migrationApplied?: boolean };
 
 function failingMigrationEnv(root: string, versions: string[]) {
@@ -82,19 +79,13 @@ function failingMigrationEnv(root: string, versions: string[]) {
   };
 }
 
-async function waitForResult(file: string, timeoutMs: number): Promise<ResultMarker | null> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (existsSync(file)) {
-      try {
-        return JSON.parse(readFileSync(file, "utf8")) as ResultMarker;
-      } catch {
-        // mid-write; retry
-      }
-    }
-    await sleep(250);
-  }
-  return null;
+/**
+ * Wait for the operation's terminal result marker (written atomically via tmp+mv).
+ * Ends on the marker, or fails as soon as the supervisor exits without writing it.
+ */
+async function waitForResult(child: ChildProcess, file: string, logs: () => string, failOn?: RegExp): Promise<ResultMarker> {
+  await waitForSupervisor(child, `result marker ${path.basename(file)}`, () => existsSync(file), logs, failOn);
+  return JSON.parse(readFileSync(file, "utf8")) as ResultMarker;
 }
 
 /**
@@ -133,10 +124,12 @@ async function runRollbackScenario(lastGoodKind: "good" | "bad", resumeLanding =
     CHORDV_API_PORT: String(port),
     CHORDV_SUPERVISOR_MIGRATE: "false",
     ...(migrateFails ? failingMigrationEnv(root, ["0.0.1", "0.0.2"]) : {}),
-    // Keep the bad releases' health gate short so the (fast) crash path dominates and
-    // the "last-good also fails" scenario doesn't sit out a long timeout per attempt.
     CHORDV_SYSTEM_FAILED_STOP_TIMEOUT_SECONDS: "1",
-    CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "8",
+    // Crashing stubs fail the gate through the liveness check, and a healthy fallback
+    // passes on its first probe, so the budget only matters when a launch is slow.
+    // The hung candidate is the one launch that MUST exhaust it; its healthy fallback
+    // then only needs to bind a port within the same budget.
+    CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: hangsOnStop ? "8" : TEST_HEALTH_TIMEOUT_SECONDS,
     CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
   };
 
@@ -147,26 +140,14 @@ async function runRollbackScenario(lastGoodKind: "good" | "bad", resumeLanding =
   });
 
   try {
-    const result = await waitForResult(path.join(stateDir, `operation-result.${opId}.json`), 60_000);
+    const result = await waitForResult(child, path.join(stateDir, `operation-result.${opId}.json`), () => stderr);
     const desired = existsSync(path.join(stateDir, "desired-version"))
       ? readFileSync(path.join(stateDir, "desired-version"), "utf8").trim()
       : "";
-    let served = false;
-    if (lastGoodKind === "good") {
-      const serveDeadline = Date.now() + 15_000;
-      while (Date.now() < serveDeadline) {
-        try {
-          const res = await fetch(`http://127.0.0.1:${port}/api/health/ready`);
-          if (res.status === 200) {
-            served = true;
-            break;
-          }
-        } catch {
-          // not up yet
-        }
-        await sleep(300);
-      }
-    }
+    // A 'rolledback' result is only written after the fallback passed readiness and
+    // stabilization while still running, so it must be serving right now.
+    const served = lastGoodKind === "good" &&
+      await fetch(`http://127.0.0.1:${port}/api/health/ready`).then(res => res.status === 200, () => false);
     const currentTarget = existsSync(path.join(root, "current"))
       ? path.basename(readlinkSync(path.join(root, "current")))
       : "";
@@ -221,7 +202,7 @@ async function runManualRollbackScenario(migrateFails = false) {
     CHORDV_API_PORT: String(port),
     CHORDV_SUPERVISOR_MIGRATE: "false",
     ...(migrateFails ? failingMigrationEnv(root, ["0.0.1", "0.0.2"]) : {}),
-    CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "8",
+    CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: TEST_HEALTH_TIMEOUT_SECONDS,
     CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
   };
 
@@ -231,7 +212,7 @@ async function runManualRollbackScenario(migrateFails = false) {
     stderr += String(chunk);
   });
   try {
-    const result = await waitForResult(path.join(stateDir, `operation-result.${opId}.json`), 60_000);
+    const result = await waitForResult(child, path.join(stateDir, `operation-result.${opId}.json`), () => stderr);
     return { result, opId, stderr };
   } finally {
     try {
@@ -277,7 +258,7 @@ async function runSnapshotFailureScenario() {
     CHORDV_SUPERVISOR_MIGRATE: "false",
     CHORDV_SYSTEM_UPDATE_SNAPSHOT: "true",
     CHORDV_SYSTEM_UPDATE_BACKUP_DIR: path.join(stateDir, "backups"),
-    CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "8",
+    CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: TEST_HEALTH_TIMEOUT_SECONDS,
     CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
   };
   delete env.DATABASE_URL; // force run_snapshot to fail before any migration runs
@@ -289,7 +270,7 @@ async function runSnapshotFailureScenario() {
     stderr += String(chunk);
   });
   try {
-    const result = await waitForResult(path.join(stateDir, `operation-result.${opId}.json`), 60_000);
+    const result = await waitForResult(child, path.join(stateDir, `operation-result.${opId}.json`), () => stderr);
     return { result, opId, stderr };
   } finally {
     try {
@@ -298,14 +279,6 @@ async function runSnapshotFailureScenario() {
       // already gone
     }
     rmSync(root, { recursive: true, force: true });
-  }
-}
-
-async function waitUntil(predicate: () => boolean, timeoutMs: number, message: () => string) {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    assert.ok(Date.now() < deadline, message());
-    await sleep(100);
   }
 }
 
@@ -367,7 +340,7 @@ exec /bin/rm "$@"
     CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"),
     CHORDV_API_PORT: String(port),
     CHORDV_SUPERVISOR_MIGRATE: "false",
-    CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "8",
+    CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: TEST_HEALTH_TIMEOUT_SECONDS,
     CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
   };
   let child = spawn("bash", [entrypoint], { env, detached: true, stdio: ["ignore", "ignore", "pipe"] });
@@ -377,9 +350,9 @@ exec /bin/rm "$@"
     // Six failures exceed the former five-attempt last-good budget. Result writes
     // must retry too, instead of clearing GEN_* and waiting forever for app exit.
     const failures = fault === "last-good" ? 6 : 2;
-    await waitUntil(
+    await waitForSupervisor(child, `${failures} ${fault} persistence retries`,
       () => existsSync(attemptsFile) && readFileSync(attemptsFile, "utf8").trim().split("\n").length >= failures,
-      30_000, () => `${fault} persistence did not keep retrying.\n${stderr}`);
+      () => stderr, SKIPPED_HELD_STEP);
     assert.deepEqual(JSON.parse(readFileSync(markerFile, "utf8")), marker, "retry must retain the original promotion marker");
     assert.equal(existsSync(resultFile), fault === "remove", "result must be persisted before marker removal");
     const launches = readFileSync(launchFile, "utf8");
@@ -395,19 +368,18 @@ exec /bin/rm "$@"
       writeFileSync(appFile, "process.exit(1);");
       child = spawn("bash", [entrypoint], { env, detached: true, stdio: ["ignore", "ignore", "pipe"] });
       child.stderr?.on("data", chunk => { stderr += chunk; });
-      const recovered = await waitForResult(resultFile, 15_000);
-      assert.equal(recovered?.status, "rolledback", stderr);
+      const recovered = await waitForResult(child, resultFile, () => stderr);
+      assert.equal(recovered.status, "rolledback", stderr);
       assert.equal(recovered.version, "0.0.1", "restart must retain actual previous good target");
       assert.equal(readFileSync(path.join(root, "public-state", "last-good-version"), "utf8"), "0.0.1");
       return;
     }
-    const result = await waitForResult(resultFile, 15_000);
-    assert.ok(result, `${fault} persistence did not recover without an app restart.\n${stderr}`);
+    const result = await waitForResult(child, resultFile, () => stderr, LEFT_HEALTHY_PATH);
     assert.equal(result.operationId, opId, "retry must finalize the original operation");
     assert.equal(result.status, resumeLanding ? "rolledback" : "success");
     assert.equal(result.version, version);
     assert.equal(result.migrationApplied, resumeLanding, "retry must retain migration context");
-    await waitUntil(() => !existsSync(markerFile), 5_000, () => `finalized marker was not cleared.\n${stderr}`);
+    await waitForSupervisor(child, "finalized marker removal", () => !existsSync(markerFile), () => stderr, LEFT_HEALTHY_PATH);
     assert.equal(readFileSync(path.join(stateDir, "last-good-version"), "utf8"), version);
     assert.equal(readFileSync(path.join(root, "public-state", "last-good-version"), "utf8"), version, "admin marker must publish only the approved version");
     assert.equal(readFileSync(launchFile, "utf8"), launches, "recovery must use the same app process");
@@ -455,7 +427,7 @@ exec /bin/mv "$@"
     CHORDV_SYSTEM_PUBLIC_STATE_DIR: path.join(root, "public-state"),
     CHORDV_SYSTEM_CURRENT_LINK: path.join(root, "current"), CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"),
     CHORDV_API_PORT: String(port), CHORDV_SUPERVISOR_MIGRATE: "false", CHORDV_SYSTEM_UPDATE_SNAPSHOT: "false",
-    CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "5", CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
+    CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: TEST_HEALTH_TIMEOUT_SECONDS, CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
   };
   let stderr = "";
   const start = () => {
@@ -472,7 +444,7 @@ exec /bin/mv "$@"
   };
   try {
     const count = () => existsSync(attempts) ? readFileSync(attempts, "utf8").trim().split("\n").length : 0;
-    await waitUntil(() => count() >= 2, 15_000, () => `terminal failure did not retry.\n${stderr}`);
+    await waitForSupervisor(child, "2 terminal failure result retries", () => count() >= 2, () => stderr);
     const journal = JSON.parse(readFileSync(marker, "utf8"));
     assert.equal(journal.failureVersion, "0.0.2");
     assert.equal(journal.migrationApplied, true);
@@ -487,20 +459,20 @@ exec /bin/mv "$@"
       await stop(); child = start();
     }
     const before = count();
-    await waitUntil(() => count() > before, 10_000, () => `failure retry stopped.\n${stderr}`);
+    await waitForSupervisor(child, "another terminal failure result retry", () => count() > before, () => stderr);
     assert.equal(existsSync(resultFile), false);
     assert.equal(existsSync(launch), false, "terminal failure must persist before relaunch/re-gate");
     rmSync(blocker);
-    const result = await waitForResult(resultFile, 10_000);
+    const result = await waitForResult(child, resultFile, () => stderr);
     assert.deepEqual(result, { operationId: op, status: "failed", version: "0.0.2", reason: journal.failureReason, migrationApplied: true });
     // Terminal failures now deliberately require offline recovery, rather than an
     // ordinary restart that would erase snapshot/rollback migration safety gates.
-    await waitUntil(() => child.exitCode !== null, 10_000, () => `failed promotion did not stop.\n${stderr}`);
+    await waitForSupervisorExit(child, "failed promotion to stop", () => stderr);
     assert.equal(child.exitCode, 1);
     assert.equal(existsSync(launch), false, "persisting a failure must not authorize a normal relaunch");
     assert.deepEqual(JSON.parse(readFileSync(marker, "utf8")), journal, "terminal journal must remain a durable launch interlock");
     child = start();
-    await waitUntil(() => child.exitCode !== null, 10_000, () => `restart did not stay blocked.\n${stderr}`);
+    await waitForSupervisorExit(child, "blocked restart to stop", () => stderr);
     assert.equal(child.exitCode, 1);
     assert.equal(existsSync(launch), false, "repairing the app alone must not unblock the failed operation");
     assert.equal(JSON.parse(readFileSync(resultFile, "utf8")).status, "failed", "later recovery must not overwrite the terminal failure");
@@ -546,7 +518,7 @@ async function runBlockedSnapshotRecoveryScenario(lastGood: "missing" | "same" |
     CHORDV_SYSTEM_CURRENT_LINK: path.join(root, "current"), CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"),
     CHORDV_API_PORT: String(port), CHORDV_SUPERVISOR_MIGRATE: "true", CHORDV_SYSTEM_UPDATE_SNAPSHOT: "true",
     CHORDV_SYSTEM_UPDATE_BACKUP_DIR: backups, CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://stub/db",
-    CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "5", CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
+    CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: TEST_HEALTH_TIMEOUT_SECONDS, CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
   };
   let stderr = "";
   const start = () => {
@@ -556,7 +528,7 @@ async function runBlockedSnapshotRecoveryScenario(lastGood: "missing" | "same" |
   };
   let child = start();
   const assertBlocked = async () => {
-    await waitUntil(() => child.exitCode !== null, 15_000, () => `snapshot failure did not block launch (${lastGood}).\n${stderr}`);
+    await waitForSupervisorExit(child, `snapshot failure to block launch (${lastGood})`, () => stderr);
     assert.equal(child.exitCode, 1);
     assert.equal(existsSync(migrations), false, "migration stub must never run, including the next supervisor loop");
     assert.equal(existsSync(launches), false, "unvalidated candidate must not launch");
@@ -564,8 +536,9 @@ async function runBlockedSnapshotRecoveryScenario(lastGood: "missing" | "same" |
   };
   try {
     await assertBlocked();
-    const result = await waitForResult(resultFile, 1_000);
-    assert.equal(result?.status, "failed");
+    // The supervisor persists the failed result before it exits.
+    const result = JSON.parse(readFileSync(resultFile, "utf8")) as ResultMarker;
+    assert.equal(result.status, "failed");
     assert.equal(result.version, version);
     assert.equal(result.migrationApplied, false);
     assert.match(result.reason!, /快照失败/);
@@ -586,8 +559,8 @@ async function runBlockedSnapshotRecoveryScenario(lastGood: "missing" | "same" |
     writeFileSync(path.join(state, "pending.json"), JSON.stringify({ version, operationId: recoveryOp, kind: "update", migrationApplied: true }));
     rmSync(marker);
     child = start();
-    const recovered = await waitForResult(path.join(state, `operation-result.${recoveryOp}.json`), 15_000);
-    assert.equal(recovered?.status, "success", stderr);
+    const recovered = await waitForResult(child, path.join(state, `operation-result.${recoveryOp}.json`), () => stderr);
+    assert.equal(recovered.status, "success", stderr);
     assert.equal(recovered.operationId, recoveryOp);
     assert.equal(readFileSync(migrations, "utf8"), "migrate\n", "exactly one migration, after the new operation's snapshot succeeded");
     assert.equal(readFileSync(launches, "utf8"), "launch\n");
@@ -674,7 +647,7 @@ async function testInvalidJournals() {
           const child = spawn("bash", [entrypoint], { env, detached: true, stdio: ["ignore", "ignore", "pipe"] });
           let stderr = ""; child.stderr?.on("data", chunk => { stderr += String(chunk); });
           try {
-            await waitUntil(() => child.exitCode !== null, 8_000, () => `${source}/${name} did not fail closed.\n${stderr}`);
+            await waitForSupervisorExit(child, `${source}/${name} to fail closed`, () => stderr);
             assert.equal(child.exitCode, 1, `${source}/${name}: ${stderr}`);
             assert.match(stderr, /invalid\/unreadable .* journal/);
             assert.equal(existsSync(path.join(root, "migrations")), false, "must not migrate on any restart");
@@ -713,7 +686,7 @@ async function testInvalidPendingAfterAppExit() {
     CHORDV_SYSTEM_RELEASES_DIR: path.join(root, "releases"), CHORDV_SYSTEM_STATE_DIR: state,
     CHORDV_SYSTEM_PUBLIC_STATE_DIR: path.join(root, "public-state"), CHORDV_SYSTEM_UPDATE_BACKUP_DIR: path.join(root, "backups"),
     CHORDV_SYSTEM_CURRENT_LINK: path.join(root, "current"), CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"),
-    CHORDV_API_PORT: String(port), CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "5", CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
+    CHORDV_API_PORT: String(port), CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: TEST_HEALTH_TIMEOUT_SECONDS, CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
   };
   let stderr = "";
   const start = () => {
@@ -723,11 +696,11 @@ async function testInvalidPendingAfterAppExit() {
   };
   let child = start();
   try {
-    await waitUntil(() => stderr.includes("0.0.1 healthy + stable"), 10_000, () => `initial app did not stabilize.\n${stderr}`);
+    await waitForSupervisor(child, "initial 0.0.1 to stabilize", () => stderr.includes("0.0.1 healthy + stable"), () => stderr, LEFT_HEALTHY_PATH);
     writeFileSync(marker, contents); writeFileSync(exitTrigger, "");
     for (let restart = 0; restart < 2; restart++) {
       if (restart) child = start();
-      await waitUntil(() => child.exitCode !== null, 8_000, () => `invalid runtime pending marker did not stop supervisor.\n${stderr}`);
+      await waitForSupervisorExit(child, "invalid runtime pending marker to stop the supervisor", () => stderr);
       assert.equal(child.exitCode, 1, stderr);
       assert.match(stderr, /invalid\/unreadable pending journal/);
       assert.equal(readFileSync(marker, "utf8"), contents);

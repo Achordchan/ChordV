@@ -3,16 +3,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { waitForSupervisor, waitForSupervisorExit } from "./supervisor-wait";
 
 const entrypoint = path.resolve(__dirname, "../../../deploy/backend/entrypoint.sh");
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-async function until(check: () => boolean, logs: () => string) {
-  const deadline = Date.now() + 15_000;
-  while (!check()) {
-    assert.ok(Date.now() < deadline, logs());
-    await sleep(50);
-  }
-}
+type Run = { child: ChildProcess; logs: () => string };
+const until = (run: Run, what: string, check: () => boolean) => waitForSupervisor(run.child, what, check, run.logs);
+const untilExit = (run: Run, what: string) => waitForSupervisorExit(run.child, what, run.logs);
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), "chordv-journal-recovery-"));
   const state = path.join(root, "state"), bin = path.join(root, "bin");
@@ -82,7 +78,7 @@ async function pendingRetry(afterExit: boolean) {
     const bytes = JSON.stringify({ version: "0.0.2", operationId: "sysop-handoff", kind: "update", migrationApplied: false });
     let run = f.start();
     if (afterExit) {
-      await until(() => run.logs().includes("healthy + stable"), run.logs);
+      await until(run, "initial version to stabilize", () => run.logs().includes("healthy + stable"));
     } else {
       await f.stop(run.child);
     }
@@ -90,19 +86,19 @@ async function pendingRetry(afterExit: boolean) {
     writeFileSync(marker, bytes);
     if (afterExit) writeFileSync(path.join(f.root, "exit-app"), "exit");
     else run = f.start();
-    await until(() => run.logs().includes("retaining pending journal"), run.logs);
+    await until(run, "pending journal retention", () => run.logs().includes("retaining pending journal"));
     assert.equal(readFileSync(marker, "utf8"), bytes);
     assert.equal(existsSync(path.join(f.state, "operation-result.sysop-handoff.json")), false);
     const before = existsSync(f.launches) ? readFileSync(f.launches, "utf8") : "";
     assert.ok(!before.includes("0.0.2"), "cannot launch candidate before durable handoff");
     await f.stop(run.child);
     run = f.start();
-    await until(() => run.logs().includes("retaining pending journal"), run.logs);
+    await until(run, "pending journal retention", () => run.logs().includes("retaining pending journal"));
     assert.equal(readFileSync(marker, "utf8"), bytes, "host restart retains sole recovery journal");
     assert.equal(existsSync(f.launches) ? readFileSync(f.launches, "utf8") : "", before);
     rmSync(f.fault);
     const result = path.join(f.state, "operation-result.sysop-handoff.json");
-    await until(() => existsSync(result), run.logs);
+    await until(run, "handoff result", () => existsSync(result));
     assert.equal(JSON.parse(readFileSync(result, "utf8")).status, "success");
     assert.equal(existsSync(marker), false);
     assert.equal(readFileSync(f.launches, "utf8").split("\n").filter(x => x === "0.0.2").length, 1);
@@ -120,12 +116,12 @@ async function missingRelease(migrated: boolean, rollback: boolean) {
       ...(rollback ? { rollbackFrom: "0.0.3" } : {}) }));
     writeFileSync(f.fault, migrated ? "result" : "state unavailable");
     let run = f.start();
-    await until(() => run.logs().includes(migrated ? "could not persist failure result" : "cannot persist terminal failure decision"), run.logs);
+    await until(run, "terminal failure persistence retry", () => run.logs().includes(migrated ? "could not persist failure result" : "cannot persist terminal failure decision"));
     assert.equal(JSON.parse(readFileSync(marker, "utf8")).migrationApplied, migrated);
     await f.stop(run.child);
     rmSync(f.fault);
     run = f.start();
-    await until(() => run.child.exitCode !== null, run.logs);
+    await untilExit(run, "blocked supervisor to stop");
     const result = path.join(f.state, "operation-result.sysop-missing.json");
     const outcome = JSON.parse(readFileSync(result, "utf8"));
     assert.equal(outcome.status, "failed");
@@ -136,7 +132,7 @@ async function missingRelease(migrated: boolean, rollback: boolean) {
     // A later restored directory must not turn the terminal failure into success.
     f.release("0.0.2");
     const retry = f.start();
-    await until(() => retry.child.exitCode !== null, retry.logs);
+    await untilExit(retry, "restored release to stay blocked");
     assert.equal(readFileSync(result, "utf8"), JSON.stringify(outcome) + "\n");
     assert.equal(existsSync(f.launches), false);
   } finally { await f.cleanup(); }
@@ -152,18 +148,18 @@ async function interruptedHandoff(conflict: boolean) {
     writeFileSync(pending, JSON.stringify({ ...journal, operationId: conflict ? "sysop-other" : journal.operationId }));
     const run = f.start();
     if (conflict) {
-      await until(() => run.child.exitCode !== null, run.logs);
+      await untilExit(run, "blocked supervisor to stop");
       assert.match(run.logs(), /conflicting pending\/promoting/);
       assert.equal(existsSync(f.launches), false);
       assert.equal(existsSync(pending), true);
       assert.equal(existsSync(path.join(f.state, "promoting.json")), true);
     } else {
-      await until(() => run.logs().includes("healthy + stable"), run.logs);
+      await until(run, "initial version to stabilize", () => run.logs().includes("healthy + stable"));
       assert.equal(existsSync(pending), false);
       const outcome = path.join(f.state, "operation-result.sysop-transfer.json");
       const bytes = readFileSync(outcome, "utf8");
       writeFileSync(path.join(f.root, "exit-app"), "exit");
-      await until(() => run.logs().includes("no pending marker; restarting"), run.logs);
+      await until(run, "ordinary restart", () => run.logs().includes("no pending marker; restarting"));
       assert.equal(readFileSync(outcome, "utf8"), bytes, "ordinary restart must not replay finalized operation");
     }
   } finally { await f.cleanup(); }
@@ -186,7 +182,7 @@ async function restartKeepsVersion() {
     writeFileSync(path.join(f.state, "pending.json"), JSON.stringify({ version: "0.0.2", operationId: "sysop-restart", kind: "restart", migrationApplied: false }));
     for (let attempt = 0; attempt < 2; attempt++) {
       const run = f.start({ CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "3" });
-      await until(() => run.child.exitCode !== null, run.logs);
+      await untilExit(run, "blocked supervisor to stop");
       const result = JSON.parse(readFileSync(path.join(f.state, "operation-result.sysop-restart.json"), "utf8"));
       assert.equal(result.status, "failed"); assert.equal(result.version, "0.0.2");
       assert.match(result.reason, /重启失败，未切换版本/);
@@ -205,19 +201,19 @@ async function journalSyncFailure() {
     const bytes = JSON.stringify({ version: "0.0.2", operationId: "sysop-sync", kind: "update", migrationApplied: false });
     writeFileSync(pending, bytes); writeFileSync(f.fault, "sync");
     let run = f.start();
-    await until(() => run.logs().includes("retaining pending journal"), run.logs);
+    await until(run, "pending journal retention", () => run.logs().includes("retaining pending journal"));
     assert.equal(readFileSync(pending, "utf8"), bytes);
     assert.ok(existsSync(path.join(f.state, "promoting.json")), "rename can be visible before failed sync");
     assert.equal(existsSync(f.launches), false);
     await f.stop(run.child);
     run = f.start();
-    await until(() => run.child.exitCode !== null, run.logs);
+    await untilExit(run, "blocked supervisor to stop");
     assert.match(run.logs(), /cannot synchronize resumed promotion journal/);
     assert.equal(readFileSync(pending, "utf8"), bytes);
     assert.equal(existsSync(f.launches), false);
     rmSync(f.fault);
     run = f.start();
-    await until(() => existsSync(path.join(f.state, "operation-result.sysop-sync.json")), run.logs);
+    await until(run, "journal sync recovery result", () => existsSync(path.join(f.state, "operation-result.sysop-sync.json")));
     assert.equal(JSON.parse(readFileSync(path.join(f.state, "operation-result.sysop-sync.json"), "utf8")).status, "success");
     assert.equal(existsSync(pending), false);
   } finally { await f.cleanup(); }
