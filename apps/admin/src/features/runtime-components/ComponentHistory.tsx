@@ -7,11 +7,11 @@ import styles from "./ComponentDelivery.module.css";
 
 type HistoryVersion = ComponentVersion & { active: boolean; canDelete: boolean };
 export function ComponentHistory({componentId,onChanged}:{componentId:string;onChanged:()=>void}) {
-  const [items,setItems]=useState<HistoryVersion[]|null>(null), [page,setPage]=useState(0), [more,setMore]=useState(false), [busy,setBusy]=useState(false), [error,setError]=useState("");
+  const [items,setItems]=useState<HistoryVersion[]|null>(null), [page,setPage]=useState(0), [more,setMore]=useState(false), [busy,setBusy]=useState(false), [error,setError]=useState(""), [retention,setRetention]=useState<{days:number;auto:boolean}|null>(null);
   const confirmation=useActionConfirmation(true);
   const load=async(next=0)=>{
     setBusy(true);setError("");
-    try{const result=await request<{items:HistoryVersion[];hasMore:boolean}>(`/admin/runtime-versions/${encodeURIComponent(componentId)}/history?page=${next}`);setItems(current=>next?[...new Map([...(current||[]),...result.items].map(item=>[item.id,item])).values()]:result.items);setPage(next);setMore(result.hasMore);}
+    try{const result=await request<{items:HistoryVersion[];hasMore:boolean;retentionDays?:number;autoRetention?:boolean}>(`/admin/runtime-versions/${encodeURIComponent(componentId)}/history?page=${next}`);if(result.retentionDays)setRetention({days:result.retentionDays,auto:Boolean(result.autoRetention)});setItems(current=>next?[...new Map([...(current||[]),...result.items].map(item=>[item.id,item])).values()]:result.items);setPage(next);setMore(result.hasMore);}
     catch(reason){setError(reason instanceof Error?reason.message:"读取历史失败");}finally{setBusy(false);}
   };
   const act=async(item:HistoryVersion,remove:boolean)=>{
@@ -27,7 +27,7 @@ export function ComponentHistory({componentId,onChanged}:{componentId:string;onC
     {item.retainUntil&&!item.active?<Text size="xs" c="dimmed">兼容保留至 {new Date(item.retainUntil).toLocaleDateString("zh-CN")}</Text>:null}
     <Group gap="xs" mt={5}>{item.status==="ready"&&!item.active?<Button size="compact-xs" variant="light" disabled={busy} onClick={()=>void act(item,false)}>使用此版本</Button>:null}{item.canDelete?<Button size="compact-xs" variant="subtle" color="red" disabled={busy} onClick={()=>void act(item,true)}>删除文件</Button>:null}</Group></div>)}
     {items?.length===0?<Text size="xs" c="dimmed">暂无历史文件</Text>:null}
-    <Text size="xs" c="dimmed" mt={8}>当前使用和获取中的版本不可删除；曾分发的文件在切换后保留 30 天。</Text>
+    <Text size="xs" c="dimmed" mt={8}>{retention?.auto?`自动更新：只保留当前使用和上一份（用于回退），更早的文件在切换 ${retention.days} 天后自动清理。`:`当前使用和获取中的版本不可删除；曾分发的文件在切换后保留 ${retention?.days??30} 天。`}</Text>
     {more||error?<Button size="compact-xs" variant="default" loading={busy} onClick={()=>void load(error?0:page+1)}>{error?"重新读取":"加载更早版本"}</Button>:busy?<Text size="xs">正在读取…</Text>:null}
   </details></>;
 }

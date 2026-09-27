@@ -14,6 +14,40 @@ import { prepareRuntimeVersion, runtimeVersionPath, runtimeVersionUrl } from "./
 
 export type RuntimeSourceInput = { componentId: string; sourceUrl: string; version?: string; autoLatest: boolean };
 const EVERY_SIX_HOURS = 6 * 60 * 60_000;
+const DAY_MS = 24 * 60 * 60_000;
+/** 手动选择的版本（含 Xray）：切换后保留 30 天，并始终保留最近 20 条。 */
+export const MANUAL_RETENTION_MS = 30 * DAY_MS;
+/**
+ * 自动跟随最新的组件（GEO）：只保留当前使用和上一份（用于回退），更早的在切换 2 天后清理。
+ * 客户端每次下载前都重新获取计划，不会长期持有旧地址，所以不需要更长的兼容期。
+ */
+export const AUTO_RETENTION_MS = 2 * DAY_MS;
+const IN_PROGRESS = ["queued", "downloading", "verifying"];
+
+export function runtimeRetentionMs(policy: { autoLatest?: boolean | null } | null | undefined, kind: string | null | undefined) {
+  return policy?.autoLatest && kind !== "xray" ? AUTO_RETENTION_MS : MANUAL_RETENTION_MS;
+}
+
+type RetentionRow = { id: string; status: string; createdAt: Date; publishedAt: Date | null; retainUntil: Date | null };
+
+/** 版本是否已过保留期（不含“是否受保护”的判断）。 */
+export function isPastRetention(row: RetentionRow, retentionMs: number, now = Date.now()) {
+  return !IN_PROGRESS.includes(row.status)
+    && (!row.publishedAt || row.publishedAt.getTime() < now - retentionMs)
+    && (!row.retainUntil || row.retainUntil.getTime() <= now);
+}
+
+/** 自动跟随组件要清理的版本：保护当前使用和最近一次被换下的那份，其余过了保留期就清理。 */
+export function selectExpiredAutoVersions(rows: RetentionRow[], activeVersionId: string | null | undefined, now = Date.now()) {
+  const previous = rows
+    .filter(row => row.status === "ready" && row.id !== activeVersionId && row.publishedAt)
+    .sort((a, b) => b.publishedAt!.getTime() - a.publishedAt!.getTime())[0];
+  const protectedIds = new Set([activeVersionId, previous?.id].filter(Boolean));
+  return rows.filter(row => !protectedIds.has(row.id)
+    && ["ready", "failed", "unchanged"].includes(row.status)
+    && row.createdAt.getTime() < now - AUTO_RETENTION_MS
+    && isPastRetention(row, AUTO_RETENTION_MS, now));
+}
 @Injectable()
 export class RuntimeVersionService {
   private busy = false;
@@ -113,13 +147,14 @@ export class RuntimeVersionService {
       const policy = await tx.runtimeComponentDelivery.findUnique({where:{componentId:version.componentId}});
       const component = await tx.runtimeComponent.findUnique({where:{id:version.componentId}});
       if(automatic && (!policy?.autoLatest || policy.sourceUrl !== version.sourceUrl || component?.kind === "xray")) return;
+      const retentionMs = runtimeRetentionMs(policy, component?.kind);
       if(policy?.activeVersionId && policy.activeVersionId !== id) {
-        await tx.runtimeComponentVersion.updateMany({where:{id:policy.activeVersionId},data:{retainUntil:new Date(Date.now()+30*24*60*60_000)}});
+        await tx.runtimeComponentVersion.updateMany({where:{id:policy.activeVersionId},data:{retainUntil:new Date(Date.now()+retentionMs)}});
       }
       // Automatic delivery updates files, not the administrator's enable switch.
       if (!automatic) await tx.runtimeComponent.update({ where: { id: version.componentId }, data: { enabled: true } });
       await tx.runtimeComponentDelivery.update({ where: { componentId: version.componentId }, data: { activeVersionId: id, notifyPending: true } });
-      await tx.runtimeComponentVersion.update({ where: { id }, data: { publishedAt: new Date(), retainUntil: new Date(Date.now()+30*24*60*60_000) } });
+      await tx.runtimeComponentVersion.update({ where: { id }, data: { publishedAt: new Date(), retainUntil: new Date(Date.now()+retentionMs) } });
     });
     this.publish();
     await this.flushNotifications();
@@ -230,12 +265,16 @@ export class RuntimeVersionService {
   }
 
   async history(componentId: string, page = 0) {
-    const rows = await this.prisma.runtimeComponentVersion.findMany({ where: { componentId }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip: page * 20, take: 21 });
+    // “内容未变化”只是一次检查记录，背后没有文件，不在历史文件里列出。
+    const rows = await this.prisma.runtimeComponentVersion.findMany({ where: { componentId, status: { not: "unchanged" } }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip: page * 20, take: 21 });
     const policy = await this.prisma.runtimeComponentDelivery.findUnique({ where: { componentId } });
-    return { hasMore: rows.length > 20, items: rows.slice(0,20).map(row => ({ ...row, storedFilePath: undefined,
+    const component = await this.prisma.runtimeComponent.findUnique({ where: { id: componentId } });
+    const retentionMs = runtimeRetentionMs(policy, component?.kind);
+    return { hasMore: rows.length > 20, retentionDays: Math.round(retentionMs / DAY_MS), autoRetention: retentionMs === AUTO_RETENTION_MS,
+      items: rows.slice(0,20).map(row => ({ ...row, storedFilePath: undefined,
       fileSizeBytes: row.fileSizeBytes?.toString() ?? null, bytesReceived: row.bytesReceived.toString(),
       active: policy?.activeVersionId === row.id,
-      canDelete: policy?.activeVersionId !== row.id && !["queued","downloading","verifying"].includes(row.status) && (!row.publishedAt || row.publishedAt.getTime() < Date.now() - 30*24*60*60_000) && (!row.retainUntil || row.retainUntil.getTime() <= Date.now())
+      canDelete: policy?.activeVersionId !== row.id && isPastRetention(row, retentionMs)
     })) };
   }
   async deleteVersion(id: string) {
@@ -246,7 +285,9 @@ export class RuntimeVersionService {
       const version = await tx.runtimeComponentVersion.findUnique({ where: { id } });
       const policy = await tx.runtimeComponentDelivery.findUnique({ where: { componentId: candidate.componentId } });
       if (!version || policy?.activeVersionId === id || ["queued","downloading","verifying"].includes(version.status)) throw new BadRequestException("正在使用或获取中的版本不能删除");
-      if ((version.publishedAt && version.publishedAt.getTime() > Date.now() - 30*24*60*60_000) || (version.retainUntil && version.retainUntil.getTime()>Date.now())) throw new BadRequestException("曾分发的版本在切换后保留 30 天，以兼容离线客户端");
+      const component = await tx.runtimeComponent.findUnique({ where: { id: candidate.componentId } });
+      const retentionMs = runtimeRetentionMs(policy, component?.kind);
+      if (!isPastRetention(version, retentionMs)) throw new BadRequestException(`曾分发的版本在切换后保留 ${Math.round(retentionMs / DAY_MS)} 天，到期后才能删除`);
       await tx.runtimeComponentVersion.delete({ where: { id } });
       await this.files.enqueue(runtimeVersionPath(id), "删除组件历史版本", tx);
       await this.files.enqueue(runtimeVersionPath(id)+".part", "删除组件历史临时文件", tx);
@@ -256,13 +297,25 @@ export class RuntimeVersionService {
   @Cron("0 30 3 * * *")
   @DrainableJob()
   async pruneVersions() {
-    const cutoff = new Date(Date.now() - 30*24*60*60_000);
+    const cutoff = new Date(Date.now() - MANUAL_RETENTION_MS);
     const policies = await this.prisma.runtimeComponentDelivery.findMany({ select: { componentId: true } });
     for (const policy of policies) {
       try {
         await this.prisma.$transaction(async tx => {
           await tx.$queryRaw`SELECT id FROM "RuntimeComponent" WHERE id = ${policy.componentId} FOR UPDATE`;
           const current = await tx.runtimeComponentDelivery.findUnique({ where: { componentId: policy.componentId } });
+          const component = await tx.runtimeComponent.findUnique({ where: { id: policy.componentId } });
+          if (runtimeRetentionMs(current, component?.kind) === AUTO_RETENTION_MS) {
+            // 早先按 30 天标记的旧文件统一收紧到 2 天，避免 GEO 继续积压一个月。
+            await tx.runtimeComponentVersion.updateMany({ where: { componentId: policy.componentId, id: { not: current?.activeVersionId ?? "" }, retainUntil: { gt: new Date(Date.now() + AUTO_RETENTION_MS) } }, data: { retainUntil: new Date(Date.now() + AUTO_RETENTION_MS) } });
+            const rows = await tx.runtimeComponentVersion.findMany({ where: { componentId: policy.componentId }, select: { id: true, status: true, createdAt: true, publishedAt: true, retainUntil: true } });
+            for (const version of selectExpiredAutoVersions(rows, current?.activeVersionId).slice(0, 200)) {
+              await tx.runtimeComponentVersion.delete({ where: { id: version.id } });
+              await this.files.enqueue(runtimeVersionPath(version.id), "组件版本保留策略清理", tx);
+              await this.files.enqueue(runtimeVersionPath(version.id)+".part", "组件临时文件保留策略清理", tx);
+            }
+            return;
+          }
           const newest = await tx.runtimeComponentVersion.findMany({ where: { componentId: policy.componentId }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 20, select: { id: true } });
           const protectedIds = [...newest.map(row => row.id), ...(current?.activeVersionId ? [current.activeVersionId] : [])];
           const expired = await tx.runtimeComponentVersion.findMany({ where: { componentId: policy.componentId, id: { notIn: protectedIds }, status: { in: ["ready","failed","unchanged"] }, createdAt: { lt: cutoff }, AND: [{OR:[{publishedAt:null},{publishedAt:{lt:cutoff}}]},{OR:[{retainUntil:null},{retainUntil:{lte:new Date()}}]}] }, take: 200 });
