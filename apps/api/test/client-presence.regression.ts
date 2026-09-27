@@ -613,10 +613,12 @@ async function testRuntimeSessionRecordsModeAndNotifies() {
   assert.equal(leases[0].connectionMode, "global", "连接时记录所选模式，供后台显示");
   assert.equal(runtime.mode, "global");
   assert.equal(presenceEvents, 1, "建立连接通知后台刷新在线列表");
+  assert.deepEqual(heartbeats.map(([userId]) => userId), ["user_1"], "建立连接即计入最近在线（推送连接不可用、第一次心跳前断开也不丢）");
+  assert.equal(heartbeats[0][1].getTime(), leases[0].issuedAt.getTime());
 
   await service.heartbeatSession(leases[0].sessionId, "Bearer token");
-  assert.equal(heartbeats.length, 1, "心跳成功后记录最近在线时间");
-  assert.equal(heartbeats[0][0], "user_1");
+  assert.equal(heartbeats.length, 2, "心跳成功后记录最近在线时间");
+  assert.equal(heartbeats[1][0], "user_1");
 
   await service.revokeLease(leases[0].id, { id: "node_hk", flow: "xtls-rprx-vision" }, "revoked_by_client");
   assert.equal(leases[0].status, "revoked");

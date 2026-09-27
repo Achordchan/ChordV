@@ -1710,6 +1710,8 @@ export class RuntimeSessionService {
         connectionMode: request.mode
       }
     });
+    // 建立连接本身也说明客户端在线：即使推送连接没连上、第一次心跳前就断开，这次访问也会留在最近在线记录里。
+    this.clientPresenceService?.noteHeartbeat(user.id, now);
     this.adminRuntimeEventsService?.publishPresenceUpdated();
 
     const runtime: GeneratedRuntimeConfigDto = {
