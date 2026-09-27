@@ -37,6 +37,13 @@ assert.equal(latestClientVersion({}), null, "旧接口没有该字段时不报�
 assert.ok(compareClientVersion("1.1.10", "1.1.9") > 0, "1.1.10 比 1.1.9 新");
 assert.ok(compareClientVersion("1.1.10", "1.1.10-beta.1") > 0, "正式版比同号预发布新");
 assert.equal(compareClientVersion("1.1.10", "1.1.10"), 0);
+assert.ok(compareClientVersion("1.1.10-beta.10", "1.1.10-beta.9") > 0, "数字段按数值比较：beta.10 比 beta.9 新");
+assert.ok(compareClientVersion("1.1.10-beta.2", "1.1.10-alpha.9") > 0, "字母段按字典序比较");
+assert.ok(compareClientVersion("1.1.10-beta", "1.1.10-1") > 0, "数字段低于字母段");
+assert.ok(compareClientVersion("1.1.10-beta.1", "1.1.10-beta") > 0, "前缀相同时段数多者更新");
+assert.equal(compareClientVersion("1.1.10-beta.9", "1.1.10-beta.9"), 0);
+const ordered = ["1.1.10-beta.9", "1.1.10", "1.1.10-beta.10", "1.1.9"].sort((a, b) => compareClientVersion(b, a));
+assert.deepEqual(ordered, ["1.1.10", "1.1.10-beta.10", "1.1.10-beta.9", "1.1.9"]);
 
 const summary = summarizeClientVersions([
   { id: "a", clientVersions: [entry({ platform: "macos" }), entry({ platform: "windows" })] },

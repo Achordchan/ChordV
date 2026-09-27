@@ -103,7 +103,30 @@ export function compareClientVersion(left: string, right: string) {
   // 同一版本号下，正式版排在预发布版之前。
   if (leftPre && !rightPre) return -1;
   if (!leftPre && rightPre) return 1;
-  return (leftPre ?? "").localeCompare(rightPre ?? "");
+  return comparePrerelease(leftPre ?? "", rightPre ?? "");
+}
+
+/** 按 SemVer 规则逐段比较预发布标识：纯数字段按数值比较且低于字母段，段数多者在前缀相同时更新。 */
+function comparePrerelease(left: string, right: string) {
+  const leftIds = left ? left.split(".") : [];
+  const rightIds = right ? right.split(".") : [];
+  for (let index = 0; index < Math.max(leftIds.length, rightIds.length); index += 1) {
+    const a = leftIds[index];
+    const b = rightIds[index];
+    if (a === undefined) return -1;
+    if (b === undefined) return 1;
+    const aNumeric = /^\d+$/.test(a);
+    const bNumeric = /^\d+$/.test(b);
+    if (aNumeric && bNumeric) {
+      const diff = Number(a) - Number(b);
+      if (diff !== 0) return diff;
+    } else if (aNumeric !== bNumeric) {
+      return aNumeric ? -1 : 1;
+    } else if (a !== b) {
+      return a < b ? -1 : 1;
+    }
+  }
+  return 0;
 }
 
 function splitPrerelease(version: string): [string, string | undefined] {
