@@ -243,7 +243,8 @@ function testUpdateErrorsAreMapped() {
 function testUnknownRawErrorsNeverLeak() {
   const contexts: UserErrorContext[] = [
     "general", "login", "session", "logout", "refresh", "connect", "disconnect", "runtime_assets",
-    "update_check", "update_download", "update_install", "ticket", "announcement", "node_probe", "server_probe"
+    "update_check", "update_download", "update_install", "ticket", "announcement", "node_probe", "server_probe",
+    "local_files"
   ];
   const raws = [
     "failed to resolve app data directory: No such file or directory",

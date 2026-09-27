@@ -410,6 +410,16 @@ body {
   border-color: #c3ccd6;
 }
 
+.subscription-toolbar-more[data-variant="default"] {
+  border-color: var(--cv-border-strong);
+  color: var(--cv-text);
+}
+
+.subscription-toolbar-more[data-variant="default"]:hover {
+  background: var(--cv-surface-hover);
+  border-color: #c3ccd6;
+}
+
 .team-icon {
   color: #fde68a;
 }
@@ -1556,6 +1566,11 @@ textarea,
   .subscription-head {
     flex-direction: row;
     align-items: flex-start;
+  }
+
+  /* 820 宽窗口：标题区只占工具栏剩下的宽度，长邮箱在标题区内换行，工具栏按钮保持一行。 */
+  .subscription-copy {
+    flex: 1 1 0;
   }
 }
 
