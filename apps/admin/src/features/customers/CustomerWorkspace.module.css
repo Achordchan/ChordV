@@ -37,6 +37,9 @@
 .rowIdentity strong { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rowIdentity small { color: var(--customer-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rowIdentity .disabledLabel { color: #ab5d41; }
+.rowIdentity .clientVersion { color: #52604c; }
+.clientVersionFact + .clientVersionFact { margin-top: 10px; }
+.memberClientVersion { display: block; font-size: 13px; color: #344049; white-space: nowrap; }
 .rowState { display: flex; flex-direction: column; align-items: flex-end; gap: 7px; flex-shrink: 0; font-size: 12px; }
 .rowState small { color: var(--customer-muted); font-size: 11px; }
 .listEmpty { padding: 35px 20px; display: flex; align-items: center; flex-direction: column; gap: 15px; color: var(--customer-muted); text-align: center; }

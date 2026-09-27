@@ -5,6 +5,7 @@ import type {
   AdminTeamRecordDto,
   AdminTeamUsageNodeSummaryDto,
   AdminTeamUsageRecordDto,
+  AdminUserClientVersionDto,
   AdminUserRecordDto,
   SessionReasonCode,
   SubscriptionSourceAction,
@@ -438,6 +439,7 @@ export function toAdminUserRecord(row: {
   subscriptionCount: number;
   activeSubscriptionCount: number;
   currentSubscription: UserSubscriptionSummaryDto | null;
+  clientVersions?: AdminUserClientVersionDto[];
 }): AdminUserRecordDto {
   return {
     ...toUserProfile(row),
@@ -447,6 +449,23 @@ export function toAdminUserRecord(row: {
     maxConcurrentSessionsOverride: row.maxConcurrentSessionsOverride ?? null,
     subscriptionCount: extras.subscriptionCount,
     activeSubscriptionCount: extras.activeSubscriptionCount,
-    currentSubscription: extras.currentSubscription
+    currentSubscription: extras.currentSubscription,
+    ...(extras.clientVersions ? { clientVersions: extras.clientVersions } : {})
+  };
+}
+
+export function toAdminUserClientVersion(row: {
+  platform: AdminUserClientVersionDto["platform"];
+  version: string;
+  build: number | null;
+  channel: AdminUserClientVersionDto["channel"];
+  lastSeenAt: Date;
+}): AdminUserClientVersionDto {
+  return {
+    platform: row.platform,
+    version: row.version,
+    build: row.build ?? null,
+    channel: row.channel,
+    lastSeenAt: row.lastSeenAt.toISOString()
   };
 }

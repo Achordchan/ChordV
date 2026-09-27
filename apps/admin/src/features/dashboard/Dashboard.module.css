@@ -15,6 +15,13 @@
 .node { width: 100%; display: flex; align-items: center; gap: 16px; padding: 23px 0; border: 0; border-bottom: 1px solid #e0e6d9; background: none; text-align: left; color: #23372b; cursor: pointer; font: inherit; }
 .node > :global(.country-flag) { width: 36px; height: 27px; flex-shrink: 0; border-radius: 3px; }.node > div { min-width: 0; flex: 1; }.node strong { display: block; font-size: 15px; overflow-wrap: anywhere; }.node div > span { display: block; margin-top: 8px; font-size: 13px; color: #586653; }.probe { font-size: 13px; white-space: nowrap; color: #42573d; }.probe[data-alert=true] { color: #a13e32; }
 .empty { text-align: center; padding: 32px 0; font-size: 14px; color: #586653; }
+.clientVersions { border-top: 1px solid #dfe5d8; margin-top: 28px; padding-top: 28px; }
+.versionRow { display: grid; grid-template-columns: minmax(90px,140px) minmax(0,1fr) minmax(120px,240px) 64px; align-items: center; gap: 18px; padding: 16px 0; border-bottom: 1px solid #e0e6d9; font-size: 14px; }
+.versionRow strong { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.versionPlatforms { color: #586653; overflow-wrap: anywhere; }
+.versionBar { height: 8px; background: #e9ede5; border-radius: 8px; overflow: hidden; }
+.versionBar > span { display: block; height: 100%; background: #245137; border-radius: 8px; }
+.versionCount { text-align: right; font-variant-numeric: tabular-nums; }
 .dashboard button:hover { color: #277448; }.dashboard button:focus-visible { outline: 3px solid #245137; outline-offset: 3px; }
 @media(max-width:1100px) { .columns { grid-template-columns: minmax(0,1fr); }.subscriptions { padding-right: 0; border-right: 0; }.nodes { border-top: 1px solid #dfe5d8; padding-top: 24px; } }
-@media(max-width:600px) { .dashboard { padding-inline: 0; }.metrics { grid-template-columns: 1fr 1fr; gap: 24px 0; padding-bottom: 26px; }.metrics button { padding: 8px 18px; }.metrics button:nth-child(2) { border-right: 0; }.tasks { gap: 8px 18px; }.sectionHeading h2 { font-size: 19px; }.topline { flex-wrap: wrap; } }
+@media(max-width:600px) { .dashboard { padding-inline: 0; }.versionRow { grid-template-columns: minmax(0,1fr) auto; gap: 8px 12px; }.versionPlatforms { grid-column: 1 / -1; grid-row: 2; }.versionBar { display: none; }.metrics { grid-template-columns: 1fr 1fr; gap: 24px 0; padding-bottom: 26px; }.metrics button { padding: 8px 18px; }.metrics button:nth-child(2) { border-right: 0; }.tasks { gap: 8px 18px; }.sectionHeading h2 { font-size: 19px; }.topline { flex-wrap: wrap; } }

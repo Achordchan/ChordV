@@ -399,8 +399,9 @@ export class ClientController {
   }
 
   @Post("update/check")
-  checkUpdate(@Body() body: UpdateCheckDto) {
-    return this.clientService.checkUpdate(body);
+  checkUpdate(@Body() body: UpdateCheckDto, @Headers("authorization") authorization?: string) {
+    // 公开接口；已登录客户端带着登录凭证来检查更新时，顺带记录其版本供后台查看。
+    return this.clientService.checkUpdate(body, authorization);
   }
 
   @Get("releases/history")

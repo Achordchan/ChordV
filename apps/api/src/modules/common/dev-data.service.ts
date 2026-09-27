@@ -118,6 +118,7 @@ import { ClientEventsPublisher } from "./client-events.publisher";
 import { ClientRoutingRuleService } from "./client-routing-rule.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { ClientTicketService } from "./client-ticket.service";
+import { ClientVersionReportService } from "./client-version-report.service";
 import { ImageBedService, type UploadedTicketAttachmentFile } from "./image-bed.service";
 import { dedupeNodeAccessRows } from "./dev-data.utils";
 import { normalizeTags, probeNodeConnectivity, toAdminNodeRecord, toNodeSummary } from "./node-import.utils";
@@ -199,7 +200,8 @@ export class DevDataService implements OnModuleInit {
     private readonly adminNodeService: AdminNodeService,
     private readonly adminSubscriptionService: AdminSubscriptionService,
     private readonly imageBedService: ImageBedService,
-    private readonly runtimeSessionService: RuntimeSessionService
+    private readonly runtimeSessionService: RuntimeSessionService,
+    private readonly clientVersionReportService: ClientVersionReportService
   ) {}
 
   async onModuleInit() {
@@ -486,7 +488,8 @@ export class DevDataService implements OnModuleInit {
     return this.clientTicketService.replyClientSupportTicketWithAttachment(ticketId, input, file, token);
   }
 
-  async checkClientUpdate(input: ClientUpdateCheckDto): Promise<ClientUpdateCheckResultDto> {
+  async checkClientUpdate(input: ClientUpdateCheckDto, token?: string): Promise<ClientUpdateCheckResultDto> {
+    if (token) this.clientVersionReportService.recordInBackground(token, input);
     return this.releaseCenterService.checkClientUpdate(input);
   }
 
