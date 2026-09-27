@@ -473,7 +473,13 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
       setLogoutBusy(true);
       invalidateSessionOperations?.();
       const accessToken = session?.accessToken ?? null;
-      await forceStopLocalRuntime();
+      try {
+        await forceStopLocalRuntime();
+      } catch (stopReason) {
+        // 本机连接没停下来时不清除会话：明确告诉用户连接可能仍在运行，而不是泛泛的“退出失败”。
+        showErrorToast(stopReason || "本机连接停止失败", "local_stop");
+        return;
+      }
       if (session) {
         void logoutSession(accessToken ?? session.accessToken, session.refreshToken).catch(() => null);
       }

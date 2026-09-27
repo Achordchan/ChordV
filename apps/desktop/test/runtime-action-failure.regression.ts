@@ -35,13 +35,15 @@ async function actions(reconnect:boolean){
  assert.match(noticeText(notices[1]),/cleanup failed/);assert.equal(contexts[1],"local_stop");
 }
 await actions(false);await actions(true);
-let cleared=0,revoked=0;const notices:unknown[]=[];
+let cleared=0,revoked=0;const notices:unknown[]=[];const logoutContexts:unknown[]=[];
 const authOptions=new Proxy({session:{accessToken:"token",refreshToken:"refresh"},logoutBusy:false,
  forceStopLocalRuntime:async()=>{throw Error("cleanup failed");},clearStoredSession:async()=>{cleared++;},
- logoutSession:async()=>{revoked++;},showErrorToast:(message:unknown)=>notices.push(message),readError:(message:string)=>message,
+ logoutSession:async()=>{revoked++;},showErrorToast:(message:unknown,context?:unknown)=>{notices.push(message);logoutContexts.push(context);},readError:(message:string)=>message,
 } as Record<string,unknown>,{get:(target,key:string)=>key in target?target[key]:()=>{}});
 await load("useAuthBootstrap").useAuthBootstrap(authOptions).handleLogout();
 assert.equal(cleared,0);assert.equal(revoked,0);assert.match(noticeText(notices[0]),/cleanup failed/);
+// 退出时本机停止失败要用 local_stop 提醒“连接可能仍在运行”，而不是泛泛的退出失败。
+assert.deepEqual(logoutContexts,["local_stop"]);
 console.log("cleanup errors are handled; reconnect and logout never continue after failed local stop");
 
 let signedOut=0;const clearErrors:unknown[]=[];
