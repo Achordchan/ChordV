@@ -611,7 +611,26 @@ function describeUserErrorInContext(reason: unknown, context: UserErrorContext):
   const bodies = lines.map(parseErrorBody).filter(Boolean);
   const body = bodies.join("\n");
   const detail = normalizeWhitespace(parts.detail);
-  const status = parts.status ?? statusFromText(`${body}\n${detail}`);
+  const codeStatus = Number(existingCode?.match(/^http_(\d{3})$/)?.[1] ?? NaN);
+  const status = parts.status ?? (Number.isInteger(codeStatus) ? codeStatus : null) ?? statusFromText(`${body}\n${detail}`);
+
+  // 多行（例如「连接失败 + 本机停止失败」）：每行独立判断，只保留安全行。
+  const safeLines = bodies.filter((line) => isCustomerSafeText(line));
+  const allSafe = bodies.length > 0 && safeLines.length === bodies.length;
+
+  // 已经格式化过的错误（安全文案 + 错误编号）再次映射时沿用原分类和原文案，
+  // 不能再被文字猜测改写（例如 504 的“请求超时”在测速场景被改成“节点不可达”）。
+  if (existingCode && allSafe) {
+    const entry = USER_ERROR_CATALOG[existingCode] ?? (status !== null && status >= 400 ? USER_ERROR_CATALOG[httpCatalogKey(status) ?? ""] : null);
+    return {
+      title: entry?.title ?? fallback.title,
+      message: unique(safeLines).join("\n"),
+      action: entry?.action ?? fallback.action,
+      code: existingCode,
+      detail,
+      known: true
+    };
+  }
 
   // 服务端明确返回了 HTTP 错误时，以状态码为准：“Gateway Timeout”、上游“connection refused”
   // 是服务端故障，不能被文字猜测成客户的网络问题。只有明确的机器码仍然优先。
@@ -624,10 +643,6 @@ function describeUserErrorInContext(reason: unknown, context: UserErrorContext):
   }
   // 识别出机器码但没有专门文案：文案走场景兜底，编号保留原码。
   const recognizedCode = existingCode ?? technicalCode;
-
-  // 多行（例如「连接失败 + 本机停止失败」）：每行独立判断，只保留安全行。
-  const safeLines = bodies.filter((line) => isCustomerSafeText(line));
-  const allSafe = bodies.length > 0 && safeLines.length === bodies.length;
 
   if (status !== null && status >= 400) {
     const key = httpCatalogKey(status);

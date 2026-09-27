@@ -167,6 +167,19 @@ function testServerBusinessMessagesStayVerbatimWithoutCode() {
   const upstreamRefused = describeUserError(Object.assign(new Error("upstream connect error: connection refused"), { status: 503 }), { context: "update_check" });
   assert.equal(upstreamRefused.code, "http_503");
   assert.equal(describeUserError(new Error("HTTP 502 Bad Gateway: tcp connect error")).code, "http_502");
+  // 已格式化的错误再次映射（手动测速：readNodeProbeError 格式化后 showErrorToast 再按 node_probe 映射）
+  // 必须沿用原分类和原文案。
+  const probeReader = createUserErrorReader("node_probe");
+  const formatted = probeReader(Object.assign(new Error("请求超时，请稍后重试"), { status: 504 }));
+  assert.match(formatted, /错误编号：http_504/);
+  const remapped = describeUserError(formatted, { context: "node_probe" });
+  assert.equal(remapped.code, "http_504");
+  assert.equal(remapped.message, "请求超时，请稍后重试");
+  assert.equal(remapped.title, describeUserError(Object.assign(new Error("请求超时，请稍后重试"), { status: 504 }), { context: "node_probe" }).title);
+  const offlineOnce = createUserErrorReader("general")(new Error("TypeError: Failed to fetch"));
+  const offlineTwice = describeUserError(offlineOnce, { context: "node_probe" });
+  assert.equal(offlineTwice.code, "network_offline", "re-mapping keeps the first classification");
+  assert.equal(offlineTwice.message, describeUserError(new Error("TypeError: Failed to fetch")).message);
   // 明确的运行时机器码仍然优先
   assert.equal(describeUserError(Object.assign(new Error("runtime_component_error:write_failed:写入失败"), { status: 500 })).code, "write_failed");
 
