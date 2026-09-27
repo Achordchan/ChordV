@@ -378,8 +378,10 @@ function testForcedTriggerDownloadsOnce() {
 function testForcedCountdownInstallsAutomatically() {
   const start = compileHookSnippet(/useEffect\((\(\) => \{\s*if \(!forcedInstallDue[\s\S]*?\n  \}), \[/, "forced install countdown start");
   const tick = compileHookSnippet(/useEffect\((\(\) => \{\s*const step = stepForcedInstallCountdown[\s\S]*?\n  \}), \[/, "forced install countdown tick");
-  const run = (valid: boolean) => {
+  const run = (valid: boolean, hiddenTicks = 0) => {
     const installs: string[] = [];
+    const focus: string[] = [];
+    let hidden = hiddenTicks;
     const dialog: boolean[] = [];
     let countdown: number | null = null;
     let timer: (() => void) | null = null;
@@ -392,6 +394,7 @@ function testForcedCountdownInstallsAutomatically() {
       forcedInstallAttemptedRef: { current: attempted },
       setForcedInstallCountdown: setCountdown,
       setUpdateDialogOpened: (value: boolean) => dialog.push(value),
+      focusDesktopWindow: async () => { focus.push("show"); },
       FORCED_INSTALL_COUNTDOWN_SECONDS
     });
     const tickContext = () => ({
@@ -400,6 +403,7 @@ function testForcedCountdownInstallsAutomatically() {
       forcedInstallStillValid: valid,
       updateDialogOpened: dialog.at(-1) === true,
       options: { forcedUpdateAllowed: true },
+      pageVisible: hidden <= 0,
       setForcedInstallCountdown: setCountdown,
       installForcedUpdateNowRef: { current: () => { countdown = null; installs.push("install"); } },
       window: { setTimeout: (fn: () => void) => { timer = fn; return 1; }, clearTimeout: () => {} }
@@ -407,18 +411,24 @@ function testForcedCountdownInstallsAutomatically() {
     const exec = (code: string, context: Record<string, any>) => new Function(...Object.keys(context), `${code}; return action;`)(...Object.values(context))();
     exec(start, startContext());
     const seen: Array<number | null> = [countdown];
-    for (let guard = 0; guard < 20 && countdown !== null; guard += 1) {
+    for (let guard = 0; guard < 40 && countdown !== null; guard += 1) {
       timer = null;
       exec(tick, tickContext());
+      hidden -= 1;
       const pending = timer as (() => void) | null;
       if (pending) pending();
       seen.push(countdown);
       exec(start, startContext());
     }
-    return { installs, dialog, seen };
+    return { installs, dialog, seen, focus };
   };
   const forced = run(true);
   assert.deepEqual(forced.dialog, [true], "the countdown notice is always shown before installing");
+  assert.deepEqual(forced.focus, ["show"], "the main window is brought back from the tray before counting down");
+  // 窗口被隐藏时暂停：隐藏的几轮里倒计时停在 10，恢复可见后才继续。
+  const paused = run(true, 3);
+  assert.deepEqual(paused.seen.slice(0, 4), [10, 10, 10, 10], "no countdown while the page is hidden");
+  assert.deepEqual(paused.installs, ["install"]);
   assert.equal(forced.seen[0], 10);
   assert.deepEqual(forced.installs, ["install"], "the forced update installs itself exactly once when the countdown ends");
   assert.ok(forced.seen.includes(1) && forced.seen.includes(0), "counts down one second at a time");

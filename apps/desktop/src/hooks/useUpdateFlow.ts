@@ -581,10 +581,20 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
   // 倒计时期间更新包仍有效（仍是强制更新、仍是这个已下载的包）
   const forcedInstallStillValid = forcedAutoUpdateCandidate && isUpdateReadyIndicatorVisible({ ...readyInput, forceUpdateRequired: false });
 
+  // 窗口缩到托盘 / 被隐藏时页面不可见，倒计时必须暂停。
+  const [pageVisible, setPageVisible] = useState(() => typeof document === "undefined" || document.visibilityState !== "hidden");
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const onVisibilityChange = () => setPageVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
+
   useEffect(() => {
     if (!forcedInstallDue || forcedInstallCountdown !== null || !updateArtifactIdentity) return;
-    // 强制更新已下载校验：弹出不可取消的倒计时提示，结束后自动安装并重启。
+    // 强制更新已下载校验：先把主窗口显示出来（可能在托盘里），再弹出不可取消的倒计时提示，结束后自动安装并重启。
     forcedInstallAttemptedRef.current.add(updateArtifactIdentity);
+    void focusDesktopWindow();
     setForcedInstallCountdown(FORCED_INSTALL_COUNTDOWN_SECONDS);
     setUpdateDialogOpened(true);
   }, [forcedInstallCountdown, forcedInstallDue, updateArtifactIdentity]);
@@ -594,8 +604,8 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     const step = stepForcedInstallCountdown({
       countdown: forcedInstallCountdown,
       valid: forcedInstallStillValid,
-      // 提示看不到时（弹窗被关、窗口切换中）暂停，避免毫无预兆地退出。
-      visible: updateDialogOpened && options.forcedUpdateAllowed === true
+      // 提示看不到时（弹窗被关、窗口切换中、窗口隐藏在托盘）暂停，避免毫无预兆地退出。
+      visible: updateDialogOpened && options.forcedUpdateAllowed === true && pageVisible
     });
     if (step.type === "cancel") {
       setForcedInstallCountdown(null);
@@ -606,7 +616,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       return () => window.clearTimeout(timer);
     }
     return undefined;
-  }, [forcedInstallCountdown, forcedInstallStillValid, options.forcedUpdateAllowed, updateDialogOpened]);
+  }, [forcedInstallCountdown, forcedInstallStillValid, options.forcedUpdateAllowed, pageVisible, updateDialogOpened]);
 
   const openUpdateCenter = useCallback(() => {
     setUpdateCenter((current) => ({
