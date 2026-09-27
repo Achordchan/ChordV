@@ -59,6 +59,10 @@ assert.deepEqual(summarizeClientVersions([], now), { activeUsers: 0, versions: [
 
 const overview = readFileSync(resolve(import.meta.dirname, "../src/pages/OverviewPage.tsx"), "utf8");
 assert.match(overview, /summarizeClientVersions\(snapshot\.users, now\)/, "仪表台展示客户端版本分布");
+const app = readFileSync(resolve(import.meta.dirname, "../src/App.tsx"), "utf8");
+const overviewLoader = app.slice(app.indexOf('if (targetSection === "overview") {'), app.indexOf('} else if (targetSection === "users") {'));
+assert.match(overviewLoader, /settleAdminLoad\(fetchAdminUsers\(\)\)/, "直接打开或刷新仪表台时也加载用户列表，客户端版本分布不依赖先进过客户页面");
+assert.match(overviewLoader, /users: usersResult\.value/);
 const customers = ["CustomerWorkspace.tsx", "CustomerMembers.tsx"].map((file) => readFileSync(resolve(import.meta.dirname, "../src/features/customers", file), "utf8")).join("\n");
 assert.match(customers, /<ClientVersionBrief user=\{customer\.user\}\/>/, "客户列表显示客户端版本");
 assert.match(customers, /<ClientVersionFacts user=\{customer\.user\}\/>/, "账号资料显示客户端版本");

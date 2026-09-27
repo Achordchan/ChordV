@@ -1181,19 +1181,23 @@ export function App() {
     const mutationSeqAtStart = sectionMutationSeqRef.current;
     try {
       if (targetSection === "overview") {
-        const [subscriptionsResult, nodesResult] = await Promise.all([
+        // 仪表台的客户端版本分布来自用户列表，直接打开或刷新仪表台时也要加载，不能依赖先进过客户页面。
+        const [subscriptionsResult, nodesResult, usersResult] = await Promise.all([
           settleAdminLoad(fetchAdminSubscriptions()),
-          settleAdminLoad(fetchAdminNodes())
+          settleAdminLoad(fetchAdminNodes()),
+          settleAdminLoad(fetchAdminUsers())
         ]);
         if (!canApplySectionResult(requestSeq, mutationSeqAtStart)) return;
         mergeSnapshot({
           ...(subscriptionsResult.ok ? { subscriptions: subscriptionsResult.value } : {}),
-          ...(nodesResult.ok ? { nodes: nodesResult.value } : {})
+          ...(nodesResult.ok ? { nodes: nodesResult.value } : {}),
+          ...(usersResult.ok ? { users: usersResult.value } : {})
         });
-        if (!subscriptionsResult.ok || !nodesResult.ok) {
+        if (!subscriptionsResult.ok || !nodesResult.ok || !usersResult.ok) {
           const message = joinAdminLoadFailures([
             subscriptionsResult.ok ? null : readError(subscriptionsResult.reason, "订阅列表加载失败"),
-            nodesResult.ok ? null : readError(nodesResult.reason, "节点列表加载失败")
+            nodesResult.ok ? null : readError(nodesResult.reason, "节点列表加载失败"),
+            usersResult.ok ? null : readError(usersResult.reason, "客户端版本加载失败")
           ]);
           if (!subscriptionsResult.ok && !nodesResult.ok) {
             throw new Error(message);
