@@ -399,7 +399,8 @@ export function App() {
     selectedNodeId: selectedNodeId ?? runtime?.node.id ?? null,
     readError: readNodeProbeError,
     onUnauthorized: recoverSessionAfterUnauthorized,
-    onError: (message) => showErrorToast(message, "node_probe"),
+    // 用原始错误映射一次：4xx 业务提示（如“拒绝访问该节点”）没有编号，二次映射会被误判为本机权限问题。
+    onError: (message, reason) => showErrorToast(reason || message, "node_probe"),
     pickNodeId: (targetNodes, preferredId, results) => pickNode(targetNodes, preferredId, results)?.id ?? null,
     pickAlternativeNodeId: (targetNodes, currentNodeId, results) =>
       pickAlternativeNode(targetNodes, currentNodeId, results)?.id ?? null,

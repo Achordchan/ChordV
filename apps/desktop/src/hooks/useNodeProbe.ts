@@ -22,7 +22,8 @@ type UseNodeProbeOptions = {
   selectedNodeId?: string | null;
   readError?: (reason: unknown) => string;
   onUnauthorized?: () => Promise<unknown> | unknown;
-  onError?: (message: string) => void;
+  /** reason 是原始错误对象：提示框应基于它映射一次，不要把已格式化的 message 再映射。 */
+  onError?: (message: string, reason?: unknown) => void;
   pickNodeId?: (
     nodes: NodeSummaryDto[],
     preferredId: string | null,
@@ -128,7 +129,7 @@ export function useNodeProbe(options: UseNodeProbeOptions) {
           return null;
         }
         if (!auto) {
-          options.onError?.(reason ? (options.readError ?? defaultReadError)(reason) : "测速失败");
+          options.onError?.(reason ? (options.readError ?? defaultReadError)(reason) : "测速失败", reason);
         }
         return null;
       } finally {

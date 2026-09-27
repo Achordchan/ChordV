@@ -105,6 +105,14 @@ function testDisplayHooksPassWholeErrors() {
   assert.match(events, /readError\(reason\) : /);
   const app = readFileSync(resolve(import.meta.dirname, "../src/App.tsx"), "utf8");
   assert.match(app, /createLoggedUserErrorReader\("ticket"\)/, "display readers record hidden raw text");
+  // 测速失败提示用原始错误映射一次，不能把已格式化的文字再映射
+  assert.match(app, /onError: \(message, reason\) => showErrorToast\(reason \|\| message, "node_probe"\)/);
+  const nodeProbe = readFileSync(resolve(import.meta.dirname, "../src/hooks/useNodeProbe.ts"), "utf8");
+  assert.match(nodeProbe, /"测速失败", reason\)/);
+  const denied = Object.assign(new Error("拒绝访问该节点，请联系客服"), { status: 403, rawMessage: "拒绝访问该节点，请联系客服" });
+  const deniedOnce = describeUserError(denied, { context: "node_probe" });
+  assert.equal(deniedOnce.message, "拒绝访问该节点，请联系客服");
+  assert.notEqual(deniedOnce.code, "permission_denied", "server authorization errors are not local permission failures");
   // Tauri 命令以字符串 reject：展示路径不能只认 Error，否则原文和编号都会丢失
   for (const hook of ["useAuthBootstrap", "useRuntimeActions", "useUpdateFlow", "useSupportTickets", "useAnnouncements", "useNodeProbe", "useClientEvents"]) {
     const source = readFileSync(resolve(import.meta.dirname, `../src/hooks/${hook}.ts`), "utf8");

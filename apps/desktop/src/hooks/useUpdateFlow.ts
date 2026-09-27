@@ -780,7 +780,8 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         return null;
       }
       const reportedSummary = report.summary?.trim();
-      const summary = reportedSummary && isCustomerSafeText(reportedSummary) ? reportedSummary : "自动替换安装未成功，已改为打开安装包。";
+      // 报告原文不可展示时不能推断安装包已打开（例如 Start-Process 本身失败），只给中性的失败说明和可操作的下一步。
+      const summary = reportedSummary && isCustomerSafeText(reportedSummary) ? reportedSummary : "更新没有安装完成。请重新检查更新后再试，或到官网下载安装包手动安装。";
       options.notify?.({
         color: "yellow",
         title: "更新安装未完全成功",

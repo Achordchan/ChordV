@@ -68,7 +68,7 @@ for (const input of ['read-error', { ok: false, summary: '自动更新失败，�
   if (input === 'read-error') assert.equal(notices[0].title, '无法读取更新结果');
   if (input?.ok === false) {
     assert.equal(notices[0].title, '更新安装未完全成功');
-    assert.equal(notices[0].message, /[\u3400-\u9fff]/.test(input.summary) ? input.summary : '自动替换安装未成功，已改为打开安装包。', 'raw English summaries are replaced');
+    assert.equal(notices[0].message, /[\u3400-\u9fff]/.test(input.summary) ? input.summary : '更新没有安装完成。请重新检查更新后再试，或到官网下载安装包手动安装。', 'raw English summaries are replaced');
   }
 }
 console.log('installation report failures are visible; successful and absent reports stay silent');
