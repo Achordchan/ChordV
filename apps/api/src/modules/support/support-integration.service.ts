@@ -250,6 +250,7 @@ export class SupportIntegrationService {
    * 事件先后一律按工单系统的时间（事件 createdAt、未读查询响应的 Date）比较，不用本机时间。
    * - 早于最近一次权威总数的事件已包含在总数里，只记录事件 ID；同一请求晚到的旧事件也不会覆盖新值。
    * - 落在最近一次服务端查询的不确定区间里的事件，无法判断是否已包含在查询结果里：不采用其总数，改为重新查询。
+   * - 同一请求在同一时刻出现两个不同的未读数，同样无法判断先后：保留已有记录，改为重新查询。
    * - 带 contactUnreadCount：以它为总数；但如果本地已有比它更新的按请求变化（新旧版本事件混在一起），
    *   两者先后无法对齐，就保留当前值并标记为待校准。
    * - 不带 contactUnreadCount（旧版工单系统）：只有从未接受过权威总数、本地记录由逐条事件累积而来时，
@@ -270,8 +271,12 @@ export class SupportIntegrationService {
         return unchanged;
       }
       const key = { userId_requestId: { userId, requestId: change.requestId } };
-      const existing = await tx.supportRequestUnread.findUnique({ where: key, select: { eventAt: true } });
-      if (!existing || existing.eventAt.getTime() <= eventAt.getTime()) {
+      const existing = await tx.supportRequestUnread.findUnique({ where: key, select: { eventAt: true, unreadCount: true } });
+      // 同一请求在同一毫秒有两个不同的未读数：到达顺序不能代表先后，保留已有记录，改为重新查询。
+      const sameInstantRequestConflict = Boolean(
+        existing && existing.eventAt.getTime() === eventAt.getTime() && existing.unreadCount !== change.unreadCount
+      );
+      if (!existing || existing.eventAt.getTime() < eventAt.getTime()) {
         await tx.supportRequestUnread.upsert({
           where: key,
           create: { userId, requestId: change.requestId, unreadCount: change.unreadCount, eventAt },
@@ -280,7 +285,7 @@ export class SupportIntegrationService {
       }
       let data: { unreadCount?: number; sourceAt?: Date; syncedAt?: Date | null; requestsComplete?: boolean };
       const insideSnapshotWindow = Boolean(state.snapshotUntil && eventAt.getTime() < state.snapshotUntil.getTime());
-      if (insideSnapshotWindow) {
+      if (insideSnapshotWindow || sameInstantRequestConflict) {
         data = { syncedAt: null };
       } else if (change.contactUnreadCount !== null) {
         // 与当前权威总数同一时刻、却给出不同总数的事件，以及其他请求在同一时刻或之后已有变化的情况，

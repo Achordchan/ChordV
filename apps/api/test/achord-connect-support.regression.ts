@@ -762,6 +762,31 @@ async function testEqualTimestampsAndPostCommitFailures() {
     assert.equal(sameDb.state("user_1")?.unreadCount, 2);
   }
 
+  // 旧格式事件：同一请求同一毫秒的“已读 0”先到、“未读 1”后到（投递顺序颠倒），不能按到达顺序把红点改回来。
+  {
+    const { service, db } = createService();
+    await configure(service);
+    let fetches = 0;
+    service.fetchImpl = async () => {
+      fetches += 1;
+      return json(200, { data: { externalUserId: "user_1", unreadCount: 0, requests: [] } }, new Date(Date.now() + 10_000));
+    };
+    const instant = new Date(Date.now() - 5_000).toISOString();
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 0, createdAt: instant })));
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 1, createdAt: instant })));
+    assert.equal(db.request("user_1", "req_a")?.unreadCount, 0, "保留已有记录");
+    assert.equal(db.state("user_1")?.unreadCount, 0);
+    assert.equal(db.state("user_1")?.syncedAt, null, "标记为待校准");
+    await waitFor(() => fetches === 1, "安排后台校准");
+    // 同一时刻、相同的值（例如重复投递但事件 ID 不同）不算冲突。
+    const { service: same, db: sameDb } = createService();
+    await configure(same);
+    await same.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 2, createdAt: instant })));
+    await same.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 2, createdAt: instant })));
+    assert.equal(sameDb.state("user_1")?.unreadCount, 2);
+    assert.equal(sameDb.state("user_1")?.requestsComplete, true);
+  }
+
   // 事件 ID 提交后推送失败：Webhook 仍返回成功，不让工单系统把重试当成已处理却什么都没做。
   {
     const { service, db } = createService();
