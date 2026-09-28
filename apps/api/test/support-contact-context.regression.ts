@@ -269,7 +269,18 @@ function createFakePrisma(input: { leases?: LeaseRow[]; team?: boolean; failLeas
 const NODE = { name: "香港 02", protocol: "vless", security: "reality", serverHost: "203.0.113.9", serverPort: 443, uuid: "11111111-2222-3333-4444-555555555555", realityPublicKey: "pubkey_secret" };
 
 async function testContextServiceUsesDatabase() {
-  const now = new Date();
+  // 订阅状态按 Date.now() 折算（到期、流量），固定时钟，测试结果不随真实日期变化。
+  const realDateNow = Date.now;
+  Date.now = () => NOW.getTime();
+  try {
+    await checkContextServiceUsesDatabase();
+  } finally {
+    Date.now = realDateNow;
+  }
+}
+
+async function checkContextServiceUsesDatabase() {
+  const now = NOW;
   const leases: LeaseRow[] = [
     { sessionId: "sess_mine", userId: "user_1", status: "active", expiresAt: new Date(now.getTime() + 60_000), issuedAt: new Date(now.getTime() - 72 * 60_000), connectionMode: "rule", node: NODE },
     { sessionId: "sess_other_device", userId: "user_1", status: "active", expiresAt: new Date(now.getTime() + 60_000), issuedAt: new Date(now.getTime() - 5 * 60_000), connectionMode: "global", node: { ...NODE, name: "东京 01" } },
@@ -316,9 +327,9 @@ async function testContextServiceUsesDatabase() {
 
   const slow = new SupportContactContextService(createFakePrisma({ slowPlan: true }).prisma as never);
   (slow as unknown as { logger: unknown }).logger = { warn: () => undefined };
-  const started = Date.now();
+  const started = performance.now();
   const timedOut = await slow.buildAttributes("user_1", {}, now);
-  assert.ok(Date.now() - started < 3_000, "数据库慢时不拖慢打开工单");
+  assert.ok(performance.now() - started < 3_000, "数据库慢时不拖慢打开工单");
   assert.equal(timedOut.plan, "未知");
 }
 
