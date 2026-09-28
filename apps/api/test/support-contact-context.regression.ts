@@ -115,7 +115,10 @@ function testSensitiveTextIsDropped() {
     "/Users/me/Library/xray",
     "C:\\Users\\me\\AppData",
     "~/Library",
-    "token abcdefghijklmnopqrstuvwxyz0123456789ABCD"
+    "token abcdefghijklmnopqrstuvwxyz0123456789ABCD",
+    "hk.example.com",
+    "节点 hk.example.com:443",
+    "gateway:8443"
   ]) {
     assert.equal(sanitizeClientText(value), null, `${value} 应被丢弃`);
     assert.equal(parseSupportLaunchContext({ context: { os: value } }).context?.os, undefined);
@@ -126,7 +129,11 @@ function testSensitiveTextIsDropped() {
     "Asia/Shanghai（UTC+8）",
     "Xray 25.8.3 · 规则库 2026-09-20 · 完整",
     "1.1.11（构建 21）· 待安装 1.1.12",
-    "正常（180 ms）"
+    "正常（180 ms）",
+    "Windows Server 2022 21H2（20348.2700，x64）",
+    "macOS 10.15.7（19H2026，x64）",
+    "Xray v25.8.3 · 规则库 v2026.09.20 · 完整",
+    "Asia/Kolkata（UTC+5:30）"
   ]) {
     assert.equal(sanitizeClientText(value), value, `${value} 应保留`);
   }
@@ -148,7 +155,7 @@ function testServerFilledFields() {
   assert.equal(describeNode({ name: "东京", protocol: "vless", security: "none" }), "东京（VLESS）");
   assert.equal(describeNode({ name: " ", protocol: "bad proto!", security: "" }), "未命名节点");
   // 后台设置的名称同样过敏感内容检查：以 IP、连接地址命名的节点不能把地址带给工单系统。
-  for (const name of ["203.0.113.9", "hk.example.com:443 vless://uuid@203.0.113.9", "https://sub.example.com/abc"]) {
+  for (const name of ["203.0.113.9", "hk.example.com:443", "hk.example.com", "香港 hk-02.node.example.net", "localhost:443", "vless://uuid@203.0.113.9", "https://sub.example.com/abc"]) {
     assert.equal(describeNode({ name, protocol: "vless", security: "reality" }), "节点名称已隐藏（VLESS Reality）", name);
   }
   assert.equal(describePlan({ scope: "personal", planName: "https://pay.example.com/x", state: "active", expireAt: new Date("2026-12-31T08:00:00.000Z"), remainingTrafficGb: 1 }), "个人 · 套餐名称已隐藏 · 正常 · 2026-12-31 到期 · 剩余 1 GB");

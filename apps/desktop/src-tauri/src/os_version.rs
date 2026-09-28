@@ -24,6 +24,8 @@ pub(crate) fn macos_label_from_sw_vers(output: &str, architecture: &str) -> Opti
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) struct WindowsVersionValues {
     pub product_name: Option<String>,
+    /// Client / Server / Server Core；服务器版的内部版本号与桌面版重叠，不能只按版本号判断。
+    pub installation_type: Option<String>,
     pub display_version: Option<String>,
     pub current_build: Option<String>,
     pub ubr: Option<u32>,
@@ -43,6 +45,7 @@ pub(crate) fn parse_windows_reg_query(output: &str) -> WindowsVersionValues {
         let data = parts.collect::<Vec<_>>().join(" ");
         match name {
             "ProductName" if kind == "REG_SZ" => values.product_name = Some(data),
+            "InstallationType" if kind == "REG_SZ" => values.installation_type = Some(data),
             "DisplayVersion" if kind == "REG_SZ" && is_version_token(&data) => values.display_version = Some(data),
             // 旧版 Windows 10 没有 DisplayVersion，只有 ReleaseId（例如 2004）。
             "ReleaseId" if kind == "REG_SZ" && values.display_version.is_none() && is_version_token(&data) => {
@@ -60,24 +63,40 @@ pub(crate) fn parse_windows_reg_query(output: &str) -> WindowsVersionValues {
     values
 }
 
-/// 注册表里的 ProductName 在 Windows 11 上仍写着“Windows 10”，版本名按内部版本号判断：22000 及以上为 Windows 11。
+/// 注册表里的 ProductName 在 Windows 11 上仍写着“Windows 10”，桌面版按内部版本号判断：22000 及以上为 Windows 11。
+/// 服务器版（ProductName 含 Server 或 InstallationType 为 Server）的内部版本号与桌面版重叠（Server 2022 为 20348，
+/// Server 2025 为 26100），先按服务器版识别，名称取 ProductName 里的年份。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn windows_label(values: &WindowsVersionValues, architecture: &str) -> Option<String> {
     let build_number = values.current_build.as_deref().and_then(|value| value.parse::<u32>().ok());
-    let name = match build_number {
-        Some(build) if build >= 22000 => "Windows 11".to_string(),
-        Some(build) if build >= 10240 => "Windows 10".to_string(),
-        _ => values
-            .product_name
-            .as_deref()
-            .and_then(|product| {
-                let mut words = product.split_whitespace();
-                match (words.next(), words.next()) {
-                    (Some("Windows"), Some(version)) if is_version_token(version) => Some(format!("Windows {version}")),
-                    _ => None,
-                }
-            })
-            .unwrap_or_else(|| "Windows".to_string()),
+    let product_is_server = values.product_name.as_deref().is_some_and(|product| product.split_whitespace().any(|word| word == "Server"));
+    let installed_as_server = values.installation_type.as_deref().is_some_and(|kind| kind.starts_with("Server"));
+    let name = if product_is_server || installed_as_server {
+        let year = values.product_name.as_deref().and_then(|product| {
+            let mut words = product.split_whitespace().skip_while(|word| *word != "Server");
+            words.next();
+            words.next().filter(|word| is_version_token(word) && word.chars().next().is_some_and(|ch| ch.is_ascii_digit()))
+        });
+        match year {
+            Some(year) => format!("Windows Server {year}"),
+            None => "Windows Server".to_string(),
+        }
+    } else {
+        match build_number {
+            Some(build) if build >= 22000 => "Windows 11".to_string(),
+            Some(build) if build >= 10240 => "Windows 10".to_string(),
+            _ => values
+                .product_name
+                .as_deref()
+                .and_then(|product| {
+                    let mut words = product.split_whitespace();
+                    match (words.next(), words.next()) {
+                        (Some("Windows"), Some(version)) if is_version_token(version) => Some(format!("Windows {version}")),
+                        _ => None,
+                    }
+                })
+                .unwrap_or_else(|| "Windows".to_string()),
+        }
     };
     if build_number.is_none() && values.product_name.is_none() {
         return None;
@@ -134,6 +153,7 @@ mod tests {
             values,
             WindowsVersionValues {
                 product_name: Some("Windows 10 Pro".into()),
+                installation_type: None,
                 display_version: Some("23H2".into()),
                 current_build: Some("22631".into()),
                 ubr: Some(4317),
@@ -145,9 +165,33 @@ mod tests {
     }
 
     #[test]
+    fn labels_windows_server_before_build_mapping() {
+        let server_2022 = parse_windows_reg_query("    CurrentBuild    REG_SZ    20348\r\n    ProductName    REG_SZ    Windows Server 2022 Datacenter\r\n    InstallationType    REG_SZ    Server\r\n    DisplayVersion    REG_SZ    21H2\r\n    UBR    REG_DWORD    0xa8c\r\n");
+        assert_eq!(windows_label(&server_2022, "x64").as_deref(), Some("Windows Server 2022 21H2（20348.2700，x64）"), "20348 不能当成 Windows 10");
+        let server_2025 = parse_windows_reg_query("    CurrentBuild    REG_SZ    26100\n    ProductName    REG_SZ    Windows Server 2025 Standard\n    InstallationType    REG_SZ    Server Core\n    DisplayVersion    REG_SZ    24H2\n");
+        assert_eq!(windows_label(&server_2025, "x64").as_deref(), Some("Windows Server 2025 24H2（26100，x64）"), "26100 不能当成 Windows 11");
+        // ProductName 没写服务器，但安装类型是服务器：同样不按桌面版版本号判断。
+        let typed_only = WindowsVersionValues {
+            product_name: Some("Windows 10 Pro".into()),
+            installation_type: Some("Server".into()),
+            current_build: Some("26100".into()),
+            ..Default::default()
+        };
+        assert_eq!(windows_label(&typed_only, "x64").as_deref(), Some("Windows Server（26100，x64）"));
+        let client = WindowsVersionValues {
+            product_name: Some("Windows 10 Pro".into()),
+            installation_type: Some("Client".into()),
+            current_build: Some("26100".into()),
+            ..Default::default()
+        };
+        assert_eq!(windows_label(&client, "arm64").as_deref(), Some("Windows 11（26100，arm64）"));
+    }
+
+    #[test]
     fn labels_windows_10_and_older_values() {
         let win10 = WindowsVersionValues {
             product_name: Some("Windows 10 Home".into()),
+            installation_type: Some("Client".into()),
             display_version: Some("22H2".into()),
             current_build: Some("19045".into()),
             ubr: Some(5011),

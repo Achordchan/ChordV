@@ -139,6 +139,9 @@ export function sanitizeClientText(value: string): string | null {
 export function looksSensitive(value: string) {
   return (
     /[a-z][a-z0-9+.-]*:\/\//i.test(value) ||
+    // 不带协议的域名（hk.example.com、hk.example.com:443）和“主机名:端口”（localhost:443）。
+    /(?:^|[^a-z0-9.-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]*[a-z](?::\d{1,5})?(?![a-z0-9-])/i.test(value) ||
+    /(?:^|[^a-z0-9.-])[a-z][a-z0-9.-]*:\d{2,5}(?!\d)/i.test(value) ||
     /[^\s@]+@[^\s@]+\.[^\s@]+/.test(value) ||
     /(?:^|[^\d.])\d{1,3}(?:\.\d{1,3}){3}(?:$|[^\d.])/.test(value) ||
     /[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){3,7}/i.test(value) ||
