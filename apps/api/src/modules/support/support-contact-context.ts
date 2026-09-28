@@ -98,9 +98,18 @@ export function parseSupportLaunchContext(body: unknown): ParsedSupportLaunchCon
   if (Buffer.byteLength(serialized, "utf8") > SUPPORT_LAUNCH_CONTEXT_MAX_BYTES) {
     return { context: null, dropped: [], oversized: true };
   }
-  const instance = plainToInstance(SupportLaunchContextDto, raw);
-  const errors = validateSync(instance, { whitelist: true, forbidUnknownValues: false });
-  const dropped = new Set<string>(errors.map((error) => error.property));
+  // 先按形状挑出白名单字段（文本字段必须是字符串，错误列表必须是由字符串组成的普通对象数组），
+  // 其余一律丢弃后再交给 class-transformer：嵌套对象里的 constructor 等键不会进入转换。
+  const { shaped, dropped } = shapeContext(raw);
+  let instance: SupportLaunchContextDto;
+  try {
+    instance = plainToInstance(SupportLaunchContextDto, shaped);
+    for (const error of validateSync(instance, { whitelist: true, forbidUnknownValues: false })) {
+      dropped.add(error.property);
+    }
+  } catch {
+    return { context: null, dropped: [...dropped].filter((name) => ALL_CONTEXT_FIELDS.has(name)), oversized: false };
+  }
   const context: SupportLaunchContext = {};
   for (const field of TEXT_FIELDS) {
     const value = instance[field];
@@ -119,6 +128,28 @@ export function parseSupportLaunchContext(body: unknown): ParsedSupportLaunchCon
     context.recentErrors = instance.recentErrors.map((item) => ({ code: item.code, at: item.at }));
   }
   return { context, dropped: [...dropped].filter((name) => ALL_CONTEXT_FIELDS.has(name)), oversized: false };
+}
+
+const STRING_FIELDS = [...TEXT_FIELDS, "connectionState", "connectionErrorCode", "sessionId"] as const;
+
+function shapeContext(raw: Record<string, unknown>) {
+  const shaped: Record<string, unknown> = {};
+  const dropped = new Set<string>();
+  for (const field of STRING_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(raw, field)) continue;
+    const value = raw[field];
+    if (typeof value === "string") shaped[field] = value;
+    else if (value !== undefined && value !== null) dropped.add(field);
+  }
+  if (Object.prototype.hasOwnProperty.call(raw, "recentErrors") && raw.recentErrors !== undefined && raw.recentErrors !== null) {
+    const list = raw.recentErrors;
+    const items = Array.isArray(list) && list.length <= 3
+      ? list.map((item) => (isPlainRecord(item) && typeof item.code === "string" && typeof item.at === "string" ? { code: item.code, at: item.at } : null))
+      : null;
+    if (items && items.every((item) => item !== null)) shaped.recentErrors = items;
+    else dropped.add("recentErrors");
+  }
+  return { shaped, dropped };
 }
 
 /**

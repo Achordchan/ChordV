@@ -1830,6 +1830,9 @@ async function testRoutesWithRawBodyParser() {
     });
     assert.equal((await postLaunch({ context: { os: "x".repeat(5000) } })).status, 200, "超过 4 KB 整体丢弃，仍能打开");
     assert.equal(contexts.at(-1), null);
+    const hostile = await postLaunch({ context: { os: { constructor: 1 }, recentErrors: [{ code: { constructor: 1 }, at: 1 }], appVersion: "1.1.11" } });
+    assert.equal(hostile.status, 200, "形状不对的诊断信息不会让打开工单报 500");
+    assert.deepEqual(contexts.at(-1), { appVersion: "1.1.11" });
     assert.equal((await postLaunch({ context: "not an object" })).status, 200);
     assert.equal(contexts.at(-1), null);
     const noBody = await fetch(`${baseUrl}/api/client/support/launch`, { method: "POST", headers: { authorization: "Bearer user-token" } });

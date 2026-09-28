@@ -99,6 +99,23 @@ function testContextWhitelistAndPerFieldValidation() {
   assert.equal(parseSupportLaunchContext({ context: { recentErrors: [{ code: "a", at: "yesterday" }] } }).context?.recentErrors, undefined);
   assert.equal(parseSupportLaunchContext({ context: { recentErrors: [{ code: "a", at: "2026-09-28T02:21:00.000Z", message: "raw text" }] } }).context?.recentErrors?.[0] && Object.keys(parseSupportLaunchContext({ context: { recentErrors: [{ code: "a", at: "2026-09-28T02:21:00.000Z", message: "raw text" }] } }).context!.recentErrors![0]).join(), "code,at", "错误条目只保留编号和时间");
 
+  // 形状不对的值（对象、数组、带 constructor 等特殊键的嵌套对象）在转换前就丢弃，不会让解析抛错。
+  const hostile = parseSupportLaunchContext(JSON.parse(JSON.stringify({
+    context: {
+      os: { constructor: 1 },
+      appVersion: { toString: "x" },
+      locale: ["zh-CN"],
+      connectionState: { constructor: { name: "String" } },
+      recentErrors: [{ code: { constructor: 1 }, at: "2026-09-28T02:21:00.000Z" }],
+      components: "Xray 25.8.3"
+    }
+  })));
+  assert.deepEqual(hostile.context, { components: "Xray 25.8.3" });
+  assert.deepEqual(new Set(hostile.dropped), new Set(["os", "appVersion", "locale", "connectionState", "recentErrors"]));
+  const nested = parseSupportLaunchContext(JSON.parse(`{"context":{"os":{"constructor":1},"recentErrors":{"constructor":1},"__proto__":{"polluted":true}}}`));
+  assert.deepEqual(nested.context, {});
+  assert.equal(({} as Record<string, unknown>).polluted, undefined, "不会污染原型");
+
   // 整体超过 4 KB 丢弃。
   const oversized = parseSupportLaunchContext({ context: { appVersion: "1", padding: "x".repeat(SUPPORT_LAUNCH_CONTEXT_MAX_BYTES) } });
   assert.equal(oversized.context, null);
