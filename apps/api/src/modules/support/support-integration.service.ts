@@ -400,6 +400,7 @@ export class SupportIntegrationService {
         });
       }
       let data: { unreadCount?: number; sourceAt?: Date; syncedAt?: Date | null; requestsComplete?: boolean };
+      let provisional = false;
       const insideSnapshotWindow = Boolean(state.snapshotUntil && eventAt.getTime() < state.snapshotUntil.getTime());
       if (insideSnapshotWindow || sameInstantRequestConflict) {
         data = { syncedAt: null };
@@ -420,8 +421,10 @@ export class SupportIntegrationService {
           ? { syncedAt: null }
           : { unreadCount: change.contactUnreadCount, sourceAt: eventAt, syncedAt: new Date(), requestsComplete: false };
       } else if (state.requestsComplete) {
+        // 按请求求和只是临时值：本地记录从第一次收到事件时才开始累积，不知道此前已有的未读，需要向工单系统核实。
         const sum = await tx.supportRequestUnread.aggregate({ where: { userId }, _sum: { unreadCount: true } });
         data = { unreadCount: sum._sum.unreadCount ?? 0 };
+        provisional = true;
       } else {
         data = { syncedAt: null };
       }
@@ -432,7 +435,7 @@ export class SupportIntegrationService {
         revision: state.revision + 1,
         publish,
         epoch: config.epoch,
-        needsResync: data.syncedAt === null
+        needsResync: data.syncedAt === null || provisional
       };
     });
   }
@@ -686,6 +689,13 @@ function applyConfigUpdate(current: StoredSupportIntegrationConfig, input: Updat
   }
   if (input.enabled !== undefined) {
     next.enabled = input.enabled;
+  }
+  // 更换已有连接（地址或 Client ID 变化）时必须同时填写新连接的 Webhook Secret：旧连接迟到或重试的 Webhook
+  // 仍带着旧密钥的签名，沿用旧密钥就无法把它们挡在外面。
+  const switchingConnection = Boolean(current.baseUrl && current.clientId) &&
+    (current.baseUrl !== next.baseUrl || current.clientId !== next.clientId);
+  if (switchingConnection && typeof input.webhookSecret !== "string") {
+    throw new BadRequestException("更换工单系统地址或 Client ID 时，请同时填写新连接的 Webhook Secret");
   }
   if (next.enabled && (!readCredentials(next) || !next.webhookSecret)) {
     // 客户端不会定时查询状态，未读提醒依赖 Webhook，所以启用前 Webhook Secret 也必须填写。

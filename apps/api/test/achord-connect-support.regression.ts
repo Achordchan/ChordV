@@ -42,6 +42,7 @@ const BASE_URL = "https://support.example.test";
 const CLIENT_ID = "ac_fake_client_id";
 const CLIENT_SECRET = "acs_fake_client_secret_for_tests";
 const WEBHOOK_SECRET = "whsec_fake_webhook_secret_for_tests";
+const NEW_WEBHOOK_SECRET = "whsec_fake_new_connection_secret";
 
 type Row = Record<string, any>;
 
@@ -839,7 +840,7 @@ async function testConnectionChangeResetsUnreadState() {
   await new Promise((resolve) => setTimeout(resolve, 5));
   let newConnectionFetches = 0;
   const countBefore = published.length;
-  await service.updateAdminConfig({ baseUrl: "https://support-new.example.test", clientId: "ac_fake_other" });
+  await service.updateAdminConfig({ baseUrl: "https://support-new.example.test", clientId: "ac_fake_other", webhookSecret: NEW_WEBHOOK_SECRET });
   service.fetchImpl = async () => {
     newConnectionFetches += 1;
     return json(200, { data: { externalUserId: "user_1", unreadCount: 1, requests: [] } });
@@ -875,7 +876,7 @@ async function testConnectionFenceAndEnableToggles() {
     db.prisma.user.findUnique = async (args: unknown) => {
       // 模拟验签后在查用户时停顿，期间管理员切换了连接。
       db.prisma.user.findUnique = originalFindUnique;
-      await service.updateAdminConfig({ baseUrl: "https://support-new.example.test" });
+      await service.updateAdminConfig({ baseUrl: "https://support-new.example.test", webhookSecret: NEW_WEBHOOK_SECRET });
       return originalFindUnique(args);
     };
     assert.equal(await service.handleWebhook(webhookRequest(event)), "ignored");
@@ -926,7 +927,7 @@ async function testPublicationFenceAndReconnectCandidates() {
     const pushesBefore = published.length;
     service.applyUnreadChange = async (...args: Parameters<SupportIntegrationService["applyUnreadChange"]>) => {
       const result = await originalApply(...args);
-      await service.updateAdminConfig({ clientId: "ac_fake_switched" });
+      await service.updateAdminConfig({ clientId: "ac_fake_switched", webhookSecret: NEW_WEBHOOK_SECRET });
       return result;
     };
     service.fetchImpl = async () => {
@@ -948,7 +949,7 @@ async function testPublicationFenceAndReconnectCandidates() {
       queried.push(url);
       return json(200, { data: { externalUserId: "user_2", unreadCount: 2, requests: [] } });
     };
-    await service.updateAdminConfig({ baseUrl: "https://support-new.example.test" });
+    await service.updateAdminConfig({ baseUrl: "https://support-new.example.test", webhookSecret: NEW_WEBHOOK_SECRET });
     await waitFor(() => db.state("user_2")?.unreadCount === 2, "向新连接查询原来没有未读的用户");
     assert.ok(queried.every((url) => url.startsWith("https://support-new.example.test/")));
   }
@@ -985,7 +986,7 @@ async function testConfigNotificationsAndStatusRecheck() {
     await configure(service);
     await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 1, contactUnreadCount: 1, createdAt: new Date().toISOString() })));
     await service.updateAdminConfig({ enabled: false });
-    await service.updateAdminConfig({ baseUrl: "https://support-new.example.test" });
+    await service.updateAdminConfig({ baseUrl: "https://support-new.example.test", webhookSecret: NEW_WEBHOOK_SECRET });
     const internals = service as unknown as Internals;
     assert.equal(internals.backgroundResyncTimers.size, 0, "停用状态下切换连接不查询");
     let fetches = 0;
@@ -1052,7 +1053,7 @@ async function testConfigNotificationsAndStatusRecheck() {
       service.fetchImpl = async () => {
         throw new TypeError("fetch failed");
       };
-      await service.updateAdminConfig({ baseUrl: "https://support-new.example.test" });
+      await service.updateAdminConfig({ baseUrl: "https://support-new.example.test", webhookSecret: NEW_WEBHOOK_SECRET });
       return json(200, { data: { externalUserId: "user_1", unreadCount: 6, requests: [] } });
     };
     assert.deepEqual(await service.getClientStatus("user_1"), { enabled: true, unreadCount: 0, supportOrigin: "https://support-new.example.test" });
@@ -1126,8 +1127,40 @@ async function testUntimedEventsAndStaleTimers() {
     const oldTimer = timers.get("user_1");
     assert.ok(oldTimer, "旧连接有一个很久以后才执行的重试");
     service.fetchImpl = async () => json(200, { data: { externalUserId: "user_1", unreadCount: 4, requests: [] } });
-    await service.updateAdminConfig({ baseUrl: "https://support-new.example.test" });
+    await service.updateAdminConfig({ baseUrl: "https://support-new.example.test", webhookSecret: NEW_WEBHOOK_SECRET });
     await waitFor(() => db.state("user_1")?.unreadCount === 4, "新连接立即查询，不被旧任务挡住");
+  }
+}
+
+async function testConnectionSwitchNeedsNewWebhookSecretAndLegacyBaseline() {
+  // 更换已有连接必须同时填写新的 Webhook Secret，否则旧连接迟到的 Webhook 仍能通过验签。
+  {
+    const { service, db } = createService();
+    await configure(service);
+    await rejects(service.updateAdminConfig({ baseUrl: "https://support-new.example.test" }), BadRequestException);
+    await rejects(service.updateAdminConfig({ clientId: "ac_fake_other" }), BadRequestException);
+    assert.equal(db.setting("achord-connect").baseUrl, BASE_URL, "被拒绝的保存不改动设置");
+    await service.updateAdminConfig({ clientId: "ac_fake_other", webhookSecret: NEW_WEBHOOK_SECRET });
+    // 切换后，旧连接用旧密钥签名的 Webhook 一律 401。
+    await rejects(service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 9, contactUnreadCount: 9, createdAt: new Date().toISOString() }))), UnauthorizedException);
+    // 首次填写连接不算更换。
+    const { service: fresh } = createService();
+    await fresh.updateAdminConfig({ baseUrl: BASE_URL, clientId: CLIENT_ID });
+  }
+
+  // 旧格式事件按请求求和只是临时值：本地记录从第一次收到事件时才开始累积，需要向工单系统核实。
+  {
+    const { service, db } = createService();
+    await configure(service);
+    let fetches = 0;
+    service.fetchImpl = async () => {
+      fetches += 1;
+      return json(200, { data: { externalUserId: "user_1", unreadCount: 5, requests: [] } }, new Date(Date.now() + 10_000));
+    };
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 1, createdAt: new Date().toISOString() })));
+    assert.equal(db.state("user_1")?.unreadCount, 1, "先用求和结果作为临时值");
+    await waitFor(() => fetches === 1, "安排核实");
+    await waitFor(() => db.state("user_1")?.unreadCount === 5, "以工单系统的总数为准");
   }
 }
 
@@ -1457,6 +1490,7 @@ async function main() {
   await testDisableClearsPendingZeroUpdates();
   await testReenableForcesReconciliation();
   await testUntimedEventsAndStaleTimers();
+  await testConnectionSwitchNeedsNewWebhookSecretAndLegacyBaseline();
   await testAdminConfigNeverReturnsSecrets();
   await testLegacyTicketWriteGuards();
   testSupportModuleDependenciesAreExported();

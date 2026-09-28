@@ -82,6 +82,7 @@ export function SupportIntegrationModal({ opened, onClose, onSaved }: { opened: 
     finally { busy.current = false; if (id === epoch.current) setTesting(false); }
   };
   const disabled = saving || testing;
+  const connectionEdited = Boolean(config?.baseUrl && config?.clientId) && (draft.baseUrl.trim() !== (config?.baseUrl ?? "") || draft.clientId.trim() !== (config?.clientId ?? ""));
   const dirty = Boolean(config) && (draft.enabled !== config?.enabled || draft.baseUrl.trim() !== (config?.baseUrl ?? "") || draft.clientId.trim() !== (config?.clientId ?? "") || Boolean(draft.clientSecret.trim()) || Boolean(draft.webhookSecret.trim()));
 
   const secretField = (key: SecretKey) => {
@@ -106,6 +107,7 @@ export function SupportIntegrationModal({ opened, onClose, onSaved }: { opened: 
         <TextInput label="Client ID" value={draft.clientId} disabled={disabled} onChange={e => setDraft({ ...draft, clientId: e.currentTarget.value })}/>
         {secretField("clientSecret")}
         {secretField("webhookSecret")}
+        {connectionEdited ? <Text size="xs" c="orange.8">更换工单系统地址或 Client ID 时，需要同时粘贴新连接的 Webhook Secret（旧连接的 Webhook 会因此被拒绝）。</Text> : null}
         <Stack gap={6}>
           <Text size="sm" fw={500}>Webhook 地址</Text>
           <Group gap="xs" wrap="nowrap">
