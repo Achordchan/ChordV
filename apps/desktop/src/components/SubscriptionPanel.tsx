@@ -16,6 +16,7 @@ import {
 } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import type { ClientBootstrapDto } from "@chordv/shared";
+import { formatSupportUnreadBadge } from "../lib/supportPortal";
 import {
   IconBell,
   IconChevronRight,
@@ -37,7 +38,10 @@ export type SubscriptionServerProbe = {
 type SubscriptionPanelProps = {
   bootstrap: ClientBootstrapDto;
   hasUnreadAnnouncements: boolean;
-  hasUnreadTickets: boolean;
+  /** 新工单系统的未读总数；大于 0 时“工单”按钮显示数字角标。 */
+  supportUnreadCount: number;
+  /** 正在申请打开地址并打开工单窗口。 */
+  supportOpening?: boolean;
   refreshing: boolean;
   updateBusy: boolean;
   updateStatusDescription?: string;
@@ -71,6 +75,8 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
     ...(isTeam ? [{ label: "我已使用", value: `${formatTrafficGb(props.bootstrap.subscription.memberUsedTrafficGb ?? 0)} GB` }] : [])
   ];
   const serverColor = probeColor(props.serverProbe.status);
+  const supportBadge = formatSupportUnreadBadge(props.supportUnreadCount);
+  const supportLabel = supportBadge ? `工单，${props.supportUnreadCount} 条未读` : "工单";
   // 强制更新有自己的倒计时安装流程，按钮保持“必须更新”。
   const updateReady = Boolean(props.updateReady && props.onInstallUpdate && !props.forceUpdate);
   const updateReadyTitle = `ChordV ${props.updateReady?.version ?? "新版本"} 已下载并校验完成。点击后应用会退出并自动安装，完成后重新打开。`;
@@ -212,9 +218,10 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
             </Indicator>
             <Indicator
               inline
-              disabled={!props.hasUnreadTickets}
+              disabled={!supportBadge}
+              label={supportBadge}
               color="red"
-              size={9}
+              size={16}
               offset={6}
               position="top-end"
               className="subscription-announcement-indicator"
@@ -226,6 +233,8 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
                 rightSection={<IconChevronRight size={14} />}
                 justify="space-between"
                 fullWidth
+                loading={props.supportOpening}
+                aria-label={supportLabel}
                 onClick={props.onOpenTickets}
               >
                 工单
@@ -326,9 +335,10 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
             </Indicator>
             <Indicator
               inline
-              disabled={!props.hasUnreadTickets}
+              disabled={!supportBadge}
+              label={supportBadge}
               color="red"
-              size={9}
+              size={16}
               offset={6}
               position="top-end"
               className="subscription-announcement-indicator"
@@ -339,6 +349,8 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
                 size="xs"
                 leftSection={<IconLifebuoy size={14} />}
                 className="subscription-secondary-button subscription-toolbar-button"
+                loading={props.supportOpening}
+                aria-label={supportLabel}
                 onClick={props.onOpenTickets}
               >
                 工单

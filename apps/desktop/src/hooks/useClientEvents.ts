@@ -69,6 +69,8 @@ export type UseClientEventsOptions = {
   handleRuntimeEvent: (event: ClientRuntimeEventDto, accessToken: string) => Promise<void> | void;
   syncConnectedState?: (accessToken: string) => Promise<void> | void;
   runUpdateCheckOnOpen?: () => Promise<void> | void;
+  /** 推送连接每次建立（含重连）后补一次查询，例如工单未读数。 */
+  syncOnOpen?: (accessToken: string) => Promise<unknown> | unknown;
   recoverSessionAfterUnauthorized: () => Promise<AuthSessionDto | null> | AuthSessionDto | null;
   readError: (reason: unknown) => string;
   subscribeClientEvents?: typeof subscribeClientEventsRequest;
@@ -83,6 +85,7 @@ export function useClientEvents(options: UseClientEventsOptions) {
     handleRuntimeEvent,
     syncConnectedState,
     runUpdateCheckOnOpen,
+    syncOnOpen,
     recoverSessionAfterUnauthorized,
     readError,
     subscribeClientEvents = subscribeClientEventsRequest,
@@ -93,6 +96,7 @@ export function useClientEvents(options: UseClientEventsOptions) {
   const recoverSessionAfterUnauthorizedRef = useRef(recoverSessionAfterUnauthorized);
   const syncConnectedStateRef = useRef(syncConnectedState);
   const runUpdateCheckOnOpenRef = useRef(runUpdateCheckOnOpen);
+  const syncOnOpenRef = useRef(syncOnOpen);
   const readErrorRef = useRef(readError);
   const isUnauthorizedErrorRef = useRef(isUnauthorizedError);
   const setServerProbeRef = useRef(setServerProbe);
@@ -114,6 +118,10 @@ export function useClientEvents(options: UseClientEventsOptions) {
   useEffect(() => {
     runUpdateCheckOnOpenRef.current = runUpdateCheckOnOpen;
   }, [runUpdateCheckOnOpen]);
+
+  useEffect(() => {
+    syncOnOpenRef.current = syncOnOpen;
+  }, [syncOnOpen]);
 
   useEffect(() => {
     readErrorRef.current = readError;
@@ -170,6 +178,7 @@ export function useClientEvents(options: UseClientEventsOptions) {
         setServerProbeRef.current(createOpenedServerProbeState(meta.elapsedMs));
         void syncConnectedStateRef.current?.(session.accessToken);
         void runUpdateCheckOnOpenRef.current?.();
+        void syncOnOpenRef.current?.(session.accessToken);
       },
       onError: (error, meta) => {
         void recordClientDiagnosticLog(

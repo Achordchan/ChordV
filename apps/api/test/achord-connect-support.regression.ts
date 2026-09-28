@@ -34,7 +34,6 @@ import {
   LegacyAdminTicketWriteGuard,
   LegacyClientTicketWriteGuard
 } from "../src/modules/common/legacy-support-tickets.guard";
-import { describeUserError } from "../../desktop/src/lib/userFacingErrors";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -810,9 +809,12 @@ async function testLegacyTicketWriteGuards() {
   await assert.rejects(adminGuard.canActivate(), GoneException);
   await service.updateAdminConfig({ enabled: false });
   assert.equal(await clientGuard.canActivate(), true, "停用后可以回退到旧工单");
-  // 客户端对 4xx 的中文业务提示原样展示，不会被替换成“工单暂时无法处理”之类的通用文案。
-  const described = describeUserError({ status: 410, message: LEGACY_CLIENT_TICKET_WRITE_MESSAGE, rawMessage: JSON.stringify({ statusCode: 410, message: LEGACY_CLIENT_TICKET_WRITE_MESSAGE }) }, { context: "ticket" });
-  assert.equal(described.message, LEGACY_CLIENT_TICKET_WRITE_MESSAGE);
+  // 旧版客户端（v1.1.10 的 describeUserError）只在 4xx 文案“客户可读”时原样展示：
+  // 必须含中文、不超过 240 字，且不含英文单词、链接、路径、括号、下划线标识等（见 v1.1.10 的 isCustomerSafeText）。
+  // v1.1.9 及更早直接展示 message。这句提示两种都满足，旧客户端看到的就是它。
+  assert.match(LEGACY_CLIENT_TICKET_WRITE_MESSAGE, /[\u3400-\u9fff]/);
+  assert.ok(LEGACY_CLIENT_TICKET_WRITE_MESSAGE.length <= 240);
+  assert.doesNotMatch(LEGACY_CLIENT_TICKET_WRITE_MESSAGE, /[A-Za-z0-9_{}[\]<>`\\|/:]/);
 }
 
 // ---------- 依赖注入 ----------
