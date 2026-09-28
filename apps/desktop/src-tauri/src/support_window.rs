@@ -240,19 +240,22 @@ impl SupportWindowRecord {
     }
 }
 
-/// 工单窗口关闭事件（带批次号，前端只处理当前账号的窗口）。
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+/// 桥接结束事件：带批次号（区分账号）和窗口标签（区分同一账号里先后打开的窗口），
+/// 前端只处理当前正在报告未读数的那个窗口发出的事件。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SupportBridgeEndedEvent {
     pub epoch: u64,
+    pub window: String,
 }
 
-/// 发给主窗口的未读数事件。
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+/// 发给主窗口的未读数事件（批次号 + 窗口标签，含义同上）。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SupportUnreadEvent {
     pub unread_count: u64,
     pub epoch: u64,
+    pub window: String,
 }
 
 #[derive(Debug, Default)]
@@ -474,6 +477,9 @@ pub async fn open_support_window(
                 if let Ok(mut guard) = loading_app.state::<Mutex<SupportWindowState>>().lock() {
                     if let Some(record) = guard.current.as_mut().filter(|record| record.label == loading_label) {
                         record.restart_loading(Instant::now());
+                        // 旧文档不会再报告未读数：通知主窗口改回以后台为准，新文档报告后再接管。
+                        let ended = SupportBridgeEndedEvent { epoch: record.epoch, window: loading_label.clone() };
+                        let _ = loading_app.emit_to("main", SUPPORT_BRIDGE_ENDED_EVENT, ended);
                     }
                 }
             }
@@ -500,7 +506,8 @@ pub async fn open_support_window(
             if let Ok(mut guard) = closed_app.state::<Mutex<SupportWindowState>>().lock() {
                 guard.discard(&closed_label);
             }
-            let _ = closed_app.emit_to("main", SUPPORT_BRIDGE_ENDED_EVENT, SupportBridgeEndedEvent { epoch });
+            let ended = SupportBridgeEndedEvent { epoch, window: closed_label.clone() };
+            let _ = closed_app.emit_to("main", SUPPORT_BRIDGE_ENDED_EVENT, ended);
         }
     });
 
@@ -558,13 +565,14 @@ pub fn support_bridge_message(
     match parsed {
         SupportBridgeMessage::Ready => record.ready = true,
         SupportBridgeMessage::UnreadChanged(unread_count) => {
-            let event = SupportUnreadEvent { unread_count, epoch: record.epoch };
+            let event = SupportUnreadEvent { unread_count, epoch: record.epoch, window: record.label.clone() };
             let _ = app.emit_to("main", SUPPORT_UNREAD_EVENT, event);
         }
         SupportBridgeMessage::SessionExpired => {
             // 过期的门户不会再报告未读数：通知主窗口改回以后台为准。
             record.expired = true;
-            let _ = app.emit_to("main", SUPPORT_BRIDGE_ENDED_EVENT, SupportBridgeEndedEvent { epoch: record.epoch });
+            let ended = SupportBridgeEndedEvent { epoch: record.epoch, window: record.label.clone() };
+            let _ = app.emit_to("main", SUPPORT_BRIDGE_ENDED_EVENT, ended);
         }
         SupportBridgeMessage::CloseRequested => {
             guard.current = None;

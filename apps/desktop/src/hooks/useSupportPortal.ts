@@ -50,7 +50,8 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
   const bridgeEpochRef = useRef<number | null>(null);
   // 工单窗口打开且门户通过桥接报告过未读数：此时角标以桥接为准，后台推送和状态查询不覆盖；
   // 窗口关闭或门户报告会话过期后改回以后台为准，并立即重新查询一次。
-  const bridgeActiveRef = useRef(false);
+  // 值为正在报告未读数的工单窗口标签；null 表示以后台为准。
+  const bridgeActiveRef = useRef<string | null>(null);
 
   const setUnreadCount = useCallback((value: unknown) => {
     const next = normalizeSupportUnreadCount(value);
@@ -62,7 +63,7 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
 
   /** 后台推送（support_unread_updated）的未读数；工单窗口正在报告未读时以窗口为准。 */
   const applySupportUnreadCount = useCallback((value: unknown) => {
-    if (!bridgeActiveRef.current) {
+    if (bridgeActiveRef.current === null) {
       setUnreadCount(value);
     }
   }, [setUnreadCount]);
@@ -97,7 +98,7 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
       }
       enabledRef.current = status.enabled === true;
       const next = normalizeSupportUnreadCount(status.enabled ? status.unreadCount : 0);
-      if (unreadRevisionRef.current === revision && !bridgeActiveRef.current && next !== null) {
+      if (unreadRevisionRef.current === revision && bridgeActiveRef.current === null && next !== null) {
         setSupportUnreadCount(next);
       }
       return status;
@@ -172,7 +173,7 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
     }
     enabledRef.current = null;
     bridgeEpochRef.current = null;
-    bridgeActiveRef.current = false;
+    bridgeActiveRef.current = null;
     unreadRevisionRef.current += 1;
     setSupportUnreadCount(0);
     if (previous) {
@@ -197,12 +198,13 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
     void subscribeSupportWindowEvents({
       onUnread: (event) => {
         if (!isCurrentWindow(event.epoch) || !accessTokenRef.current) return;
-        bridgeActiveRef.current = true;
+        bridgeActiveRef.current = event.window;
         setUnreadCount(event.unreadCount);
       },
       onEnded: (event) => {
-        if (!isCurrentWindow(event.epoch) || !bridgeActiveRef.current) return;
-        bridgeActiveRef.current = false;
+        // 只处理正在报告未读数的那个窗口：被取代的旧窗口晚到的结束通知不影响新窗口。
+        if (!isCurrentWindow(event.epoch) || bridgeActiveRef.current !== event.window) return;
+        bridgeActiveRef.current = null;
         void refreshSupportStatus();
       }
     })

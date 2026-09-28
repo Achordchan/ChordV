@@ -422,8 +422,10 @@ async function testBadgeFollowsStatusEventsAndBridge() {
   const statusResponses: Array<ClientSupportStatusDto | Promise<ClientSupportStatusDto>> = [ENABLED];
   const statusCalls: string[] = [];
   const nativeEvents: string[] = [];
-  let bridgeHandler: ((event: { unreadCount: number; epoch: number }) => void) | null = null;
-  let closedHandler: ((event: { epoch: number }) => void) | null = null;
+  type UnreadEvent = { unreadCount: number; epoch: number; window: string };
+  type EndedEvent = { epoch: number; window: string };
+  let bridgeHandler: ((event: UnreadEvent) => void) | null = null;
+  let closedHandler: ((event: EndedEvent) => void) | null = null;
   let nativeEpoch = 1;
   const opened: Array<{ launchUrl: string; supportOrigin: string }> = [];
   const launchTokens: string[] = [];
@@ -452,8 +454,8 @@ async function testBadgeFollowsStatusEventsAndBridge() {
       }),
       closeSupportWindow: async () => { nativeEvents.push("close"); nativeEpoch += 1; },
       subscribeSupportWindowEvents: async (handlers: {
-        onUnread: (event: { unreadCount: number; epoch: number }) => void;
-        onEnded: (event: { epoch: number }) => void;
+        onUnread: (event: UnreadEvent) => void;
+        onEnded: (event: EndedEvent) => void;
       }) => {
         bridgeHandler = handlers.onUnread;
         closedHandler = handlers.onEnded;
@@ -532,7 +534,7 @@ async function testBadgeFollowsStatusEventsAndBridge() {
 
   // 还没打开过工单窗口：桥接消息一律不接受。
   assert.ok(bridgeHandler, "bridge unread events are subscribed");
-  bridgeHandler!({ unreadCount: 44, epoch: nativeEpoch });
+  bridgeHandler!({ unreadCount: 44, epoch: nativeEpoch, window: "support-1" });
   hook = render(user1);
   assert.equal(hook.supportUnreadCount, 3, "bridge events are ignored until this account opens a window");
 
@@ -546,10 +548,10 @@ async function testBadgeFollowsStatusEventsAndBridge() {
   assert.deepEqual(errors, []);
 
   // 工单窗口的原生桥接报告未读变化：只接受本账号窗口的批次号。
-  bridgeHandler!({ unreadCount: 0, epoch: nativeEpoch });
+  bridgeHandler!({ unreadCount: 0, epoch: nativeEpoch, window: "support-1" });
   hook = render(expiredUser1);
   assert.equal(hook.supportUnreadCount, 0);
-  bridgeHandler!({ unreadCount: 17, epoch: nativeEpoch - 1 });
+  bridgeHandler!({ unreadCount: 17, epoch: nativeEpoch - 1, window: "support-1" });
   hook = render(expiredUser1);
   assert.equal(hook.supportUnreadCount, 0, "events from an older window epoch are dropped");
 
@@ -559,15 +561,23 @@ async function testBadgeFollowsStatusEventsAndBridge() {
   await hook.refreshSupportStatus("expired");
   hook = render(expiredUser1);
   assert.equal(hook.supportUnreadCount, 0, "while the portal reports unread counts, the window wins");
-  // 其他账号批次的关闭事件不影响。
-  closedHandler!({ epoch: nativeEpoch - 1 });
+  // 其他账号批次的结束事件不影响。
+  closedHandler!({ epoch: nativeEpoch - 1, window: "support-1" });
   hook.applySupportUnreadCount(6);
   hook = render(expiredUser1);
   assert.equal(hook.supportUnreadCount, 0);
-  // 窗口关闭：改回以后台为准，并立即重新查询。
+  // 同一账号重开：新窗口已开始报告后，被取代的旧窗口晚到的结束通知不影响新窗口。
+  bridgeHandler!({ unreadCount: 1, epoch: nativeEpoch, window: "support-2" });
+  closedHandler!({ epoch: nativeEpoch, window: "support-1" });
+  hook.applySupportUnreadCount(6);
+  statusResponses.push({ ...ENABLED, unreadCount: 7 });
+  await hook.refreshSupportStatus("expired");
+  hook = render(expiredUser1);
+  assert.equal(hook.supportUnreadCount, 1, "a superseded window's late ended event is ignored");
+  // 当前窗口结束（关闭、会话过期或整页重新加载）：改回以后台为准，并立即重新查询。
   statusResponses.push({ ...ENABLED, unreadCount: 4 });
   const callsBeforeClose = statusCalls.length;
-  closedHandler!({ epoch: nativeEpoch });
+  closedHandler!({ epoch: nativeEpoch, window: "support-2" });
   await flush();
   hook = render(expiredUser1);
   assert.equal(statusCalls.length, callsBeforeClose + 2, "closing the window re-syncs from the status endpoint (after token recovery)");
@@ -594,7 +604,7 @@ async function testBadgeFollowsStatusEventsAndBridge() {
   assert.deepEqual(errors, []);
   assert.deepEqual(nativeEvents, ["close"], "switching accounts closes the support window and invalidates native opens");
   // 上一个账号窗口已排队的未读消息到达：丢弃。
-  bridgeHandler!({ unreadCount: 9, epoch: staleEpoch });
+  bridgeHandler!({ unreadCount: 9, epoch: staleEpoch, window: "support-2" });
   hook = await settle(user2);
   assert.equal(hook.supportUnreadCount, 0, "queued unread events from the previous account are dropped");
 
@@ -611,7 +621,7 @@ async function testBadgeFollowsStatusEventsAndBridge() {
   await late;
   hook = render(loggedOut);
   assert.equal(hook.supportUnreadCount, 0);
-  bridgeHandler!({ unreadCount: 9, epoch: nativeEpoch });
+  bridgeHandler!({ unreadCount: 9, epoch: nativeEpoch, window: "support-3" });
   hook = render(loggedOut);
   assert.equal(hook.supportUnreadCount, 0, "bridge events after logout are ignored");
   assert.deepEqual(notices, []);

@@ -248,12 +248,14 @@ fn bridge_authority_ends_on_close_and_session_expiry() {
     // 顶层文档重新加载时重新要求就绪。
     assert!(source.contains("payload.event() != PageLoadEvent::Started"));
     assert!(source.contains("record.restart_loading(Instant::now())"));
+    let reload = source.find("record.restart_loading(Instant::now())").unwrap();
+    assert!(source[reload..reload + 400].contains("SUPPORT_BRIDGE_ENDED_EVENT"), "a reload ends the old document's authority");
 }
 
 #[test]
 fn window_closed_event_carries_the_epoch() {
-    let json = serde_json::to_value(SupportBridgeEndedEvent { epoch: 5 }).unwrap();
-    assert_eq!(json, serde_json::json!({ "epoch": 5 }));
+    let json = serde_json::to_value(SupportBridgeEndedEvent { epoch: 5, window: "support-2".into() }).unwrap();
+    assert_eq!(json, serde_json::json!({ "epoch": 5, "window": "support-2" }));
 }
 
 #[test]
@@ -324,8 +326,8 @@ fn a_launch_that_never_becomes_ready_can_be_relaunched_after_the_ticket_expires(
 
 #[test]
 fn unread_events_carry_their_window_epoch() {
-    let json = serde_json::to_value(SupportUnreadEvent { unread_count: 4, epoch: 2 }).unwrap();
-    assert_eq!(json, serde_json::json!({ "unreadCount": 4, "epoch": 2 }));
+    let json = serde_json::to_value(SupportUnreadEvent { unread_count: 4, epoch: 2, window: "support-3".into() }).unwrap();
+    assert_eq!(json, serde_json::json!({ "unreadCount": 4, "epoch": 2, "window": "support-3" }));
 }
 
 #[test]

@@ -657,7 +657,9 @@ export async function closeSupportWindow() {
 }
 
 /** 工单页面通过原生桥接报告的未读总数（Rust 已校验为 0–99999 的整数），带着发出它的窗口所属批次号。 */
-export type SupportUnreadBridgeEvent = { unreadCount: number; epoch: number };
+export type SupportUnreadBridgeEvent = { unreadCount: number; epoch: number; window: string };
+/** 桥接结束：窗口关闭 / 被取代、门户报告会话过期、或页面整页重新加载。 */
+export type SupportBridgeEndedEvent = { epoch: number; window: string };
 
 /**
  * 订阅工单窗口的原生事件：桥接未读数，以及桥接结束（窗口关闭 / 被重开取代，或门户报告会话过期）。
@@ -665,7 +667,7 @@ export type SupportUnreadBridgeEvent = { unreadCount: number; epoch: number };
  */
 export async function subscribeSupportWindowEvents(handlers: {
   onUnread: (event: SupportUnreadBridgeEvent) => void;
-  onEnded: (event: { epoch: number }) => void;
+  onEnded: (event: SupportBridgeEndedEvent) => void;
 }) {
   if (!supportsSupportWindow()) {
     return () => {};
@@ -674,7 +676,7 @@ export async function subscribeSupportWindowEvents(handlers: {
   const unlistenUnread = await listen<SupportUnreadBridgeEvent>("chordv://support-unread", (event) => {
     if (event.payload) handlers.onUnread(event.payload);
   });
-  const unlistenEnded = await listen<{ epoch: number }>("chordv://support-bridge-ended", (event) => {
+  const unlistenEnded = await listen<SupportBridgeEndedEvent>("chordv://support-bridge-ended", (event) => {
     if (event.payload) handlers.onEnded(event.payload);
   }).catch((error) => {
     unlistenUnread();
