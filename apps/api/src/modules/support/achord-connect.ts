@@ -10,7 +10,8 @@ export const ACHORD_CONNECT_WEBHOOK_PATH = "/api/integrations/achord-connect/web
 export const ACHORD_CONNECT_WEBHOOK_TOLERANCE_SECONDS = 300;
 export const ACHORD_CONNECT_WEBHOOK_MAX_BODY_BYTES = 1024 * 1024;
 const LAUNCH_TICKETS_PATH = "/api/v1/integrations/universal/launch-tickets";
-const RESPONSE_MAX_CHARS = 256 * 1024;
+/** 工单系统响应体上限（字节），边读边检查，超出立即中止读取。 */
+const RESPONSE_MAX_BYTES = 256 * 1024;
 const USER_NAME_MAX_CHARS = 160;
 const EXTERNAL_ID_MAX_CHARS = 191;
 
@@ -163,7 +164,7 @@ async function requestAchordConnect(
   }
   const signal = AbortSignal.timeout(input.timeoutMs);
   let response: Response;
-  let text: string;
+  let text: string | null;
   try {
     // 不跟随跳转：带着 Basic 凭据跳到别的地址既不安全，也说明地址配置有误。
     response = await fetchImpl(url, {
@@ -173,14 +174,14 @@ async function requestAchordConnect(
       redirect: "manual",
       signal
     });
-    text = await response.text();
+    text = await readLimitedText(response, RESPONSE_MAX_BYTES);
   } catch (error) {
     if (signal.aborted) {
       throw new AchordConnectRequestError("timeout", null, null, `${input.method} ${input.path} timed out after ${input.timeoutMs}ms`);
     }
     throw new AchordConnectRequestError("network", null, null, `${input.method} ${input.path} failed: ${readErrorName(error)}`);
   }
-  if (text.length > RESPONSE_MAX_CHARS) {
+  if (text === null) {
     throw new AchordConnectRequestError("invalid_response", response.status, null, `${input.method} ${input.path} response is too large`);
   }
   const payload = parseJson(text);
@@ -265,6 +266,32 @@ export function parseAchordConnectWebhookEvent(rawBody: Buffer): AchordConnectWe
       ? { externalUserId, requestId, unreadCount, contactUnreadCount }
       : null
   };
+}
+
+/** 按字节上限读取响应体：超出时取消读取并返回 null，不会先把整个响应读进内存。 */
+async function readLimitedText(response: Response, maxBytes: number): Promise<string | null> {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel().catch(() => undefined);
+    return null;
+  }
+  if (!response.body) {
+    return "";
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength))).toString("utf8");
 }
 
 function isSameOriginUrl(value: string, origin: string) {

@@ -147,7 +147,8 @@ export class SupportIntegrationService {
       const resyncCandidates = nowEnabled && (connectionChanged || !wasEnabled) ? withUnread.map((item) => item.userId) : [];
       if (!connectionChanged && nowEnabled && !wasEnabled) {
         // 重新启用：停用期间可能漏掉了变化（例如当时换过 Webhook Secret），所有用户都视为待校准，后台任务不会因“刚校准过”而跳过。
-        await tx.supportUnreadState.updateMany({ data: { syncedAt: null } });
+        // 版本号同时加一：进行中的校准（结果可能在停用前取得）会因版本不符被放弃。
+        await tx.supportUnreadState.updateMany({ data: { syncedAt: null, revision: { increment: 1 } } });
       }
       if (connectionChanged) {
         // 重置后每位用户的版本号加一，下面的“推送 0”使用重置后的版本号。
@@ -243,11 +244,8 @@ export class SupportIntegrationService {
     } else if (stale) {
       // 被限流：同样交给后台在允许时查询。
       this.scheduleBackgroundResync(userId);
-      return { enabled: true, unreadCount, supportOrigin: credentials.baseUrl };
-    } else {
-      return { enabled: true, unreadCount, supportOrigin: credentials.baseUrl };
     }
-    // 校准期间设置可能已变：停用了就按未启用返回；换了连接就返回新连接下的本地值（已重置，稍后由后台查询新连接）。
+    // 查询期间设置可能已变（每条路径都复核）：停用了就按未启用返回；换了连接就返回新连接下的本地值（已重置，稍后由后台查询新连接）。
     const latest = await this.readLaunchCredentials();
     if (!latest) {
       return { enabled: false, unreadCount: 0, supportOrigin: null };

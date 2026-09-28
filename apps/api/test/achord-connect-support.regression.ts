@@ -1190,6 +1190,66 @@ async function testConnectionSwitchNeedsNewWebhookSecretAndLegacyBaseline() {
   }
 }
 
+async function testResponseLimitsReenableFenceAndStatusRecheck() {
+  // 响应体边读边限：超过上限立即取消读取，不会先把整个响应读进内存。
+  let pulled = 0;
+  let cancelled = false;
+  const hugeStream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulled += 1;
+      controller.enqueue(new Uint8Array(64 * 1024).fill(0x20));
+    },
+    cancel() {
+      cancelled = true;
+    }
+  });
+  await assert.rejects(
+    createAchordConnectLaunchTicket(async () => new Response(hugeStream, { status: 201 }), { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }, { id: "u", email: "", displayName: "A" }, 1000),
+    (error: unknown) => error instanceof AchordConnectRequestError && error.kind === "invalid_response"
+  );
+  assert.ok(cancelled, "超出上限时取消读取");
+  assert.ok(pulled <= 6, `只读到上限附近就停止（读取了 ${pulled} 块）`);
+  let declaredCancelled = false;
+  const declaredTooLarge = new Response(new ReadableStream<Uint8Array>({ cancel() { declaredCancelled = true; } }), { status: 201, headers: { "content-length": String(10 * 1024 * 1024) } });
+  await assert.rejects(
+    createAchordConnectLaunchTicket(async () => declaredTooLarge, { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }, { id: "u", email: "", displayName: "A" }, 1000),
+    (error: unknown) => error instanceof AchordConnectRequestError && error.kind === "invalid_response"
+  );
+  assert.ok(declaredCancelled, "声明的长度超限时直接取消，不读取正文");
+
+  // 校准进行中管理员停用又重新启用：重新启用会使进行中的校准失效，旧结果不写入。
+  {
+    const { service, db } = createService();
+    await configure(service);
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 2, contactUnreadCount: 2, createdAt: new Date(Date.now() - 60_000).toISOString() })));
+    service.fetchImpl = async () => {
+      await service.updateAdminConfig({ enabled: false });
+      await service.updateAdminConfig({ enabled: true });
+      service.fetchImpl = async () => {
+        throw new TypeError("fetch failed");
+      };
+      return json(200, { data: { externalUserId: "user_1", unreadCount: 7, requests: [] } });
+    };
+    assert.equal(await service.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), null);
+    assert.equal(db.state("user_1")?.unreadCount, 2);
+    assert.equal(db.state("user_1")?.syncedAt, null, "仍为待校准，后台任务会重新查询");
+  }
+
+  // 本地值新鲜、不需要校准的路径同样复核设置：查询期间被停用就按未启用返回。
+  {
+    const { service, db } = createService();
+    await configure(service);
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 2, contactUnreadCount: 2, createdAt: new Date().toISOString() })));
+    const originalFind = db.prisma.supportUnreadState.findUnique;
+    db.prisma.supportUnreadState.findUnique = async (args: unknown) => {
+      db.prisma.supportUnreadState.findUnique = originalFind;
+      await service.updateAdminConfig({ enabled: false });
+      return originalFind(args);
+    };
+    assert.deepEqual(await service.getClientStatus("user_1"), { enabled: false, unreadCount: 0, supportOrigin: null });
+  }
+}
+
 async function testStatusSchedulesRetryWhenDeferred() {
   const { service } = createService();
   await configure(service);
@@ -1517,6 +1577,7 @@ async function main() {
   await testReenableForcesReconciliation();
   await testUntimedEventsAndStaleTimers();
   await testConnectionSwitchNeedsNewWebhookSecretAndLegacyBaseline();
+  await testResponseLimitsReenableFenceAndStatusRecheck();
   await testAdminConfigNeverReturnsSecrets();
   await testLegacyTicketWriteGuards();
   testSupportModuleDependenciesAreExported();
