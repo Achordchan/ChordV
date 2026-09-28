@@ -127,6 +127,15 @@ function createFakePrisma(options: { users?: string[] } = {}) {
         if (!states.has(where.userId)) throw new Error("not found");
         return { ...states.get(where.userId) };
       },
+      findMany: async ({ where }: any) =>
+        [...states.values()].filter((row) => row.unreadCount > where.unreadCount.gt).map((row) => ({ userId: row.userId })),
+      updateMany: async ({ data }: any) => {
+        const { revision, ...rest } = data;
+        for (const [key, row] of states) {
+          states.set(key, { ...row, ...rest, revision: row.revision + (revision?.increment ?? 0) });
+        }
+        return { count: states.size };
+      },
       update: async ({ where, data }: any) => {
         if (failures.stateUpdate > 0) {
           failures.stateUpdate -= 1;
@@ -177,10 +186,10 @@ function createFakePrisma(options: { users?: string[] } = {}) {
         }
         return { _sum: { unreadCount: sum } };
       },
-      deleteMany: async ({ where }: any) => {
+      deleteMany: async ({ where = {} }: any = {}) => {
         let count = 0;
         for (const [key, row] of requests) {
-          if (row.userId === where.userId && (!where.eventAt || row.eventAt <= where.eventAt.lte)) {
+          if ((where.userId === undefined || row.userId === where.userId) && (!where.eventAt || row.eventAt <= where.eventAt.lte)) {
             requests.delete(key);
             count += 1;
           }
@@ -802,6 +811,60 @@ async function testEqualTimestampsAndPostCommitFailures() {
   }
 }
 
+async function testConnectionChangeResetsUnreadState() {
+  const { service, db, published } = createService();
+  await configure(service);
+  await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 2, contactUnreadCount: 4, createdAt: new Date().toISOString() })));
+  await service.handleWebhook(webhookRequest(unreadEvent({ userId: "user_2", requestId: "req_b", unreadCount: 0, contactUnreadCount: 0, createdAt: new Date().toISOString() })));
+  const revisionBefore = db.state("user_1")!.revision;
+  // 旧连接的校准正在进行时切换了连接：结果不能写入。
+  let releaseFetch: () => void = () => undefined;
+  service.fetchImpl = () => new Promise<Response>((resolve) => {
+    releaseFetch = () => resolve(json(200, { data: { externalUserId: "user_1", unreadCount: 9, requests: [] } }));
+  });
+  const inflight = service.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  let newConnectionFetches = 0;
+  const countBefore = published.length;
+  await service.updateAdminConfig({ baseUrl: "https://support-new.example.test", clientId: "ac_fake_other" });
+  service.fetchImpl = async () => {
+    newConnectionFetches += 1;
+    return json(200, { data: { externalUserId: "user_1", unreadCount: 1, requests: [] } });
+  };
+  releaseFetch();
+  assert.equal(await inflight, null, "旧连接的校准结果不采用");
+  assert.equal(db.state("user_1")?.unreadCount, 0, "切换连接后未读清零");
+  assert.equal(db.state("user_1")?.syncedAt, null);
+  assert.equal(db.state("user_1")?.sourceAt, null);
+  assert.equal(db.state("user_1")?.requestsComplete, true);
+  assert.ok(db.state("user_1")!.revision > revisionBefore, "版本号继续递增");
+  assert.equal(db.requestCount(), 0, "旧连接的按请求记录全部删除");
+  assert.deepEqual(published.slice(countBefore), [{ userId: "user_1", count: 0 }], "只给原来有未读的用户推送 0");
+  await waitFor(() => newConnectionFetches === 1, "为原来有未读的用户向新连接重新查询");
+  await waitFor(() => db.state("user_1")?.unreadCount === 1, "新连接的结果写回");
+  assert.deepEqual(published.at(-1), { userId: "user_1", count: 1 });
+  // 只改密钥或开关不算换连接，不清空未读。
+  await service.updateAdminConfig({ webhookSecret: "whsec_rotated_fake" });
+  assert.equal(db.state("user_1")?.unreadCount, 1);
+}
+
+async function testStatusSchedulesRetryWhenDeferred() {
+  const { service } = createService();
+  await configure(service);
+  const timers = (service as unknown as { backgroundResyncTimers: Map<string, ReturnType<typeof setTimeout>> }).backgroundResyncTimers;
+  service.fetchImpl = async () => {
+    throw new TypeError("fetch failed");
+  };
+  await service.getClientStatus("user_1");
+  assert.ok(timers.has("user_1"), "状态查询校准失败后安排后台重试");
+  for (const timer of timers.values()) clearTimeout(timer);
+  timers.clear();
+  await service.getClientStatus("user_1");
+  assert.ok(timers.has("user_1"), "状态查询被限流时安排后台查询");
+  for (const timer of timers.values()) clearTimeout(timer);
+  timers.clear();
+}
+
 async function testLegacyEventsTriggerBackgroundResync() {
   // 客户端不会定时查询状态：旧格式事件无法给出总数时，由后台主动重新查询，不等客户端下次查询。
   const { service, db, published } = createService();
@@ -1103,6 +1166,8 @@ async function main() {
   await testPublishingKeepsNewestRevisionAndRespectsEnabled();
   await testLegacyEventsTriggerBackgroundResync();
   await testEqualTimestampsAndPostCommitFailures();
+  await testConnectionChangeResetsUnreadState();
+  await testStatusSchedulesRetryWhenDeferred();
   await testAdminConfigNeverReturnsSecrets();
   await testLegacyTicketWriteGuards();
   testSupportModuleDependenciesAreExported();

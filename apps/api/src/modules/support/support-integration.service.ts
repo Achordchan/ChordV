@@ -110,17 +110,50 @@ export class SupportIntegrationService {
   /**
    * 部分更新：省略的字段保持不变。读取与写回在同一事务里并对设置行加锁，
    * 两位管理员同时保存时后者基于前者的结果修改，不会把对方清除的密钥或关闭的开关写回去。
+   * 地址或 Client ID 变化意味着换了一个 Achord Connect 连接：旧连接的未读数、按请求记录和水位线全部作废
+   * （版本号照常加一，进行中的旧连接校准会因版本不符被放弃），并为原来有未读的用户推送 0、安排重新查询。
    */
   async updateAdminConfig(input: UpdateAdminSupportIntegrationConfigInputDto): Promise<AdminSupportIntegrationConfigDto> {
     const saved = await this.prisma.$transaction(async (tx) => {
       await tx.systemSetting.createMany({ data: [{ key: SUPPORT_INTEGRATION_SETTING_KEY, value: {} }], skipDuplicates: true });
       await tx.$queryRaw`SELECT "key" FROM "SystemSetting" WHERE "key" = ${SUPPORT_INTEGRATION_SETTING_KEY} FOR UPDATE`;
       const row = await tx.systemSetting.findUniqueOrThrow({ where: { key: SUPPORT_INTEGRATION_SETTING_KEY } });
-      const next = applyConfigUpdate(parseStoredSupportIntegrationConfig(row.value), input);
+      const current = parseStoredSupportIntegrationConfig(row.value);
+      const next = applyConfigUpdate(current, input);
       const updated = await tx.systemSetting.update({ where: { key: SUPPORT_INTEGRATION_SETTING_KEY }, data: { value: next } });
-      return { next, updatedAt: updated.updatedAt };
+      const connectionChanged = current.baseUrl !== next.baseUrl || current.clientId !== next.clientId;
+      let resetUserIds: string[] = [];
+      if (connectionChanged) {
+        const withUnread = await tx.supportUnreadState.findMany({ where: { unreadCount: { gt: 0 } }, select: { userId: true } });
+        resetUserIds = withUnread.map((item) => item.userId);
+        await tx.supportRequestUnread.deleteMany({});
+        await tx.supportUnreadState.updateMany({
+          data: { unreadCount: 0, sourceAt: null, snapshotUntil: null, syncedAt: null, requestsComplete: true, revision: { increment: 1 } }
+        });
+      }
+      return { next, updatedAt: updated.updatedAt, connectionChanged, resetUserIds };
     });
+    if (saved.connectionChanged) {
+      this.afterConnectionChanged(saved.resetUserIds, saved.next.enabled && readCredentials(saved.next) !== null);
+    }
     return this.toAdminConfig(saved.next, saved.updatedAt);
+  }
+
+  private afterConnectionChanged(resetUserIds: string[], enabled: boolean) {
+    // 未读状态整体重置后版本号不再能与本进程记录的已推送版本比较，清空重新开始；限流记录同样清空，尽快查询新连接。
+    this.publishedRevisions.clear();
+    this.resyncAttempts.clear();
+    if (!enabled) {
+      return;
+    }
+    for (const userId of resetUserIds) {
+      try {
+        this.clientEventsPublisher.publishSupportUnreadUpdated(userId, 0);
+        this.scheduleBackgroundResync(userId);
+      } catch (error) {
+        this.logger.warn(`切换 Achord Connect 连接后重置未读推送失败（用户 ${userId}）：${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
   }
 
   /** 用已保存的设置测试：为测试用户创建一次票据（不会被兑换，60 秒后自动失效），并查询一次未读。 */
@@ -163,7 +196,12 @@ export class SupportIntegrationService {
         // 校准失败或被放弃时，查询期间可能已有 Webhook 写入并推送了新值，重新读取，避免返回旧值覆盖客户端。
         const current = await this.prisma.supportUnreadState.findUnique({ where: { userId }, select: { unreadCount: true } });
         unreadCount = current?.unreadCount ?? 0;
+        // 客户端不会定时查询状态：交给后台稍后重试，结果通过推送送达。
+        this.scheduleBackgroundResync(userId, 1);
       }
+    } else if (stale) {
+      // 被限流：同样交给后台在允许时查询。
+      this.scheduleBackgroundResync(userId);
     }
     return { enabled: true, unreadCount, supportOrigin: credentials.baseUrl };
   }
@@ -361,7 +399,13 @@ export class SupportIntegrationService {
         await tx.supportUnreadState.createMany({ data: [{ userId }], skipDuplicates: true });
         await tx.$queryRaw`SELECT "userId" FROM "SupportUnreadState" WHERE "userId" = ${userId} FOR UPDATE`;
         const state = await tx.supportUnreadState.findUniqueOrThrow({ where: { userId } });
-        if (state.revision !== expectedRevision) {
+        const currentConnection = readCredentials((await readSupportIntegrationConfig(tx)).value);
+        if (
+          state.revision !== expectedRevision ||
+          currentConnection?.baseUrl !== credentials.baseUrl ||
+          currentConnection?.clientId !== credentials.clientId
+        ) {
+          // 查询期间处理过 Webhook，或连接已被切换：结果不再适用。
           return null;
         }
         const snapshotWatermark = new Date(serverTime.getTime() - SNAPSHOT_WATERMARK_MARGIN_MS);
@@ -384,7 +428,7 @@ export class SupportIntegrationService {
       return null;
     }
     if (!result) {
-      this.logger.log(`Achord Connect 未读校准期间收到新的 Webhook，已保留 Webhook 的值（用户 ${userId}）`);
+      this.logger.log(`Achord Connect 未读校准期间收到新的 Webhook 或连接已切换，本次结果不采用（用户 ${userId}）`);
       return null;
     }
     try {
@@ -396,7 +440,8 @@ export class SupportIntegrationService {
   }
 
   /**
-   * 由无法直接采用的 Webhook 触发的后台校准：客户端不会定时查询状态，不能等下一次查询才纠正红点。
+   * 后台校准：由无法直接采用的 Webhook、被限流或失败的状态查询、切换连接触发。
+   * 客户端不会定时查询状态，不能等下一次查询才纠正红点，结果通过推送送达。
    * 同一用户只排一个任务，遵守与状态查询相同的限流（同一用户 5 分钟一次、全进程每分钟上限），
    * 失败或被限流时按最小间隔重试，最多 BACKGROUND_RESYNC_MAX_ATTEMPTS 次；新工单系统停用后不再查询。
    */
@@ -425,7 +470,7 @@ export class SupportIntegrationService {
         return;
       }
       const state = await this.prisma.supportUnreadState.findUnique({ where: { userId }, select: { syncedAt: true } });
-      if (state?.syncedAt) {
+      if (state?.syncedAt && Date.now() - state.syncedAt.getTime() < SUPPORT_UNREAD_RESYNC_AFTER_MS) {
         return;
       }
       if (!this.claimResyncAttempt(userId, Date.now()) || (await this.resyncUnread(userId, credentials)) === null) {
