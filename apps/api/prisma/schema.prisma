@@ -906,6 +906,9 @@ model SupportUnreadState {
   sourceAt    DateTime?
   // 最近一次拿到权威总数的本地时间；为空或过久时，客户端查询状态会先向工单系统重新同步。
   syncedAt    DateTime?
+  // 最近一次服务端查询结果的不确定区间上界（工单系统时间）：sourceAt 到它之间产生的事件，
+  // 无法判断是否已包含在查询结果里，不直接采用其总数，而是重新查询。
+  snapshotUntil DateTime?
   // 每次写入加一；校准查询期间若有 Webhook 写入，放弃这次查询结果，避免旧快照覆盖新事件。
   revision    Int       @default(0)
   // 总数是否仍由逐条事件累积的按请求记录求和得出。接受过权威总数（contactUnreadCount 或服务端查询）后为 false，

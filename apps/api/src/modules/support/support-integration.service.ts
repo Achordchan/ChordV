@@ -8,7 +8,8 @@ import type {
   ClientSupportStatusDto,
   UpdateAdminSupportIntegrationConfigInputDto
 } from "@chordv/shared";
-import { DrainableJob } from "../../work-lifecycle";
+import { promotionAdmission } from "../../promotion-admission";
+import { DrainableJob, workLifecycle } from "../../work-lifecycle";
 import { ClientEventsPublisher } from "../common/client-events.publisher";
 import { PrismaService } from "../common/prisma.service";
 import { SiteAddressService } from "../common/site-address.service";
@@ -29,6 +30,7 @@ import {
 } from "./achord-connect";
 import {
   SUPPORT_INTEGRATION_SETTING_KEY,
+  isSupportIntegrationEnabled,
   parseStoredSupportIntegrationConfig,
   readSupportIntegrationConfig,
   readSupportIntegrationCredentials as readCredentials,
@@ -54,6 +56,8 @@ export const SUPPORT_UNREAD_RESYNC_MIN_INTERVAL_MS = 5 * 60_000;
 /** 整个进程每分钟最多校准的次数，远低于工单系统每连接每分钟 600 次的限额，超出时直接用本地值。 */
 export const SUPPORT_UNREAD_RESYNC_MAX_PER_MINUTE = 120;
 const RESYNC_ATTEMPT_TRACKING_LIMIT = 10_000;
+/** 后台校准（由无法直接采用的 Webhook 触发）失败或被限流时的重试次数，按同一用户的最小间隔排队，约半小时内放弃。 */
+const BACKGROUND_RESYNC_MAX_ATTEMPTS = 6;
 export const WEBHOOK_EVENT_RETENTION_DAYS = 30;
 const CONNECTION_TEST_USER: AchordConnectLaunchUser = { id: "chordv-connection-test", email: "", displayName: "ChordV 连接测试" };
 
@@ -66,8 +70,11 @@ export type AchordConnectWebhookRequest = {
 
 export type AchordConnectWebhookResult = "accepted" | "duplicate" | "ignored";
 
-/** revision 是写入后的版本号；推送时据此丢弃乱序到达的旧结果。 */
-type UnreadTotalChange = { previous: number; next: number; revision: number };
+/**
+ * revision 是写入后的版本号，推送时据此丢弃乱序到达的旧结果；
+ * needsResync 表示这次事件无法可靠地给出总数，需要后台向工单系统重新查询。
+ */
+type UnreadTotalChange = { previous: number; next: number; revision: number; needsResync?: boolean };
 
 @Injectable()
 export class SupportIntegrationService {
@@ -77,6 +84,7 @@ export class SupportIntegrationService {
   private readonly resyncAttempts = new Map<string, number>();
   private readonly recentResyncs: number[] = [];
   private readonly publishedRevisions = new Map<string, number>();
+  private readonly backgroundResyncTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private unreadEndpointMissingLogged = false;
   private lastRejectedWebhookLogAt = 0;
 
@@ -84,7 +92,12 @@ export class SupportIntegrationService {
     private readonly prisma: PrismaService,
     private readonly sites: SiteAddressService,
     private readonly clientEventsPublisher: ClientEventsPublisher
-  ) {}
+  ) {
+    workLifecycle.onDrain(() => {
+      for (const timer of this.backgroundResyncTimers.values()) clearTimeout(timer);
+      this.backgroundResyncTimers.clear();
+    });
+  }
 
   // ---------- 后台设置 ----------
 
@@ -218,7 +231,10 @@ export class SupportIntegrationService {
     if (!result) {
       return "duplicate";
     }
-    this.publishIfChanged(change.externalUserId, result);
+    await this.publishIfChanged(change.externalUserId, result);
+    if (result.needsResync) {
+      this.scheduleBackgroundResync(change.externalUserId);
+    }
     return "accepted";
   }
 
@@ -226,6 +242,7 @@ export class SupportIntegrationService {
    * 在一个事务里记录事件 ID（去重）并更新未读数；同一用户的事件按行锁串行处理。返回 null 表示事件已处理过。
    * 事件先后一律按工单系统的时间（事件 createdAt、未读查询响应的 Date）比较，不用本机时间。
    * - 早于最近一次权威总数的事件已包含在总数里，只记录事件 ID；同一请求晚到的旧事件也不会覆盖新值。
+   * - 落在最近一次服务端查询的不确定区间里的事件，无法判断是否已包含在查询结果里：不采用其总数，改为重新查询。
    * - 带 contactUnreadCount：以它为总数；但如果本地已有比它更新的按请求变化（新旧版本事件混在一起），
    *   两者先后无法对齐，就保留当前值并标记为待校准。
    * - 不带 contactUnreadCount（旧版工单系统）：只有从未接受过权威总数、本地记录由逐条事件累积而来时，
@@ -255,7 +272,10 @@ export class SupportIntegrationService {
         });
       }
       let data: { unreadCount?: number; sourceAt?: Date; syncedAt?: Date | null; requestsComplete?: boolean };
-      if (change.contactUnreadCount !== null) {
+      const insideSnapshotWindow = Boolean(state.snapshotUntil && eventAt.getTime() < state.snapshotUntil.getTime());
+      if (insideSnapshotWindow) {
+        data = { syncedAt: null };
+      } else if (change.contactUnreadCount !== null) {
         const newerRequests = await tx.supportRequestUnread.count({ where: { userId, eventAt: { gt: eventAt } } });
         data = newerRequests > 0
           ? { syncedAt: null }
@@ -267,7 +287,12 @@ export class SupportIntegrationService {
         data = { syncedAt: null };
       }
       await tx.supportUnreadState.update({ where: { userId }, data: { ...data, revision: { increment: 1 } } });
-      return { previous: state.unreadCount, next: data.unreadCount ?? state.unreadCount, revision: state.revision + 1 };
+      return {
+        previous: state.unreadCount,
+        next: data.unreadCount ?? state.unreadCount,
+        revision: state.revision + 1,
+        needsResync: data.syncedAt === null
+      };
     });
   }
 
@@ -281,7 +306,7 @@ export class SupportIntegrationService {
    * 水位线用工单系统的时钟：响应头 Date 减去“请求超时 + 1 秒”。Date 是生成响应的时间（精确到秒），
    * 工单系统读取未读数一定发生在这次请求之内，而整个请求不超过超时时间，所以读取时刻不早于这条水位线；
    * 早于水位线的事件必然已包含在结果里。水位线之后、读取之前的事件会被再次接受，
-   * 每个事件带的都是当时的总数，随后更新的事件会纠正结果，不会出现误丢事件后无法恢复的情况。没有 Date 时不推进水位线。
+   * 这些事件无法判断是否已包含在结果里，不直接采用其总数，而是由后台重新查询（见 snapshotUntil）。没有 Date 时不推进水位线。
    */
   async resyncUnread(userId: string, credentials: AchordConnectCredentials): Promise<number | null> {
     const before = await this.prisma.supportUnreadState.findUnique({ where: { userId }, select: { revision: true } });
@@ -313,9 +338,11 @@ export class SupportIntegrationService {
         const sourceAt = snapshotWatermark && (!state.sourceAt || snapshotWatermark.getTime() > state.sourceAt.getTime())
           ? snapshotWatermark
           : state.sourceAt;
+        // Date 只精确到秒，真实的响应时间在 [Date, Date + 1 秒) 之内；早于这个上界的事件都可能在读取之前或之后。
+        const snapshotUntil = remote.serverTime ? new Date(remote.serverTime.getTime() + 1000) : null;
         await tx.supportUnreadState.update({
           where: { userId },
-          data: { unreadCount: remote.unreadCount, sourceAt, syncedAt: new Date(), requestsComplete: false, revision: { increment: 1 } }
+          data: { unreadCount: remote.unreadCount, sourceAt, snapshotUntil, syncedAt: new Date(), requestsComplete: false, revision: { increment: 1 } }
         });
         return { previous: state.unreadCount, next: remote.unreadCount, revision: state.revision + 1 };
       });
@@ -327,8 +354,50 @@ export class SupportIntegrationService {
       this.logger.log(`Achord Connect 未读校准期间收到新的 Webhook，已保留 Webhook 的值（用户 ${userId}）`);
       return null;
     }
-    this.publishIfChanged(userId, result);
+    await this.publishIfChanged(userId, result);
     return result.next;
+  }
+
+  /**
+   * 由无法直接采用的 Webhook 触发的后台校准：客户端不会定时查询状态，不能等下一次查询才纠正红点。
+   * 同一用户只排一个任务，遵守与状态查询相同的限流（同一用户 5 分钟一次、全进程每分钟上限），
+   * 失败或被限流时按最小间隔重试，最多 BACKGROUND_RESYNC_MAX_ATTEMPTS 次；新工单系统停用后不再查询。
+   */
+  scheduleBackgroundResync(userId: string, attempt = 0) {
+    if (this.backgroundResyncTimers.has(userId) || workLifecycle.isDraining || attempt >= BACKGROUND_RESYNC_MAX_ATTEMPTS) {
+      return;
+    }
+    const last = this.resyncAttempts.get(userId);
+    const untilAllowed = last === undefined ? 0 : Math.max(0, last + SUPPORT_UNREAD_RESYNC_MIN_INTERVAL_MS - Date.now());
+    const delay = attempt === 0 ? untilAllowed : Math.max(untilAllowed, 60_000);
+    const timer = setTimeout(() => {
+      this.backgroundResyncTimers.delete(userId);
+      if (workLifecycle.isDraining || !promotionAdmission.isApproved()) {
+        return;
+      }
+      void workLifecycle.track(this.runBackgroundResync(userId, attempt));
+    }, delay);
+    timer.unref?.();
+    this.backgroundResyncTimers.set(userId, timer);
+  }
+
+  private async runBackgroundResync(userId: string, attempt: number) {
+    try {
+      const credentials = await this.readLaunchCredentials();
+      if (!credentials) {
+        return;
+      }
+      const state = await this.prisma.supportUnreadState.findUnique({ where: { userId }, select: { syncedAt: true } });
+      if (state?.syncedAt) {
+        return;
+      }
+      if (!this.claimResyncAttempt(userId, Date.now()) || (await this.resyncUnread(userId, credentials)) === null) {
+        this.scheduleBackgroundResync(userId, attempt + 1);
+      }
+    } catch (error) {
+      this.logger.warn(`Achord Connect 后台未读校准失败（用户 ${userId}）：${error instanceof Error ? error.message : String(error)}`);
+      this.scheduleBackgroundResync(userId, attempt + 1);
+    }
   }
 
   /** 每小时清理 30 天前的 Webhook 事件 ID；工单系统最长约 14 小时内重试完，30 天足够去重。 */
@@ -348,10 +417,15 @@ export class SupportIntegrationService {
   /**
    * 行锁保证了数据库写入的先后，但事务提交后到推送之间可能被并发的另一次写入插队：
    * 按写入后的版本号推送，比已推送版本旧的结果直接丢弃，客户端最终停在最新值上。
+   * 读取启用状态的等待发生在比较版本号之前，比较与记录之间没有等待，不会再被插队。
    * （版本记录在本进程内；生产环境是单个 API 进程。）
    */
-  private publishIfChanged(userId: string, change: UnreadTotalChange) {
+  private async publishIfChanged(userId: string, change: UnreadTotalChange) {
     if (change.previous === change.next) {
+      return;
+    }
+    // 停用新工单系统后仍记录未读（重新启用时可直接使用），但不再推给客户端，免得停用后又亮起红点。
+    if (!(await isSupportIntegrationEnabled(this.prisma))) {
       return;
     }
     const published = this.publishedRevisions.get(userId);

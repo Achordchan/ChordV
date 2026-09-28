@@ -300,6 +300,14 @@ function webhookRequest(event: { id: string; rawBody: Buffer }, overrides: Parti
   };
 }
 
+async function waitFor(condition: () => boolean, label: string, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) assert.fail(`等待超时：${label}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 async function rejects(promise: Promise<unknown>, type: new (...args: never[]) => Error) {
   await assert.rejects(promise, (error: unknown) => error instanceof type);
 }
@@ -608,9 +616,19 @@ async function testReconciliationWatermarkAndConcurrentEvents() {
   assert.equal(await skewed.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), 0);
   const responseDate = Math.floor(upstreamNow.getTime() / 1000) * 1000;
   assert.equal(skewedDb.state("user_1")?.sourceAt?.getTime(), responseDate - 4000, "水位线取响应头 Date 减去请求超时再减 1 秒");
-  // 读取未读数可能早于生成响应：Date 之前几秒内的事件不能当成已包含而丢掉。
+  // 读取未读数可能早于生成响应：Date 前后几秒内的事件既不能当成已包含而丢掉，也不能直接采用其总数，
+  // 而是由后台重新查询。例如用户已读后查询返回 0，一个 2 秒前的“未读 1”事件晚到，不能把 0 改回 1。
+  let skewedFetches = 0;
+  skewed.fetchImpl = async () => {
+    skewedFetches += 1;
+    return json(200, { data: { externalUserId: "user_1", unreadCount: 0, requests: [] } }, upstreamNow);
+  };
   await skewed.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_edge", unreadCount: 1, contactUnreadCount: 1, createdAt: new Date(responseDate - 2000).toISOString() })));
-  assert.equal(skewedDb.state("user_1")?.unreadCount, 1, "读取与响应之间产生的事件照常接受");
+  assert.equal(skewedDb.state("user_1")?.unreadCount, 0, "不确定区间内的事件不直接采用");
+  assert.equal(skewedDb.state("user_1")?.syncedAt, null);
+  await waitFor(() => skewedFetches === 1, "后台重新查询");
+  await waitFor(() => skewedDb.state("user_1")?.syncedAt instanceof Date, "重新查询后写回");
+  assert.equal(skewedDb.state("user_1")?.unreadCount, 0);
   const afterSnapshot = new Date(upstreamNow.getTime() + 5_000).toISOString();
   await skewed.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 2, contactUnreadCount: 2, createdAt: afterSnapshot })));
   assert.equal(skewedDb.state("user_1")?.unreadCount, 2, "工单系统时间晚于快照的事件照常接受");
@@ -689,16 +707,65 @@ async function testIncompleteBaselineAndMixedOrdering() {
   }
 }
 
-function testPublishingKeepsNewestRevision() {
+async function testPublishingKeepsNewestRevisionAndRespectsEnabled() {
   const { service, published } = createService();
+  await configure(service);
   const publish = (change: { previous: number; next: number; revision: number }) =>
-    (service as unknown as { publishIfChanged: (userId: string, change: unknown) => void }).publishIfChanged("user_1", change);
+    (service as unknown as { publishIfChanged: (userId: string, change: unknown) => Promise<void> }).publishIfChanged("user_1", change);
   // 两个事务先后提交（版本 5、6），但版本 6 的推送先执行：版本 5 的旧结果不能再推给客户端。
-  publish({ previous: 3, next: 1, revision: 6 });
-  publish({ previous: 2, next: 3, revision: 5 });
-  publish({ previous: 1, next: 1, revision: 7 });
-  publish({ previous: 1, next: 4, revision: 8 });
+  await publish({ previous: 3, next: 1, revision: 6 });
+  await publish({ previous: 2, next: 3, revision: 5 });
+  await publish({ previous: 1, next: 1, revision: 7 });
+  await publish({ previous: 1, next: 4, revision: 8 });
   assert.deepEqual(published.map((item) => item.count), [1, 4]);
+  // 并发推送：先开始的旧版本即使后完成也不会覆盖。
+  await Promise.all([publish({ previous: 4, next: 5, revision: 9 }), publish({ previous: 5, next: 6, revision: 10 })]);
+  assert.equal(published.at(-1)?.count, 6);
+
+  // 停用后仍记录未读，但不推送；推送前的启用检查也覆盖校准结果。
+  await service.updateAdminConfig({ enabled: false });
+  const countBefore = published.length;
+  await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_off", unreadCount: 3, contactUnreadCount: 9, createdAt: new Date(Date.now() + 60_000).toISOString() })));
+  assert.equal(published.length, countBefore, "停用时不推送未读");
+  service.fetchImpl = async () => json(200, { data: { externalUserId: "user_1", unreadCount: 2, requests: [] } }, new Date(Date.now() + 120_000));
+  await service.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET });
+  assert.equal(published.length, countBefore, "停用时校准结果也不推送");
+}
+
+async function testLegacyEventsTriggerBackgroundResync() {
+  // 客户端不会定时查询状态：旧格式事件无法给出总数时，由后台主动重新查询，不等客户端下次查询。
+  const { service, db, published } = createService();
+  await configure(service);
+  await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 1, contactUnreadCount: 5, createdAt: new Date(Date.now() - 60_000).toISOString() })));
+  let fetches = 0;
+  service.fetchImpl = async () => {
+    fetches += 1;
+    if (fetches === 1) throw new TypeError("fetch failed");
+    return json(200, { data: { externalUserId: "user_1", unreadCount: 3, requests: [] } }, new Date(Date.now() + 10_000));
+  };
+  await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_b", unreadCount: 0, createdAt: new Date().toISOString() })));
+  assert.equal(db.state("user_1")?.unreadCount, 5);
+  await waitFor(() => fetches === 1, "后台立即校准一次");
+  const timers = (service as unknown as { backgroundResyncTimers: Map<string, ReturnType<typeof setTimeout>> }).backgroundResyncTimers;
+  await waitFor(() => timers.has("user_1"), "失败后排队重试");
+  // 同一用户只排一个任务。
+  service.scheduleBackgroundResync("user_1");
+  assert.equal(timers.size, 1);
+  // 跳过等待，直接执行排队的重试。
+  clearTimeout(timers.get("user_1"));
+  timers.delete("user_1");
+  (service as unknown as { resyncAttempts: Map<string, number> }).resyncAttempts.clear();
+  service.scheduleBackgroundResync("user_1", 1);
+  clearTimeout(timers.get("user_1"));
+  timers.delete("user_1");
+  await (service as unknown as { runBackgroundResync: (userId: string, attempt: number) => Promise<void> }).runBackgroundResync("user_1", 1);
+  assert.equal(fetches, 2);
+  assert.equal(db.state("user_1")?.unreadCount, 3);
+  assert.deepEqual(published.at(-1), { userId: "user_1", count: 3 });
+  // 停用后排队的校准不再查询。
+  await service.updateAdminConfig({ enabled: false });
+  await (service as unknown as { runBackgroundResync: (userId: string, attempt: number) => Promise<void> }).runBackgroundResync("user_1", 0);
+  assert.equal(fetches, 2);
 }
 
 function testResyncRateLimits() {
@@ -822,7 +889,7 @@ async function testLegacyTicketWriteGuards() {
 function testSupportModuleDependenciesAreExported() {
   // 路由测试直接替换了服务实例，这里单独确认真实启动时构造函数依赖都能从全局模块拿到。
   const service = readFileSync(resolve(__dirname, "../src/modules/support/support-integration.service.ts"), "utf8");
-  const constructorBlock = /constructor\(([\s\S]*?)\)\s*\{\}/.exec(service)?.[1] ?? "";
+  const constructorBlock = /constructor\(([\s\S]*?)\)\s*\{/.exec(service)?.[1] ?? "";
   const dependencies = [...constructorBlock.matchAll(/:\s*(\w+)/g)].map((match) => match[1]);
   assert.deepEqual(dependencies, ["PrismaService", "SiteAddressService", "ClientEventsPublisher"]);
   const devDataModule = readFileSync(resolve(__dirname, "../src/modules/common/dev-data.module.ts"), "utf8");
@@ -963,7 +1030,8 @@ async function main() {
   await testReconciliationWatermarkAndConcurrentEvents();
   await testIncompleteBaselineAndMixedOrdering();
   testResyncRateLimits();
-  testPublishingKeepsNewestRevision();
+  await testPublishingKeepsNewestRevisionAndRespectsEnabled();
+  await testLegacyEventsTriggerBackgroundResync();
   await testAdminConfigNeverReturnsSecrets();
   await testLegacyTicketWriteGuards();
   testSupportModuleDependenciesAreExported();
