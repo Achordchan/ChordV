@@ -1250,6 +1250,45 @@ async function testResponseLimitsReenableFenceAndStatusRecheck() {
   }
 }
 
+async function testLaunchFencedAgainstConfigChanges() {
+  const ticketFor = (base: string) => json(201, { data: { launchUrl: `${base}/embed/connect/pub_fake#ticket=act_fake&mode=native`, expiresAt: "2026-09-28T10:01:00.000Z" } });
+  // 创建票据期间被停用：不返回旧票据，按“暂未开放”处理。
+  {
+    const { service } = createService();
+    await configure(service);
+    service.fetchImpl = async () => {
+      await service.updateAdminConfig({ enabled: false });
+      return ticketFor(BASE_URL);
+    };
+    await service.launchForClient({ id: "user_1", email: "a@example.test", displayName: "A" }).then(
+      () => assert.fail("停用后不能返回旧票据"),
+      (error: HttpException) => {
+        assert.equal(error.getStatus(), 503);
+        assert.equal((error.getResponse() as { message: string }).message, "工单系统暂未开放，请稍后再试");
+      }
+    );
+  }
+  // 创建票据期间切换了连接：丢弃旧连接的票据，按新连接重新创建。
+  {
+    const { service, fetchCalls } = createService();
+    await configure(service);
+    let first = true;
+    service.fetchImpl = async (url) => {
+      fetchCalls.push({ url, init: {} });
+      if (first) {
+        first = false;
+        await service.updateAdminConfig({ baseUrl: "https://support-new.example.test", webhookSecret: NEW_WEBHOOK_SECRET });
+        return ticketFor(BASE_URL);
+      }
+      return ticketFor("https://support-new.example.test");
+    };
+    const launched = await service.launchForClient({ id: "user_1", email: "a@example.test", displayName: "A" });
+    assert.equal(launched.supportOrigin, "https://support-new.example.test");
+    assert.match(launched.launchUrl, /^https:\/\/support-new\.example\.test\//);
+    assert.equal(fetchCalls.filter((call) => call.url.endsWith("/launch-tickets")).length, 2);
+  }
+}
+
 async function testStatusSchedulesRetryWhenDeferred() {
   const { service } = createService();
   await configure(service);
@@ -1578,6 +1617,7 @@ async function main() {
   await testUntimedEventsAndStaleTimers();
   await testConnectionSwitchNeedsNewWebhookSecretAndLegacyBaseline();
   await testResponseLimitsReenableFenceAndStatusRecheck();
+  await testLaunchFencedAgainstConfigChanges();
   await testAdminConfigNeverReturnsSecrets();
   await testLegacyTicketWriteGuards();
   testSupportModuleDependenciesAreExported();

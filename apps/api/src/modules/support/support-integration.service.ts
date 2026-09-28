@@ -257,14 +257,19 @@ export class SupportIntegrationService {
     return { enabled: true, unreadCount, supportOrigin: credentials.baseUrl };
   }
 
-  async launchForClient(user: AchordConnectLaunchUser): Promise<ClientSupportLaunchDto> {
-    const credentials = await this.readLaunchCredentials();
+  /**
+   * 创建一次性打开地址。请求工单系统期间（最长 8 秒）设置可能被改：返回前复核，
+   * 已停用就按“暂未开放”处理；已切换连接或启用状态变化过就丢弃旧连接的票据，按新设置重新创建一次。
+   */
+  async launchForClient(user: AchordConnectLaunchUser, retried = false): Promise<ClientSupportLaunchDto> {
+    const before = (await this.readStoredConfig()).value;
+    const credentials = isStoredSupportIntegrationEnabled(before) ? readCredentials(before) : null;
     if (!credentials) {
       throw new ServiceUnavailableException(SUPPORT_NOT_OPEN_MESSAGE);
     }
+    let ticket: Awaited<ReturnType<typeof createAchordConnectLaunchTicket>>;
     try {
-      const ticket = await createAchordConnectLaunchTicket(this.fetchImpl, credentials, user, LAUNCH_TIMEOUT_MS);
-      return { launchUrl: ticket.launchUrl, expiresAt: ticket.expiresAt, supportOrigin: credentials.baseUrl };
+      ticket = await createAchordConnectLaunchTicket(this.fetchImpl, credentials, user, LAUNCH_TIMEOUT_MS);
     } catch (error) {
       this.logger.warn(`Achord Connect 创建票据失败（用户 ${user.id}）：${describeInternalError(error)}${describeLaunchConfigHint(error)}`);
       if (error instanceof AchordConnectRequestError && error.status === HttpStatus.TOO_MANY_REQUESTS) {
@@ -272,6 +277,18 @@ export class SupportIntegrationService {
       }
       throw new BadGatewayException(SUPPORT_UNAVAILABLE_MESSAGE);
     }
+    const after = (await this.readStoredConfig()).value;
+    if (!isStoredSupportIntegrationEnabled(after)) {
+      throw new ServiceUnavailableException(SUPPORT_NOT_OPEN_MESSAGE);
+    }
+    if (after.generation !== before.generation || after.epoch !== before.epoch) {
+      this.logger.warn(`Achord Connect 创建票据期间设置已变化，丢弃旧票据（用户 ${user.id}）`);
+      if (retried) {
+        throw new BadGatewayException(SUPPORT_UNAVAILABLE_MESSAGE);
+      }
+      return this.launchForClient(user, true);
+    }
+    return { launchUrl: ticket.launchUrl, expiresAt: ticket.expiresAt, supportOrigin: credentials.baseUrl };
   }
 
   // ---------- Webhook ----------
