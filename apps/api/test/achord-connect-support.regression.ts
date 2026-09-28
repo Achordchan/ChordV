@@ -1078,6 +1078,25 @@ async function testDisableClearsPendingZeroUpdates() {
   assert.deepEqual(published, [{ userId: "user_1", count: 2 }, { userId: "user_1", count: 0 }], "停用时给记录已为 0 的用户也推送 0");
 }
 
+async function testReenableForcesReconciliation() {
+  // 刚校准过的用户，停用维护几分钟后重新启用：不能因为“5 分钟内校准过”就跳过，停用期间可能漏掉了变化。
+  const { service, db, published } = createService();
+  await configure(service);
+  await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 2, contactUnreadCount: 2, createdAt: new Date(Date.now() - 5_000).toISOString() })));
+  assert.ok(db.state("user_1")?.syncedAt instanceof Date, "刚由权威总数校准过");
+  await service.updateAdminConfig({ enabled: false });
+  let fetches = 0;
+  service.fetchImpl = async () => {
+    fetches += 1;
+    return json(200, { data: { externalUserId: "user_1", unreadCount: 0, requests: [] } });
+  };
+  await service.updateAdminConfig({ enabled: true });
+  assert.equal(db.state("user_1")?.syncedAt, null, "重新启用时所有用户视为待校准");
+  await waitFor(() => db.state("user_1")?.unreadCount === 0, "重新启用后后台查询纠正");
+  assert.equal(fetches, 1);
+  assert.deepEqual(published.at(-1), { userId: "user_1", count: 0 });
+}
+
 async function testStatusSchedulesRetryWhenDeferred() {
   const { service } = createService();
   await configure(service);
@@ -1402,6 +1421,7 @@ async function main() {
   await testPublicationFenceAndReconnectCandidates();
   await testConfigNotificationsAndStatusRecheck();
   await testDisableClearsPendingZeroUpdates();
+  await testReenableForcesReconciliation();
   await testAdminConfigNeverReturnsSecrets();
   await testLegacyTicketWriteGuards();
   testSupportModuleDependenciesAreExported();

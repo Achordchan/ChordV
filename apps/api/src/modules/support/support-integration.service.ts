@@ -145,6 +145,10 @@ export class SupportIntegrationService {
       // 切换连接或重新启用后，所有用过工单入口的用户都要查询一次：连接可能已换（原来没有未读的用户在新连接里也可能有），
       // 停用期间也可能漏掉了变化。后台任务执行前会跳过近期已校准的用户。
       const resyncCandidates = nowEnabled && (connectionChanged || !wasEnabled) ? withUnread.map((item) => item.userId) : [];
+      if (!connectionChanged && nowEnabled && !wasEnabled) {
+        // 重新启用：停用期间可能漏掉了变化（例如当时换过 Webhook Secret），所有用户都视为待校准，后台任务不会因“刚校准过”而跳过。
+        await tx.supportUnreadState.updateMany({ data: { syncedAt: null } });
+      }
       if (connectionChanged) {
         // 重置后每位用户的版本号加一，下面的“推送 0”使用重置后的版本号。
         for (const item of withUnread) item.revision += 1;
