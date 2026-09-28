@@ -423,6 +423,7 @@ async function testBadgeFollowsStatusEventsAndBridge() {
   const statusCalls: string[] = [];
   const nativeEvents: string[] = [];
   let bridgeHandler: ((event: { unreadCount: number; epoch: number }) => void) | null = null;
+  let closedHandler: ((event: { epoch: number }) => void) | null = null;
   let nativeEpoch = 1;
   const opened: Array<{ launchUrl: string; supportOrigin: string }> = [];
   const launchTokens: string[] = [];
@@ -450,8 +451,12 @@ async function testBadgeFollowsStatusEventsAndBridge() {
         dispose: () => undefined
       }),
       closeSupportWindow: async () => { nativeEvents.push("close"); nativeEpoch += 1; },
-      subscribeSupportUnread: async (handler: (event: { unreadCount: number; epoch: number }) => void) => {
-        bridgeHandler = handler;
+      subscribeSupportWindowEvents: async (handlers: {
+        onUnread: (event: { unreadCount: number; epoch: number }) => void;
+        onClosed: (event: { epoch: number }) => void;
+      }) => {
+        bridgeHandler = handlers.onUnread;
+        closedHandler = handlers.onClosed;
         return () => undefined;
       }
     },
@@ -547,6 +552,29 @@ async function testBadgeFollowsStatusEventsAndBridge() {
   bridgeHandler!({ unreadCount: 17, epoch: nativeEpoch - 1 });
   hook = render(expiredUser1);
   assert.equal(hook.supportUnreadCount, 0, "events from an older window epoch are dropped");
+
+  // 工单窗口打开期间以桥接为准：后台推送和状态查询都不覆盖。
+  hook.applySupportUnreadCount(6);
+  statusResponses.push({ ...ENABLED, unreadCount: 7 });
+  await hook.refreshSupportStatus("expired");
+  hook = render(expiredUser1);
+  assert.equal(hook.supportUnreadCount, 0, "while the portal reports unread counts, the window wins");
+  // 其他账号批次的关闭事件不影响。
+  closedHandler!({ epoch: nativeEpoch - 1 });
+  hook.applySupportUnreadCount(6);
+  hook = render(expiredUser1);
+  assert.equal(hook.supportUnreadCount, 0);
+  // 窗口关闭：改回以后台为准，并立即重新查询。
+  statusResponses.push({ ...ENABLED, unreadCount: 4 });
+  const callsBeforeClose = statusCalls.length;
+  closedHandler!({ epoch: nativeEpoch });
+  await flush();
+  hook = render(expiredUser1);
+  assert.equal(statusCalls.length, callsBeforeClose + 2, "closing the window re-syncs from the status endpoint (after token recovery)");
+  assert.equal(hook.supportUnreadCount, 4);
+  hook.applySupportUnreadCount(8);
+  hook = render(expiredUser1);
+  assert.equal(hook.supportUnreadCount, 8, "pushes apply again once the window is closed");
 
   // 票据申请途中换账号：不为上一个账号打开工单窗口，也不报错。
   const slowUser1 = { accessToken: "slow", userId: "user-1" };

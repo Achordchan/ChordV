@@ -659,16 +659,30 @@ export async function closeSupportWindow() {
 /** 工单页面通过原生桥接报告的未读总数（Rust 已校验为 0–99999 的整数），带着发出它的窗口所属批次号。 */
 export type SupportUnreadBridgeEvent = { unreadCount: number; epoch: number };
 
-export async function subscribeSupportUnread(handler: (event: SupportUnreadBridgeEvent) => void) {
+/**
+ * 订阅工单窗口的原生事件：桥接未读数，以及窗口关闭（含被重开取代）。
+ * 两者都带着窗口所属的批次号，由调用方丢弃其他账号的窗口发出的事件。
+ */
+export async function subscribeSupportWindowEvents(handlers: {
+  onUnread: (event: SupportUnreadBridgeEvent) => void;
+  onClosed: (event: { epoch: number }) => void;
+}) {
   if (!supportsSupportWindow()) {
     return () => {};
   }
   const { listen } = await import("@tauri-apps/api/event");
-  const unlisten = await listen<SupportUnreadBridgeEvent>("chordv://support-unread", (event) => {
-    if (event.payload) handler(event.payload);
+  const unlistenUnread = await listen<SupportUnreadBridgeEvent>("chordv://support-unread", (event) => {
+    if (event.payload) handlers.onUnread(event.payload);
+  });
+  const unlistenClosed = await listen<{ epoch: number }>("chordv://support-window-closed", (event) => {
+    if (event.payload) handlers.onClosed(event.payload);
+  }).catch((error) => {
+    unlistenUnread();
+    throw error;
   });
   return () => {
-    unlisten();
+    unlistenUnread();
+    unlistenClosed();
   };
 }
 

@@ -207,6 +207,42 @@ fn support_window_is_centered_over_the_main_window_and_kept_on_screen() {
 }
 
 #[test]
+fn support_window_fits_the_work_area() {
+    let screen = Some((0.0, 25.0, 1440.0, 875.0));
+    // 普通屏幕：900×680，以主窗口为中心，最小 720×560。
+    let normal = plan_support_window_layout(Some((270.0, 180.0, 820.0, 588.0)), None, screen);
+    assert_eq!(normal.size, SUPPORT_WINDOW_SIZE);
+    assert_eq!(normal.min_size, SUPPORT_WINDOW_MIN_SIZE);
+    assert_eq!(normal.position, Some((230.0, 114.0)));
+
+    // 可用高度不足 680（高缩放的笔记本）：大小和最小尺寸都收进屏幕，整个窗口留在屏幕内。
+    let small = Some((0.0, 25.0, 1280.0, 615.0));
+    let fitted = plan_support_window_layout(Some((230.0, 40.0, 820.0, 588.0)), None, small);
+    assert_eq!(fitted.size, (900.0, 543.0));
+    assert_eq!(fitted.min_size, (720.0, 543.0));
+    let (x, y) = fitted.position.unwrap();
+    assert!(y >= 25.0 && y + fitted.size.1 + SUPPORT_WINDOW_DECORATION_HEIGHT <= 25.0 + 615.0);
+    assert!(x >= 0.0 && x + fitted.size.0 <= 1280.0);
+
+    // 很窄的屏幕：宽度也收进来。
+    let narrow = plan_support_window_layout(None, None, Some((0.0, 0.0, 700.0, 900.0)));
+    assert_eq!(narrow.size, (668.0, 680.0));
+    assert_eq!(narrow.min_size, (668.0, 560.0));
+    assert_eq!(narrow.position, None, "without a visible main window the system centers it");
+
+    // 重开时沿用旧窗口的位置和大小。
+    let reopened = plan_support_window_layout(Some((270.0, 180.0, 820.0, 588.0)), Some((100.0, 60.0, 1000.0, 700.0)), screen);
+    assert_eq!(reopened.size, (1000.0, 700.0));
+    assert_eq!(reopened.position, Some((100.0, 60.0)));
+}
+
+#[test]
+fn window_closed_event_carries_the_epoch() {
+    let json = serde_json::to_value(SupportWindowClosedEvent { epoch: 5 }).unwrap();
+    assert_eq!(json, serde_json::json!({ "epoch": 5 }));
+}
+
+#[test]
 fn every_window_gets_a_fresh_support_label() {
     let mut state = SupportWindowState::default();
     assert_eq!(state.next_label(), "support-1");

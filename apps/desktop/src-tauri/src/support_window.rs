@@ -18,6 +18,8 @@ pub const SUPPORT_WINDOW_LABEL_PREFIX: &str = "support-";
 pub const SUPPORT_BRIDGE_PERMISSION: &str = "support-bridge";
 /// 桥接收到的未读数只发给主窗口。
 pub const SUPPORT_UNREAD_EVENT: &str = "chordv://support-unread";
+/// 工单窗口关闭（含被重开取代）时通知主窗口：未读数改回以后台推送 / 状态接口为准。
+pub const SUPPORT_WINDOW_CLOSED_EVENT: &str = "chordv://support-window-closed";
 pub const SUPPORT_BRIDGE_SOURCE: &str = "achord-connect-v1";
 /// 一次性票据的有效期：窗口打开后这么久门户仍没确认就绪，就允许重新签发票据。
 pub const SUPPORT_LAUNCH_GRACE: Duration = Duration::from_secs(60);
@@ -26,6 +28,9 @@ pub const MAX_SUPPORT_UNREAD_COUNT: u64 = 99_999;
 pub const SUPPORT_WINDOW_TITLE: &str = "ChordV 工单";
 pub const SUPPORT_WINDOW_SIZE: (f64, f64) = (900.0, 680.0);
 pub const SUPPORT_WINDOW_MIN_SIZE: (f64, f64) = (720.0, 560.0);
+/// 标题栏等窗口装饰预留的高度（逻辑像素），以及离屏幕边缘的留白。
+pub const SUPPORT_WINDOW_DECORATION_HEIGHT: f64 = 40.0;
+pub const SUPPORT_WINDOW_SCREEN_MARGIN: f64 = 16.0;
 
 /// 校验后台下发的工单站点来源：必须是不带路径、参数、账号信息的 https 来源。
 pub fn parse_support_origin(input: &str) -> Result<Url, String> {
@@ -163,6 +168,45 @@ pub fn centered_window_origin(
     (x.round(), y.round())
 }
 
+/// 逻辑坐标的矩形：(x, y, 宽, 高)。
+pub type LogicalRect = (f64, f64, f64, f64);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SupportWindowLayout {
+    pub size: (f64, f64),
+    pub min_size: (f64, f64),
+    /// None 表示交给系统居中。
+    pub position: Option<(f64, f64)>,
+}
+
+/// 规划工单窗口的大小与位置：
+/// - 重开（会话过期 / 未就绪）时沿用旧窗口的位置和大小，看起来就是原窗口重新进入；
+/// - 否则以主窗口为中心；
+/// - 大小和最小尺寸都收进屏幕可用区域（扣除窗口装饰和留白），小屏或高缩放下不会有部分内容在屏幕外。
+pub fn plan_support_window_layout(
+    parent: Option<LogicalRect>,
+    previous: Option<LogicalRect>,
+    bounds: Option<LogicalRect>,
+) -> SupportWindowLayout {
+    let desired = previous.map_or(SUPPORT_WINDOW_SIZE, |(_, _, width, height)| (width, height));
+    let (size, min_size) = match bounds {
+        Some((_, _, width, height)) => {
+            let max_width = (width - 2.0 * SUPPORT_WINDOW_SCREEN_MARGIN).max(320.0);
+            let max_height = (height - SUPPORT_WINDOW_DECORATION_HEIGHT - 2.0 * SUPPORT_WINDOW_SCREEN_MARGIN).max(240.0);
+            let size = (desired.0.min(max_width), desired.1.min(max_height));
+            (size, (SUPPORT_WINDOW_MIN_SIZE.0.min(size.0), SUPPORT_WINDOW_MIN_SIZE.1.min(size.1)))
+        }
+        None => (desired, SUPPORT_WINDOW_MIN_SIZE),
+    };
+    let outer = (size.0, size.1 + SUPPORT_WINDOW_DECORATION_HEIGHT);
+    let position = match (previous, parent) {
+        (Some((x, y, _, _)), _) => Some(centered_window_origin((x, y, outer.0, outer.1), outer, bounds)),
+        (None, Some(parent)) => Some(centered_window_origin(parent, outer, bounds)),
+        (None, None) => None,
+    };
+    SupportWindowLayout { size, min_size, position }
+}
+
 #[derive(Debug, Clone)]
 pub struct SupportWindowRecord {
     pub label: String,
@@ -186,6 +230,13 @@ impl SupportWindowRecord {
     pub fn can_focus(&self, now: Instant) -> bool {
         !self.expired && (self.ready || now.saturating_duration_since(self.opened_at) < SUPPORT_LAUNCH_GRACE)
     }
+}
+
+/// 工单窗口关闭事件（带批次号，前端只处理当前账号的窗口）。
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SupportWindowClosedEvent {
+    pub epoch: u64,
 }
 
 /// 发给主窗口的未读数事件。
@@ -289,25 +340,39 @@ fn focus(window: &WebviewWindow) -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "android"))]
-fn position_near_main(app: &AppHandle) -> Option<(f64, f64)> {
-    let main = app.get_webview_window("main")?;
-    if !main.is_visible().unwrap_or(false) || main.is_minimized().unwrap_or(false) {
-        return None;
+fn work_area(monitor: Option<tauri::Monitor>) -> Option<LogicalRect> {
+    let monitor = monitor?;
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area();
+    let origin = area.position.to_logical::<f64>(scale);
+    let extent = area.size.to_logical::<f64>(scale);
+    Some((origin.x, origin.y, extent.width, extent.height))
+}
+
+#[cfg(not(target_os = "android"))]
+fn window_rect(window: &WebviewWindow, outer: bool) -> Option<LogicalRect> {
+    let scale = window.scale_factor().ok()?;
+    let position = window.outer_position().ok()?.to_logical::<f64>(scale);
+    let size = if outer { window.outer_size().ok()? } else { window.inner_size().ok()? }.to_logical::<f64>(scale);
+    Some((position.x, position.y, size.width, size.height))
+}
+
+#[cfg(not(target_os = "android"))]
+fn plan_layout(app: &AppHandle, previous: Option<&WebviewWindow>) -> SupportWindowLayout {
+    if let Some(previous) = previous.filter(|window| !window.is_minimized().unwrap_or(false)) {
+        if let Some(rect) = window_rect(previous, false) {
+            return plan_support_window_layout(None, Some(rect), work_area(previous.current_monitor().ok().flatten()));
+        }
     }
-    let scale = main.scale_factor().ok()?;
-    let position = main.outer_position().ok()?.to_logical::<f64>(scale);
-    let size = main.outer_size().ok()?.to_logical::<f64>(scale);
-    let bounds = main.current_monitor().ok().flatten().map(|monitor| {
-        let area = monitor.work_area();
-        let origin = area.position.to_logical::<f64>(scale);
-        let extent = area.size.to_logical::<f64>(scale);
-        (origin.x, origin.y, extent.width, extent.height)
-    });
-    Some(centered_window_origin(
-        (position.x, position.y, size.width, size.height),
-        SUPPORT_WINDOW_SIZE,
-        bounds,
-    ))
+    let main = app
+        .get_webview_window("main")
+        .filter(|main| main.is_visible().unwrap_or(false) && !main.is_minimized().unwrap_or(false));
+    if let Some(main) = main {
+        if let Some(rect) = window_rect(&main, true) {
+            return plan_support_window_layout(Some(rect), None, work_area(main.current_monitor().ok().flatten()));
+        }
+    }
+    plan_support_window_layout(None, None, work_area(app.primary_monitor().ok().flatten()))
 }
 
 #[cfg(not(target_os = "android"))]
@@ -352,6 +417,7 @@ pub async fn open_support_window(
         guard.begin_open(epoch, SupportWindowRecord::new(label.clone(), origin.clone(), epoch, Instant::now()))?;
         (label, previous)
     };
+    let layout = plan_layout(&app, previous.as_ref());
     if let Some(previous) = previous {
         let _ = previous.destroy();
     }
@@ -375,8 +441,8 @@ pub async fn open_support_window(
     let navigation_origin = origin_url.clone();
     let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(launch))
         .title(SUPPORT_WINDOW_TITLE)
-        .inner_size(SUPPORT_WINDOW_SIZE.0, SUPPORT_WINDOW_SIZE.1)
-        .min_inner_size(SUPPORT_WINDOW_MIN_SIZE.0, SUPPORT_WINDOW_MIN_SIZE.1)
+        .inner_size(layout.size.0, layout.size.1)
+        .min_inner_size(layout.min_size.0, layout.min_size.1)
         .resizable(true)
         .initialization_script(support_bridge_script(&origin))
         .on_navigation(move |url| match classify_support_navigation(url, &navigation_origin) {
@@ -393,13 +459,25 @@ pub async fn open_support_window(
             }
             NewWindowResponse::Deny
         });
-    builder = match position_near_main(&app) {
+    builder = match layout.position {
         Some((x, y)) => builder.position(x, y),
         None => builder.center(),
     };
     let window = builder
         .build()
         .map_err(|error| discard(format!("无法打开工单窗口：{error}")))?;
+
+    // 窗口关闭（用户关闭、门户请求关闭、退出登录、被重开取代）后撤销登记，并通知主窗口改回以后台数据为准。
+    let closed_app = app.clone();
+    let closed_label = label.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            if let Ok(mut guard) = closed_app.state::<Mutex<SupportWindowState>>().lock() {
+                guard.discard(&closed_label);
+            }
+            let _ = closed_app.emit_to("main", SUPPORT_WINDOW_CLOSED_EVENT, SupportWindowClosedEvent { epoch });
+        }
+    });
 
     // 建窗期间退出登录或换账号：不保留这个窗口。
     if !lock(&state)?.is_registered(epoch, &label) {
