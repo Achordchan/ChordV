@@ -296,6 +296,8 @@ model User {
   clientVersions       UserClientVersion[]
   clientPresence       UserClientPresence?
   clientPresenceStreams UserClientPresenceStream[]
+  supportUnreadState   SupportUnreadState?
+  supportRequestUnreads SupportRequestUnread[]
 }
 
 // 每位用户在各平台最近一次上报的客户端版本（来自已登录客户端的检查更新请求）。
@@ -894,6 +896,42 @@ model SupportTicketReadState {
   @@unique([ticketId, userId])
   @@index([userId, updatedAt])
   @@index([ticketId, updatedAt])
+}
+
+// 新工单系统（Achord Connect）：用户全部请求的未读总数，由 Webhook 维护，必要时向工单系统重新查询校准。
+model SupportUnreadState {
+  userId      String    @id
+  unreadCount Int       @default(0)
+  // 最近一次权威总数（Webhook 的 contactUnreadCount 或服务端查询结果）对应的工单系统时间，用于丢弃晚到的旧事件。
+  sourceAt    DateTime?
+  // 最近一次拿到权威总数的本地时间；为空或过久时，客户端查询状态会先向工单系统重新同步。
+  syncedAt    DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// 新工单系统（Achord Connect）：用户每个请求的未读数，Webhook 未带总数时据此求和。
+model SupportRequestUnread {
+  userId      String
+  requestId   String
+  unreadCount Int
+  // 这条未读数对应的工单系统事件时间，只接受更新的事件。
+  eventAt     DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, requestId])
+}
+
+// 已处理的 Achord Connect Webhook 事件 ID，按事件 ID 去重；保留约 30 天后清理。
+model AchordConnectWebhookEvent {
+  eventId    String   @id
+  type       String
+  receivedAt DateTime @default(now())
+
+  @@index([receivedAt])
 }
 
 model StrategyGroup {

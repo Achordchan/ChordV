@@ -14,7 +14,6 @@ type OverviewPageProps = {
   onOpenCustomers: () => void;
   onOpenTeams: () => void;
   onOpenNodes: () => void;
-  onOpenTickets: () => void;
   onOpenSyncQueue: () => void;
 };
 
@@ -45,7 +44,7 @@ export function OverviewPage(props: OverviewPageProps) {
   return <section className={styles.dashboard} aria-label="仪表台">
     <div className={styles.topline}><Text className={styles.date}>{new Intl.DateTimeFormat("zh-CN",{year:"numeric",month:"long",day:"numeric",weekday:"long"}).format(now)}</Text><Button color="teal.9" rightSection={<IconArrowRight size={16}/>} onClick={props.onOpenNodes}>管理节点</Button></div>
     <div className={styles.tasks} aria-label="待处理事项">
-      <button onClick={props.onOpenTickets}>待回复工单 <strong>{snapshot.dashboard.waitingAdminTickets ?? 0}</strong><IconChevronRight size={16}/></button>
+      {/* 自建工单已迁移到 Achord Connect 且只读，历史“待回复”数量不再是待处理事项，不在这里显示。 */}
       <button onClick={props.onOpenSyncQueue}>后台同步 <strong>{queueCount}</strong><IconChevronRight size={16}/></button>
       <button onClick={props.onOpenNodes}>异常节点 <strong>{abnormalNodes.length}</strong><IconChevronRight size={16}/></button>
       {pendingNodes.length>0?<span>{pendingNodes.length} 个节点状态待确认</span>:null}

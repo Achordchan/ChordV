@@ -21,6 +21,7 @@ import type {
   RuntimeDownloadFailureReason
 } from "@chordv/shared";
 import { ClientAuthGuard } from "../common/client-auth.guard";
+import { LegacyClientTicketWriteGuard } from "../common/legacy-support-tickets.guard";
 import { RuntimeComponentsService } from "../common/runtime-components.service";
 import { UploadedTempFileCleanupInterceptor } from "../common/uploaded-temp-file-cleanup.interceptor";
 import { SUPPORT_TICKET_ATTACHMENT_MAX_BYTES } from "../common/upload-limits";
@@ -459,6 +460,7 @@ export class ClientController {
     return this.clientService.getRuntime(query.sessionId, authorization);
   }
 
+  // 自建工单只读保留：旧版客户端仍可查看历史工单；新建、回复、上传附件由 LegacyClientTicketWriteGuard 拒绝。
   @Get("tickets")
   @UseGuards(ClientAuthGuard)
   getTickets(@Headers("authorization") authorization?: string) {
@@ -478,13 +480,13 @@ export class ClientController {
   }
 
   @Post("tickets")
-  @UseGuards(ClientAuthGuard)
+  @UseGuards(ClientAuthGuard, LegacyClientTicketWriteGuard)
   createTicket(@Body() body: CreateSupportTicketDto, @Headers("authorization") authorization?: string) {
     return this.clientService.createSupportTicket(body, authorization);
   }
 
   @Post("tickets/:ticketId/replies")
-  @UseGuards(ClientAuthGuard)
+  @UseGuards(ClientAuthGuard, LegacyClientTicketWriteGuard)
   replyTicket(
     @Param("ticketId") ticketId: string,
     @Body() body: ReplySupportTicketDto,
@@ -510,7 +512,7 @@ export class ClientController {
   }
 
   @Post("tickets/:ticketId/attachments/upload")
-  @UseGuards(ClientAuthGuard)
+  @UseGuards(ClientAuthGuard, LegacyClientTicketWriteGuard)
   @UseInterceptors(
     UploadedTempFileCleanupInterceptor,
     FileInterceptor("file", {
@@ -534,7 +536,7 @@ export class ClientController {
   }
 
   @Post("tickets/:ticketId/attachments")
-  @UseGuards(ClientAuthGuard)
+  @UseGuards(ClientAuthGuard, LegacyClientTicketWriteGuard)
   @UseInterceptors(
     UploadedTempFileCleanupInterceptor,
     FileInterceptor("file", {

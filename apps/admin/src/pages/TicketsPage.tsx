@@ -5,7 +5,6 @@ import {
   Badge,
   Button,
   Card,
-  FileButton,
   Group,
   Modal,
   Paper,
@@ -13,34 +12,19 @@ import {
   Stack,
   Text,
   TextInput,
-  Textarea,
   Title
 } from "@mantine/core";
-import { notifications } from "@mantine/notifications";
 import type { SupportTicketStatus } from "@chordv/shared";
-import { IconPaperclip, IconRefresh, IconSend, IconX } from "@tabler/icons-react";
+import { IconRefresh } from "@tabler/icons-react";
 import {
-  closeAdminSupportTicket,
-  fetchAdminUploadLimits,
   fetchAdminSupportTicketDetail,
   fetchAdminSupportTickets,
-  reopenAdminSupportTicket,
-  replyAdminSupportTicket,
-  replyAdminSupportTicketWithAttachment,
   type AdminSupportTicketDetailDto,
   type AdminSupportTicketSummaryDto
 } from "../api/client";
 import { SectionCard } from "../features/shared/SectionCard";
 import { StatusBadge } from "../features/shared/StatusBadge";
-import {
-  filterByKeyword,
-  isPotentiallyCompletedMutationFailure,
-  isSupportTicketAttachmentUploadFailure,
-  buildUncertainMutationMessage,
-  isUncertainRequestFailure,
-  readError,
-  summarizeAdminDiagnosticMessage
-} from "../utils/admin-filters";
+import { filterByKeyword, readError } from "../utils/admin-filters";
 import { formatDateTime, formatDateTimeWithYear } from "../utils/admin-format";
 
 type TicketOwnerFilter = "all" | "personal" | "team";
@@ -51,8 +35,8 @@ type TicketAttachmentPreview = {
 };
 type TicketAttachmentImageState = "loading" | "loaded" | "failed";
 
-const ADMIN_TICKET_REPLY_MAX_BODY_LENGTH = 4000;
-const DEFAULT_ADMIN_TICKET_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+/** 自建工单已迁移到 Achord Connect：这里只保留历史记录的查看与搜索，不能回复或修改状态。 */
+export const LEGACY_TICKETS_READ_ONLY_NOTICE = "工单系统已迁移到 Achord Connect，这里仅保留历史记录，只读。";
 
 const ticketStatusOptions = [
   { value: "all", label: "全部状态" },
@@ -70,7 +54,6 @@ const ownerTypeOptions = [
 
 type TicketsPageProps = {
   refreshSignal?: number;
-  onTicketMutated?: () => void;
 };
 
 export function TicketsPage(props: TicketsPageProps) {
@@ -85,34 +68,16 @@ export function TicketsPage(props: TicketsPageProps) {
   const [selectedTicket, setSelectedTicket] = useState<AdminSupportTicketDetailDto | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [replyDraft, setReplyDraft] = useState("");
-  const [replyAttachment, setReplyAttachment] = useState<File | null>(null);
-  const [attachmentMaxBytes, setAttachmentMaxBytes] = useState(DEFAULT_ADMIN_TICKET_ATTACHMENT_MAX_BYTES);
-  const [replySaving, setReplySaving] = useState(false);
-  const [statusChanging, setStatusChanging] = useState<string | null>(null);
   const [previewAttachment, setPreviewAttachment] = useState<TicketAttachmentPreview | null>(null);
   const selectedTicketIdRef = useRef<string | null>(null);
   const ticketListRequestSeqRef = useRef(0);
   const detailRequestSeqRef = useRef(0);
   const ticketListLoadingSeqRef = useRef<number | null>(null);
   const ticketDetailLoadingSeqRef = useRef<number | null>(null);
-  const replySavingRef = useRef(false);
-  const statusChangingRef = useRef<string | null>(null);
-  const replyAttachmentResetRef = useRef<() => void>(null);
 
   useEffect(() => {
     void loadTickets();
-    void loadUploadLimits();
   }, []);
-
-  async function loadUploadLimits() {
-    try {
-      const limits = await fetchAdminUploadLimits();
-      setAttachmentMaxBytes(limits.supportTicketAttachmentMaxBytes || DEFAULT_ADMIN_TICKET_ATTACHMENT_MAX_BYTES);
-    } catch {
-      setAttachmentMaxBytes(DEFAULT_ADMIN_TICKET_ATTACHMENT_MAX_BYTES);
-    }
-  }
 
   useEffect(() => {
     if (!props.refreshSignal) {
@@ -133,14 +98,8 @@ export function TicketsPage(props: TicketsPageProps) {
     if (!selectedTicketId) {
       setSelectedTicket(null);
       setDetailError(null);
-      setReplyDraft("");
-      setReplyAttachment(null);
-      replyAttachmentResetRef.current?.();
       return;
     }
-    setReplyDraft("");
-    setReplyAttachment(null);
-    replyAttachmentResetRef.current?.();
     void loadTicketDetail(selectedTicketId);
   }, [selectedTicketId]);
 
@@ -248,144 +207,6 @@ export function TicketsPage(props: TicketsPageProps) {
     );
   }
 
-  function handleReplyAttachmentChange(file: File | null) {
-    if (!file) {
-      setReplyAttachment(null);
-      replyAttachmentResetRef.current?.();
-      return;
-    }
-    if (!file.type.startsWith("image/")) {
-      notifications.show({
-        color: "yellow",
-        title: "附件格式不支持",
-        message: "工单附件只支持图片文件。"
-      });
-      setReplyAttachment(null);
-      replyAttachmentResetRef.current?.();
-      return;
-    }
-    if (file.size > attachmentMaxBytes) {
-      notifications.show({
-        color: "yellow",
-        title: "附件过大",
-        message: `工单附件不能超过 ${formatUploadBytes(attachmentMaxBytes)}。`
-      });
-      setReplyAttachment(null);
-      return;
-    }
-    setReplyAttachment(file);
-  }
-
-  async function handleReply() {
-    if (replySavingRef.current || statusChangingRef.current) {
-      return;
-    }
-    const body = replyDraft.trim();
-    if (!selectedTicket || (!body && !replyAttachment)) {
-      return;
-    }
-    if (body.length > ADMIN_TICKET_REPLY_MAX_BODY_LENGTH) {
-      notifications.show({
-        color: "yellow",
-        title: "回复内容过长",
-        message: `回复内容不能超过 ${ADMIN_TICKET_REPLY_MAX_BODY_LENGTH} 字。`
-      });
-      return;
-    }
-
-    try {
-      replySavingRef.current = true;
-      setReplySaving(true);
-      const detail = replyAttachment
-        ? await replyAdminSupportTicketWithAttachment(selectedTicket.id, { body: body || null }, replyAttachment)
-        : await replyAdminSupportTicket(selectedTicket.id, { body });
-      detailRequestSeqRef.current += 1;
-      ticketListRequestSeqRef.current += 1;
-      const stillSelected = selectedTicketIdRef.current === detail.id;
-      if (stillSelected) {
-        setSelectedTicket(detail);
-        setReplyDraft("");
-        setReplyAttachment(null);
-        replyAttachmentResetRef.current?.();
-      }
-      upsertTicketSummary(detail);
-      props.onTicketMutated?.();
-      if (detail.attachmentUploadStatus === "failed") {
-        notifications.show({
-          color: "yellow",
-          title: "附件上传失败",
-          message: `文字回复已保存，附件上传失败：${
-            summarizeAdminDiagnosticMessage(detail.attachmentUploadError, "附件上传失败，请检查图床配置或稍后重试。") ?? "请稍后重试"
-          }`
-        });
-      } else {
-        notifications.show({
-          color: "green",
-          title: "工单",
-          message: "回复已发送"
-        });
-      }
-    } catch (reason) {
-      const message = readError(reason, "发送回复失败");
-      const uncertain = isPotentiallyCompletedMutationFailure(message);
-      const attachmentUploadFailed = Boolean(replyAttachment) && !uncertain && isSupportTicketAttachmentUploadFailure(message);
-      notifications.show({
-        color: uncertain ? "yellow" : "red",
-        title: uncertain ? "回复状态不确定" : attachmentUploadFailed ? "附件上传失败" : "工单",
-        message: uncertain
-          ? buildTicketReplyUncertainMessage(message)
-          : attachmentUploadFailed
-            ? buildTicketAttachmentFailureMessage(message)
-            : message
-      });
-      if (uncertain && selectedTicket) {
-        void loadTickets({ silent: true });
-        void loadTicketDetail(selectedTicket.id, { silent: true });
-      }
-    } finally {
-      replySavingRef.current = false;
-      setReplySaving(false);
-    }
-  }
-
-  async function handleStatusAction(ticket: AdminSupportTicketSummaryDto | AdminSupportTicketDetailDto, next: "close" | "reopen") {
-    if (statusChangingRef.current || replySavingRef.current) {
-      return;
-    }
-    try {
-      statusChangingRef.current = ticket.id;
-      setStatusChanging(ticket.id);
-      const detail = next === "close" ? await closeAdminSupportTicket(ticket.id) : await reopenAdminSupportTicket(ticket.id);
-      detailRequestSeqRef.current += 1;
-      ticketListRequestSeqRef.current += 1;
-      if (selectedTicketIdRef.current === detail.id) {
-        setSelectedTicket(detail);
-      }
-      upsertTicketSummary(detail);
-      props.onTicketMutated?.();
-      notifications.show({
-        color: "green",
-        title: "工单",
-        message: next === "close" ? "工单已关闭" : "工单已重新打开"
-      });
-    } catch (reason) {
-      const message = readError(reason, next === "close" ? "关闭工单失败" : "重开工单失败");
-      const uncertain = isPotentiallyCompletedMutationFailure(message);
-      notifications.show({
-        color: uncertain ? "yellow" : "red",
-        title: uncertain ? "工单状态不确定" : "工单",
-        message: uncertain ? buildUncertainMutationMessage("工单操作") : message
-      });
-      if (uncertain) {
-        void loadTickets({ silent: true });
-        void loadTicketDetail(ticket.id, { silent: true });
-      }
-    } finally {
-      statusChangingRef.current = null;
-      setStatusChanging(null);
-    }
-  }
-
   const orderedMessages = useMemo(
     () =>
       [...(selectedTicket?.messages ?? [])].sort(
@@ -393,13 +214,14 @@ export function TicketsPage(props: TicketsPageProps) {
       ),
     [selectedTicket?.messages]
   );
-  const replyClosed = !selectedTicket || selectedTicket.status === "closed";
-  const canSendReply = Boolean(selectedTicket && selectedTicket.status !== "closed" && (replyDraft.trim() || replyAttachment));
 
   return (
     <Stack gap="lg">
       <SectionCard searchValue={keyword} onSearchChange={setKeyword}>
         <Stack gap="md">
+          <Alert color="blue" variant="light" className="admin-tickets-readonly-notice">
+            {LEGACY_TICKETS_READ_ONLY_NOTICE}
+          </Alert>
           <Group align="end" wrap="wrap">
             <Select
               label="状态"
@@ -514,35 +336,9 @@ export function TicketsPage(props: TicketsPageProps) {
                         </Text>
                       ) : null}
                     </div>
-                    <Group gap="xs">
-                      {selectedTicket ? (
-                        <StatusBadge color={ticketStatusColor(selectedTicket.status)} label={translateTicketStatus(selectedTicket.status)} />
-                      ) : null}
-                      {selectedTicket ? (
-                        selectedTicket.status === "closed" ? (
-                          <Button
-                            variant="default"
-                            size="xs"
-                            loading={statusChanging === selectedTicket.id}
-                            disabled={replySaving || (statusChanging !== null && statusChanging !== selectedTicket.id)}
-                            onClick={() => void handleStatusAction(selectedTicket, "reopen")}
-                          >
-                            重开工单
-                          </Button>
-                        ) : (
-                          <Button
-                            variant="default"
-                            color="red"
-                            size="xs"
-                            loading={statusChanging === selectedTicket.id}
-                            disabled={replySaving || (statusChanging !== null && statusChanging !== selectedTicket.id)}
-                            onClick={() => void handleStatusAction(selectedTicket, "close")}
-                          >
-                            关闭工单
-                          </Button>
-                        )
-                      ) : null}
-                    </Group>
+                    {selectedTicket ? (
+                      <StatusBadge color={ticketStatusColor(selectedTicket.status)} label={translateTicketStatus(selectedTicket.status)} />
+                    ) : null}
                   </div>
 
                   {detailError ? (
@@ -557,16 +353,6 @@ export function TicketsPage(props: TicketsPageProps) {
                     <Text c="dimmed">请选择左侧工单查看详情。</Text>
                   ) : (
                     <>
-                      {selectedTicket.attachmentUploadStatus === "failed" ? (
-                        <Alert color="yellow" variant="light">
-                          文字回复已保存，附件上传失败：
-                          {summarizeAdminDiagnosticMessage(
-                            selectedTicket.attachmentUploadError,
-                            "请检查图床配置或稍后重试。"
-                          )}
-                        </Alert>
-                      ) : null}
-
                       <div className="admin-ticket-summary">
                         <Paper withBorder radius="lg" p="md">
                           <Text size="xs" c="dimmed">标题</Text>
@@ -642,65 +428,6 @@ export function TicketsPage(props: TicketsPageProps) {
                         </div>
                       </Stack>
 
-                      <Stack gap="sm" className="admin-ticket-reply">
-                        <Group justify="space-between" align="center">
-                          <Title order={5}>回复</Title>
-                          <Text size="xs" c="dimmed">
-                            {replyDraft.length} 字
-                          </Text>
-                        </Group>
-                        <Textarea
-                          minRows={3}
-                          placeholder={selectedTicket.status === "closed" ? "工单已关闭，请先重开再回复。" : "输入回复内容"}
-                          value={replyDraft}
-                          onChange={(event) => setReplyDraft(event.currentTarget.value)}
-                          disabled={replyClosed}
-                        />
-                        <Group justify="space-between" align="center" wrap="wrap" className="admin-ticket-reply__toolbar">
-                          <Group gap="xs" className="admin-ticket-attachment-actions">
-                            {replyAttachment ? (
-                              <Button
-                                size="xs"
-                                variant="light"
-                                rightSection={<IconX size={14} />}
-                                className="admin-ticket-attachment-pill"
-                                onClick={() => {
-                                  setReplyAttachment(null);
-                                  replyAttachmentResetRef.current?.();
-                                }}
-                              >
-                                {replyAttachment.name}
-                              </Button>
-                            ) : null}
-                            <FileButton
-                              resetRef={replyAttachmentResetRef}
-                              onChange={handleReplyAttachmentChange}
-                              accept="image/png,image/jpeg,image/webp,image/gif"
-                            >
-                              {(fileButtonProps) => (
-                                <Button
-                                  {...fileButtonProps}
-                                  size="xs"
-                                  variant="default"
-                                  leftSection={<IconPaperclip size={14} />}
-                                  disabled={replySaving || replyClosed}
-                                >
-                                  添加附件
-                                </Button>
-                              )}
-                            </FileButton>
-                          </Group>
-                          <Button
-                            className="admin-ticket-send-button"
-                            leftSection={<IconSend size={15} />}
-                            onClick={() => void handleReply()}
-                            loading={replySaving}
-                            disabled={!canSendReply || replySaving || statusChanging !== null}
-                          >
-                            发送回复
-                          </Button>
-                        </Group>
-                      </Stack>
                     </>
                   )}
                 </Stack>
@@ -862,22 +589,4 @@ function readMessageAuthorLabel(
     return authorDisplayName;
   }
   return translateMessageRole(role);
-}
-
-function formatUploadBytes(value: number) {
-  if (value >= 1024 * 1024 * 1024) {
-    return `${(value / (1024 * 1024 * 1024)).toFixed(1).replace(/\.0$/, "")}GB`;
-  }
-  if (value >= 1024 * 1024) {
-    return `${(value / (1024 * 1024)).toFixed(1).replace(/\.0$/, "")}MB`;
-  }
-  return `${value}B`;
-}
-
-function buildTicketReplyUncertainMessage(message: string) {
-  return `${message} 请求没有返回确认结果，回复可能已保存；请刷新工单详情确认，避免重复提交。`;
-}
-
-function buildTicketAttachmentFailureMessage(message: string) {
-  return `${message} 请求没有返回成功结果；如果工单里没有出现新回复，请先发送纯文字回复或调整附件后重试。`;
 }

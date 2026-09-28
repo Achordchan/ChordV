@@ -340,39 +340,6 @@ body {
   object-fit: contain;
 }
 
-.admin-ticket-reply {
-  flex: 0 0 auto;
-  padding-top: 10px;
-  border-top: 1px solid rgba(148, 163, 184, 0.18);
-}
-
-.admin-ticket-reply .mantine-Textarea-input {
-  min-height: 92px;
-}
-
-.admin-ticket-reply__toolbar {
-  row-gap: 8px;
-}
-
-.admin-ticket-attachment-actions {
-  flex: 1 1 260px;
-  min-width: 0;
-}
-
-.admin-ticket-send-button {
-  flex: 0 0 auto;
-}
-
-.admin-ticket-attachment-pill {
-  max-width: 280px;
-}
-
-.admin-ticket-attachment-pill .mantine-Button-label {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 @media (max-width: 1080px) {
   .admin-tickets-workspace,
   .admin-ticket-summary {
@@ -426,27 +393,6 @@ body {
   .admin-section-card-search {
     max-width: none;
     width: 100%;
-  }
-
-  .admin-ticket-reply__toolbar {
-    align-items: stretch !important;
-  }
-
-  .admin-ticket-attachment-actions,
-  .admin-ticket-send-button {
-    width: 100%;
-  }
-
-  .admin-ticket-attachment-actions {
-    flex: 1 1 100%;
-  }
-
-  .admin-ticket-attachment-actions > button {
-    flex: 1 1 auto;
-  }
-
-  .admin-ticket-attachment-pill {
-    max-width: 100%;
   }
 }
 

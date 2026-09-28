@@ -788,28 +788,17 @@ async function main() {
         body: { ok: true, query: { path: "tests/uat.png", folder: "false" } }
       }
     );
-    assert.deepEqual(
-      await requestMultipartJson(
-        baseUrl,
-        "/api/admin/tickets/ticket_1/attachments",
-        { body: "带附件回复" },
-        "ticket-attachment.png",
-        "png",
-        "image/png"
-      ),
-      {
-        status: 201,
-        body: {
-          id: "ticket_1",
-          body: { body: "带附件回复" },
-          file: {
-            originalname: "ticket-attachment.png",
-            mimetype: "image/png",
-            size: 3
-          }
-        }
-      }
+    // 自建工单只读：带附件回复在守卫阶段就被拒绝，不会进入上传或服务层。
+    const adminTicketAttachment = await requestMultipartJson(
+      baseUrl,
+      "/api/admin/tickets/ticket_1/attachments",
+      { body: "带附件回复" },
+      "ticket-attachment.png",
+      "png",
+      "image/png"
     );
+    assert.equal(adminTicketAttachment.status, 410);
+    assert.equal((adminTicketAttachment.body as { message?: string }).message, "工单系统已迁移到 Achord Connect，这里仅保留历史记录，只读。");
     const clientSse = await requestSse(baseUrl, "/api/client/events/stream", "Bearer user-test-token", "client_event_0");
     assert.equal(clientSse.status, 200);
     assert.match(clientSse.contentType, /text\/event-stream/);
@@ -827,29 +816,17 @@ async function main() {
     assert.match(clientSseAlias.contentType, /text\/event-stream/);
     assert.match(clientSseAlias.body, /event: ticket_updated/);
     assert.deepEqual(clientSseObservedInput, { authorization: "Bearer user-test-token", lastEventId: "client_event_alias_0" });
-    assert.deepEqual(
-      await requestMultipartJson(
-        baseUrl,
-        "/api/client/tickets/ticket_1/attachments",
-        { body: "client attachment reply" },
-        "client-ticket.png",
-        "png",
-        "image/png",
-        "Bearer user-test-token"
-      ),
-      {
-        status: 201,
-        body: {
-          id: "ticket_1",
-          body: { body: "client attachment reply" },
-          file: {
-            originalname: "client-ticket.png",
-            mimetype: "image/png",
-            size: 3
-          }
-        }
-      }
+    const clientTicketAttachment = await requestMultipartJson(
+      baseUrl,
+      "/api/client/tickets/ticket_1/attachments",
+      { body: "client attachment reply" },
+      "client-ticket.png",
+      "png",
+      "image/png",
+      "Bearer user-test-token"
     );
+    assert.equal(clientTicketAttachment.status, 410);
+    assert.equal((clientTicketAttachment.body as { message?: string }).message, "工单系统已升级，请更新到最新版客户端后提交工单");
     assert.deepEqual(
       await requestMultipartJson(
         baseUrl,
@@ -1020,26 +997,6 @@ async function main() {
         route: "image-bed-file-delete",
         value: "files",
         body: { path: "tests/uat.png", folder: "false" }
-      },
-      {
-        route: "ticket-attachment",
-        value: "ticket_1",
-        body: { body: "带附件回复", adminId: "admin_1" },
-        file: {
-          originalname: "ticket-attachment.png",
-          mimetype: "image/png",
-          size: 3
-        }
-      },
-      {
-        route: "client-ticket-attachment",
-        value: "ticket_1",
-        body: { body: "client attachment reply", authorization: "Bearer user-test-token" },
-        file: {
-          originalname: "client-ticket.png",
-          mimetype: "image/png",
-          size: 3
-        }
       },
       {
         route: "runtime-upload",

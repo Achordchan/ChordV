@@ -284,7 +284,7 @@ const sectionMeta: Record<SectionKey, { label: string; icon: ReactNode }> = {
     icon: <IconUser size={18} />
   },
   tickets: {
-    label: "工单中心",
+    label: "历史工单",
     icon: <IconMessageCircle size={18} />
   },
   nodes: {
@@ -314,14 +314,8 @@ const sectionGroups: Array<{ title: string; sections: SectionKey[] }> = [
   { title: "系统", sections: ["system"] }
 ];
 
-function readSectionNavBadge(sectionKey: SectionKey, waitingAdminTicketCount: number, backgroundSyncQueueCount: number) {
-  if (sectionKey === "tickets" && waitingAdminTicketCount > 0) {
-    return (
-      <Badge size="sm" color="red" variant="filled" radius="xl">
-        {waitingAdminTicketCount > 99 ? "99+" : waitingAdminTicketCount}
-      </Badge>
-    );
-  }
+// 自建工单已迁移到 Achord Connect 且只读，“待回复”数量不再需要处理，不在导航上提示。
+function readSectionNavBadge(sectionKey: SectionKey, backgroundSyncQueueCount: number) {
   if (sectionKey === "nodes" && backgroundSyncQueueCount > 0) {
     return (
       <Badge size="sm" color="yellow" variant="light" radius="xl">
@@ -991,10 +985,6 @@ export function App() {
     return loadSectionData(dataSection, { force: true, silent: true }).catch(() => {
       // Silent background refreshes are opportunistic; explicit actions report refresh failures separately.
     });
-  }
-
-  function refreshDashboardAfterTicketMutation() {
-    void refreshDashboard({ silent: true }).catch(() => undefined);
   }
 
   function applyListPatch<K extends SnapshotListKey>(key: K, value: AdminSnapshotDto[K]) {
@@ -2862,7 +2852,6 @@ export function App() {
 
   const backgroundSyncQueueCount =
     snapshot.leaseRevocationJobs.length + sumNodeCommandSummaries(snapshot.nodeCommandQueue.summaries, "nodes");
-  const waitingAdminTicketCount = snapshot.dashboard.waitingAdminTickets;
   const dataSection = section === "users" ? "subscriptions" : section;
   const parentLoadsSection = ["overview", "users", "subscriptions", "plans", "nodes", "announcements", "policies", "system"].includes(section);
   const awaitingFirstData = parentLoadsSection && !displayReadySections.has(dataSection);
@@ -2898,7 +2887,7 @@ export function App() {
                         active={section === key}
                         label={item.label}
                         leftSection={item.icon}
-                        rightSection={readSectionNavBadge(key, waitingAdminTicketCount, backgroundSyncQueueCount)}
+                        rightSection={readSectionNavBadge(key, backgroundSyncQueueCount)}
                         onClick={() => {
                           selectSection(key);
                         }}
@@ -2997,7 +2986,6 @@ export function App() {
                   selectSection("users");
                 }}
                 onOpenNodes={() => selectSection("nodes")}
-                onOpenTickets={() => selectSection("tickets")}
                 onOpenSyncQueue={() => openLeaseRevocationQueue()}
               />
             ) : null}
@@ -3119,7 +3107,7 @@ export function App() {
             ) : null}
 
             {section === "tickets" ? (
-              <TicketsPage refreshSignal={ticketRefreshSignal} onTicketMutated={refreshDashboardAfterTicketMutation} />
+              <TicketsPage refreshSignal={ticketRefreshSignal} />
             ) : null}
 
             <AgentNodeCreateModal

@@ -14,6 +14,8 @@ import { resolveTrustProxy } from "./trust-proxy";
 import { forceHttpsMiddleware } from "./https-enforcement";
 import { LoggingExceptionFilter } from "./logging-exception.filter";
 import { assertAgentTokenPepperReadyForProduction } from "./modules/agent/agent.service";
+import type { NestExpressApplication } from "@nestjs/platform-express";
+import { ACHORD_CONNECT_WEBHOOK_MAX_BODY_BYTES, isAchordConnectWebhookRequest } from "./modules/support/achord-connect";
 
 async function bootstrap() {
   await assertPrismaMigrationBaselineOrExit();
@@ -23,7 +25,7 @@ async function bootstrap() {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
   // Include configuration reads in the same drain/admission boundary as routes.
   app.use(promotionAdmission.middleware);
   app.use(workLifecycle.middleware);
@@ -32,6 +34,9 @@ async function bootstrap() {
     if (req.path.startsWith("/api/health")) { next(); return; }
     void sites.get().then(config => siteAddressContext.run(config, next)).catch(next);
   });
+  // Achord Connect Webhook 要用原始请求体验签：只为这一条路径把正文读成 Buffer，
+  // 必须在 Nest 默认的 JSON 解析器（listen 时注册）之前挂上；其他路径的解析与大小限制不变。
+  app.useBodyParser("raw", { type: isAchordConnectWebhookRequest, limit: ACHORD_CONNECT_WEBHOOK_MAX_BODY_BYTES });
   app.enableCors({
       origin: resolveCorsOrigin,
       credentials: true,

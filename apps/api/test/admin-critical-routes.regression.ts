@@ -640,13 +640,17 @@ async function main() {
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/node_1", { method: "DELETE" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/tickets", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/tickets/ticket_1", { method: "GET" })).status, 200);
-    assert.equal((await requestJson(baseUrl, "/api/admin/tickets/ticket_1/replies", { body: { body: "admin reply" } })).status, 201);
-    assert.equal(
-      (await requestJson(baseUrl, "/api/admin/tickets/ticket_1/attachments", { body: { body: "admin attachment reply" } })).status,
-      201
-    );
-    assert.equal((await requestJson(baseUrl, "/api/admin/tickets/ticket_1/close")).status, 201);
-    assert.equal((await requestJson(baseUrl, "/api/admin/tickets/ticket_1/reopen")).status, 201);
+    // 自建工单已迁移到 Achord Connect：后台对旧工单的写接口一律 410，不进入服务层。
+    for (const [path, body] of [
+      ["/api/admin/tickets/ticket_1/replies", { body: "admin reply" }],
+      ["/api/admin/tickets/ticket_1/attachments", { body: "admin attachment reply" }],
+      ["/api/admin/tickets/ticket_1/close", undefined],
+      ["/api/admin/tickets/ticket_1/reopen", undefined]
+    ] as const) {
+      const response = await requestJson(baseUrl, path, { body });
+      assert.equal(response.status, 410, `${path} should be read-only`);
+      assert.equal(response.body.message, "工单系统已迁移到 Achord Connect，这里仅保留历史记录，只读。");
+    }
     assert.equal((await requestJson(baseUrl, "/api/admin/announcements", { method: "GET" })).status, 200);
     assert.equal(
       (await requestJson(baseUrl, "/api/admin/announcements", {
@@ -807,20 +811,17 @@ async function main() {
     assert.equal((await requestJson(baseUrl, "/api/client/tickets", { method: "GET", authorization: "Bearer user-test-token" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/client/tickets/ticket_1", { method: "GET", authorization: "Bearer user-test-token" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/client/tickets/ticket_1/read", { authorization: "Bearer user-test-token" })).status, 201);
-    assert.equal(
-      (await requestJson(baseUrl, "/api/client/tickets", {
-        authorization: "Bearer user-test-token",
-        body: { title: "UAT ticket", body: "client body" }
-      })).status,
-      201
-    );
-    assert.equal(
-      (await requestJson(baseUrl, "/api/client/tickets/ticket_1/replies", {
-        authorization: "Bearer user-test-token",
-        body: { body: "client reply" }
-      })).status,
-      201
-    );
+    // 旧版客户端新建、回复工单：410 + 明确的中文提示（旧客户端原样展示 4xx 的中文 message）。
+    for (const [path, body] of [
+      ["/api/client/tickets", { title: "UAT ticket", body: "client body" }],
+      ["/api/client/tickets/ticket_1/replies", { body: "client reply" }],
+      ["/api/client/tickets/ticket_1/attachments/upload", undefined],
+      ["/api/client/tickets/ticket_1/attachments", { body: "client attachment reply" }]
+    ] as const) {
+      const response = await requestJson(baseUrl, path, { authorization: "Bearer user-test-token", body });
+      assert.equal(response.status, 410, `${path} should reject legacy ticket writes`);
+      assert.equal(response.body.message, "工单系统已升级，请更新到最新版客户端后提交工单");
+    }
     assert.equal(
       (await requestJson(baseUrl, "/api/client/session/connect", {
         authorization: "Bearer user-test-token",
@@ -938,14 +939,6 @@ async function main() {
         { route: "node-delete", value: "node_1" },
         { route: "tickets-list", value: "all" },
         { route: "ticket-detail", value: "ticket_1" },
-        { route: "ticket-reply", value: "ticket_1", body: { body: "admin reply", adminId: "admin_1" } },
-        {
-          route: "ticket-reply-attachment",
-          value: "ticket_1",
-          body: { body: "admin attachment reply", hasFile: false, adminId: "admin_1" }
-        },
-        { route: "ticket-close", value: "ticket_1" },
-        { route: "ticket-reopen", value: "ticket_1" },
         { route: "announcements-list", value: "all" },
         { route: "announcement-create", value: "new", body: { title: "UAT announcement", body: "body", level: "info" } },
         { route: "announcement-update", value: "announcement_1", body: { isActive: false } },
@@ -1041,8 +1034,6 @@ async function main() {
         "client-tickets-list",
         "client-ticket-detail",
         "client-ticket-read",
-        "client-ticket-create",
-        "client-ticket-reply",
         "client-session-connect",
         "client-session-heartbeat",
         "client-session-disconnect"
