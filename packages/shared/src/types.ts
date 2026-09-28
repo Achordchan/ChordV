@@ -847,6 +847,8 @@ export interface DashboardSnapshotDto {
   openTickets: number;
   waitingAdminTickets: number;
   closedTickets: number;
+  /** 已启用新工单系统（Achord Connect）：自建工单转为只读存档，“待回复”不再是待处理事项。 */
+  legacyTicketsReadOnly?: boolean;
 }
 
 export interface AdminSnapshotDto {
@@ -1137,6 +1139,43 @@ export interface ClientSupportStatusDto {
   enabled: boolean;
   unreadCount: number;
   supportOrigin: string | null;
+}
+
+/** 后台“工单系统接入”设置。两个密钥只写不读：接口只返回是否已设置，永不返回密钥本身。 */
+export interface AdminSupportIntegrationConfigDto {
+  /** 工单系统地址（HTTPS 站点来源，如 https://support.achord.cn）；未设置为 null。 */
+  baseUrl: string | null;
+  clientId: string | null;
+  hasClientSecret: boolean;
+  hasWebhookSecret: boolean;
+  enabled: boolean;
+  /** 需要填到 Achord Connect 连接配置里的 Webhook 地址，由本站主地址推算。 */
+  webhookUrl: string;
+  updatedAt: string | null;
+}
+
+/**
+ * 保存“工单系统接入”设置。字段省略表示保持不变；
+ * 两个密钥传非空字符串表示替换，传 null 表示清除。
+ */
+export interface UpdateAdminSupportIntegrationConfigInputDto {
+  baseUrl?: string | null;
+  clientId?: string | null;
+  clientSecret?: string | null;
+  webhookSecret?: string | null;
+  enabled?: boolean;
+}
+
+export interface AdminSupportIntegrationTestItemDto {
+  ok: boolean;
+  message: string;
+}
+
+/** “测试连接”的结果：分别检查创建工单入口与未读查询。 */
+export interface AdminSupportIntegrationTestResultDto {
+  ok: boolean;
+  launch: AdminSupportIntegrationTestItemDto;
+  unread: AdminSupportIntegrationTestItemDto;
 }
 
 export interface CreateSubscriptionInputDto {

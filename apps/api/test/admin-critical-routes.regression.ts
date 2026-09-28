@@ -18,6 +18,8 @@ import { DownloadMirrorService } from "../src/modules/common/download-mirror.ser
 import { ImageBedService } from "../src/modules/common/image-bed.service";
 import { RuntimeComponentsService } from "../src/modules/common/runtime-components.service";
 import { ClientService } from "../src/modules/client/client.service";
+import { PrismaService } from "../src/modules/common/prisma.service";
+import { LegacyAdminTicketWriteGuard, LegacyClientTicketWriteGuard } from "../src/modules/common/legacy-support-tickets.guard";
 import {
   ChangeSubscriptionPlanDto,
   CreateAnnouncementDto,
@@ -71,6 +73,22 @@ Reflect.defineMetadata("design:paramtypes", [ClientService, RuntimeComponentsSer
 Reflect.defineMetadata("design:paramtypes", [ReportNodeProbesDto, String], ClientController.prototype, "reportNodeProbes");
 Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
 Reflect.defineMetadata("design:paramtypes", [AuthSessionService], ClientAuthGuard);
+
+// 旧工单写接口以“工单系统接入”是否启用为切换点；守卫只读取这一行设置。
+const supportIntegrationSetting = { enabled: false };
+const prismaStub = {
+  systemSetting: {
+    findUnique: async ({ where }: { where: { key: string } }) =>
+      where.key === "achord-connect" && supportIntegrationSetting.enabled
+        ? {
+            value: { enabled: true, baseUrl: "https://support.example.test", clientId: "ac_fake", clientSecret: "acs_fake", webhookSecret: "whsec_fake" },
+            updatedAt: new Date()
+          }
+        : null
+  }
+};
+Reflect.defineMetadata("design:paramtypes", [PrismaService], LegacyClientTicketWriteGuard);
+Reflect.defineMetadata("design:paramtypes", [PrismaService], LegacyAdminTicketWriteGuard);
 
 function toPlainJson(value: unknown) {
   return JSON.parse(JSON.stringify(value)) as unknown;
@@ -287,6 +305,7 @@ const imageBedServiceStub = {
   providers: [
     AdminAuthGuard,
     ClientAuthGuard,
+    { provide: PrismaService, useValue: prismaStub },
     {
       provide: AuthSessionService,
       useValue: {
@@ -1047,6 +1066,43 @@ async function main() {
         "client-session-heartbeat",
         "client-session-disconnect"
       ]
+    );
+
+    // 启用新工单系统后：旧工单的查看照常，写接口一律 410 且不进入服务层。
+    supportIntegrationSetting.enabled = true;
+    const callsBeforeReadOnly = calls.length;
+    assert.equal((await requestJson(baseUrl, "/api/admin/tickets/ticket_1", { method: "GET" })).status, 200);
+    assert.equal((await requestJson(baseUrl, "/api/client/tickets/ticket_1", { method: "GET", authorization: "Bearer user-test-token" })).status, 200);
+    assert.equal((await requestJson(baseUrl, "/api/client/tickets/ticket_1/read", { authorization: "Bearer user-test-token" })).status, 201);
+    for (const [path, body] of [
+      ["/api/admin/tickets/ticket_1/replies", { body: "admin reply" }],
+      ["/api/admin/tickets/ticket_1/attachments", { body: "admin attachment reply" }],
+      ["/api/admin/tickets/ticket_1/close", undefined],
+      ["/api/admin/tickets/ticket_1/reopen", undefined]
+    ] as const) {
+      const response = await requestJson(baseUrl, path, { body });
+      assert.equal(response.status, 410, `${path} should be read-only once Achord Connect is enabled`);
+      assert.equal(response.body.message, "工单系统已迁移到 Achord Connect，这里仅保留历史记录，只读。");
+    }
+    for (const [path, body] of [
+      ["/api/client/tickets", { title: "UAT ticket", body: "client body" }],
+      ["/api/client/tickets/ticket_1/replies", { body: "client reply" }],
+      ["/api/client/tickets/ticket_1/attachments/upload", undefined],
+      ["/api/client/tickets/ticket_1/attachments", { body: "client attachment reply" }]
+    ] as const) {
+      const response = await requestJson(baseUrl, path, { authorization: "Bearer user-test-token", body });
+      assert.equal(response.status, 410, `${path} should reject legacy ticket writes once Achord Connect is enabled`);
+      assert.equal(response.body.message, "工单系统已升级，请更新到最新版客户端后提交工单");
+    }
+    assert.equal(
+      (await requestJson(baseUrl, "/api/client/tickets", { authorization: "Bearer bad-token", body: { title: "t", body: "b" } })).status !== 410,
+      true,
+      "认证未通过时仍按认证问题处理，而不是提示升级"
+    );
+    assert.deepEqual(
+      calls.slice(callsBeforeReadOnly).map((call) => call.route),
+      ["ticket-detail", "client-ticket-detail", "client-ticket-read"],
+      "只读后写接口不能进入服务层"
     );
   } finally {
     expressApp.response.download = originalDownload;

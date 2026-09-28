@@ -51,6 +51,9 @@ type TicketAttachmentPreview = {
 };
 type TicketAttachmentImageState = "loading" | "loaded" | "failed";
 
+/** 启用新工单系统（Achord Connect）后，自建工单只保留历史记录的查看与搜索，不能回复或修改状态。 */
+export const LEGACY_TICKETS_READ_ONLY_NOTICE = "工单系统已迁移到 Achord Connect，这里仅保留历史记录，只读。";
+
 const ADMIN_TICKET_REPLY_MAX_BODY_LENGTH = 4000;
 const DEFAULT_ADMIN_TICKET_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 
@@ -70,6 +73,8 @@ const ownerTypeOptions = [
 
 type TicketsPageProps = {
   refreshSignal?: number;
+  /** 已启用新工单系统：只读存档，隐藏回复、附件、关闭、重开（后台接口同样拒绝）。 */
+  readOnly?: boolean;
   onTicketMutated?: () => void;
 };
 
@@ -277,7 +282,7 @@ export function TicketsPage(props: TicketsPageProps) {
   }
 
   async function handleReply() {
-    if (replySavingRef.current || statusChangingRef.current) {
+    if (replySavingRef.current || statusChangingRef.current || props.readOnly) {
       return;
     }
     const body = replyDraft.trim();
@@ -349,7 +354,7 @@ export function TicketsPage(props: TicketsPageProps) {
   }
 
   async function handleStatusAction(ticket: AdminSupportTicketSummaryDto | AdminSupportTicketDetailDto, next: "close" | "reopen") {
-    if (statusChangingRef.current || replySavingRef.current) {
+    if (statusChangingRef.current || replySavingRef.current || props.readOnly) {
       return;
     }
     try {
@@ -400,6 +405,11 @@ export function TicketsPage(props: TicketsPageProps) {
     <Stack gap="lg">
       <SectionCard searchValue={keyword} onSearchChange={setKeyword}>
         <Stack gap="md">
+          {props.readOnly ? (
+            <Alert color="blue" variant="light" className="admin-tickets-readonly-notice">
+              {LEGACY_TICKETS_READ_ONLY_NOTICE}
+            </Alert>
+          ) : null}
           <Group align="end" wrap="wrap">
             <Select
               label="状态"
@@ -518,7 +528,7 @@ export function TicketsPage(props: TicketsPageProps) {
                       {selectedTicket ? (
                         <StatusBadge color={ticketStatusColor(selectedTicket.status)} label={translateTicketStatus(selectedTicket.status)} />
                       ) : null}
-                      {selectedTicket ? (
+                      {selectedTicket && !props.readOnly ? (
                         selectedTicket.status === "closed" ? (
                           <Button
                             variant="default"
@@ -642,7 +652,7 @@ export function TicketsPage(props: TicketsPageProps) {
                         </div>
                       </Stack>
 
-                      <Stack gap="sm" className="admin-ticket-reply">
+                      {props.readOnly ? null : <Stack gap="sm" className="admin-ticket-reply">
                         <Group justify="space-between" align="center">
                           <Title order={5}>回复</Title>
                           <Text size="xs" c="dimmed">
@@ -700,7 +710,7 @@ export function TicketsPage(props: TicketsPageProps) {
                             发送回复
                           </Button>
                         </Group>
-                      </Stack>
+                      </Stack>}
                     </>
                   )}
                 </Stack>

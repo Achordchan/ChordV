@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 
 const source = readFileSync(resolve(import.meta.dirname, "../src/pages/TicketsPage.tsx"), "utf8");
 const styles = readFileSync(resolve(import.meta.dirname, "../src/styles.css"), "utf8");
+const app = readFileSync(resolve(import.meta.dirname, "../src/App.tsx"), "utf8");
+const overview = readFileSync(resolve(import.meta.dirname, "../src/pages/OverviewPage.tsx"), "utf8");
 
 function extractAsyncFunctionBody(functionName: string) {
   const signature = `async function ${functionName}`;
@@ -80,12 +82,12 @@ function testTicketStatusActionHandlesUncertainStateAndReleasesBusyState() {
 function testTicketReplyAndStatusActionsAreMutuallyExclusive() {
   assert.match(
     extractAsyncFunctionBody("handleReply"),
-    /if \(replySavingRef\.current \|\| statusChangingRef\.current\) {[\s\S]*?return;[\s\S]*?}/,
+    /if \(replySavingRef\.current \|\| statusChangingRef\.current \|\| props\.readOnly\) {[\s\S]*?return;[\s\S]*?}/,
     "ticket reply should not start while close/reopen is in flight"
   );
   assert.match(
     extractAsyncFunctionBody("handleStatusAction"),
-    /if \(statusChangingRef\.current \|\| replySavingRef\.current\) {[\s\S]*?return;[\s\S]*?}/,
+    /if \(statusChangingRef\.current \|\| replySavingRef\.current \|\| props\.readOnly\) {[\s\S]*?return;[\s\S]*?}/,
     "ticket close/reopen should not start while a reply is in flight"
   );
   assert.match(
@@ -100,7 +102,26 @@ function testTicketReplyAndStatusActionsAreMutuallyExclusive() {
   );
 }
 
+function testLegacyTicketsBecomeReadOnlyWhenAchordConnectEnabled() {
+  // 切换点是后台“工单系统接入”的启用开关（仪表台返回 legacyTicketsReadOnly）。
+  assert.match(app, /const legacyTicketsReadOnly = snapshot\.dashboard\.legacyTicketsReadOnly === true;/);
+  assert.match(app, /<TicketsPage refreshSignal=\{ticketRefreshSignal\} readOnly=\{legacyTicketsReadOnly\}/);
+  assert.match(app, /const waitingAdminTicketCount = legacyTicketsReadOnly \? 0 : snapshot\.dashboard\.waitingAdminTickets;/, "只读后导航不再提示待回复数量");
+  assert.match(overview, /\{snapshot\.dashboard\.legacyTicketsReadOnly \? null : <button onClick=\{props\.onOpenTickets\}>待回复工单/, "只读后仪表台不再把历史待回复当成待处理事项");
+  // 只读时显示提示，隐藏回复、附件、关闭、重开；处理函数也直接返回。
+  assert.match(source, /工单系统已迁移到 Achord Connect，这里仅保留历史记录，只读。/);
+  assert.match(source, /\{props\.readOnly \? \(\s*<Alert color="blue" variant="light" className="admin-tickets-readonly-notice">\s*\{LEGACY_TICKETS_READ_ONLY_NOTICE\}/);
+  assert.match(source, /\{selectedTicket && !props\.readOnly \? \(\s*selectedTicket\.status === "closed"/);
+  assert.match(source, /\{props\.readOnly \? null : <Stack gap="sm" className="admin-ticket-reply">/);
+  assert.match(extractAsyncFunctionBody("handleReply"), /if \(replySavingRef\.current \|\| statusChangingRef\.current \|\| props\.readOnly\) {/);
+  assert.match(extractAsyncFunctionBody("handleStatusAction"), /if \(statusChangingRef\.current \|\| replySavingRef\.current \|\| props\.readOnly\) {/);
+  // 查看与搜索保留。
+  assert.match(source, /fetchAdminSupportTicketDetail\(ticketId\)/);
+  assert.match(source, /<SectionCard searchValue=\{keyword\} onSearchChange=\{setKeyword\}>/);
+}
+
 testTicketAttachmentsOpenInPreviewModal();
+testLegacyTicketsBecomeReadOnlyWhenAchordConnectEnabled();
 testTicketAttachmentImagesExposeLoadingFailureAndRecoveryStates();
 testTicketAttachmentPreviewHasScopedStyles();
 testTicketReplyAlwaysReleasesBusyState();

@@ -50,6 +50,7 @@ export * from "./nodes";
 export * from "./plans";
 export * from "./policies";
 export * from "./subscriptions";
+export * from "./support-integration";
 export * from "./teams";
 export * from "./users";
 

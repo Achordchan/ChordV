@@ -315,6 +315,7 @@ const sectionGroups: Array<{ title: string; sections: SectionKey[] }> = [
 ];
 
 function readSectionNavBadge(sectionKey: SectionKey, waitingAdminTicketCount: number, backgroundSyncQueueCount: number) {
+  // 启用新工单系统后旧工单只读，调用方传 0，不再提示“待回复”。
   if (sectionKey === "tickets" && waitingAdminTicketCount > 0) {
     return (
       <Badge size="sm" color="red" variant="filled" radius="xl">
@@ -2862,7 +2863,8 @@ export function App() {
 
   const backgroundSyncQueueCount =
     snapshot.leaseRevocationJobs.length + sumNodeCommandSummaries(snapshot.nodeCommandQueue.summaries, "nodes");
-  const waitingAdminTicketCount = snapshot.dashboard.waitingAdminTickets;
+  const legacyTicketsReadOnly = snapshot.dashboard.legacyTicketsReadOnly === true;
+  const waitingAdminTicketCount = legacyTicketsReadOnly ? 0 : snapshot.dashboard.waitingAdminTickets;
   const dataSection = section === "users" ? "subscriptions" : section;
   const parentLoadsSection = ["overview", "users", "subscriptions", "plans", "nodes", "announcements", "policies", "system"].includes(section);
   const awaitingFirstData = parentLoadsSection && !displayReadySections.has(dataSection);
@@ -3119,7 +3121,7 @@ export function App() {
             ) : null}
 
             {section === "tickets" ? (
-              <TicketsPage refreshSignal={ticketRefreshSignal} onTicketMutated={refreshDashboardAfterTicketMutation} />
+              <TicketsPage refreshSignal={ticketRefreshSignal} readOnly={legacyTicketsReadOnly} onTicketMutated={refreshDashboardAfterTicketMutation} />
             ) : null}
 
             <AgentNodeCreateModal
@@ -3189,6 +3191,7 @@ export function App() {
               onOpenTasks={() => openLeaseRevocationQueue()}
               onOpenPolicies={() => { setPolicyDirty(false); setSettingsPolicyLoading(true); setSettingsPanel("policies"); }}
               onOpenImageBed={() => setSettingsPanel("imageBed")}
+              onSupportIntegrationChanged={refreshDashboardAfterTicketMutation}
               onLogout={() => void handleAdminLogout()}
             /> : null}
             </>}

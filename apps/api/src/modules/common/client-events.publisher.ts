@@ -68,6 +68,15 @@ export class ClientEventsPublisher {
     });
   }
 
+  /** 新工单系统（Achord Connect）里该用户的未读总数变化，推送给这位用户在线的客户端。 */
+  publishSupportUnreadUpdated(userId: string, supportUnreadCount: number) {
+    this.clientRuntimeEventsService.publishToUser(userId, {
+      type: "support_unread_updated",
+      occurredAt: new Date().toISOString(),
+      supportUnreadCount
+    });
+  }
+
   async publishVersionUpdated(
     platform?: PlatformTarget | null,
     channel: ReleaseChannel = "stable",

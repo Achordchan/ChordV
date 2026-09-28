@@ -15,6 +15,8 @@ import { RuntimeComponentsService } from "../src/modules/common/runtime-componen
 import { ClientController } from "../src/modules/client/client.controller";
 import { ClientService } from "../src/modules/client/client.service";
 import { DownloadsController } from "../src/modules/client/downloads.controller";
+import { PrismaService } from "../src/modules/common/prisma.service";
+import { LegacyAdminTicketWriteGuard, LegacyClientTicketWriteGuard } from "../src/modules/common/legacy-support-tickets.guard";
 
 type RouteCall = {
   route: string;
@@ -41,6 +43,22 @@ Reflect.defineMetadata("design:paramtypes", [DevDataService, RuntimeComponentsSe
 Reflect.defineMetadata("design:paramtypes", [ClientService, RuntimeComponentsService], ClientController);
 Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
 Reflect.defineMetadata("design:paramtypes", [AuthSessionService], ClientAuthGuard);
+
+// 旧工单写接口以“工单系统接入”是否启用为切换点；守卫只读取这一行设置。
+const supportIntegrationSetting = { enabled: false };
+const prismaStub = {
+  systemSetting: {
+    findUnique: async ({ where }: { where: { key: string } }) =>
+      where.key === "achord-connect" && supportIntegrationSetting.enabled
+        ? {
+            value: { enabled: true, baseUrl: "https://support.example.test", clientId: "ac_fake", clientSecret: "acs_fake", webhookSecret: "whsec_fake" },
+            updatedAt: new Date()
+          }
+        : null
+  }
+};
+Reflect.defineMetadata("design:paramtypes", [PrismaService], LegacyClientTicketWriteGuard);
+Reflect.defineMetadata("design:paramtypes", [PrismaService], LegacyAdminTicketWriteGuard);
 
 const devDataServiceStub = {
   retryAdminLeaseRevocationJob: async (jobId: string) => {
@@ -313,6 +331,7 @@ async function testAdminSseRouteMetadataAndAdminValidation() {
   providers: [
     AdminAuthGuard,
     ClientAuthGuard,
+    { provide: PrismaService, useValue: prismaStub },
     {
       provide: AuthSessionService,
       useValue: {
@@ -1077,6 +1096,32 @@ async function main() {
       { route: "runtime-verify", value: "component_1" },
       { route: "runtime-delete", value: "component_1" }
     ]);
+
+    // 启用新工单系统后，带附件回复在守卫阶段就被拒绝，不读取上传、不进入服务层。
+    supportIntegrationSetting.enabled = true;
+    const callsBeforeReadOnly = calls.length;
+    const adminTicketAttachment = await requestMultipartJson(
+      baseUrl,
+      "/api/admin/tickets/ticket_1/attachments",
+      { body: "带附件回复" },
+      "ticket-attachment.png",
+      "png",
+      "image/png"
+    );
+    assert.equal(adminTicketAttachment.status, 410);
+    assert.equal((adminTicketAttachment.body as { message?: string }).message, "工单系统已迁移到 Achord Connect，这里仅保留历史记录，只读。");
+    const clientTicketAttachment = await requestMultipartJson(
+      baseUrl,
+      "/api/client/tickets/ticket_1/attachments",
+      { body: "client attachment reply" },
+      "client-ticket.png",
+      "png",
+      "image/png",
+      "Bearer user-test-token"
+    );
+    assert.equal(clientTicketAttachment.status, 410);
+    assert.equal((clientTicketAttachment.body as { message?: string }).message, "工单系统已升级，请更新到最新版客户端后提交工单");
+    assert.equal(calls.length, callsBeforeReadOnly);
   } finally {
     expressApp.response.download = originalDownload;
     await app.close();

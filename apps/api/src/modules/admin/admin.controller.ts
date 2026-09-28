@@ -26,6 +26,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { AdminAuthGuard } from "../common/admin-auth.guard";
+import { LegacyAdminTicketWriteGuard } from "../common/legacy-support-tickets.guard";
 import { AdminRuntimeEventsService } from "../common/admin-runtime-events.service";
 import { AuthSessionService } from "../common/auth-session.service";
 import { DevDataService } from "../common/dev-data.service";
@@ -410,6 +411,7 @@ export class AdminController {
   }
 
   @Post("tickets/:ticketId/replies")
+  @UseGuards(LegacyAdminTicketWriteGuard)
   replySupportTicket(
     @Param("ticketId") ticketId: string,
     @Body() body: ReplySupportTicketDto,
@@ -419,6 +421,7 @@ export class AdminController {
   }
 
   @Post("tickets/:ticketId/attachments")
+  @UseGuards(LegacyAdminTicketWriteGuard)
   @UseInterceptors(
     UploadedTempFileCleanupInterceptor,
     FileInterceptor("file", {
@@ -443,11 +446,13 @@ export class AdminController {
   }
 
   @Post("tickets/:ticketId/close")
+  @UseGuards(LegacyAdminTicketWriteGuard)
   closeSupportTicket(@Param("ticketId") ticketId: string) {
     return this.devDataService.closeAdminSupportTicket(ticketId);
   }
 
   @Post("tickets/:ticketId/reopen")
+  @UseGuards(LegacyAdminTicketWriteGuard)
   reopenSupportTicket(@Param("ticketId") ticketId: string) {
     return this.devDataService.reopenAdminSupportTicket(ticketId);
   }

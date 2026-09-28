@@ -14956,8 +14956,13 @@ async function testAdminDashboardCountsOnlyPublishedActiveAnnouncements() {
 
 async function testAdminDashboardCountsWaitingUserTicketsAsOpen() {
   const ticketCountPayloads: Array<Record<string, any>> = [];
+  let supportIntegration: Record<string, unknown> | null = null;
   const service = createDevDataService({
     prisma: {
+      systemSetting: {
+        findUnique: async ({ where }: { where: { key: string } }) =>
+          where.key === "achord-connect" && supportIntegration ? { value: supportIntegration, updatedAt: new Date() } : null
+      },
       supportTicket: {
         count: async (payload: Record<string, any>) => {
           ticketCountPayloads.push(payload);
@@ -14981,7 +14986,16 @@ async function testAdminDashboardCountsWaitingUserTicketsAsOpen() {
   assert.equal(counts.openTickets, 3);
   assert.equal(counts.waitingAdminTickets, 2);
   assert.equal(counts.closedTickets, 1);
+  assert.equal(counts.legacyTicketsReadOnly, false, "未启用新工单系统前，旧工单照常处理");
   assert.deepEqual(ticketCountPayloads[0].where.status, { in: ["open", "waiting_user"] });
+
+  // 启用 Achord Connect（开关打开且凭据齐全）后，旧工单转为只读存档。
+  supportIntegration = { enabled: true, baseUrl: "https://support.example.test", clientId: "ac_fake", clientSecret: "acs_fake", webhookSecret: "whsec_fake" };
+  assert.equal((await service["getSupportTicketDashboardCounts"]()).legacyTicketsReadOnly, true);
+  supportIntegration = { enabled: true, baseUrl: "https://support.example.test", clientId: "ac_fake", clientSecret: null, webhookSecret: "whsec_fake" };
+  assert.equal((await service["getSupportTicketDashboardCounts"]()).legacyTicketsReadOnly, false, "凭据不全时不算启用");
+  supportIntegration = { enabled: true, baseUrl: "https://support.example.test", clientId: "ac_fake", clientSecret: "acs_fake", webhookSecret: null };
+  assert.equal((await service["getSupportTicketDashboardCounts"]()).legacyTicketsReadOnly, false, "没有 Webhook Secret 时不算启用");
 }
 
 async function testCreateAnnouncementKeepsLocalSaveWhenPublishFails() {
