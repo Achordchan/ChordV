@@ -1,9 +1,8 @@
 import type { ClientBootstrapDto, NodeSummaryDto, SubscriptionStatusDto } from "@chordv/shared";
-import { notifications } from "./notifications";
+import { showToast } from "../components/Toast";
 import {
   createUserErrorReader,
   describeUserError,
-  formatUserError,
   shouldRecordDiagnostic,
   splitUserErrorText,
   type UserErrorContext,
@@ -11,7 +10,7 @@ import {
 } from "./userFacingErrors";
 import { recordClientDiagnosticLog } from "../api/client";
 import type { SubscriptionServerProbe } from "../components/SubscriptionPanel";
-import type { GuidanceTone, ConnectionGuidance } from "./connectionGuidance";
+import type { ConnectionGuidance } from "./connectionGuidance";
 import type { RuntimeNodeProbeResult, RuntimePlatform } from "./runtime";
 import type { RuntimeAssetsUiState } from "./runtimeComponents";
 import type { ServerProbeState } from "../hooks/useClientEvents";
@@ -171,15 +170,10 @@ export function showErrorToast(reason: unknown, context: UserErrorContext = "gen
   if (shouldRecordDiagnostic(error)) {
     logUserErrorDiagnostic(error, context);
   }
-  notifications.show({
-    color: "red",
+  showToast({
+    tone: "danger",
     title: error.title,
-    message: formatUserError(error)
+    message: error.message,
+    code: error.code
   });
-}
-
-export function toneToToastColor(tone: GuidanceTone) {
-  if (tone === "danger") return "red";
-  if (tone === "warning") return "yellow";
-  return "cyan";
 }

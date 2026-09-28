@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ActionIcon, Badge, Button, Collapse, Group, Switch, Text, TextInput, UnstyledButton } from "@mantine/core";
-import { notifications } from "../lib/notifications";
+import { showToast } from "./Toast";
 import { logUserErrorDiagnostic } from "../lib/appState";
 import { describeUserError, shouldRecordDiagnostic, type UserErrorContext } from "../lib/userFacingErrors";
 import {
@@ -84,31 +84,31 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
 
   async function applyIfConnected(title: string) {
     if (!props.connected) {
-      notifications.show({
-        color: "green",
+      showToast({
+        tone: "success",
         title,
         message: "规则已保存，下次连接生效。"
       });
       return;
     }
-    notifications.show({
-      color: "blue",
+    showToast({
+      tone: "info",
       title,
       message: "规则已保存，正在重新连接以立即生效。"
     });
     try {
       const result = await props.onApplyWhileConnected?.();
       if (result === false) {
-        notifications.show({
-          color: "yellow",
+        showToast({
+          tone: "warning",
           title: "稍后手动重连",
           message: "规则已保存，当前有其他操作进行中，请稍后手动重新连接。"
         });
       }
     } catch (reason) {
       showFailure(reason, "connect");
-      notifications.show({
-        color: "red",
+      showToast({
+        tone: "danger",
         title: "自动重连失败",
         message: "规则已保存，但重连未完成，请手动重新连接。"
       });

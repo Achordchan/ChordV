@@ -2,27 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
-import { createNotificationsStore } from "@mantine/notifications";
-import { notifications } from "../src/lib/notifications";
 import * as guidance from "../src/lib/connectionGuidance";
-
-const store = createNotificationsStore();
-const notice = { title: "同步失败", message: "请稍后重试", color: "yellow" };
-const id = notifications.show(notice, store);
-notifications.show(notice, store);
-notifications.show(notice, store);
-assert.equal(store.getState().notifications.length, 1);
-notifications.show({ ...notice, message: "另一个错误" }, store);
-assert.equal(store.getState().notifications.length, 2);
-notifications.hide(id, store);
-notifications.show(notice, store);
-assert.equal(store.getState().notifications.length, 2, "dismissed notices may recur");
-store.setState({ ...store.getState(), limit: 0 });
-notifications.show({ ...notice, message: "排队消息" }, store);
-notifications.show({ ...notice, message: "排队消息" }, store);
-assert.equal(store.getState().queue.filter(item => item.message === "排队消息").length, 1);
-notifications.show({ id: "persistent", message: "退出失败", autoClose: false }, store);
-assert.equal(store.getState().queue.find(item => item.id === "persistent")?.autoClose, false);
 
 const code = ts.transpileModule(readFileSync(new URL("../src/hooks/useRuntimeActions.ts", import.meta.url), "utf8"), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }
@@ -79,4 +59,4 @@ async function scenario(kind: "empty" | "disconnect" | "logout" | "switch" | "id
   assert.equal(notices.length, 0, "retired session events must be ignored before auth handling");
 }
 for (const kind of ["empty", "disconnect", "logout", "switch", "idle", "confirm-fails", "valid"] as const) await scenario(kind);
-console.log("notification deduplication and seven connection sync race scenarios passed");
+console.log("seven connection sync race scenarios passed (toast deduplication lives in toast.regression.ts)");

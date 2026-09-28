@@ -52,12 +52,7 @@ import {
   type RuntimeDownloadFailureReason
 } from "../lib/runtimeComponents";
 import { describeRuntimeAssetsFailure } from "../lib/userFacingErrors";
-
-type NoticeInput = {
-  color: "green" | "yellow" | "red" | "blue";
-  title: string;
-  message: string;
-};
+import type { ToastInput } from "../lib/toast";
 
 export type RuntimeAssetsCheckSummary = {
   checked: boolean;
@@ -97,7 +92,7 @@ type UseRuntimeAssetsOptions = {
   runtimeMirrorPrefix: string;
   platformTarget: RuntimeStatus["platformTarget"];
   accessToken?: string | null;
-  notify?: (notice: NoticeInput) => void;
+  notify?: (notice: ToastInput) => void;
   onUnauthorized?: () => Promise<unknown> | unknown;
   readError?: (message: string) => string;
 };
@@ -999,7 +994,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
             ensureOptions.interactive
           ) {
             options.notify?.({
-              color: "green",
+              tone: "success",
               title: "核心组件已更新",
               message: `${summary.updated.join("、")} 已更新到可用版本。`
             });
@@ -1009,7 +1004,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
             ensureOptions.source === "update_check"
           ) {
             options.notify?.({
-              color: "yellow",
+              tone: "warning",
               title: "组件更新未完成",
               message: `${summary.failed.join("、")} 更新失败，将继续使用本地已有文件。`
             });

@@ -427,14 +427,17 @@ function testDisplaySurfacesUseErrorNumber() {
   const app = readFileSync(resolve(import.meta.dirname, "../src/App.tsx"), "utf8");
   assert.doesNotMatch(app, /错误代码|错误编号：/, "App no longer renders code text lines itself");
   assert.match(app, /<GuidanceDialog guidance=\{guidanceDialog\}/);
-  const styles = readFileSync(resolve(import.meta.dirname, "../src/styles.css"), "utf8");
-  assert.match(styles, /\.cv-notification \.mantine-Notification-description[\s\S]*white-space: pre-line/, "toast code line renders on its own line");
+  const toast = readFileSync(resolve(import.meta.dirname, "../src/components/Toast.tsx"), "utf8");
+  assert.match(toast, /<ErrorCodeHint code=\{toast\.code\} \/>/, "toast code line uses the shared ErrorCodeHint");
+  const toastStyles = readFileSync(resolve(import.meta.dirname, "../src/components/Toast.module.css"), "utf8");
+  assert.match(toastStyles, /\.description \{[^}]*white-space: pre-line/, "toast body keeps its line breaks");
   const notice = readFileSync(resolve(import.meta.dirname, "../src/components/NoticeRow.module.css"), "utf8");
   assert.match(notice, /\.text \{[^}]*white-space: pre-line/, "inline notices keep the code line break");
   const client = readFileSync(resolve(import.meta.dirname, "../src/api/client.ts"), "utf8");
   assert.doesNotMatch(client, /璇锋眰瓒呮椂/, "no mojibake in client request errors");
   const appState = readFileSync(resolve(import.meta.dirname, "../src/lib/appState.ts"), "utf8");
   assert.match(appState, /describeUserError\(/, "toasts are routed through the user-facing mapping");
+  assert.match(appState, /showToast\(\{\s*tone: "danger",\s*title: error\.title,\s*message: error\.message,\s*code: error\.code\s*\}\)/, "error toasts pass the code separately");
 }
 
 testCatalogEntriesAreCustomerSafe();

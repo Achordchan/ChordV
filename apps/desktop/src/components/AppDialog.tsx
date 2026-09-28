@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ActionIcon, Modal, Tooltip } from "@mantine/core";
+import { ActionIcon, getDefaultZIndex, Modal, Tooltip } from "@mantine/core";
 import { IconCheck, IconCopy } from "@tabler/icons-react";
 import { copyText } from "../lib/clipboard";
 import { toneIcon, type NoticeTone } from "./NoticeRow";
@@ -89,7 +89,8 @@ export function ErrorCodeHint({ code }: { code: string }) {
     <span className={styles.errorCode}>
       <span className={styles.errorCodeLabel}>错误编号</span>
       <code className={styles.errorCodeValue} title={code}>{code}</code>
-      <Tooltip label={copied ? "已复制" : "复制错误编号"} withArrow openDelay={200}>
+      {/* 提示卡片（toast）层级高于默认浮层，复制提示必须压在它上面才看得见。 */}
+      <Tooltip label={copied ? "已复制" : "复制错误编号"} withArrow openDelay={200} zIndex={getDefaultZIndex("max")}>
         <ActionIcon size="sm" variant="subtle" color={copied ? "green" : "gray"} aria-label="复制错误编号" onClick={() => void copy()}>
           {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
         </ActionIcon>

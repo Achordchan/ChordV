@@ -6,6 +6,8 @@ import "@mantine/core/styles.css";
 import "@mantine/notifications/styles.css";
 import "flag-icons/css/flag-icons.min.css";
 import { App } from "./App";
+import { toastContainerClassNames } from "./components/Toast";
+import { TOAST_AUTO_CLOSE_MS, TOAST_LIMIT, TOAST_WIDTH } from "./lib/toast";
 import "./styles.css";
 
 const fontFamily =
@@ -26,8 +28,7 @@ const theme = createTheme({
     Paper: { defaultProps: { radius: "lg" } },
     Modal: { defaultProps: { radius: "xl" } },
     Tooltip: { defaultProps: { radius: "md" } },
-    Menu: { defaultProps: { radius: "md", shadow: "md" } },
-    Notification: { defaultProps: { radius: "md" } }
+    Menu: { defaultProps: { radius: "md", shadow: "md" } }
   }
 });
 
@@ -36,7 +37,13 @@ const Root = (import.meta.env.DEV || import.meta.env.VITE_CHORDV_LOCAL_PREVIEW =
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <MantineProvider theme={theme} defaultColorScheme="light">
-    <Notifications position="top-right" autoClose={2600} classNames={{ notification: "cv-notification" }} />
+    <Notifications
+      position="top-right"
+      autoClose={TOAST_AUTO_CLOSE_MS}
+      limit={TOAST_LIMIT}
+      containerWidth={TOAST_WIDTH}
+      classNames={toastContainerClassNames}
+    />
     <React.Suspense fallback={null}><Root /></React.Suspense>
   </MantineProvider>
 );
