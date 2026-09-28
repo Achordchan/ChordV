@@ -1097,6 +1097,40 @@ async function testReenableForcesReconciliation() {
   assert.deepEqual(published.at(-1), { userId: "user_1", count: 0 });
 }
 
+async function testUntimedEventsAndStaleTimers() {
+  // 没有有效 createdAt 的事件：签名时间只是投递时间，旧事件重试时会变新，不能据此覆盖；改为重新查询。
+  {
+    const { service, db } = createService();
+    await configure(service);
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 0, contactUnreadCount: 0, createdAt: new Date().toISOString() })));
+    let fetches = 0;
+    service.fetchImpl = async () => {
+      fetches += 1;
+      return json(200, { data: { externalUserId: "user_1", unreadCount: 0, requests: [] } }, new Date(Date.now() + 10_000));
+    };
+    const untimed = { id: "evt_untimed", rawBody: Buffer.from(JSON.stringify({ id: "evt_untimed", type: "request.unread.changed", data: { externalUserId: "user_1", request: { id: "req_a" }, unreadCount: 3, contactUnreadCount: 3 } })) };
+    assert.equal(await service.handleWebhook(webhookRequest(untimed)), "accepted");
+    assert.equal(db.state("user_1")?.unreadCount, 0, "不采用无法排序的事件的数值");
+    assert.equal(db.request("user_1", "req_a")?.unreadCount, 0);
+    assert.equal(await service.handleWebhook(webhookRequest(untimed)), "duplicate", "事件 ID 照常去重");
+    await waitFor(() => fetches === 1, "安排重新查询");
+  }
+
+  // 切换连接时取消旧连接排队中的任务，按新连接重新排队（重试次数也重新计算）。
+  {
+    const { service, db } = createService();
+    await configure(service);
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 1, contactUnreadCount: 1, createdAt: new Date().toISOString() })));
+    const timers = (service as unknown as { backgroundResyncTimers: Map<string, ReturnType<typeof setTimeout>> }).backgroundResyncTimers;
+    service.scheduleBackgroundResync("user_1", 5, true);
+    const oldTimer = timers.get("user_1");
+    assert.ok(oldTimer, "旧连接有一个很久以后才执行的重试");
+    service.fetchImpl = async () => json(200, { data: { externalUserId: "user_1", unreadCount: 4, requests: [] } });
+    await service.updateAdminConfig({ baseUrl: "https://support-new.example.test" });
+    await waitFor(() => db.state("user_1")?.unreadCount === 4, "新连接立即查询，不被旧任务挡住");
+  }
+}
+
 async function testStatusSchedulesRetryWhenDeferred() {
   const { service } = createService();
   await configure(service);
@@ -1422,6 +1456,7 @@ async function main() {
   await testConfigNotificationsAndStatusRecheck();
   await testDisableClearsPendingZeroUpdates();
   await testReenableForcesReconciliation();
+  await testUntimedEventsAndStaleTimers();
   await testAdminConfigNeverReturnsSecrets();
   await testLegacyTicketWriteGuards();
   testSupportModuleDependenciesAreExported();

@@ -177,6 +177,11 @@ export class SupportIntegrationService {
       // 清空限流记录，尽快向新连接查询。
       this.resyncAttempts.clear();
     }
+    if (saved.resyncCandidates.length > 0) {
+      // 取消旧的排队任务（可能针对旧连接、带着旧的重试次数、要很久以后才执行），按新的情况重新排队。
+      for (const timer of this.backgroundResyncTimers.values()) clearTimeout(timer);
+      this.backgroundResyncTimers.clear();
+    }
     for (const userId of saved.resyncCandidates) {
       this.scheduleBackgroundResync(userId);
     }
@@ -315,7 +320,8 @@ export class SupportIntegrationService {
       this.logger.warn(`Achord Connect 未读事件 ${eventId} 指向不存在的用户，已忽略`);
       return "ignored";
     }
-    const eventAt = event.createdAt ?? new Date(Number(request.timestamp) * 1000);
+    // 没有有效 createdAt 的事件无法排序（签名时间是投递时间，重试时会变新），不采用其数值，改为重新查询。
+    const eventAt = event.createdAt;
     const result = await this.applyUnreadChange(eventId, event.type, change, eventAt, generation);
     if (result === "stale") {
       this.logger.warn(`Achord Connect 未读事件 ${eventId} 在验签后连接已切换，已忽略`);
@@ -344,6 +350,7 @@ export class SupportIntegrationService {
    * - 早于最近一次权威总数的事件已包含在总数里，只记录事件 ID；同一请求晚到的旧事件也不会覆盖新值。
    * - 落在最近一次服务端查询的不确定区间里的事件，无法判断是否已包含在查询结果里：不采用其总数，改为重新查询。
    * - 同一请求在同一时刻出现两个不同的未读数，同样无法判断先后：保留已有记录，改为重新查询。
+   * - 没有有效 createdAt 的事件无法排序：只记录事件 ID，改为重新查询。
    * - 带 contactUnreadCount：以它为总数；但如果本地已有比它更新的按请求变化（新旧版本事件混在一起），
    *   两者先后无法对齐，就保留当前值并标记为待校准。
    * - 不带 contactUnreadCount（旧版工单系统）：只有从未接受过权威总数、本地记录由逐条事件累积而来时，
@@ -353,7 +360,7 @@ export class SupportIntegrationService {
     eventId: string,
     type: string,
     change: AchordConnectUnreadChange,
-    eventAt: Date,
+    eventAt: Date | null,
     generation: number
   ): Promise<UnreadTotalChange | null | "stale"> {
     const userId = change.externalUserId;
@@ -372,6 +379,10 @@ export class SupportIntegrationService {
       const state = await tx.supportUnreadState.findUniqueOrThrow({ where: { userId } });
       const publish = isStoredSupportIntegrationEnabled(config);
       const unchanged = { previous: state.unreadCount, next: state.unreadCount, revision: state.revision, publish: false, epoch: config.epoch };
+      if (!eventAt) {
+        await tx.supportUnreadState.update({ where: { userId }, data: { syncedAt: null, revision: { increment: 1 } } });
+        return { ...unchanged, revision: state.revision + 1, publish, needsResync: true };
+      }
       if (state.sourceAt && eventAt.getTime() < state.sourceAt.getTime()) {
         return unchanged;
       }
