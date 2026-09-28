@@ -128,7 +128,9 @@ function createFakePrisma(options: { users?: string[] } = {}) {
         return { ...states.get(where.userId) };
       },
       findMany: async ({ where }: any) =>
-        [...states.values()].filter((row) => row.unreadCount > where.unreadCount.gt).map((row) => ({ userId: row.userId })),
+        [...states.values()]
+          .filter((row) => row.unreadCount > where.unreadCount.gt)
+          .map((row) => ({ userId: row.userId, unreadCount: row.unreadCount, revision: row.revision })),
       updateMany: async ({ data }: any) => {
         const { revision, ...rest } = data;
         for (const [key, row] of states) {
@@ -211,7 +213,14 @@ function createFakePrisma(options: { users?: string[] } = {}) {
       }
     },
     $queryRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
-      assert.match(strings.join("?"), /FOR UPDATE/);
+      const sql = strings.join("?");
+      if (/FOR SHARE/.test(sql)) {
+        assert.match(sql, /FROM "SystemSetting"/);
+        locks.push(`share:${String(values[0])}`);
+        const row = settings.get(String(values[0]));
+        return row ? [{ value: structuredClone(row.value) }] : [];
+      }
+      assert.match(sql, /FOR UPDATE/);
       locks.push(String(values[0]));
       return [];
     },
@@ -398,7 +407,10 @@ async function testWebhookIdempotencyAndAggregation() {
     { userId: "user_1", count: 3 }
   ], "总数变化时推送 support_unread_updated，重复事件不重复推送");
   assert.ok(db.locks.includes("achord-connect"), "保存设置时对设置行加锁");
-  assert.ok(db.locks.filter((key) => key !== "achord-connect").every((userId) => userId === "user_1"), "按用户加行锁串行处理");
+  assert.ok(db.locks.filter((key) => key !== "achord-connect" && !key.startsWith("share:")).every((userId) => userId === "user_1"), "按用户加行锁串行处理");
+  // 加锁顺序：每次写入都先拿设置行的共享锁，再锁用户未读状态。
+  const firstUserLock = db.locks.indexOf("user_1");
+  assert.ok(firstUserLock > 0 && db.locks[firstUserLock - 1] === "share:achord-connect", "先锁设置行，再锁用户未读状态");
 
   // 晚到的旧事件（重试）不能覆盖更新的请求未读数。
   assert.equal(await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 9, createdAt: "2026-09-28T09:59:00.000Z" }))), "accepted");
@@ -848,6 +860,46 @@ async function testConnectionChangeResetsUnreadState() {
   assert.equal(db.state("user_1")?.unreadCount, 1);
 }
 
+async function testConnectionFenceAndEnableToggles() {
+  // 验签之后、写入之前连接被切换：这个事件属于旧连接，不写入新连接的状态。
+  {
+    const { service, db } = createService();
+    await configure(service);
+    const event = unreadEvent({ requestId: "req_a", unreadCount: 5, contactUnreadCount: 5, createdAt: new Date().toISOString() });
+    const originalFindUnique = db.prisma.user.findUnique;
+    db.prisma.user.findUnique = async (args: unknown) => {
+      // 模拟验签后在查用户时停顿，期间管理员切换了连接。
+      db.prisma.user.findUnique = originalFindUnique;
+      await service.updateAdminConfig({ baseUrl: "https://support-new.example.test" });
+      return originalFindUnique(args);
+    };
+    assert.equal(await service.handleWebhook(webhookRequest(event)), "ignored");
+    assert.equal(db.state("user_1"), null);
+    assert.equal(db.eventCount(), 0, "旧连接的事件不记录事件 ID");
+    assert.equal(db.setting("achord-connect").generation, 2, "首次填写和之后切换连接，代次各加一");
+    await service.updateAdminConfig({ webhookSecret: "whsec_rotated_fake", enabled: false });
+    assert.equal(db.setting("achord-connect").generation, 2, "只换密钥或开关不算切换连接");
+  }
+
+  // 停用时给有未读的在线客户端推送 0；重新启用时推送停用期间记录的当前值。
+  {
+    const { service, db, published } = createService();
+    await configure(service);
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 2, contactUnreadCount: 2, createdAt: new Date(Date.now() - 10_000).toISOString() })));
+    assert.deepEqual(published, [{ userId: "user_1", count: 2 }]);
+    await service.updateAdminConfig({ enabled: false });
+    assert.deepEqual(published.at(-1), { userId: "user_1", count: 0 }, "停用时推送 0");
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 4, contactUnreadCount: 4, createdAt: new Date().toISOString() })));
+    assert.equal(published.length, 2, "停用期间只记录不推送");
+    await service.updateAdminConfig({ enabled: true });
+    assert.deepEqual(published.at(-1), { userId: "user_1", count: 4 }, "重新启用时推送当前值");
+    assert.equal(db.state("user_1")?.unreadCount, 4);
+    // 启用后推送按版本继续，不会被重新启用时的推送挡住更新的值。
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 1, contactUnreadCount: 1, createdAt: new Date(Date.now() + 1_000).toISOString() })));
+    assert.deepEqual(published.at(-1), { userId: "user_1", count: 1 });
+  }
+}
+
 async function testStatusSchedulesRetryWhenDeferred() {
   const { service } = createService();
   await configure(service);
@@ -1168,6 +1220,7 @@ async function main() {
   await testEqualTimestampsAndPostCommitFailures();
   await testConnectionChangeResetsUnreadState();
   await testStatusSchedulesRetryWhenDeferred();
+  await testConnectionFenceAndEnableToggles();
   await testAdminConfigNeverReturnsSecrets();
   await testLegacyTicketWriteGuards();
   testSupportModuleDependenciesAreExported();

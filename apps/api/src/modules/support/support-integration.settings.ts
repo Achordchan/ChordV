@@ -9,6 +9,8 @@ export type StoredSupportIntegrationConfig = {
   clientSecret: string | null;
   webhookSecret: string | null;
   enabled: boolean;
+  /** 连接代次：地址或 Client ID 每变化一次加一。Webhook 与校准写入时核对代次，旧连接的数据不会写进新连接的状态。 */
+  generation: number;
 };
 
 type SystemSettingReader = {
@@ -25,7 +27,8 @@ export function parseStoredSupportIntegrationConfig(value: unknown): StoredSuppo
     clientId: text("clientId"),
     clientSecret: text("clientSecret"),
     webhookSecret: text("webhookSecret"),
-    enabled: record.enabled === true
+    enabled: record.enabled === true,
+    generation: typeof record.generation === "number" && Number.isInteger(record.generation) && record.generation >= 0 ? record.generation : 0
   };
 }
 
@@ -47,5 +50,20 @@ export async function readSupportIntegrationConfig(prisma: SystemSettingReader) 
  */
 export async function isSupportIntegrationEnabled(prisma: SystemSettingReader) {
   const { value } = await readSupportIntegrationConfig(prisma);
+  return isStoredSupportIntegrationEnabled(value);
+}
+
+export function isStoredSupportIntegrationEnabled(value: StoredSupportIntegrationConfig) {
   return value.enabled && readSupportIntegrationCredentials(value) !== null;
+}
+
+type SharedSettingLocker = { $queryRaw<T = unknown>(query: TemplateStringsArray, ...values: unknown[]): Promise<T> };
+
+/**
+ * 在当前事务里对设置行加共享锁并读取设置。Webhook 与校准的写入都先拿这把锁，保存设置时拿排他锁：
+ * 切换连接与这些写入互斥，且所有路径都按“设置行 → 用户未读状态 → 按请求记录”的顺序加锁，不会互相死锁。
+ */
+export async function lockSupportIntegrationConfigShared(tx: SharedSettingLocker) {
+  const rows = await tx.$queryRaw<Array<{ value: unknown }>>`SELECT "value" FROM "SystemSetting" WHERE "key" = ${SUPPORT_INTEGRATION_SETTING_KEY} FOR SHARE`;
+  return parseStoredSupportIntegrationConfig(rows[0]?.value);
 }

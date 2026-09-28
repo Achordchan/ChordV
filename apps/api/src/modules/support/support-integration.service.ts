@@ -30,7 +30,8 @@ import {
 } from "./achord-connect";
 import {
   SUPPORT_INTEGRATION_SETTING_KEY,
-  isSupportIntegrationEnabled,
+  isStoredSupportIntegrationEnabled,
+  lockSupportIntegrationConfigShared,
   parseStoredSupportIntegrationConfig,
   readSupportIntegrationConfig,
   readSupportIntegrationCredentials as readCredentials,
@@ -108,10 +109,12 @@ export class SupportIntegrationService {
   }
 
   /**
-   * 部分更新：省略的字段保持不变。读取与写回在同一事务里并对设置行加锁，
-   * 两位管理员同时保存时后者基于前者的结果修改，不会把对方清除的密钥或关闭的开关写回去。
-   * 地址或 Client ID 变化意味着换了一个 Achord Connect 连接：旧连接的未读数、按请求记录和水位线全部作废
-   * （版本号照常加一，进行中的旧连接校准会因版本不符被放弃），并为原来有未读的用户推送 0、安排重新查询。
+   * 部分更新：省略的字段保持不变。读取与写回在同一事务里并对设置行加排他锁，
+   * 两位管理员同时保存时后者基于前者的结果修改，不会把对方清除的密钥或关闭的开关写回去；
+   * Webhook 与校准写入时持有同一行的共享锁，保存设置与它们互斥。
+   * - 地址或 Client ID 变化意味着换了一个 Achord Connect 连接：连接代次加一，旧连接的未读数、按请求记录和水位线全部作废
+   *   （加锁顺序与 Webhook 一致：设置行 → 用户未读状态 → 按请求记录）。
+   * - 启用状态变化时通知在线客户端：停用时推送 0，启用时推送当前未读数（停用期间只记录、不推送）。
    */
   async updateAdminConfig(input: UpdateAdminSupportIntegrationConfigInputDto): Promise<AdminSupportIntegrationConfigDto> {
     const saved = await this.prisma.$transaction(async (tx) => {
@@ -120,38 +123,52 @@ export class SupportIntegrationService {
       const row = await tx.systemSetting.findUniqueOrThrow({ where: { key: SUPPORT_INTEGRATION_SETTING_KEY } });
       const current = parseStoredSupportIntegrationConfig(row.value);
       const next = applyConfigUpdate(current, input);
-      const updated = await tx.systemSetting.update({ where: { key: SUPPORT_INTEGRATION_SETTING_KEY }, data: { value: next } });
       const connectionChanged = current.baseUrl !== next.baseUrl || current.clientId !== next.clientId;
-      let resetUserIds: string[] = [];
       if (connectionChanged) {
-        const withUnread = await tx.supportUnreadState.findMany({ where: { unreadCount: { gt: 0 } }, select: { userId: true } });
-        resetUserIds = withUnread.map((item) => item.userId);
-        await tx.supportRequestUnread.deleteMany({});
+        next.generation = current.generation + 1;
+      }
+      const updated = await tx.systemSetting.update({ where: { key: SUPPORT_INTEGRATION_SETTING_KEY }, data: { value: next } });
+      const wasEnabled = isStoredSupportIntegrationEnabled(current);
+      const nowEnabled = isStoredSupportIntegrationEnabled(next);
+      const withUnread = connectionChanged || wasEnabled !== nowEnabled
+        ? await tx.supportUnreadState.findMany({ where: { unreadCount: { gt: 0 } }, select: { userId: true, unreadCount: true, revision: true } })
+        : [];
+      if (connectionChanged) {
         await tx.supportUnreadState.updateMany({
           data: { unreadCount: 0, sourceAt: null, snapshotUntil: null, syncedAt: null, requestsComplete: true, revision: { increment: 1 } }
         });
+        await tx.supportRequestUnread.deleteMany({});
       }
-      return { next, updatedAt: updated.updatedAt, connectionChanged, resetUserIds };
+      return { next, updatedAt: updated.updatedAt, connectionChanged, wasEnabled, nowEnabled, withUnread };
     });
-    if (saved.connectionChanged) {
-      this.afterConnectionChanged(saved.resetUserIds, saved.next.enabled && readCredentials(saved.next) !== null);
-    }
+    this.afterConfigSaved(saved);
     return this.toAdminConfig(saved.next, saved.updatedAt);
   }
 
-  private afterConnectionChanged(resetUserIds: string[], enabled: boolean) {
-    // 未读状态整体重置后版本号不再能与本进程记录的已推送版本比较，清空重新开始；限流记录同样清空，尽快查询新连接。
-    this.publishedRevisions.clear();
-    this.resyncAttempts.clear();
-    if (!enabled) {
-      return;
+  private afterConfigSaved(saved: {
+    connectionChanged: boolean;
+    wasEnabled: boolean;
+    nowEnabled: boolean;
+    withUnread: Array<{ userId: string; unreadCount: number; revision: number }>;
+  }) {
+    if (saved.connectionChanged) {
+      // 未读状态整体重置：清空本进程的已推送版本和限流记录，尽快向新连接查询。
+      this.publishedRevisions.clear();
+      this.resyncAttempts.clear();
     }
-    for (const userId of resetUserIds) {
+    for (const item of saved.withUnread) {
       try {
-        this.clientEventsPublisher.publishSupportUnreadUpdated(userId, 0);
-        this.scheduleBackgroundResync(userId);
+        if (saved.connectionChanged) {
+          if (saved.wasEnabled) this.clientEventsPublisher.publishSupportUnreadUpdated(item.userId, 0);
+          if (saved.nowEnabled) this.scheduleBackgroundResync(item.userId);
+        } else if (saved.nowEnabled) {
+          this.publishedRevisions.set(item.userId, item.revision);
+          this.clientEventsPublisher.publishSupportUnreadUpdated(item.userId, item.unreadCount);
+        } else {
+          this.clientEventsPublisher.publishSupportUnreadUpdated(item.userId, 0);
+        }
       } catch (error) {
-        this.logger.warn(`切换 Achord Connect 连接后重置未读推送失败（用户 ${userId}）：${error instanceof Error ? error.message : String(error)}`);
+        this.logger.warn(`工单系统接入设置变化后推送未读失败（用户 ${item.userId}）：${error instanceof Error ? error.message : String(error)}`);
       }
     }
   }
@@ -226,7 +243,7 @@ export class SupportIntegrationService {
   // ---------- Webhook ----------
 
   async handleWebhook(request: AchordConnectWebhookRequest): Promise<AchordConnectWebhookResult> {
-    const { webhookSecret } = (await this.readStoredConfig()).value;
+    const { webhookSecret, generation } = (await this.readStoredConfig()).value;
     const verified = Boolean(webhookSecret) && verifyAchordConnectWebhookSignature({
       secret: webhookSecret ?? "",
       rawBody: request.rawBody,
@@ -266,7 +283,11 @@ export class SupportIntegrationService {
       return "ignored";
     }
     const eventAt = event.createdAt ?? new Date(Number(request.timestamp) * 1000);
-    const result = await this.applyUnreadChange(eventId, event.type, change, eventAt);
+    const result = await this.applyUnreadChange(eventId, event.type, change, eventAt, generation);
+    if (result === "stale") {
+      this.logger.warn(`Achord Connect 未读事件 ${eventId} 在验签后连接已切换，已忽略`);
+      return "ignored";
+    }
     if (!result) {
       return "duplicate";
     }
@@ -284,7 +305,8 @@ export class SupportIntegrationService {
   }
 
   /**
-   * 在一个事务里记录事件 ID（去重）并更新未读数；同一用户的事件按行锁串行处理。返回 null 表示事件已处理过。
+   * 在一个事务里记录事件 ID（去重）并更新未读数；同一用户的事件按行锁串行处理。
+   * 返回 null 表示事件已处理过，"stale" 表示验签所用的连接已被切换。
    * 事件先后一律按工单系统的时间（事件 createdAt、未读查询响应的 Date）比较，不用本机时间。
    * - 早于最近一次权威总数的事件已包含在总数里，只记录事件 ID；同一请求晚到的旧事件也不会覆盖新值。
    * - 落在最近一次服务端查询的不确定区间里的事件，无法判断是否已包含在查询结果里：不采用其总数，改为重新查询。
@@ -294,9 +316,20 @@ export class SupportIntegrationService {
    * - 不带 contactUnreadCount（旧版工单系统）：只有从未接受过权威总数、本地记录由逐条事件累积而来时，
    *   才按请求求和；一旦接受过权威总数，本地记录无法证明与之一致，改为保留当前值并标记为待校准。
    */
-  async applyUnreadChange(eventId: string, type: string, change: AchordConnectUnreadChange, eventAt: Date): Promise<UnreadTotalChange | null> {
+  async applyUnreadChange(
+    eventId: string,
+    type: string,
+    change: AchordConnectUnreadChange,
+    eventAt: Date,
+    generation: number
+  ): Promise<UnreadTotalChange | null | "stale"> {
     const userId = change.externalUserId;
     return this.prisma.$transaction(async (tx) => {
+      // 先拿设置行的共享锁并核对连接代次：验签之后若连接已切换，这个事件属于旧连接，不写入。
+      const config = await lockSupportIntegrationConfigShared(tx);
+      if (config.generation !== generation) {
+        return "stale" as const;
+      }
       const inserted = await tx.achordConnectWebhookEvent.createMany({ data: [{ eventId, type }], skipDuplicates: true });
       if (inserted.count === 0) {
         return null;
@@ -304,6 +337,7 @@ export class SupportIntegrationService {
       await tx.supportUnreadState.createMany({ data: [{ userId }], skipDuplicates: true });
       await tx.$queryRaw`SELECT "userId" FROM "SupportUnreadState" WHERE "userId" = ${userId} FOR UPDATE`;
       const state = await tx.supportUnreadState.findUniqueOrThrow({ where: { userId } });
+      const publish = isStoredSupportIntegrationEnabled(config);
       const unchanged = { previous: state.unreadCount, next: state.unreadCount, revision: state.revision, publish: false };
       if (state.sourceAt && eventAt.getTime() < state.sourceAt.getTime()) {
         return unchanged;
@@ -352,7 +386,7 @@ export class SupportIntegrationService {
         previous: state.unreadCount,
         next: data.unreadCount ?? state.unreadCount,
         revision: state.revision + 1,
-        publish: await isSupportIntegrationEnabled(tx),
+        publish,
         needsResync: data.syncedAt === null
       };
     });
@@ -396,10 +430,11 @@ export class SupportIntegrationService {
     let result: UnreadTotalChange | null;
     try {
       result = await this.prisma.$transaction(async (tx) => {
+        const config = await lockSupportIntegrationConfigShared(tx);
         await tx.supportUnreadState.createMany({ data: [{ userId }], skipDuplicates: true });
         await tx.$queryRaw`SELECT "userId" FROM "SupportUnreadState" WHERE "userId" = ${userId} FOR UPDATE`;
         const state = await tx.supportUnreadState.findUniqueOrThrow({ where: { userId } });
-        const currentConnection = readCredentials((await readSupportIntegrationConfig(tx)).value);
+        const currentConnection = readCredentials(config);
         if (
           state.revision !== expectedRevision ||
           currentConnection?.baseUrl !== credentials.baseUrl ||
@@ -420,7 +455,7 @@ export class SupportIntegrationService {
           previous: state.unreadCount,
           next: remote.unreadCount,
           revision: state.revision + 1,
-          publish: await isSupportIntegrationEnabled(tx)
+          publish: isStoredSupportIntegrationEnabled(config)
         };
       });
     } catch (error) {
