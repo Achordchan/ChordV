@@ -580,11 +580,24 @@ export type SupportWindowTarget = {
 const SUPPORT_POPUP_BLOCKED_MESSAGE = "无法打开工单页面，请允许弹出窗口后重试。";
 
 /**
- * 必须在点击事件里同步调用：浏览器只允许在用户手势内打开新窗口，
+ * 必须在点击事件里同步调用：网页预览中浏览器只允许在用户手势内打开新窗口，
  * 所以先预留一个空白窗口，拿到打开地址后再跳转。
  */
 export function createSupportWindowTarget(): SupportWindowTarget {
+  if (isTauriApp() && isAndroidPlatform()) {
+    // 安卓端没有独立工单窗口，也不能靠空白弹窗：交给应用统一的外部链接打开方式（与 APK 更新链接相同）。
+    return {
+      focusExisting: async () => false,
+      open: async ({ launchUrl }) => {
+        // 原始错误可能带出地址，统一换成不含地址的提示。
+        const result = await openExternalUrl(launchUrl).catch(() => ({ ok: false as const }));
+        if (!result.ok) throw new Error(SUPPORT_POPUP_BLOCKED_MESSAGE);
+      },
+      dispose: () => {}
+    };
+  }
   if (!supportsSupportWindow()) {
+    // 网页预览：浏览器只允许在点击内开新窗口，先预留空白窗口。
     let popup: Window | null = null;
     try {
       popup = window.open("about:blank", "_blank");

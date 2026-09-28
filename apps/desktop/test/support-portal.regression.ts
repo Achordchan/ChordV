@@ -270,8 +270,7 @@ async function testNativeAdaptersRouteByPlatform() {
   assert.deepEqual(desktop.calls.map(([command]) => command), ["focus_support_window", "open_support_window", "close_support_window"]);
   assert.deepEqual(desktop.calls[1][1], { launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin, epoch: 7 });
 
-  // 安卓端 / 网页预览：点击时同步预留空白窗口，拿到地址后再跳转，且不调用原生工单命令。
-  const android: FakeNative = { calls: [], handlers: {} };
+  // 网页预览：点击时同步预留空白窗口，拿到地址后再跳转。
   const visited: string[] = [];
   const opens: string[] = [];
   const popup = {
@@ -280,31 +279,52 @@ async function testNativeAdaptersRouteByPlatform() {
     location: { replace: (url: string) => { assert.equal(popup.opener, null); visited.push(url); } },
     close: () => { popup.closed = true; }
   };
-  await withNative("Linux; Android 14", android, async () => {
+  await withNative("Browser", { calls: [], handlers: {} }, async () => {
     const target = createSupportWindowTarget();
     assert.deepEqual(opens, ["about:blank"], "the popup is reserved synchronously inside the click");
     assert.equal(await target.focusExisting(), false);
     await target.open({ launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin });
     target.dispose();
-  }, { open: (url: string) => { opens.push(url); return popup; } });
+  }, { __TAURI_INTERNALS__: undefined, open: (url: string) => { opens.push(url); return popup; } });
   assert.deepEqual(visited, [LAUNCH.launchUrl]);
   assert.equal(popup.closed, false, "dispose after a successful open keeps the portal");
-  assert.deepEqual(android.calls, []);
 
-  // 没有打开时释放预留窗口（网页预览）。
+  // 没有打开时释放预留窗口。
   const unused = { closed: false, close: () => { unused.closed = true; } };
   await withNative("Browser", { calls: [], handlers: {} }, async () => {
     createSupportWindowTarget().dispose();
   }, { __TAURI_INTERNALS__: undefined, open: () => unused });
   assert.equal(unused.closed, true);
 
-  // 弹窗被拦截：提示不含地址。
-  await withNative("Linux; Android 14", { calls: [], handlers: {} }, async () => {
-    await assert.rejects(
-      createSupportWindowTarget().open({ launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin }),
-      (error: Error) => !error.message.includes("act_secret") && error.message.includes("无法打开工单页面")
-    );
-  }, { open: () => null });
+  // 安卓端：不预留弹窗，拿到地址后交给应用统一的外部链接打开方式，且不调用原生工单命令。
+  const android: FakeNative = { calls: [], handlers: {} };
+  const androidOpens: string[] = [];
+  const androidVisited: string[] = [];
+  const androidPopup = {
+    opener: {} as unknown,
+    location: { replace: (url: string) => { androidVisited.push(url); } },
+    close: () => {}
+  };
+  await withNative("Linux; Android 14", android, async () => {
+    const target = createSupportWindowTarget();
+    assert.deepEqual(androidOpens, [], "android does not reserve an empty popup");
+    assert.equal(await target.focusExisting(), false);
+    await target.open({ launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin });
+  }, { open: (url: string) => { androidOpens.push(url); return androidPopup; } });
+  assert.deepEqual(androidVisited, [LAUNCH.launchUrl], "the issued url goes through openExternalUrl");
+  assert.deepEqual(android.calls, []);
+  const runtime = read("../src/lib/runtime.ts");
+  assert.match(runtime, /if \(isTauriApp\(\) && isAndroidPlatform\(\)\) \{[\s\S]*?await openExternalUrl\(launchUrl\)/);
+
+  // 打不开：提示不含地址。
+  for (const userAgent of ["Linux; Android 14", "Browser"]) {
+    await withNative(userAgent, { calls: [], handlers: {} }, async () => {
+      await assert.rejects(
+        createSupportWindowTarget().open({ launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin }),
+        (error: Error) => !error.message.includes("act_secret") && error.message.includes("无法打开工单页面")
+      );
+    }, userAgent === "Browser" ? { __TAURI_INTERNALS__: undefined, open: () => null } : { open: () => null });
+  }
 }
 
 function testUnreadBadgeFormatting() {
@@ -504,7 +524,10 @@ async function testBadgeFollowsStatusEventsAndBridge() {
   const pendingOpen = hook.openSupportPortal();
   await flush();
   assert.ok(releaseSlowLaunch, "launch is pending");
+  statusResponses.push(Promise.reject(new Error("offline")));
+  render({ accessToken: "other-token", userId: "user-2" });
   hook = render({ accessToken: "other-token", userId: "user-2" });
+  assert.equal(hook.supportUnreadCount, 0, "the previous account's badge is cleared on account switch");
   releaseSlowLaunch!();
   assert.equal(await pendingOpen, "stale");
   assert.equal(opened.length, 1, "no window is opened for the previous account");

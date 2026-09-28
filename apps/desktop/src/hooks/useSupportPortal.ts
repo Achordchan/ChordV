@@ -124,6 +124,24 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
     }
   }, []);
 
+  // 退出登录或换账号：清掉上一个账号的未读数和开放状态、作废它还没返回的查询，
+  // 关闭工单窗口并作废原生层进行中的打开（避免下一个账号看到上一个账号的工单）。
+  // 必须排在下面的状态查询之前，否则新账号刚发起的查询也会被作废。
+  const closedForUserIdRef = useRef(options.userId);
+  useEffect(() => {
+    const previous = closedForUserIdRef.current;
+    closedForUserIdRef.current = options.userId;
+    if (previous === options.userId) {
+      return;
+    }
+    enabledRef.current = null;
+    unreadRevisionRef.current += 1;
+    setSupportUnreadCount(0);
+    if (previous) {
+      void closeSupportWindow().catch(() => undefined);
+    }
+  }, [options.userId]);
+
   useEffect(() => {
     if (!options.accessToken) {
       enabledRef.current = null;
@@ -133,15 +151,6 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
     void refreshSupportStatus(options.accessToken);
   }, [options.accessToken, refreshSupportStatus]);
 
-  // 退出登录或换账号时关闭工单窗口，并作废原生层进行中的打开（避免下一个账号看到上一个账号的工单）。
-  const closedForUserIdRef = useRef(options.userId);
-  useEffect(() => {
-    const previous = closedForUserIdRef.current;
-    closedForUserIdRef.current = options.userId;
-    if (previous && previous !== options.userId) {
-      void closeSupportWindow().catch(() => undefined);
-    }
-  }, [options.userId]);
 
   useEffect(() => {
     let disposed = false;
