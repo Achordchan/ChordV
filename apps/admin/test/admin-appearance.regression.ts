@@ -9,19 +9,17 @@ register(new URL("./css-module-loader.mjs", import.meta.url));
 const { AdminAppearance } = await import("../src/features/shared/AdminAppearance");
 let observed: any;
 function Inspect() { observed = useMantineTheme(); return null; }
-function render(enabled: boolean) {
+function render() {
   renderToStaticMarkup(createElement(MantineProvider, { theme: createTheme({ primaryColor: "blue", defaultRadius: "lg" }) },
-    createElement(AdminAppearance, { enabled, children: createElement(Inspect) })));
+    createElement(AdminAppearance, { children: createElement(Inspect) })));
   return observed;
 }
-const modern = render(true);
+// 所有页面（包括重做后的工单页）统一使用后台主题，覆盖根主题的蓝色大圆角。
+const modern = render();
 assert.equal(modern.primaryColor, "teal");
+assert.equal(modern.defaultRadius, "sm");
 assert.equal(modern.components.Select.defaultProps.maxDropdownHeight, 240);
 assert.ok(modern.components.Combobox.classNames.dropdown);
-const tickets = render(false);
-assert.equal(tickets.primaryColor, "blue");
-assert.equal(tickets.defaultRadius, "lg");
-assert.equal(tickets.components.Combobox?.classNames?.dropdown, undefined);
 const users = [
   { id: "owner", teamId: "a", status: "active" },
   { id: "member", teamId: "a", status: "active" },
@@ -32,4 +30,4 @@ const users = [
 assert.deepEqual(teamOwnerOptions(users, "a").map(item=>item.value), ["owner", "member"]);
 assert.deepEqual(teamOwnerOptions(users, null).map(item=>item.value), ["new"]);
 assert.equal(teamOwnerOptions(users, "a", "disabled").find(item=>item.value==="disabled")?.disabled, true);
-console.log("admin appearance ticket isolation and team owner options checks passed");
+console.log("admin appearance theme and team owner options checks passed");

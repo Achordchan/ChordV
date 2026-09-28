@@ -2871,7 +2871,7 @@ export function App() {
   const firstLoadError = sectionLoadErrors[dataSection];
 
   return (
-    <AdminAppearance enabled={section !== "tickets"}>
+    <AdminAppearance>
       <AppShell
         className="admin-shell"
         navbar={{ width: 232, breakpoint: "sm", collapsed: { mobile: !mobileNavOpened } }}
@@ -3121,7 +3121,16 @@ export function App() {
             ) : null}
 
             {section === "tickets" ? (
-              <TicketsPage refreshSignal={ticketRefreshSignal} readOnly={legacyTicketsReadOnly} onTicketMutated={refreshDashboardAfterTicketMutation} />
+              <TicketsPage
+                refreshSignal={ticketRefreshSignal}
+                readOnly={legacyTicketsReadOnly}
+                onTicketMutated={refreshDashboardAfterTicketMutation}
+                onOpenCustomer={(target) => {
+                  setUserTab(target.tab);
+                  setSearch((current) => ({ ...current, users: target.keyword }));
+                  selectSection("users");
+                }}
+              />
             ) : null}
 
             <AgentNodeCreateModal
