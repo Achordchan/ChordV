@@ -1303,6 +1303,18 @@ async function testLaunchFencedAgainstConfigChanges() {
   }
 }
 
+async function testUsersSeenWhileDisabledAreRefreshedOnEnable() {
+  // 未启用期间登录的用户：状态接口记下他，启用时后台为他查询并推送，不必等客户端重新连接。
+  const { service, db, published } = createService();
+  await configure(service, { enabled: false });
+  assert.deepEqual(await service.getClientStatus("user_2"), { enabled: false, unreadCount: 0, supportOrigin: null });
+  assert.equal(db.state("user_2")?.unreadCount, 0, "未启用时也记下查询过状态的用户");
+  service.fetchImpl = async () => json(200, { data: { externalUserId: "user_2", unreadCount: 4, requests: [] } });
+  await service.updateAdminConfig({ enabled: true });
+  await waitFor(() => db.state("user_2")?.unreadCount === 4, "启用后为他查询");
+  assert.deepEqual(published.at(-1), { userId: "user_2", count: 4 });
+}
+
 async function testStatusSchedulesRetryWhenDeferred() {
   const { service } = createService();
   await configure(service);
@@ -1632,6 +1644,7 @@ async function main() {
   await testConnectionSwitchNeedsNewWebhookSecretAndLegacyBaseline();
   await testResponseLimitsReenableFenceAndStatusRecheck();
   await testLaunchFencedAgainstConfigChanges();
+  await testUsersSeenWhileDisabledAreRefreshedOnEnable();
   await testAdminConfigNeverReturnsSecrets();
   await testLegacyTicketWriteGuards();
   testSupportModuleDependenciesAreExported();

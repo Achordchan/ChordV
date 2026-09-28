@@ -221,6 +221,10 @@ export class SupportIntegrationService {
   async getClientStatus(userId: string): Promise<ClientSupportStatusDto> {
     const credentials = await this.readLaunchCredentials();
     if (!credentials) {
+      // 记下查询过状态的用户：之后启用时，他们在线的客户端不会主动刷新，需要由后台查询并推送未读。
+      await this.prisma.supportUnreadState.createMany({ data: [{ userId }], skipDuplicates: true }).catch((error: unknown) => {
+        this.logger.warn(`记录工单状态查询用户失败（用户 ${userId}）：${error instanceof Error ? error.message : String(error)}`);
+      });
       return { enabled: false, unreadCount: 0, supportOrigin: null };
     }
     const state = await this.prisma.supportUnreadState.findUnique({
