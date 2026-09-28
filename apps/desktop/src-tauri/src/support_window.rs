@@ -226,13 +226,24 @@ impl SupportWindowState {
         }
     }
 
-    /// 窗口建好后登记；建窗期间已退出登录时返回 false，调用方必须销毁刚建好的窗口。
-    pub fn finish_open(&mut self, epoch: u64, record: SupportWindowRecord) -> bool {
-        if epoch != self.epoch {
-            return false;
-        }
+    /// 建窗之前先登记新窗口（取代旧记录）：网页在建窗过程中就开始加载，门户很快发来的 ready / 未读数
+    /// 必须能找到这条记录。批次号已作废（期间退出登录 / 换账号）时拒绝。
+    pub fn begin_open(&mut self, epoch: u64, record: SupportWindowRecord) -> Result<(), String> {
+        self.ensure_epoch(epoch)?;
         self.current = Some(record);
-        true
+        Ok(())
+    }
+
+    /// 建窗之后确认登记仍然有效：期间被退出登录作废或被更新的打开取代时返回 false，调用方必须销毁刚建好的窗口。
+    pub fn is_registered(&self, epoch: u64, label: &str) -> bool {
+        epoch == self.epoch && self.current.as_ref().is_some_and(|record| record.label == label)
+    }
+
+    /// 建窗失败时撤销预先登记的记录（只撤销自己的，不影响之后的打开）。
+    pub fn discard(&mut self, label: &str) {
+        if self.current.as_ref().is_some_and(|record| record.label == label) {
+            self.current = None;
+        }
     }
 }
 
@@ -337,11 +348,19 @@ pub async fn open_support_window(
         let mut guard = lock(&state)?;
         guard.ensure_epoch(epoch)?;
         let previous = current_window(&app, &guard);
-        (guard.next_label(), previous)
+        let label = guard.next_label();
+        guard.begin_open(epoch, SupportWindowRecord::new(label.clone(), origin.clone(), epoch, Instant::now()))?;
+        (label, previous)
     };
     if let Some(previous) = previous {
         let _ = previous.destroy();
     }
+    let discard = |error: String| -> String {
+        if let Ok(mut guard) = lock(&state) {
+            guard.discard(&label);
+        }
+        error
+    };
 
     // 桥接权限只给这一个窗口、只对工单站点生效；不开放本地页面。
     app.add_capability(
@@ -351,7 +370,7 @@ pub async fn open_support_window(
             .remote(format!("{origin}/*"))
             .permission(SUPPORT_BRIDGE_PERMISSION),
     )
-    .map_err(|error| format!("无法准备工单窗口：{error}"))?;
+    .map_err(|error| discard(format!("无法准备工单窗口：{error}")))?;
 
     let navigation_origin = origin_url.clone();
     let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(launch))
@@ -380,10 +399,10 @@ pub async fn open_support_window(
     };
     let window = builder
         .build()
-        .map_err(|error| format!("无法打开工单窗口：{error}"))?;
+        .map_err(|error| discard(format!("无法打开工单窗口：{error}")))?;
 
     // 建窗期间退出登录或换账号：不保留这个窗口。
-    if !lock(&state)?.finish_open(epoch, SupportWindowRecord::new(label, origin, epoch, Instant::now())) {
+    if !lock(&state)?.is_registered(epoch, &label) {
         let _ = window.destroy();
         return Err(SUPPORT_WINDOW_STALE_ERROR.into());
     }

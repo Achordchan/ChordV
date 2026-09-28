@@ -217,24 +217,37 @@ fn every_window_gets_a_fresh_support_label() {
 fn logout_invalidates_pending_launches() {
     let mut state = SupportWindowState::default();
     let record = |label: &str| SupportWindowRecord::new(label.into(), "https://support.achord.cn".into(), 0, Instant::now());
-    // 正常流程：拿到批次号 → 签发票据 → 用同一批次号打开。
+    // 正常流程：拿到批次号 → 签发票据 → 建窗前先登记（建窗中门户发来的消息能找到记录）→ 建窗后确认。
     let epoch = state.epoch;
-    assert!(state.ensure_epoch(epoch).is_ok());
-    assert!(state.finish_open(epoch, record("support-1")));
+    assert!(state.begin_open(epoch, record("support-1")).is_ok());
     assert_eq!(state.current.as_ref().map(|r| r.label.as_str()), Some("support-1"));
+    assert!(state.is_registered(epoch, "support-1"));
 
-    // 票据还在路上时退出登录：旧批次号既不能开始打开，也不能在建窗后登记。
-    let pending = state.epoch;
-    assert_eq!(state.invalidate().map(|r| r.label), Some("support-1".to_string()));
-    assert!(state.current.is_none());
-    assert_eq!(state.ensure_epoch(pending), Err(SUPPORT_WINDOW_STALE_ERROR.to_string()));
-    assert!(!state.finish_open(pending, record("support-2")), "a window built for the old account is discarded");
+    // 建窗期间退出登录：登记被作废，建好的窗口必须销毁。
+    let building = state.epoch;
+    assert!(state.begin_open(building, record("support-2")).is_ok());
+    assert_eq!(state.invalidate().map(|r| r.label), Some("support-2".to_string()));
+    assert!(!state.is_registered(building, "support-2"), "a window built for the old account is discarded");
+
+    // 票据还在路上时退出登录：旧批次号不能开始打开。
+    let pending = building;
+    assert_eq!(state.begin_open(pending, record("support-3")), Err(SUPPORT_WINDOW_STALE_ERROR.to_string()));
     assert!(state.current.is_none());
 
-    // 新账号拿到的新批次号照常可用。
+    // 建窗失败：只撤销自己的登记。
     let fresh = state.epoch;
     assert_ne!(fresh, pending);
-    assert!(state.finish_open(fresh, record("support-3")));
+    assert!(state.begin_open(fresh, record("support-4")).is_ok());
+    state.discard("support-3");
+    assert!(state.is_registered(fresh, "support-4"));
+    state.discard("support-4");
+    assert!(state.current.is_none());
+
+    // 较新的打开取代了较早的：较早的那次建窗后不再有效。
+    assert!(state.begin_open(fresh, record("support-5")).is_ok());
+    assert!(state.begin_open(fresh, record("support-6")).is_ok());
+    assert!(!state.is_registered(fresh, "support-5"));
+    assert!(state.is_registered(fresh, "support-6"));
 }
 
 #[test]

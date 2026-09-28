@@ -11,6 +11,10 @@ import type { ClientSupportLaunchDto, ClientSupportStatusDto } from "@chordv/sha
  */
 
 export const SUPPORT_DISABLED_MESSAGE = "工单系统暂未开放，请稍后再试";
+/** 客服邮箱：工单入口不可用时的兜底联系方式（登录页的“联系客服”也使用它）。 */
+export const SUPPORT_CONTACT_EMAIL = "achordchan@gmail.com";
+/** 连接的后台还没有新工单系统接口（旧版后台）时的提示：给出客服邮箱，不让用户失去联系渠道。 */
+export const SUPPORT_UPGRADING_MESSAGE = `工单系统正在升级，暂时无法在应用内打开。如需帮助，请发送邮件至 ${SUPPORT_CONTACT_EMAIL}。`;
 export const MAX_SUPPORT_UNREAD_COUNT = 99_999;
 
 /** 服务端推送、状态查询、原生桥接给出的未读数统一在这里校验；无效值返回 null（保持现有角标）。 */
@@ -44,7 +48,12 @@ export function isSupportDisabledError(reason: unknown) {
   return text.includes("暂未开放");
 }
 
-export type SupportPortalOpenResult = "focused" | "opened" | "disabled" | "failed" | "busy" | "stale";
+export type SupportPortalOpenResult = "focused" | "opened" | "disabled" | "upgrading" | "failed" | "busy" | "stale";
+
+/** 后台没有新工单系统的打开接口（404）：说明连接的是还没升级的旧版后台。 */
+export function isSupportEndpointMissing(reason: unknown) {
+  return Boolean(reason && typeof reason === "object" && (reason as ErrorLike).status === 404);
+}
 
 /** 与 runtime.ts 的 SupportWindowTarget 一致；这里单独声明，保持本文件无运行时依赖。 */
 export type SupportPortalTarget = {
@@ -65,6 +74,8 @@ export type SupportPortalDeps = {
   /** isCurrent 在每次等待之后检查账号是否仍是发起时的账号。 */
   launch: (isCurrent: () => boolean) => Promise<ClientSupportLaunchDto>;
   notifyDisabled: () => void;
+  /** 旧版后台没有新工单接口时的提示（带客服邮箱）。 */
+  notifyUpgrading: () => void;
   showError: (reason: unknown) => void;
 };
 
@@ -113,6 +124,10 @@ export function createSupportPortalOpener(deps: SupportPortalDeps) {
       if (isSupportDisabledError(reason)) {
         deps.notifyDisabled();
         return "disabled";
+      }
+      if (isSupportEndpointMissing(reason)) {
+        deps.notifyUpgrading();
+        return "upgrading";
       }
       deps.showError(reason);
       return "failed";

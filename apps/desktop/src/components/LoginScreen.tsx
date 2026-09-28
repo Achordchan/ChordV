@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Button, Checkbox, PasswordInput, Text, TextInput } from "@mantine/core";
 import { IconLock, IconMail, IconSend } from "@tabler/icons-react";
 import { openExternalUrl } from "../lib/runtime";
+import { SUPPORT_CONTACT_EMAIL as SUPPORT_EMAIL } from "../lib/supportPortal";
 import appIcon from "../../src-tauri/icons/icon.png";
 import { AppDialog, DialogText } from "./AppDialog";
 import "./LoginScreen.css";
@@ -24,8 +25,6 @@ type LoginScreenProps = {
   onSubmit: () => void;
   onEmergencyDisconnect: () => void;
 };
-
-const SUPPORT_EMAIL = "achordchan@gmail.com";
 
 export function LoginScreen(props: LoginScreenProps) {
   const [helpOpened, setHelpOpened] = useState(false);

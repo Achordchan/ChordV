@@ -11,7 +11,9 @@ import {
   formatSupportUnreadBadge,
   isSupportDisabledError,
   normalizeSupportUnreadCount,
+  SUPPORT_CONTACT_EMAIL,
   SUPPORT_DISABLED_MESSAGE,
+  SUPPORT_UPGRADING_MESSAGE,
   type SupportPortalDeps,
   type SupportPortalTarget
 } from "../src/lib/supportPortal";
@@ -103,6 +105,7 @@ function realDeps(overrides: Partial<SupportPortalDeps> = {}): SupportPortalDeps
     refreshStatus: async () => ENABLED,
     launch: () => launchSupportPortal("token-1"),
     notifyDisabled: () => assert.fail("not disabled"),
+    notifyUpgrading: () => assert.fail("not upgrading"),
     showError: (reason) => assert.fail(`unexpected error ${String(reason)}`),
     ...overrides
   };
@@ -151,6 +154,7 @@ function createDeps(overrides: Partial<SupportPortalDeps> & { events?: string[];
     refreshStatus: async () => { events.push("status"); return ENABLED; },
     launch: async () => { events.push("launch"); return LAUNCH; },
     notifyDisabled: () => { events.push("disabled"); },
+    notifyUpgrading: () => { events.push("upgrading"); },
     showError: (reason) => { events.push(`error ${describeUserError(reason, { context: "support" }).message}`); },
     ...overrides
   };
@@ -188,7 +192,7 @@ async function testLaunchErrorsAreMapped() {
   const cases: Array<[unknown, string]> = [
     [apiError(429, "工单打开过于频繁，请稍后再试"), "工单打开过于频繁，请稍后再试"],
     [apiError(502, "Upstream UNIVERSAL_RATE_LIMITED"), "服务器暂时繁忙"],
-    [apiError(404, "Cannot POST /api/client/support/launch"), "工单系统暂时无法打开，请稍后重试。"],
+    [apiError(403, "Forbidden resource"), "工单系统暂时无法打开，请稍后重试。"],
     [new Error("Failed to fetch"), "暂时无法连接到 ChordV 服务，请检查网络后重试。"],
     // 原生层拒绝打开（例如站点不是 https）时以字符串 reject。
     ["工单地址必须使用 https", "工单系统暂时无法打开，请稍后重试。"]
@@ -201,6 +205,14 @@ async function testLaunchErrorsAreMapped() {
     assert.doesNotMatch(deps.events[2], /act_|https?:\/\/|UNIVERSAL|Cannot POST/);
     assert.equal(deps.events[3], "dispose", "a reserved browser window is released on failure");
   }
+
+  // 旧版后台没有新工单接口（404）：提示升级中并给出客服邮箱，而不是报错。
+  const oldBackend = createDeps({ launch: async () => { throw apiError(404, "Cannot POST /api/client/support/launch"); } });
+  assert.equal(await createSupportPortalOpener(oldBackend).open(), "upgrading");
+  assert.deepEqual(oldBackend.events, ["prepare", "focus", "upgrading", "dispose"]);
+  assert.match(SUPPORT_UPGRADING_MESSAGE, /工单系统正在升级/);
+  assert.ok(SUPPORT_UPGRADING_MESSAGE.includes(SUPPORT_CONTACT_EMAIL), "users keep a support channel on older backends");
+  assert.match(read("../src/components/LoginScreen.tsx"), /SUPPORT_CONTACT_EMAIL as SUPPORT_EMAIL/, "one support email for the whole app");
 
   const windowFailure = createDeps({ target: { open: async () => { throw "无法打开工单窗口：webview error"; } } });
   assert.equal(await createSupportPortalOpener(windowFailure).open(), "failed");

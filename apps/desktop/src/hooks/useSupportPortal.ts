@@ -6,6 +6,7 @@ import {
   createSupportPortalOpener,
   normalizeSupportUnreadCount,
   SUPPORT_DISABLED_MESSAGE,
+  SUPPORT_UPGRADING_MESSAGE,
   SupportPortalStaleError
 } from "../lib/supportPortal";
 
@@ -132,6 +133,8 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
           return await launchSupportPortal(recovered.accessToken);
         }
       },
+      notifyUpgrading: () =>
+        latest.current.notify({ color: "yellow", title: "工单系统升级中", message: SUPPORT_UPGRADING_MESSAGE }),
       notifyDisabled: () =>
         latest.current.notify({ color: "blue", title: "工单暂未开放", message: SUPPORT_DISABLED_MESSAGE }),
       showError: (reason) => latest.current.showError(reason)
