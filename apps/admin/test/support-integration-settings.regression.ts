@@ -65,9 +65,34 @@ function testSystemSettingsLinksToModal() {
   assert.match(settingsPage, /onClick=\{\(\)=>setSupportOpened\(true\)\}>管理接入</);
 }
 
+function testModalListsContactProfileFields() {
+  const fields = readFileSync(resolve(import.meta.dirname, "../src/features/system-settings/SupportContactFields.tsx"), "utf8").replace(/\r\n/g, "\n");
+  const sharedFields = readFileSync(resolve(import.meta.dirname, "../../../packages/shared/src/support-contact-fields.ts"), "utf8").replace(/\r\n/g, "\n");
+  // 字段列表只有一份（共享包），后台发送与这里展示、复制的是同一组键名。
+  const keys = [...sharedFields.matchAll(/\{ key: "([a-z_]+)", label: "([^"]+)", type: "text" \}/g)].map((match) => [match[1], match[2]]);
+  assert.deepEqual(keys, [
+    ["app_version", "客户端版本"], ["os", "系统"], ["timezone", "时区"], ["locale", "系统语言"], ["update_channel", "更新通道"],
+    ["connection", "连接"], ["line_status", "线路状态"], ["recent_errors", "最近错误"], ["components", "连接组件"], ["plan", "套餐"]
+  ]);
+  assert.match(fields, /import \{ SUPPORT_CONTACT_PROFILE_FIELDS, type AdminSupportContactAttributesStatusDto \} from "@chordv\/shared";/);
+  assert.match(fields, /<CopyButton value=\{SUPPORT_CONTACT_FIELDS_COPY_TEXT\}/, "可以复制字段列表");
+  assert.match(fields, /"键名\\t显示名称\\t类型"/);
+  assert.match(fields, /外部接入 → 联系人资料字段/, "说明在工单系统的哪里声明");
+  assert.match(fields, /修改字段会撤销当前所有工单会话，并需要重新检查、激活连接/);
+  assert.match(fields, /工单系统尚未声明这些字段，暂时不附带/, "工单系统拒绝时给出状态");
+  assert.match(fields, /status\.status === "rejected"/);
+  assert.match(modal, /<SupportContactFields status=\{config\.contactAttributes\}\/>/);
+  assert.match(modal, /联系人资料字段：\{testResult\.attributes\.message\}/, "测试连接同时报告字段是否被接受");
+  assert.match(modal, /setConfig\(\(current\) => current \? \{ \.\.\.current, contactAttributes: latest\.contactAttributes \} : current\)/, "测试后刷新状态行");
+  const dto = readInterface("AdminSupportIntegrationConfigDto");
+  assert.match(dto, /contactAttributes\?: AdminSupportContactAttributesStatusDto;/);
+  assert.match(readInterface("AdminSupportIntegrationTestResultDto"), /attributes\?: AdminSupportIntegrationTestItemDto;/);
+}
+
 testSettingsDtoNeverCarriesSecrets();
 testModalNeverRendersStoredSecrets();
 testModalShowsWebhookUrlAndConnectionTest();
 testSystemSettingsLinksToModal();
+testModalListsContactProfileFields();
 
 console.log("admin support integration settings regression checks passed");

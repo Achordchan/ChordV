@@ -42,6 +42,7 @@ mod support_window;
 mod presence_keepalive;
 #[cfg(not(target_os = "android"))]
 mod tray_menu;
+mod os_version;
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -2467,6 +2468,46 @@ async fn install_windows_update(app: AppHandle) -> Result<CommandResult, String>
         .await.map_err(|error| error.to_string())?;
     #[cfg(not(windows))]
     { let _ = app; Err("此安装方式仅支持 Windows".into()) }
+}
+
+/// 系统版本标签（例如 macOS 15.1（24B83，arm64）），打开工单时附带给客服；取到后本次运行内缓存，取不到返回 None。
+#[tauri::command]
+async fn desktop_os_label() -> Option<String> {
+    static LABEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    if let Some(label) = LABEL.get() {
+        return Some(label.clone());
+    }
+    let label = tauri::async_runtime::spawn_blocking(detect_os_label).await.ok().flatten()?;
+    Some(LABEL.get_or_init(|| label).clone())
+}
+
+fn detect_os_label() -> Option<String> {
+    with_command_budget(Duration::from_secs(2), || {
+        #[cfg(target_os = "macos")]
+        {
+            let output = Command::new("sw_vers").bounded_output().ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            return os_version::macos_label_from_sw_vers(&String::from_utf8_lossy(&output.stdout), detect_runtime_component_architecture());
+        }
+
+        #[cfg(windows)]
+        {
+            let mut command = Command::new("reg");
+            command.args(["query", r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion"]);
+            command.creation_flags(CREATE_NO_WINDOW);
+            let output = command.bounded_output().ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            let values = os_version::parse_windows_reg_query(&String::from_utf8_lossy(&output.stdout));
+            return os_version::windows_label(&values, detect_runtime_component_architecture());
+        }
+
+        #[allow(unreachable_code)]
+        None
+    })
 }
 
 #[tauri::command]
@@ -7423,6 +7464,7 @@ pub fn run() {
             quit_for_update,
             consume_desktop_update_install_report,
             desktop_runtime_environment,
+            desktop_os_label,
             ensure_bundled_runtime_components,
             get_runtime_component_local_info,
             fetch_remote_text,

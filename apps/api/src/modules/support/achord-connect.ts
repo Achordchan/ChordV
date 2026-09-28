@@ -82,13 +82,28 @@ export function buildAchordConnectWebhookUrl(siteOrigin: string) {
 
 export type AchordConnectLaunchUser = { id: string; email: string; displayName: string };
 
-/** 创建票据的请求体：用 ChordV 用户 ID 作为外部 ID，原生窗口模式，不传 returnOrigin。 */
-export function buildLaunchTicketBody(user: AchordConnectLaunchUser) {
+/** 工单系统在联系人资料字段未声明或类型不符时返回的错误码（HTTP 422）。 */
+export const ACHORD_CONNECT_ATTRIBUTE_REJECTION_CODES = ["UNDECLARED_PROFILE_ATTRIBUTE", "INVALID_PROFILE_ATTRIBUTE"] as const;
+
+/** 创建票据被拒绝的原因是否是联系人资料字段（未在连接中声明或类型不符）。 */
+export function isAchordConnectAttributeRejection(error: unknown): error is AchordConnectRequestError {
+  return error instanceof AchordConnectRequestError &&
+    error.kind === "http" &&
+    error.status === 422 &&
+    (ACHORD_CONNECT_ATTRIBUTE_REJECTION_CODES as readonly string[]).includes(error.code ?? "");
+}
+
+/**
+ * 创建票据的请求体：用 ChordV 用户 ID 作为外部 ID，原生窗口模式，不传 returnOrigin。
+ * attributes 是联系人资料（客服在联系人卡片上看到，每次打开都会覆盖）；为空时不传。
+ */
+export function buildLaunchTicketBody(user: AchordConnectLaunchUser, attributes?: Record<string, string> | null) {
   const email = user.email.trim();
   const localPart = email.split("@")[0]?.trim() ?? "";
   const name = truncateChars(user.displayName.trim() || localPart || "ChordV 用户", USER_NAME_MAX_CHARS);
+  const hasAttributes = Boolean(attributes && Object.keys(attributes).length > 0);
   return {
-    user: { id: user.id, name, email: email || null },
+    user: { id: user.id, name, email: email || null, ...(hasAttributes ? { attributes: { ...attributes } } : {}) },
     context: { theme: "system", locale: "zh-CN", launchMode: "native" }
   };
 }
@@ -97,12 +112,13 @@ export async function createAchordConnectLaunchTicket(
   fetchImpl: AchordConnectFetch,
   credentials: AchordConnectCredentials,
   user: AchordConnectLaunchUser,
-  timeoutMs: number
+  timeoutMs: number,
+  attributes?: Record<string, string> | null
 ): Promise<{ launchUrl: string; expiresAt: string }> {
   const { payload } = await requestAchordConnect(fetchImpl, credentials, {
     method: "POST",
     path: LAUNCH_TICKETS_PATH,
-    body: buildLaunchTicketBody(user),
+    body: buildLaunchTicketBody(user, attributes),
     timeoutMs
   });
   const data = readRecord(readRecord(payload)?.data);

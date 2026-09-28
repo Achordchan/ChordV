@@ -257,10 +257,15 @@ function createService(options: { users?: string[] } = {}) {
   const published: Array<{ userId: string; count: number }> = [];
   const logs: string[] = [];
   const fetchCalls: FetchCall[] = [];
+  // 联系人资料由单独的服务组装（见 support-contact-context.regression.ts）；这里默认不附带，个别用例替换。
+  const contactContext = {
+    buildAttributes: async (_userId: string, _context: unknown): Promise<Record<string, string>> => ({})
+  };
   const service = new SupportIntegrationService(
     db.prisma,
     { get: async () => ({ primaryOrigin: "https://v.example.test", legacyOrigins: [], updatedAt: null }) } as never,
-    { publishSupportUnreadUpdated: (userId: string, count: number) => published.push({ userId, count }) } as never
+    { publishSupportUnreadUpdated: (userId: string, count: number) => published.push({ userId, count }) } as never,
+    contactContext as never
   );
   (service as unknown as { logger: unknown }).logger = {
     log: (message: string) => logs.push(message),
@@ -280,6 +285,7 @@ function createService(options: { users?: string[] } = {}) {
     published,
     logs,
     fetchCalls,
+    contactContext,
     respond: (next: (call: FetchCall) => Promise<Response>) => {
       responder = next;
     }
@@ -1413,7 +1419,8 @@ async function testAdminConfigNeverReturnsSecrets() {
     hasWebhookSecret: false,
     enabled: false,
     webhookUrl: "https://v.example.test/api/integrations/achord-connect/webhook",
-    updatedAt: null
+    updatedAt: null,
+    contactAttributes: { status: "unknown", code: null, checkedAt: null }
   });
   await rejects(service.updateAdminConfig({ enabled: true }), BadRequestException);
   await rejects(service.updateAdminConfig({ baseUrl: "http://support.example.test" }), BadRequestException);
@@ -1470,6 +1477,168 @@ async function testAdminConfigNeverReturnsSecrets() {
   assert.doesNotMatch(JSON.stringify([nativeDisabled, passed]), /acs_|whsec_|upstream detail/);
 }
 
+// ---------- 联系人资料（打开工单时附带的诊断信息） ----------
+
+const SAMPLE_ATTRIBUTES = {
+  app_version: "1.1.11（构建 21）",
+  os: "macOS 15.1（24B83，arm64）",
+  connection: "已连接 · 规则模式 · 香港 02（VLESS Reality）· 1 小时 12 分",
+  plan: "个人 · 标准版 · 正常 · 2026-12-31 到期 · 剩余 120.5 GB"
+};
+const LAUNCH_OK = () => json(201, { data: { launchUrl: `${BASE_URL}/embed/connect/pub_fake#ticket=act_fake`, expiresAt: "2026-09-28T10:01:00.000Z" } });
+const launchBody = (call: FetchCall) => JSON.parse(String(call.init.body)) as { user: Record<string, unknown> };
+
+async function testLaunchAttachesContactAttributes() {
+  const { service, fetchCalls, respond, contactContext } = createService();
+  await configure(service);
+  const seen: unknown[] = [];
+  contactContext.buildAttributes = async (userId, context) => {
+    seen.push({ userId, context });
+    return { ...SAMPLE_ATTRIBUTES };
+  };
+  respond(async () => LAUNCH_OK());
+  const context = { appVersion: "1.1.11（构建 21）", connectionState: "connected" as const, sessionId: "sess_1" };
+  await service.launchForClient({ id: "user_1", email: "a@example.test", displayName: "A" }, context);
+  assert.deepEqual(seen, [{ userId: "user_1", context }], "客户端上报的诊断信息交给联系人资料服务，由它补齐连接与套餐");
+  assert.equal(fetchCalls.length, 1);
+  const body = launchBody(fetchCalls[0]);
+  assert.deepEqual(body.user.attributes, SAMPLE_ATTRIBUTES);
+  assert.doesNotMatch(String(fetchCalls[0].init.body), /sess_1/, "会话 ID 只用于后台查找，不转发给工单系统");
+  assert.equal((await service.getAdminConfig()).contactAttributes?.status, "accepted");
+
+  // 未启用时不组装资料（不查数据库）。
+  seen.length = 0;
+  await service.updateAdminConfig({ enabled: false });
+  await rejects(service.launchForClient({ id: "user_1", email: "a@example.test", displayName: "A" }, context), HttpException);
+  assert.equal(seen.length, 0);
+
+  // 组装失败不影响打开，只是不附带。
+  await service.updateAdminConfig({ enabled: true });
+  contactContext.buildAttributes = async () => {
+    throw new Error("db down");
+  };
+  fetchCalls.length = 0;
+  await service.launchForClient({ id: "user_1", email: "a@example.test", displayName: "A" }, context);
+  assert.equal(fetchCalls.length, 1);
+  assert.equal(launchBody(fetchCalls[0]).user.attributes, undefined);
+}
+
+async function testAttributeRejectionRetriesOnceWithoutAttributes() {
+  for (const code of ["UNDECLARED_PROFILE_ATTRIBUTE", "INVALID_PROFILE_ATTRIBUTE"]) {
+    const { service, fetchCalls, respond, contactContext, logs } = createService();
+    await configure(service);
+    contactContext.buildAttributes = async () => ({ ...SAMPLE_ATTRIBUTES });
+    respond(async (call) => launchBody(call).user.attributes
+      ? json(422, { error: { code, message: "用户资料字段 app_version 未在连接中声明" } })
+      : LAUNCH_OK());
+    const launched = await service.launchForClient({ id: "user_1", email: "a@example.test", displayName: "A" }, null);
+    assert.equal(launched.supportOrigin, BASE_URL, `${code}：不附带资料重试后照常打开`);
+    assert.equal(fetchCalls.length, 2, `${code}：只重试一次`);
+    assert.ok(launchBody(fetchCalls[0]).user.attributes);
+    assert.equal(launchBody(fetchCalls[1]).user.attributes, undefined);
+    assert.equal(logs.filter((line) => line.includes(code)).length, 1, "记一条警告");
+    const status = (await service.getAdminConfig()).contactAttributes;
+    assert.equal(status?.status, "rejected");
+    assert.equal(status?.code, code);
+    assert.ok(status?.checkedAt);
+
+    // 10 分钟内直接不附带，不会每次多请求一次；也不重复记日志。
+    fetchCalls.length = 0;
+    await service.launchForClient({ id: "user_2", email: "b@example.test", displayName: "B" }, null);
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(launchBody(fetchCalls[0]).user.attributes, undefined);
+    assert.equal(logs.filter((line) => line.includes(code)).length, 1);
+
+    // 过了记忆期再试着附带：管理员在工单系统里声明好字段后自动恢复。
+    const memory = (service as unknown as { contactAttributes: { rejectedUntil: number } }).contactAttributes;
+    memory.rejectedUntil = Date.now() - 1;
+    respond(async () => LAUNCH_OK());
+    fetchCalls.length = 0;
+    await service.launchForClient({ id: "user_1", email: "a@example.test", displayName: "A" }, null);
+    assert.equal(fetchCalls.length, 1);
+    assert.deepEqual(launchBody(fetchCalls[0]).user.attributes, SAMPLE_ATTRIBUTES);
+    assert.equal((await service.getAdminConfig()).contactAttributes?.status, "accepted");
+  }
+
+  // 其他 422（例如 VALIDATION_ERROR）和其他错误不重试，按原来的错误处理。
+  for (const [status, code] of [[422, "VALIDATION_ERROR"], [422, "UNIVERSAL_NATIVE_LAUNCH_DISABLED"], [429, "UNIVERSAL_RATE_LIMITED"], [401, "UNDECLARED_PROFILE_ATTRIBUTE"]] as const) {
+    const { service, fetchCalls, respond, contactContext } = createService();
+    await configure(service);
+    contactContext.buildAttributes = async () => ({ ...SAMPLE_ATTRIBUTES });
+    respond(async () => json(status, { error: { code, message: "upstream detail" } }));
+    await rejects(service.launchForClient({ id: "user_1", email: "a@example.test", displayName: "A" }, null), HttpException);
+    assert.equal(fetchCalls.length, 1, `${status} ${code} 不重试`);
+    assert.equal((await service.getAdminConfig()).contactAttributes?.status, "unknown");
+  }
+
+  // 没有资料可附带时，资料被拒绝的错误码也不会触发重试（不可能出现，但不能因此重复请求）。
+  const { service, fetchCalls, respond } = createService();
+  await configure(service);
+  respond(async () => json(422, { error: { code: "UNDECLARED_PROFILE_ATTRIBUTE", message: "x" } }));
+  await rejects(service.launchForClient({ id: "user_1", email: "a@example.test", displayName: "A" }, null), HttpException);
+  assert.equal(fetchCalls.length, 1);
+}
+
+async function testAttributeMemoryFollowsConnection() {
+  const { service, respond, contactContext } = createService();
+  await configure(service);
+  contactContext.buildAttributes = async () => ({ ...SAMPLE_ATTRIBUTES });
+  respond(async (call) => launchBody(call).user.attributes
+    ? json(422, { error: { code: "UNDECLARED_PROFILE_ATTRIBUTE", message: "x" } })
+    : LAUNCH_OK());
+  await service.launchForClient({ id: "user_1", email: "a@example.test", displayName: "A" }, null);
+  assert.equal((await service.getAdminConfig()).contactAttributes?.status, "rejected");
+  // 换了连接：新连接是否声明过字段需要重新确认。
+  await service.updateAdminConfig({ baseUrl: "https://support2.example.test", webhookSecret: NEW_WEBHOOK_SECRET });
+  assert.deepEqual((await service.getAdminConfig()).contactAttributes, { status: "unknown", code: null, checkedAt: null });
+}
+
+async function testConnectionTestReportsAttributes() {
+  const { service, fetchCalls, respond } = createService();
+  await configure(service);
+  const unreadOk = () => json(200, { data: { externalUserId: "chordv-connection-test", unreadCount: 0, requests: [] } });
+
+  // 未声明字段：资料一项给出说明，创建工单入口不附带资料再测一次，仍算连接正常。
+  respond(async (call) => {
+    if (!call.url.endsWith("/launch-tickets")) return unreadOk();
+    return launchBody(call).user.attributes
+      ? json(422, { error: { code: "UNDECLARED_PROFILE_ATTRIBUTE", message: "upstream detail" } })
+      : LAUNCH_OK();
+  });
+  const undeclared = await service.testConnection();
+  assert.equal(undeclared.ok, true);
+  assert.equal(undeclared.launch.ok, true);
+  assert.equal(undeclared.attributes?.ok, false);
+  assert.match(undeclared.attributes?.message ?? "", /尚未声明联系人资料字段/);
+  const launchCalls = fetchCalls.filter((call) => call.url.endsWith("/launch-tickets"));
+  assert.equal(launchCalls.length, 2);
+  const testAttributes = launchBody(launchCalls[0]).user.attributes as Record<string, string>;
+  assert.deepEqual(Object.keys(testAttributes), ["app_version", "os", "timezone", "locale", "update_channel", "connection", "line_status", "recent_errors", "components", "plan"]);
+  assert.equal((await service.getAdminConfig()).contactAttributes?.status, "rejected", "测试结果同步到后台状态");
+  assert.doesNotMatch(JSON.stringify(undeclared), /upstream detail|acs_|whsec_/);
+
+  // 类型不符。
+  respond(async (call) => {
+    if (!call.url.endsWith("/launch-tickets")) return unreadOk();
+    return launchBody(call).user.attributes
+      ? json(422, { error: { code: "INVALID_PROFILE_ATTRIBUTE", message: "upstream detail" } })
+      : LAUNCH_OK();
+  });
+  assert.match((await service.testConnection()).attributes?.message ?? "", /类型不符/);
+
+  // 已声明：资料一项通过，并立即恢复附带（不用等 10 分钟）。
+  respond(async (call) => (call.url.endsWith("/launch-tickets") ? LAUNCH_OK() : unreadOk()));
+  const accepted = await service.testConnection();
+  assert.equal(accepted.attributes?.ok, true);
+  assert.equal((await service.getAdminConfig()).contactAttributes?.status, "accepted");
+
+  // 凭据错误：资料一项标为未测试。
+  respond(async () => json(401, { error: { code: "UNIVERSAL_CREDENTIAL_INVALID", message: "upstream detail" } }));
+  const denied = await service.testConnection();
+  assert.equal(denied.ok, false);
+  assert.match(denied.attributes?.message ?? "", /未测试/);
+}
+
 // ---------- 旧工单写接口 ----------
 
 async function testLegacyTicketWriteGuards() {
@@ -1505,7 +1674,7 @@ function testSupportModuleDependenciesAreExported() {
   const service = readFileSync(resolve(__dirname, "../src/modules/support/support-integration.service.ts"), "utf8");
   const constructorBlock = /constructor\(([\s\S]*?)\)\s*\{/.exec(service)?.[1] ?? "";
   const dependencies = [...constructorBlock.matchAll(/:\s*(\w+)/g)].map((match) => match[1]);
-  assert.deepEqual(dependencies, ["PrismaService", "SiteAddressService", "ClientEventsPublisher"]);
+  assert.deepEqual(dependencies, ["PrismaService", "SiteAddressService", "ClientEventsPublisher", "SupportContactContextService"]);
   const devDataModule = readFileSync(resolve(__dirname, "../src/modules/common/dev-data.module.ts"), "utf8");
   const exportsBlock = /exports:\s*\[([\s\S]*?)\]/.exec(devDataModule)?.[1] ?? "";
   assert.match(devDataModule, /@Global\(\)/);
@@ -1514,6 +1683,10 @@ function testSupportModuleDependenciesAreExported() {
   }
   const supportModule = readFileSync(resolve(__dirname, "../src/modules/support/support.module.ts"), "utf8");
   assert.match(supportModule, /imports: \[DevDataModule\]/, "SupportModule 显式导入提供这些依赖的模块");
+  assert.match(supportModule, /providers: \[SupportIntegrationService, SupportContactContextService\]/, "联系人资料服务由 SupportModule 自己提供");
+  const contactService = readFileSync(resolve(__dirname, "../src/modules/support/support-contact-context.service.ts"), "utf8");
+  const contactConstructor = /constructor\(([\s\S]*?)\)\s*\{/.exec(contactService)?.[1] ?? "";
+  assert.deepEqual([...contactConstructor.matchAll(/:\s*(\w+)/g)].map((match) => match[1]), ["PrismaService"]);
   const prismaModule = readFileSync(resolve(__dirname, "../src/modules/common/prisma.module.ts"), "utf8");
   assert.match(prismaModule, /@Global\(\)[\s\S]*exports: \[PrismaService\]/);
 }
@@ -1623,6 +1796,50 @@ async function testRoutesWithRawBodyParser() {
       expiresAt: "2026-09-28T10:01:00.000Z",
       supportOrigin: BASE_URL
     });
+    // 新版客户端附带诊断信息：按白名单逐项校验，未知字段丢弃，不合格的字段只丢弃该项，都不影响打开。
+    const contexts: unknown[] = [];
+    const originalLaunch = service.launchForClient.bind(service);
+    service.launchForClient = async (user, context) => {
+      contexts.push(context);
+      return originalLaunch(user, context);
+    };
+    const postLaunch = (body: unknown) => fetch(`${baseUrl}/api/client/support/launch`, {
+      method: "POST",
+      headers: { authorization: "Bearer user-token", "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const withContext = await postLaunch({
+      context: {
+        appVersion: "1.1.11（构建 21）",
+        os: "macOS 15.1（24B83，arm64）",
+        connectionState: "bogus",
+        sessionId: "sess_route",
+        recentErrors: [{ code: "runtime_exited", at: "2026-09-28T02:21:00.000Z" }],
+        lineStatus: "x".repeat(81),
+        plan: "客户端伪造的套餐",
+        token: "should-be-dropped"
+      },
+      extra: true
+    });
+    assert.equal(withContext.status, 200, "诊断信息不合格也照常打开");
+    assert.deepEqual(contexts.at(-1), {
+      appVersion: "1.1.11（构建 21）",
+      os: "macOS 15.1（24B83，arm64）",
+      sessionId: "sess_route",
+      recentErrors: [{ code: "runtime_exited", at: "2026-09-28T02:21:00.000Z" }]
+    });
+    assert.equal((await postLaunch({ context: { os: "x".repeat(5000) } })).status, 200, "超过 4 KB 整体丢弃，仍能打开");
+    assert.equal(contexts.at(-1), null);
+    const hostile = await postLaunch({ context: { os: { constructor: 1 }, recentErrors: [{ code: { constructor: 1 }, at: 1 }], appVersion: "1.1.11" } });
+    assert.equal(hostile.status, 200, "形状不对的诊断信息不会让打开工单报 500");
+    assert.deepEqual(contexts.at(-1), { appVersion: "1.1.11" });
+    assert.equal((await postLaunch({ context: "not an object" })).status, 200);
+    assert.equal(contexts.at(-1), null);
+    const noBody = await fetch(`${baseUrl}/api/client/support/launch`, { method: "POST", headers: { authorization: "Bearer user-token" } });
+    assert.equal(noBody.status, 200, "旧版客户端没有请求体");
+    assert.equal(contexts.at(-1), null);
+    service.launchForClient = originalLaunch;
+
     respond(async () => json(429, { error: { code: "UNIVERSAL_RATE_LIMITED", message: "upstream detail" } }));
     const limited = await fetch(`${baseUrl}/api/client/support/launch`, { method: "POST", headers: { authorization: "Bearer user-token" } });
     assert.equal(limited.status, 429);
@@ -1661,6 +1878,10 @@ async function main() {
   await testUsersSeenWhileDisabledAreRefreshedOnEnable();
   await testStatusRegistrationRacingEnable();
   await testAdminConfigNeverReturnsSecrets();
+  await testLaunchAttachesContactAttributes();
+  await testAttributeRejectionRetriesOnceWithoutAttributes();
+  await testAttributeMemoryFollowsConnection();
+  await testConnectionTestReportsAttributes();
   await testLegacyTicketWriteGuards();
   testSupportModuleDependenciesAreExported();
   await testRoutesWithRawBodyParser();

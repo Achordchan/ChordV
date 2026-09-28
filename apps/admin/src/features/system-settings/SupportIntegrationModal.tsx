@@ -4,6 +4,7 @@ import { notifications } from "@mantine/notifications";
 import type { AdminSupportIntegrationConfigDto, AdminSupportIntegrationTestResultDto, UpdateAdminSupportIntegrationConfigInputDto } from "@chordv/shared";
 import { fetchSupportIntegrationConfig, testSupportIntegration, updateSupportIntegrationConfig } from "../../api/support-integration";
 import { useActionConfirmation } from "../modals/useActionConfirmation";
+import { SupportContactFields } from "./SupportContactFields";
 import { readError } from "../../utils/admin-filters";
 
 type SecretKey = "clientSecret" | "webhookSecret";
@@ -78,6 +79,9 @@ export function SupportIntegrationModal({ opened, onClose, onSaved }: { opened: 
     try {
       const result = await testSupportIntegration();
       if (id === epoch.current) setTestResult(result);
+      // 测试会刷新“联系人资料字段”的接受状态，只更新这一项（有未保存修改时不能测试，其他字段不会被覆盖）。
+      const latest = await fetchSupportIntegrationConfig().catch(() => null);
+      if (latest && id === epoch.current) setConfig((current) => current ? { ...current, contactAttributes: latest.contactAttributes } : current);
     } catch (reason) { if (id === epoch.current) setError(readError(reason, "测试连接失败，请稍后重试")); }
     finally { busy.current = false; if (id === epoch.current) setTesting(false); }
   };
@@ -117,9 +121,11 @@ export function SupportIntegrationModal({ opened, onClose, onSaved }: { opened: 
           <Text size="xs" c="dimmed">填到 Achord Connect 连接配置的 Webhook 地址，并订阅“未读变化”事件。地址随站点主地址变化。</Text>
         </Stack>
         <Text size="xs" c="dimmed">启用前需填写地址、Client ID、Client Secret 和 Webhook Secret：客户端不会定时刷新，未读提醒依靠 Webhook 推送。</Text>
+        <SupportContactFields status={config.contactAttributes}/>
         {testResult ? <Alert color={testResult.ok ? "teal" : "red"} title={testResult.ok ? "连接正常" : "连接未通过"}>
           <Text size="sm">创建工单入口：{testResult.launch.message}</Text>
           <Text size="sm">未读查询：{testResult.unread.message}</Text>
+          {testResult.attributes ? <Text size="sm" c={testResult.attributes.ok ? undefined : "orange.8"}>联系人资料字段：{testResult.attributes.message}</Text> : null}
         </Alert> : null}
         <Group justify="space-between">
           <Button variant="default" loading={testing} disabled={saving || dirty} onClick={() => void test()} title={dirty ? "请先保存，测试使用已保存的设置" : undefined}>测试连接</Button>

@@ -727,6 +727,30 @@ export async function consumeDesktopUpdateInstallReport() {
   return invoke<DesktopUpdateInstallReport | null>("consume_desktop_update_install_report");
 }
 
+let osLabelTask: Promise<string | null> | null = null;
+
+/**
+ * 系统版本标签（例如 macOS 15.1（24B83，arm64）），打开工单时附带给客服。
+ * 原生层取到后本次运行内缓存；这里缓存成功的结果，取不到时下次再试。
+ */
+export function loadDesktopOsLabel(): Promise<string | null> {
+  if (!osLabelTask) {
+    osLabelTask = (async () => {
+      const invoke = await loadInvoke();
+      if (!invoke || isAndroidPlatform()) {
+        return null;
+      }
+      const label = await invoke<string | null>("desktop_os_label");
+      return typeof label === "string" && label.trim() ? label.trim() : null;
+    })().catch(() => null);
+    const task = osLabelTask;
+    void task.then((label) => {
+      if (label === null && osLabelTask === task) osLabelTask = null;
+    });
+  }
+  return osLabelTask;
+}
+
 export async function loadDesktopRuntimeEnvironment() {
   const invoke = await loadInvoke();
   if (!invoke || isAndroidPlatform()) {

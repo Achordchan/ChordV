@@ -44,6 +44,7 @@ import {
   focusDesktopWindow,
   hasActivePlatformRuntime,
   loadActiveRuntimeConfig,
+  loadDesktopOsLabel,
   revealLocalFile,
   subscribeDesktopShellActions,
   subscribeNativeLeaseHeartbeat,
@@ -54,6 +55,10 @@ import {
   type RuntimeStatus
 } from "./lib/runtime";
 import { resolveDesktopPlatformVersion } from "./lib/platformVersion";
+import { APP_BUILD_NUMBER } from "./lib/buildInfo";
+import { readRecentErrorCodes, recordRecentErrorCode } from "./lib/recentErrorCodes";
+import { collectSupportLaunchContext, type SupportContextSnapshot } from "./lib/supportContext";
+import { loadSupportComponentsInfo } from "./lib/supportContextSources";
 import { localFileKindForComponent, resolveLocalFileVersions, supportsLocalFiles, type LocalFileKind, type LocalFileVersions } from "./lib/localFiles";
 import { readStoredGeoVersionLabel } from "./lib/geoUpdate";
 import { readStoredXrayInstalledIdentity } from "./lib/xrayInstall";
@@ -154,6 +159,16 @@ export function App() {
   const [countdown, setCountdown] = useState(0);
   const [now, setNow] = useState(Date.now());
   const [connectionGuidance, setConnectionGuidance] = useState<ConnectionGuidance | null>(null);
+  // 连接指引可能只弹对话框、不弹提示条：出现时把错误编号记入“最近错误”（只有编号和时间），打开工单时附带给客服。
+  useEffect(() => {
+    if (connectionGuidance && connectionGuidance.tone !== "info") {
+      recordRecentErrorCode(connectionGuidance.errorCode ?? connectionGuidance.code);
+    }
+  }, [connectionGuidance]);
+  // 提前取一次系统版本（原生层缓存），点“工单”时不必等待。
+  useEffect(() => {
+    void loadDesktopOsLabel();
+  }, []);
   const [guidanceDialog, setGuidanceDialog] = useState<ConnectionGuidance | null>(null);
   const [closeHintOpened, setCloseHintOpened] = useState(false);
   const [localFilesOpened, setLocalFilesOpened] = useState(false);
@@ -231,13 +246,22 @@ export function App() {
     readError: readAnnouncementError,
     notify: showToast
   });
+  // 打开工单时附带给客服的诊断信息：快照在下面各状态就绪后每次渲染更新（见 supportContextSnapshotRef.current 的赋值）。
+  const supportContextSnapshotRef = useRef<(() => SupportContextSnapshot) | null>(null);
   const { supportUnreadCount, supportOpening, openSupportPortal, refreshSupportStatus, applySupportUnreadCount } =
     useSupportPortal({
       accessToken: session?.accessToken ?? null,
       userId: session?.user.id ?? null,
       onUnauthorized: recoverSessionAfterUnauthorized,
       notify: showToast,
-      showError: (reason) => showErrorToast(reason, "support")
+      showError: (reason) => showErrorToast(reason, "support"),
+      collectContext: () =>
+        collectSupportLaunchContext({
+          snapshot: () => supportContextSnapshotRef.current!(),
+          loadOsLabel: loadDesktopOsLabel,
+          loadComponents: loadSupportComponentsInfo,
+          readRecentErrors: readRecentErrorCodes
+        })
     });
   const runtimeComponentsCheckRef = useRef<
     | ((input: {
@@ -371,6 +395,23 @@ export function App() {
     const summary = getLastRuntimeAssetsCheckSummary();
     componentVersionSync.reportManualSyncResult(session?.accessToken ?? null, success, summary);
     return summary;
+  };
+  supportContextSnapshotRef.current = () => {
+    const summary = getLastRuntimeAssetsCheckSummary();
+    return {
+      appVersion,
+      appBuild: APP_BUILD_NUMBER,
+      pendingUpdate: effectiveUpdateActionable && effectiveUpdate
+        ? { version: effectiveUpdate.latestVersion, ready: updateReadyToInstall }
+        : null,
+      updateChannel,
+      autoDownload: autoDownloadUpdates,
+      runtimeStatus: desktopStatus.status,
+      runtimeErrorCode: connectionGuidance?.errorCode ?? connectionGuidance?.code ?? desktopStatus.reasonCode ?? null,
+      sessionId: runtime?.sessionId ?? desktopStatus.activeSessionId ?? null,
+      serverProbe: { status: serverProbe.status, elapsedMs: serverProbe.elapsedMs },
+      cachedComponents: { xrayVersion: summary.xray.localVersion, geoVersion: summary.geo.localVersion }
+    };
   };
   const {
     probeBusy,

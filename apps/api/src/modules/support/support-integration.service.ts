@@ -1,12 +1,14 @@
 import { BadGatewayException, BadRequestException, HttpException, HttpStatus, Injectable, Logger, ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
-import type {
-  AdminSupportIntegrationConfigDto,
-  AdminSupportIntegrationTestItemDto,
-  AdminSupportIntegrationTestResultDto,
-  ClientSupportLaunchDto,
-  ClientSupportStatusDto,
-  UpdateAdminSupportIntegrationConfigInputDto
+import {
+  SUPPORT_CONTACT_PROFILE_FIELDS,
+  type AdminSupportContactAttributesStatusDto,
+  type AdminSupportIntegrationConfigDto,
+  type AdminSupportIntegrationTestItemDto,
+  type AdminSupportIntegrationTestResultDto,
+  type ClientSupportLaunchDto,
+  type ClientSupportStatusDto,
+  type UpdateAdminSupportIntegrationConfigInputDto
 } from "@chordv/shared";
 import { promotionAdmission } from "../../promotion-admission";
 import { DrainableJob, workLifecycle } from "../../work-lifecycle";
@@ -18,6 +20,7 @@ import {
   buildAchordConnectWebhookUrl,
   createAchordConnectLaunchTicket,
   fetchAchordConnectContactUnread,
+  isAchordConnectAttributeRejection,
   normalizeAchordConnectBaseUrl,
   normalizeAchordConnectClientId,
   normalizeAchordConnectSecret,
@@ -37,6 +40,8 @@ import {
   readSupportIntegrationCredentials as readCredentials,
   type StoredSupportIntegrationConfig
 } from "./support-integration.settings";
+import { SupportContactContextService } from "./support-contact-context.service";
+import type { SupportLaunchContext } from "./support-contact-context";
 
 export { SUPPORT_INTEGRATION_SETTING_KEY } from "./support-integration.settings";
 export const SUPPORT_NOT_OPEN_MESSAGE = "工单系统暂未开放，请稍后再试";
@@ -61,6 +66,13 @@ const RESYNC_ATTEMPT_TRACKING_LIMIT = 10_000;
 const BACKGROUND_RESYNC_MAX_ATTEMPTS = 6;
 export const WEBHOOK_EVENT_RETENTION_DAYS = 30;
 const CONNECTION_TEST_USER: AchordConnectLaunchUser = { id: "chordv-connection-test", email: "", displayName: "ChordV 连接测试" };
+/** 测试连接时给测试联系人附带的资料：每个字段都写“连接测试”，用来确认工单系统已声明这些字段。 */
+const CONNECTION_TEST_ATTRIBUTES: Record<string, string> = Object.fromEntries(SUPPORT_CONTACT_PROFILE_FIELDS.map((field) => [field.key, "连接测试"]));
+/**
+ * 工单系统拒绝联系人资料字段（尚未声明或类型不符）后，这段时间内打开工单直接不附带资料，避免每次都多请求一次；
+ * 过后再试着附带，管理员在工单系统里声明好字段后会自动恢复（测试连接也会立即刷新这个状态）。
+ */
+export const SUPPORT_CONTACT_ATTRIBUTES_RETRY_AFTER_MS = 10 * 60_000;
 
 export type AchordConnectWebhookRequest = {
   rawBody: Buffer;
@@ -93,11 +105,18 @@ export class SupportIntegrationService {
   private publicationEpoch = 0;
   private unreadEndpointMissingLogged = false;
   private lastRejectedWebhookLogAt = 0;
+  /**
+   * 联系人资料字段最近一次被接受 / 拒绝的情况（只在本进程内存里，按连接代次区分）。
+   * rejectedUntil 之前打开工单不附带资料。
+   */
+  private contactAttributes: { generation: number; status: "accepted" | "rejected"; code: string | null; checkedAt: Date; rejectedUntil: number } | null = null;
+  private lastAttributeRejectionLogAt = 0;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly sites: SiteAddressService,
-    private readonly clientEventsPublisher: ClientEventsPublisher
+    private readonly clientEventsPublisher: ClientEventsPublisher,
+    private readonly contactContext: SupportContactContextService
   ) {
     workLifecycle.onDrain(() => {
       for (const timer of this.backgroundResyncTimers.values()) clearTimeout(timer);
@@ -177,6 +196,8 @@ export class SupportIntegrationService {
     if (saved.connectionChanged) {
       // 清空限流记录，尽快向新连接查询。
       this.resyncAttempts.clear();
+      // 新连接是否声明了联系人资料字段需要重新确认。
+      this.contactAttributes = null;
     }
     if (saved.resyncCandidates.length > 0) {
       // 取消旧的排队任务（可能针对旧连接、带着旧的重试次数、要很久以后才执行），按新的情况重新排队。
@@ -198,22 +219,43 @@ export class SupportIntegrationService {
     }
   }
 
-  /** 用已保存的设置测试：为测试用户创建一次票据（不会被兑换，60 秒后自动失效），并查询一次未读。 */
+  /**
+   * 用已保存的设置测试：为测试用户创建一次票据（不会被兑换，60 秒后自动失效），并查询一次未读。
+   * 创建票据时附带全部联系人资料字段；工单系统因字段未声明而拒绝时，记下结果并不附带资料再测一次创建票据。
+   */
   async testConnection(): Promise<AdminSupportIntegrationTestResultDto> {
-    const credentials = readCredentials((await this.readStoredConfig()).value);
+    const stored = (await this.readStoredConfig()).value;
+    const credentials = readCredentials(stored);
     if (!credentials) {
       const missing = { ok: false, message: "请先填写并保存工单系统地址、Client ID 和 Client Secret" };
-      return { ok: false, launch: missing, unread: { ok: false, message: "未测试" } };
+      return { ok: false, launch: missing, unread: { ok: false, message: "未测试" }, attributes: { ok: false, message: "未测试" } };
     }
-    const launch = await createAchordConnectLaunchTicket(this.fetchImpl, credentials, CONNECTION_TEST_USER, LAUNCH_TIMEOUT_MS).then(
-      (): AdminSupportIntegrationTestItemDto => ({ ok: true, message: "凭据有效，可以创建原生窗口工单入口" }),
-      (error: unknown) => ({ ok: false, message: describeConnectionTestFailure(error, "launch") })
+    const launchOk: AdminSupportIntegrationTestItemDto = { ok: true, message: "凭据有效，可以创建原生窗口工单入口" };
+    let attributes: AdminSupportIntegrationTestItemDto = { ok: false, message: "未测试" };
+    const launch = await createAchordConnectLaunchTicket(this.fetchImpl, credentials, CONNECTION_TEST_USER, LAUNCH_TIMEOUT_MS, CONNECTION_TEST_ATTRIBUTES).then(
+      (): AdminSupportIntegrationTestItemDto => {
+        this.noteContactAttributesAccepted(stored.generation);
+        attributes = { ok: true, message: "工单系统已声明联系人资料字段，打开工单时会附带诊断信息" };
+        return launchOk;
+      },
+      async (error: unknown): Promise<AdminSupportIntegrationTestItemDto> => {
+        if (!isAchordConnectAttributeRejection(error)) {
+          attributes = { ok: false, message: "未测试（创建工单入口没有通过）" };
+          return { ok: false, message: describeConnectionTestFailure(error, "launch") };
+        }
+        this.noteContactAttributesRejected(stored.generation, error.code);
+        attributes = { ok: false, message: describeAttributeRejection(error.code) };
+        return createAchordConnectLaunchTicket(this.fetchImpl, credentials, CONNECTION_TEST_USER, LAUNCH_TIMEOUT_MS).then(
+          (): AdminSupportIntegrationTestItemDto => launchOk,
+          (retryError: unknown) => ({ ok: false, message: describeConnectionTestFailure(retryError, "launch") })
+        );
+      }
     );
     const unread = await fetchAchordConnectContactUnread(this.fetchImpl, credentials, CONNECTION_TEST_USER.id, LAUNCH_TIMEOUT_MS).then(
       (): AdminSupportIntegrationTestItemDto => ({ ok: true, message: "未读查询接口可用" }),
       (error: unknown) => ({ ok: false, message: describeConnectionTestFailure(error, "unread") })
     );
-    return { ok: launch.ok, launch, unread };
+    return { ok: launch.ok, launch, unread, attributes };
   }
 
   // ---------- 客户端接口 ----------
@@ -269,16 +311,33 @@ export class SupportIntegrationService {
   /**
    * 创建一次性打开地址。请求工单系统期间（最长 8 秒）设置可能被改：返回前复核，
    * 已停用就按“暂未开放”处理；已切换连接或启用状态变化过就丢弃旧连接的票据，按新设置重新创建一次。
+   * context 是客户端附带的诊断信息（旧版客户端为 null），与后台补齐的连接、套餐一起作为联系人资料发给工单系统。
    */
-  async launchForClient(user: AchordConnectLaunchUser, retried = false): Promise<ClientSupportLaunchDto> {
+  async launchForClient(user: AchordConnectLaunchUser, context: SupportLaunchContext | null = null): Promise<ClientSupportLaunchDto> {
+    return this.launchWithAttributes(user, context, false, undefined);
+  }
+
+  private async launchWithAttributes(
+    user: AchordConnectLaunchUser,
+    context: SupportLaunchContext | null,
+    retried: boolean,
+    prepared: Record<string, string> | null | undefined
+  ): Promise<ClientSupportLaunchDto> {
     const before = (await this.readStoredConfig()).value;
     const credentials = isStoredSupportIntegrationEnabled(before) ? readCredentials(before) : null;
     if (!credentials) {
       throw new ServiceUnavailableException(SUPPORT_NOT_OPEN_MESSAGE);
     }
+    // 诊断信息只在确认工单系统已启用后组装（需要查数据库）；组装失败时不附带，不影响打开。
+    const attributes = prepared !== undefined
+      ? prepared
+      : await this.contactContext.buildAttributes(user.id, context).catch((error: unknown) => {
+        this.logger.warn(`组装工单联系人资料失败（用户 ${user.id}），本次不附带：${error instanceof Error ? error.message : String(error)}`);
+        return null;
+      });
     let ticket: Awaited<ReturnType<typeof createAchordConnectLaunchTicket>>;
     try {
-      ticket = await createAchordConnectLaunchTicket(this.fetchImpl, credentials, user, LAUNCH_TIMEOUT_MS);
+      ticket = await this.createClientLaunchTicket(credentials, before.generation, user, attributes);
     } catch (error) {
       this.logger.warn(`Achord Connect 创建票据失败（用户 ${user.id}）：${describeInternalError(error)}${describeLaunchConfigHint(error)}`);
       if (error instanceof AchordConnectRequestError && error.status === HttpStatus.TOO_MANY_REQUESTS) {
@@ -295,9 +354,61 @@ export class SupportIntegrationService {
       if (retried) {
         throw new BadGatewayException(SUPPORT_UNAVAILABLE_MESSAGE);
       }
-      return this.launchForClient(user, true);
+      return this.launchWithAttributes(user, context, true, attributes);
     }
     return { launchUrl: ticket.launchUrl, expiresAt: ticket.expiresAt, supportOrigin: credentials.baseUrl };
+  }
+
+  /**
+   * 附带联系人资料创建票据。工单系统因资料字段未声明或类型不符（422）拒绝时，记下结果并不附带资料重试一次，
+   * 保证管理员还没在工单系统里声明字段时也能打开工单；之后 10 分钟内直接不附带，不再多请求一次。
+   * 工单系统先校验资料再生成票据，被拒绝的那次不会生成票据，不占每位用户每分钟 20 次的额度。
+   */
+  private async createClientLaunchTicket(
+    credentials: AchordConnectCredentials,
+    generation: number,
+    user: AchordConnectLaunchUser,
+    attributes: Record<string, string> | null
+  ) {
+    const send = Boolean(attributes && Object.keys(attributes).length > 0) && !this.contactAttributesSuppressed(generation);
+    try {
+      const ticket = await createAchordConnectLaunchTicket(this.fetchImpl, credentials, user, LAUNCH_TIMEOUT_MS, send ? attributes : null);
+      if (send) this.noteContactAttributesAccepted(generation);
+      return ticket;
+    } catch (error) {
+      if (!send || !isAchordConnectAttributeRejection(error)) {
+        throw error;
+      }
+      this.noteContactAttributesRejected(generation, error.code);
+      return createAchordConnectLaunchTicket(this.fetchImpl, credentials, user, LAUNCH_TIMEOUT_MS, null);
+    }
+  }
+
+  private contactAttributesSuppressed(generation: number, now = Date.now()) {
+    const state = this.contactAttributes;
+    return Boolean(state && state.generation === generation && state.status === "rejected" && now < state.rejectedUntil);
+  }
+
+  private noteContactAttributesAccepted(generation: number) {
+    this.contactAttributes = { generation, status: "accepted", code: null, checkedAt: new Date(), rejectedUntil: 0 };
+  }
+
+  private noteContactAttributesRejected(generation: number, code: string | null) {
+    const now = Date.now();
+    this.contactAttributes = { generation, status: "rejected", code, checkedAt: new Date(now), rejectedUntil: now + SUPPORT_CONTACT_ATTRIBUTES_RETRY_AFTER_MS };
+    // 每 10 分钟最多记一条，避免刷屏。
+    if (now - this.lastAttributeRejectionLogAt >= SUPPORT_CONTACT_ATTRIBUTES_RETRY_AFTER_MS) {
+      this.lastAttributeRejectionLogAt = now;
+      this.logger.warn(`Achord Connect 不接受工单联系人资料字段（${code ?? "未知错误码"}），已改为不附带资料打开；请在工单系统连接配置的“联系人资料字段”里声明这些字段（见后台“工单系统接入”）。10 分钟内不再附带`);
+    }
+  }
+
+  private readContactAttributesStatus(generation: number): AdminSupportContactAttributesStatusDto {
+    const state = this.contactAttributes;
+    if (!state || state.generation !== generation) {
+      return { status: "unknown", code: null, checkedAt: null };
+    }
+    return { status: state.status, code: state.code, checkedAt: state.checkedAt.toISOString() };
   }
 
   // ---------- Webhook ----------
@@ -694,7 +805,8 @@ export class SupportIntegrationService {
       hasWebhookSecret: Boolean(value.webhookSecret),
       enabled: value.enabled,
       webhookUrl: buildAchordConnectWebhookUrl(site.primaryOrigin),
-      updatedAt: updatedAt?.toISOString() ?? null
+      updatedAt: updatedAt?.toISOString() ?? null,
+      contactAttributes: this.readContactAttributesStatus(value.generation)
     };
   }
 }
@@ -746,6 +858,14 @@ function describeLaunchConfigHint(error: unknown) {
   if (error.status === 422) return "（工单系统拒绝了请求参数）";
   if (error.status === 429) return "（触发工单系统限流）";
   return "";
+}
+
+/** 测试连接时联系人资料字段被拒绝的说明。 */
+function describeAttributeRejection(code: string | null) {
+  if (code === "INVALID_PROFILE_ATTRIBUTE") {
+    return "工单系统里声明的联系人资料字段类型不符（INVALID_PROFILE_ATTRIBUTE），请把这些字段都设为“文本”；修正前打开工单暂不附带诊断信息";
+  }
+  return "工单系统尚未声明联系人资料字段（UNDECLARED_PROFILE_ATTRIBUTE），打开工单暂不附带诊断信息；请按下方列表在工单系统里声明";
 }
 
 /** 给管理员看的测试结果：可以带状态码和工单系统的错误码，但不带工单系统返回的原文。 */
