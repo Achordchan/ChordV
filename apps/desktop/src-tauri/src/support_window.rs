@@ -484,6 +484,9 @@ pub async fn open_support_window(
         let _ = window.destroy();
         return Err(SUPPORT_WINDOW_STALE_ERROR.into());
     }
+    // 加载失败的恢复：登记时 ready=false，只有门户通过桥接确认 ready 才算打开成功。若打开后断网、
+    // 落在同源错误页等导致门户一直未就绪，SupportWindowRecord::can_focus 会在票据有效期
+    // （SUPPORT_LAUNCH_GRACE，60 秒）过后返回 false，下次点击“工单”即重新签发票据并在原位置重开窗口。
     focus(&window)
 }
 

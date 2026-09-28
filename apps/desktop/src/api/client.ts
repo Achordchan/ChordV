@@ -493,6 +493,12 @@ export function fetchSubscription(accessToken: string) {
   });
 }
 
+/**
+ * 新工单系统（Achord Connect）接口。旧版后台没有这两个接口（404）时：
+ * - 发版前 release-desktop.yml 会检查生产后台已上线这两个接口，未上线则拒绝发布客户端；
+ * - 万一连到旧后台，打开流程（createSupportPortalOpener）提示“工单系统正在升级”并给出客服邮箱，
+ *   用户不会失去联系渠道；状态查询失败只保留现有角标。
+ */
 export function fetchSupportStatus(accessToken: string) {
   return request<ClientSupportStatusDto>("/client/support/status", {
     headers: {
