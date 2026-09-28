@@ -186,11 +186,9 @@ export class SupportIntegrationService {
       this.scheduleBackgroundResync(userId);
     }
     for (const item of saved.withUnread) {
-      // 停用或切换连接：已在线的客户端清零；重新启用：推送停用期间记录的当前值。
+      // 停用或切换连接：已在线的客户端一律清零（不论之前是否启用：更早一次保存的回调可能晚于这次才执行，
+      // 它的清零会被这次更新的推送代次挡掉，只能由这次负责）；重新启用：推送停用期间记录的当前值。
       const count = saved.nowEnabled && !saved.connectionChanged ? item.unreadCount : 0;
-      if (saved.connectionChanged && !saved.wasEnabled) {
-        continue;
-      }
       try {
         this.publishFenced(item.userId, count, saved.next.epoch, item.revision);
       } catch (error) {

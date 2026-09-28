@@ -1035,6 +1035,31 @@ async function testConfigNotificationsAndStatusRecheck() {
     assert.deepEqual(published.map((item) => item.count), [5, 0], "晚到的旧回调不推送");
   }
 
+  // 两次保存按顺序提交（先停用，再切换连接并启用），回调却倒序执行：切换连接的回调必须自己清零，
+  // 否则停用回调的清零会被更新的代次挡掉，客户端一直显示旧连接的数字。
+  {
+    const { service, published } = createService();
+    const internals = service as unknown as Internals;
+    internals.publishIfChanged("user_1", { previous: 0, next: 3, revision: 2, publish: true, epoch: 1 });
+    internals.afterConfigSaved({
+      next: { epoch: 3 },
+      connectionChanged: true,
+      wasEnabled: false,
+      nowEnabled: true,
+      withUnread: [{ userId: "user_1", unreadCount: 3, revision: 4 }],
+      resyncCandidates: []
+    });
+    internals.afterConfigSaved({
+      next: { epoch: 2 },
+      connectionChanged: false,
+      wasEnabled: true,
+      nowEnabled: false,
+      withUnread: [{ userId: "user_1", unreadCount: 3, revision: 3 }],
+      resyncCandidates: []
+    });
+    assert.deepEqual(published.map((item) => item.count), [3, 0], "切换连接的回调即使之前是停用状态也清零");
+  }
+
   // 状态查询在校准期间遇到停用：按未启用返回，不返回旧连接的数字。
   {
     const { service } = createService();
