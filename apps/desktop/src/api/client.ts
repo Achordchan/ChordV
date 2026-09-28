@@ -8,6 +8,7 @@ import type {
   ClientRuntimeComponentsPlanDto,
   ClientRuntimeEventDto,
   ClientRuntimeComponentFailureReportInputDto,
+  ClientSupportLaunchContextDto,
   ClientSupportLaunchDto,
   ClientSupportStatusDto,
   ClientRoutingRuleDto,
@@ -507,13 +508,17 @@ export function fetchSupportStatus(accessToken: string) {
   });
 }
 
-/** 返回一次性打开地址（票据在 URL 片段里，60 秒内有效）：只用于立即打开工单窗口，不能写进任何日志。 */
-export function launchSupportPortal(accessToken: string) {
+/**
+ * 返回一次性打开地址（票据在 URL 片段里，60 秒内有效）：只用于立即打开工单窗口，不能写进任何日志。
+ * context 是附带给客服的诊断信息（见 lib/supportContext.ts）；收集失败时不传，后台按旧版客户端处理。
+ */
+export function launchSupportPortal(accessToken: string, context?: ClientSupportLaunchContextDto | null) {
   return request<ClientSupportLaunchDto>("/client/support/launch", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`
-    }
+    },
+    ...(context ? { body: JSON.stringify({ context }) } : {})
   });
 }
 

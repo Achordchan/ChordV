@@ -1134,6 +1134,38 @@ export interface ClientSupportLaunchDto {
   supportOrigin: string;
 }
 
+/** 客户端打开工单时上报的连接状态（只是状态枚举；节点、模式、时长由后台按会话记录补齐）。 */
+export type ClientSupportConnectionState = "connected" | "connecting" | "disconnecting" | "disconnected" | "error";
+
+/** 最近错误：只含稳定的错误编号与发生时间，不含任何原始错误文本。 */
+export interface ClientSupportRecentErrorDto {
+  code: string;
+  at: string;
+}
+
+/**
+ * 打开工单时客户端附带的诊断信息（全部可选，旧版客户端不传）。后台逐项校验，某一项不合格只丢弃该项，不影响打开工单；
+ * 连接详情与套餐由后台按数据库补齐，不采用客户端的值。
+ */
+export interface ClientSupportLaunchContextDto {
+  appVersion?: string;
+  os?: string;
+  timezone?: string;
+  locale?: string;
+  updateChannel?: string;
+  connectionState?: ClientSupportConnectionState;
+  connectionErrorCode?: string;
+  /** 当前连接的会话 ID，只用于后台查找本机的会话记录，不会转发给工单系统。 */
+  sessionId?: string;
+  lineStatus?: string;
+  recentErrors?: ClientSupportRecentErrorDto[];
+  components?: string;
+}
+
+export interface ClientSupportLaunchInputDto {
+  context?: ClientSupportLaunchContextDto;
+}
+
 export interface ClientSupportStatusDto {
   /** 后台是否已配置并启用新工单系统；未启用时客户端提示“工单系统暂未开放”。 */
   enabled: boolean;
@@ -1152,6 +1184,19 @@ export interface AdminSupportIntegrationConfigDto {
   /** 需要填到 Achord Connect 连接配置里的 Webhook 地址，由本站主地址推算。 */
   webhookUrl: string;
   updatedAt: string | null;
+  /** 联系人资料字段（打开工单时附带的诊断信息）最近一次被工单系统接受或拒绝的情况；旧版后台不返回。 */
+  contactAttributes?: AdminSupportContactAttributesStatusDto;
+}
+
+/**
+ * accepted：最近一次附带资料字段的请求被接受；rejected：工单系统尚未声明这些字段（或类型不符），
+ * 这段时间内打开工单暂不附带；unknown：本次启动后还没有附带过。只记录在后台进程内存中。
+ */
+export interface AdminSupportContactAttributesStatusDto {
+  status: "unknown" | "accepted" | "rejected";
+  /** 被拒绝时工单系统返回的错误码，例如 UNDECLARED_PROFILE_ATTRIBUTE。 */
+  code: string | null;
+  checkedAt: string | null;
 }
 
 /**
@@ -1176,6 +1221,8 @@ export interface AdminSupportIntegrationTestResultDto {
   ok: boolean;
   launch: AdminSupportIntegrationTestItemDto;
   unread: AdminSupportIntegrationTestItemDto;
+  /** 工单系统是否接受联系人资料字段；旧版后台不返回。 */
+  attributes?: AdminSupportIntegrationTestItemDto;
 }
 
 export interface CreateSubscriptionInputDto {

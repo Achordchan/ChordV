@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AuthSessionDto } from "@chordv/shared";
+import type { AuthSessionDto, ClientSupportLaunchContextDto } from "@chordv/shared";
 import { fetchSupportStatus, isUnauthorizedApiError, launchSupportPortal } from "../api/client";
 import { closeSupportWindow, createSupportWindowTarget, subscribeSupportWindowEvents } from "../lib/runtime";
+import { clearRecentErrorCodes } from "../lib/recentErrorCodes";
 import {
   createSupportPortalOpener,
   normalizeSupportUnreadCount,
@@ -18,6 +19,8 @@ type UseSupportPortalOptions = {
   onUnauthorized?: () => Promise<AuthSessionDto | null> | AuthSessionDto | null;
   notify: (notice: ToastInput) => void;
   showError: (reason: unknown) => void;
+  /** 打开工单时附带给客服的诊断信息；应在 300 毫秒内返回，失败时返回 null（不附带，照常打开）。 */
+  collectContext?: () => Promise<ClientSupportLaunchContextDto | null>;
 };
 
 /**
@@ -118,12 +121,19 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
       getKnownEnabled: () => enabledRef.current,
       refreshStatus: () => refreshSupportStatus(),
       launch: async (isCurrent) => {
+        // 诊断信息收集有时间上限，任何失败都不影响打开；令牌恢复后重试时沿用同一份。
+        const context = await Promise.resolve()
+          .then(() => latest.current.collectContext?.() ?? null)
+          .catch(() => null);
+        if (!isCurrent()) {
+          throw new SupportPortalStaleError();
+        }
         const accessToken = accessTokenRef.current;
         if (!accessToken) {
           throw new SupportPortalStaleError();
         }
         try {
-          return await launchSupportPortal(accessToken);
+          return await launchSupportPortal(accessToken, context);
         } catch (reason) {
           if (!isUnauthorizedApiError(reason) || !isCurrent()) {
             throw reason;
@@ -136,7 +146,7 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
           if (!recovered?.accessToken) {
             throw reason;
           }
-          return await launchSupportPortal(recovered.accessToken);
+          return await launchSupportPortal(recovered.accessToken, context);
         }
       },
       notifyUpgrading: () =>
@@ -173,6 +183,8 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
     setSupportUnreadCount(0);
     if (previous) {
       void closeSupportWindow().catch(() => undefined);
+      // 上一个账号遇到的错误编号不带到下一个账号的工单里。
+      clearRecentErrorCodes();
     }
   }, [options.userId]);
 

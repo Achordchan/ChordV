@@ -18,6 +18,7 @@ import {
   type SupportPortalTarget
 } from "../src/lib/supportPortal";
 import { describeUserError } from "../src/lib/userFacingErrors";
+import * as recentErrorCodes from "../src/lib/recentErrorCodes";
 
 // Windows 检出时可能是 CRLF 换行，统一成 LF 再匹配。
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
@@ -88,13 +89,19 @@ async function testApiClientUsesSupportEndpoints() {
       })
     }
   };
+  const context = { appVersion: "1.1.11（构建 21）", connectionState: "disconnected" as const, recentErrors: [] };
   await withNative("Macintosh", native, async () => {
     assert.deepEqual(await fetchSupportStatus("token-1"), ENABLED);
     assert.deepEqual(await launchSupportPortal("token-1"), LAUNCH);
+    assert.deepEqual(await launchSupportPortal("token-1", context), LAUNCH);
+    assert.deepEqual(await launchSupportPortal("token-1", null), LAUNCH);
   });
-  const requests = native.calls.map(([, args]) => (args as { request: { method: string; path: string; headers: Record<string, string> } }).request);
-  assert.deepEqual(requests.map((request) => `${request.method} ${request.path}`), ["GET /client/support/status", "POST /client/support/launch"]);
+  const requests = native.calls.map(([, args]) => (args as { request: { method: string; path: string; headers: Record<string, string>; body?: string } }).request);
+  assert.deepEqual(requests.map((request) => `${request.method} ${request.path}`), ["GET /client/support/status", "POST /client/support/launch", "POST /client/support/launch", "POST /client/support/launch"]);
   assert.ok(requests.every((request) => request.headers.Authorization === "Bearer token-1"));
+  assert.equal(requests[1].body, undefined, "没有诊断信息时不带请求体（与旧版一致）");
+  assert.deepEqual(JSON.parse(requests[2].body ?? "null"), { context }, "诊断信息放在 { context } 里");
+  assert.equal(requests[3].body, undefined);
 }
 
 function realDeps(overrides: Partial<SupportPortalDeps> = {}): SupportPortalDeps {
@@ -429,6 +436,7 @@ async function testBadgeFollowsStatusEventsAndBridge() {
   let nativeEpoch = 1;
   const opened: Array<{ launchUrl: string; supportOrigin: string }> = [];
   const launchTokens: string[] = [];
+  const launchContexts: unknown[] = [];
   let releaseSlowLaunch: (() => void) | null = null;
   const unauthorized = Object.assign(new Error("Unauthorized"), { status: 401 });
   const useSupportPortal = loadHook("../src/hooks/useSupportPortal.ts", "useSupportPortal", {
@@ -438,8 +446,9 @@ async function testBadgeFollowsStatusEventsAndBridge() {
         if (token === "expired") throw unauthorized;
         return await (statusResponses.shift() ?? ENABLED);
       },
-      launchSupportPortal: async (token: string) => {
+      launchSupportPortal: async (token: string, context?: unknown) => {
         launchTokens.push(token);
+        launchContexts.push(context);
         if (token === "expired") throw unauthorized;
         if (token === "slow") await new Promise<void>((resolve) => { releaseSlowLaunch = resolve; });
         return LAUNCH;
@@ -462,15 +471,22 @@ async function testBadgeFollowsStatusEventsAndBridge() {
         return () => undefined;
       }
     },
-    "../lib/supportPortal": supportPortal
+    "../lib/supportPortal": supportPortal,
+    "../lib/recentErrorCodes": recentErrorCodes
   }, harness.react);
 
   const notices: unknown[] = [];
   const errors: unknown[] = [];
+  const collected = { appVersion: "1.1.11", connectionState: "connected", sessionId: "sess_1" };
+  let collectCalls = 0;
   const baseProps = {
     onUnauthorized: async () => ({ accessToken: "fresh" }),
     notify: (notice: unknown) => notices.push(notice),
-    showError: (reason: unknown) => errors.push(reason)
+    showError: (reason: unknown) => errors.push(reason),
+    collectContext: async () => {
+      collectCalls += 1;
+      return collected;
+    }
   };
   const render = (props: { accessToken: string | null; userId: string | null }) =>
     harness.render(useSupportPortal, { ...baseProps, ...props });
@@ -544,6 +560,8 @@ async function testBadgeFollowsStatusEventsAndBridge() {
   hook = await settle(expiredUser1);
   assert.equal(await hook.openSupportPortal(), "opened");
   assert.deepEqual(launchTokens, ["expired", "fresh"]);
+  assert.equal(collectCalls, 1, "诊断信息只收集一次");
+  assert.deepEqual(launchContexts, [collected, collected], "恢复登录后重试沿用同一份诊断信息");
   assert.deepEqual(opened, [{ launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin }]);
   assert.deepEqual(errors, []);
 
@@ -586,6 +604,20 @@ async function testBadgeFollowsStatusEventsAndBridge() {
   hook = render(expiredUser1);
   assert.equal(hook.supportUnreadCount, 8, "pushes apply again once the window is closed");
 
+  // 诊断信息收集失败：不附带，照常打开。
+  baseProps.collectContext = async () => {
+    throw new Error("collector broke");
+  };
+  hook = render(expiredUser1);
+  launchContexts.length = 0;
+  const openedBefore = opened.length;
+  assert.equal(await hook.openSupportPortal(), "opened");
+  assert.deepEqual(launchContexts, [null, null]);
+  assert.equal(opened.length, openedBefore + 1);
+  assert.deepEqual(errors, []);
+  opened.splice(openedBefore);
+  baseProps.collectContext = async () => collected;
+
   // 票据申请途中换账号：不为上一个账号打开工单窗口，也不报错。
   const slowUser1 = { accessToken: "slow", userId: "user-1" };
   hook = await settle(slowUser1);
@@ -595,9 +627,11 @@ async function testBadgeFollowsStatusEventsAndBridge() {
   assert.ok(releaseSlowLaunch, "launch is pending");
   statusResponses.push(Promise.reject(new Error("offline")));
   const user2 = { accessToken: "other-token", userId: "user-2" };
+  recentErrorCodes.recordRecentErrorCode("runtime_exited");
   render(user2);
   hook = render(user2);
   assert.equal(hook.supportUnreadCount, 0, "the previous account's badge is cleared on account switch");
+  assert.deepEqual(recentErrorCodes.readRecentErrorCodes(), [], "上一个账号的最近错误不带到下一个账号的工单里");
   releaseSlowLaunch!();
   assert.equal(await pendingOpen, "stale");
   assert.equal(opened.length, 1, "no window is opened for the previous account");

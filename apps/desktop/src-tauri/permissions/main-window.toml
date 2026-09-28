@@ -34,6 +34,7 @@ commands.allow = [
   "quit_for_update",
   "consume_desktop_update_install_report",
   "desktop_runtime_environment",
+  "desktop_os_label",
   "ensure_bundled_runtime_components",
   "get_runtime_component_local_info",
   "fetch_remote_text",

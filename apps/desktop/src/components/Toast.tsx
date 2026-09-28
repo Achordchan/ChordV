@@ -1,4 +1,5 @@
 import { notifications, type NotificationsStore } from "@mantine/notifications";
+import { recordRecentErrorCode } from "../lib/recentErrorCodes";
 import { toToastModel, type ToastInput } from "../lib/toast";
 import { ErrorCodeHint } from "./AppDialog";
 import { toneIcon } from "./NoticeRow";
@@ -22,6 +23,8 @@ const toastClassNames = {
  */
 export function showToast(input: ToastInput, store?: NotificationsStore) {
   const toast = toToastModel(input);
+  // 出错时的错误编号记入“最近错误”（只有编号和时间），打开工单时附带给客服。
+  if (toast.code && (toast.tone === "danger" || toast.tone === "warning")) recordRecentErrorCode(toast.code);
   const Icon = toneIcon(toast.tone);
   return notifications.show(
     {
