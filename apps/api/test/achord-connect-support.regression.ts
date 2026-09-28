@@ -969,6 +969,92 @@ async function testPublicationFenceAndReconnectCandidates() {
   }
 }
 
+async function testConfigNotificationsAndStatusRecheck() {
+  type Internals = {
+    publishIfChanged: (userId: string, change: unknown) => void;
+    afterConfigSaved: (saved: unknown) => void;
+    backgroundResyncTimers: Map<string, ReturnType<typeof setTimeout>>;
+  };
+  // 先停用、再切换连接、最后单独启用：启用时也要为用过工单入口的用户安排查询。
+  {
+    const { service, db } = createService();
+    await configure(service);
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 1, contactUnreadCount: 1, createdAt: new Date().toISOString() })));
+    await service.updateAdminConfig({ enabled: false });
+    await service.updateAdminConfig({ baseUrl: "https://support-new.example.test" });
+    const internals = service as unknown as Internals;
+    assert.equal(internals.backgroundResyncTimers.size, 0, "停用状态下切换连接不查询");
+    let fetches = 0;
+    service.fetchImpl = async () => {
+      fetches += 1;
+      return json(200, { data: { externalUserId: "user_1", unreadCount: 3, requests: [] } });
+    };
+    await service.updateAdminConfig({ enabled: true });
+    await waitFor(() => db.state("user_1")?.unreadCount === 3, "重新启用后向新连接查询");
+    assert.equal(fetches, 1);
+  }
+
+  // 保存设置时的推送同样按代次和版本号截断。
+  {
+    const { service, published } = createService();
+    const internals = service as unknown as Internals;
+    // 启用事务提交时读到 4（版本 7），但在它推送前，一个 Webhook（版本 8，同一代次）已推送 5：不能再推 4。
+    internals.publishIfChanged("user_1", { previous: 4, next: 5, revision: 8, publish: true, epoch: 3 });
+    internals.afterConfigSaved({
+      next: { epoch: 3 },
+      connectionChanged: false,
+      wasEnabled: false,
+      nowEnabled: true,
+      withUnread: [{ userId: "user_1", unreadCount: 4, revision: 7 }],
+      resyncCandidates: []
+    });
+    assert.deepEqual(published.map((item) => item.count), [5]);
+    // 较早的一次保存（代次 3）的回调，晚于较新的停用（代次 4）执行：不再推送。
+    internals.afterConfigSaved({
+      next: { epoch: 4 },
+      connectionChanged: false,
+      wasEnabled: true,
+      nowEnabled: false,
+      withUnread: [{ userId: "user_1", unreadCount: 5, revision: 8 }],
+      resyncCandidates: []
+    });
+    assert.deepEqual(published.map((item) => item.count), [5, 0], "停用推送 0（代次更新，版本号相同也能送达）");
+    internals.afterConfigSaved({
+      next: { epoch: 3 },
+      connectionChanged: false,
+      wasEnabled: false,
+      nowEnabled: true,
+      withUnread: [{ userId: "user_1", unreadCount: 5, revision: 9 }],
+      resyncCandidates: []
+    });
+    assert.deepEqual(published.map((item) => item.count), [5, 0], "晚到的旧回调不推送");
+  }
+
+  // 状态查询在校准期间遇到停用：按未启用返回，不返回旧连接的数字。
+  {
+    const { service } = createService();
+    await configure(service);
+    service.fetchImpl = async () => {
+      await service.updateAdminConfig({ enabled: false });
+      return json(200, { data: { externalUserId: "user_1", unreadCount: 6, requests: [] } });
+    };
+    assert.deepEqual(await service.getClientStatus("user_1"), { enabled: false, unreadCount: 0, supportOrigin: null });
+  }
+  // 校准期间切换了连接：返回新连接的地址和重置后的本地值。
+  {
+    const { service } = createService();
+    await configure(service);
+    service.fetchImpl = async () => {
+      service.fetchImpl = async () => {
+        throw new TypeError("fetch failed");
+      };
+      await service.updateAdminConfig({ baseUrl: "https://support-new.example.test" });
+      return json(200, { data: { externalUserId: "user_1", unreadCount: 6, requests: [] } });
+    };
+    assert.deepEqual(await service.getClientStatus("user_1"), { enabled: true, unreadCount: 0, supportOrigin: "https://support-new.example.test" });
+  }
+}
+
 async function testStatusSchedulesRetryWhenDeferred() {
   const { service } = createService();
   await configure(service);
@@ -1291,6 +1377,7 @@ async function main() {
   await testStatusSchedulesRetryWhenDeferred();
   await testConnectionFenceAndEnableToggles();
   await testPublicationFenceAndReconnectCandidates();
+  await testConfigNotificationsAndStatusRecheck();
   await testAdminConfigNeverReturnsSecrets();
   await testLegacyTicketWriteGuards();
   testSupportModuleDependenciesAreExported();

@@ -86,7 +86,8 @@ export class SupportIntegrationService {
   fetchImpl: AchordConnectFetch = (input, init) => fetch(input, init);
   private readonly resyncAttempts = new Map<string, number>();
   private readonly recentResyncs: number[] = [];
-  private readonly publishedRevisions = new Map<string, number>();
+  /** 每位用户最近一次推送对应的（推送代次，版本号），按先代次、后版本号比较新旧。 */
+  private readonly publishedRevisions = new Map<string, { epoch: number; revision: number }>();
   private readonly backgroundResyncTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** 本进程见过的最新推送代次。 */
   private publicationEpoch = 0;
@@ -139,11 +140,14 @@ export class SupportIntegrationService {
       const withUnread = connectionChanged || wasEnabled !== nowEnabled
         ? await tx.supportUnreadState.findMany({ where: { unreadCount: { gt: 0 } }, select: { userId: true, unreadCount: true, revision: true } })
         : [];
-      // 切换连接后，所有用过工单入口的用户都要向新连接查询一次（原来没有未读的用户在新连接里也可能有）。
-      const resyncCandidates = connectionChanged && nowEnabled
+      // 切换连接或重新启用后，所有用过工单入口的用户都要查询一次：连接可能已换（原来没有未读的用户在新连接里也可能有），
+      // 停用期间也可能漏掉了变化。后台任务执行前会跳过近期已校准的用户。
+      const resyncCandidates = nowEnabled && (connectionChanged || !wasEnabled)
         ? (await tx.supportUnreadState.findMany({ where: { unreadCount: { gte: 0 } }, select: { userId: true } })).map((item) => item.userId)
         : [];
       if (connectionChanged) {
+        // 重置后每位用户的版本号加一，下面的“推送 0”使用重置后的版本号。
+        for (const item of withUnread) item.revision += 1;
         await tx.supportUnreadState.updateMany({
           data: { unreadCount: 0, sourceAt: null, snapshotUntil: null, syncedAt: null, requestsComplete: true, revision: { increment: 1 } }
         });
@@ -166,23 +170,20 @@ export class SupportIntegrationService {
     // 先推进推送代次：在这次保存之前提交、但尚未推送的结果，之后到达推送时会被丢弃。
     this.publicationEpoch = Math.max(this.publicationEpoch, saved.next.epoch);
     if (saved.connectionChanged) {
-      // 未读状态整体重置：清空本进程的已推送版本和限流记录，尽快向新连接查询。
-      this.publishedRevisions.clear();
+      // 清空限流记录，尽快向新连接查询。
       this.resyncAttempts.clear();
     }
     for (const userId of saved.resyncCandidates) {
       this.scheduleBackgroundResync(userId);
     }
     for (const item of saved.withUnread) {
+      // 停用或切换连接：已在线的客户端清零；重新启用：推送停用期间记录的当前值。
+      const count = saved.nowEnabled && !saved.connectionChanged ? item.unreadCount : 0;
+      if (saved.connectionChanged && !saved.wasEnabled) {
+        continue;
+      }
       try {
-        if (saved.connectionChanged) {
-          if (saved.wasEnabled) this.clientEventsPublisher.publishSupportUnreadUpdated(item.userId, 0);
-        } else if (saved.nowEnabled) {
-          this.publishedRevisions.set(item.userId, item.revision);
-          this.clientEventsPublisher.publishSupportUnreadUpdated(item.userId, item.unreadCount);
-        } else {
-          this.clientEventsPublisher.publishSupportUnreadUpdated(item.userId, 0);
-        }
+        this.publishFenced(item.userId, count, saved.next.epoch, item.revision);
       } catch (error) {
         this.logger.warn(`工单系统接入设置变化后推送未读失败（用户 ${item.userId}）：${error instanceof Error ? error.message : String(error)}`);
       }
@@ -235,6 +236,18 @@ export class SupportIntegrationService {
     } else if (stale) {
       // 被限流：同样交给后台在允许时查询。
       this.scheduleBackgroundResync(userId);
+      return { enabled: true, unreadCount, supportOrigin: credentials.baseUrl };
+    } else {
+      return { enabled: true, unreadCount, supportOrigin: credentials.baseUrl };
+    }
+    // 校准期间设置可能已变：停用了就按未启用返回；换了连接就返回新连接下的本地值（已重置，稍后由后台查询新连接）。
+    const latest = await this.readLaunchCredentials();
+    if (!latest) {
+      return { enabled: false, unreadCount: 0, supportOrigin: null };
+    }
+    if (latest.baseUrl !== credentials.baseUrl || latest.clientId !== credentials.clientId) {
+      const current = await this.prisma.supportUnreadState.findUnique({ where: { userId }, select: { unreadCount: true } });
+      return { enabled: true, unreadCount: current?.unreadCount ?? 0, supportOrigin: latest.baseUrl };
     }
     return { enabled: true, unreadCount, supportOrigin: credentials.baseUrl };
   }
@@ -567,22 +580,33 @@ export class SupportIntegrationService {
       // 设置已在别处（或本进程重启前）推进过代次，跟上它。
       this.publicationEpoch = change.epoch;
     }
-    if (change.previous === change.next || !change.publish || change.epoch < this.publicationEpoch) {
+    if (change.previous === change.next || !change.publish) {
+      return;
+    }
+    this.publishFenced(userId, change.next, change.epoch, change.revision);
+  }
+
+  /**
+   * 所有未读推送的唯一出口（包括保存设置时的推送）：推送代次比当前旧，或（代次，版本号）不比已推送的新，都不推送；
+   * 通过后才记录并推送，已推送的位置只会前进。保存设置时的推送代次更新，所以即使版本号相同也能送达。
+   */
+  private publishFenced(userId: string, count: number, epoch: number, revision: number) {
+    if (epoch < this.publicationEpoch) {
       return;
     }
     const published = this.publishedRevisions.get(userId);
-    if (published !== undefined && change.revision <= published) {
+    if (published && (epoch < published.epoch || (epoch === published.epoch && revision <= published.revision))) {
       return;
     }
     this.publishedRevisions.delete(userId);
-    this.publishedRevisions.set(userId, change.revision);
+    this.publishedRevisions.set(userId, { epoch, revision });
     if (this.publishedRevisions.size > RESYNC_ATTEMPT_TRACKING_LIMIT) {
       const oldest = this.publishedRevisions.keys().next().value;
       if (oldest !== undefined) {
         this.publishedRevisions.delete(oldest);
       }
     }
-    this.clientEventsPublisher.publishSupportUnreadUpdated(userId, change.next);
+    this.clientEventsPublisher.publishSupportUnreadUpdated(userId, count);
   }
 
   private claimResyncAttempt(userId: string, now: number) {
