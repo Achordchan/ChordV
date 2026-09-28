@@ -118,7 +118,12 @@ function testSensitiveTextIsDropped() {
     "token abcdefghijklmnopqrstuvwxyz0123456789ABCD",
     "hk.example.com",
     "节点 hk.example.com:443",
-    "gateway:8443"
+    "gateway:8443",
+    "2600::1",
+    "节点 [2001:db8::1]:443",
+    "fe80::1%en0",
+    "::ffff:198.51.100.7",
+    "2001:db8:0:0:0:0:0:1"
   ]) {
     assert.equal(sanitizeClientText(value), null, `${value} 应被丢弃`);
     assert.equal(parseSupportLaunchContext({ context: { os: value } }).context?.os, undefined);
@@ -133,7 +138,10 @@ function testSensitiveTextIsDropped() {
     "Windows Server 2022 21H2（20348.2700，x64）",
     "macOS 10.15.7（19H2026，x64）",
     "Xray v25.8.3 · 规则库 v2026.09.20 · 完整",
-    "Asia/Kolkata（UTC+5:30）"
+    "Asia/Kolkata（UTC+5:30）",
+    "America/St_Johns（UTC-3:30）",
+    "Asia/Kathmandu（UTC+5:45）",
+    "runtime_exited 10:21:33"
   ]) {
     assert.equal(sanitizeClientText(value), value, `${value} 应保留`);
   }
@@ -155,7 +163,7 @@ function testServerFilledFields() {
   assert.equal(describeNode({ name: "东京", protocol: "vless", security: "none" }), "东京（VLESS）");
   assert.equal(describeNode({ name: " ", protocol: "bad proto!", security: "" }), "未命名节点");
   // 后台设置的名称同样过敏感内容检查：以 IP、连接地址命名的节点不能把地址带给工单系统。
-  for (const name of ["203.0.113.9", "hk.example.com:443", "hk.example.com", "香港 hk-02.node.example.net", "localhost:443", "vless://uuid@203.0.113.9", "https://sub.example.com/abc"]) {
+  for (const name of ["203.0.113.9", "2600::1", "hk.example.com:443", "hk.example.com", "香港 hk-02.node.example.net", "localhost:443", "vless://uuid@203.0.113.9", "https://sub.example.com/abc"]) {
     assert.equal(describeNode({ name, protocol: "vless", security: "reality" }), "节点名称已隐藏（VLESS Reality）", name);
   }
   assert.equal(describePlan({ scope: "personal", planName: "https://pay.example.com/x", state: "active", expireAt: new Date("2026-12-31T08:00:00.000Z"), remainingTrafficGb: 1 }), "个人 · 套餐名称已隐藏 · 正常 · 2026-12-31 到期 · 剩余 1 GB");
@@ -173,6 +181,10 @@ function testServerFilledFields() {
   assert.equal(describeRecentErrors([{ code: "runtime_exited", at: "2026-09-27T02:21:00.000Z" }], "Asia/Shanghai", NOW), "runtime_exited 09-27 10:21", "不是今天的带日期");
   assert.equal(describeRecentErrors([{ code: "runtime_exited", at: "2026-09-28T02:21:00.000Z" }], "Not/AZone", NOW), "runtime_exited 10:21", "时区无效时按北京时间");
   assert.equal(describeRecentErrors([], "Asia/Shanghai", NOW), "无");
+  // 负的非整点时区：时区字段保留，错误时间按客户端时区显示。
+  const newfoundland = parseSupportLaunchContext({ context: { timezone: "America/St_Johns（UTC-2:30）", recentErrors: [{ code: "http_5xx", at: "2026-09-28T02:18:00.000Z" }] } }).context;
+  assert.equal(newfoundland?.timezone, "America/St_Johns（UTC-2:30）");
+  assert.equal(describeRecentErrors(newfoundland?.recentErrors, newfoundland?.timezone, NOW), "http_5xx 09-27 23:48");
   assert.equal(describeRecentErrors(undefined, undefined, NOW), "未知");
 }
 

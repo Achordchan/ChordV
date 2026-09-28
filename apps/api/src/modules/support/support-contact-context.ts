@@ -1,3 +1,4 @@
+import { isIPv6 } from "node:net";
 import { plainToInstance, Type } from "class-transformer";
 import {
   ArrayMaxSize,
@@ -137,17 +138,35 @@ export function sanitizeClientText(value: string): string | null {
 }
 
 export function looksSensitive(value: string) {
+  // 时区偏移（UTC+8、UTC-3:30、UTC+5:45）是正常值，先去掉，避免被当成“主机名:端口”。
+  const text = value.replace(/\bUTC[+-]\d{1,2}(?::\d{2})?(?![\d:])/gi, " ");
   return (
-    /[a-z][a-z0-9+.-]*:\/\//i.test(value) ||
+    /[a-z][a-z0-9+.-]*:\/\//i.test(text) ||
     // 不带协议的域名（hk.example.com、hk.example.com:443）和“主机名:端口”（localhost:443）。
-    /(?:^|[^a-z0-9.-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]*[a-z](?::\d{1,5})?(?![a-z0-9-])/i.test(value) ||
-    /(?:^|[^a-z0-9.-])[a-z][a-z0-9.-]*:\d{2,5}(?!\d)/i.test(value) ||
-    /[^\s@]+@[^\s@]+\.[^\s@]+/.test(value) ||
-    /(?:^|[^\d.])\d{1,3}(?:\.\d{1,3}){3}(?:$|[^\d.])/.test(value) ||
-    /[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){3,7}/i.test(value) ||
-    /(?:^|[\s（(])(?:\/|~\/|[a-z]:\\|\\\\)/i.test(value) ||
-    /[A-Za-z0-9+/_=-]{32,}/.test(value)
+    /(?:^|[^a-z0-9.-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]*[a-z](?::\d{1,5})?(?![a-z0-9-])/i.test(text) ||
+    /(?:^|[^a-z0-9.-])[a-z][a-z0-9.-]*:\d{2,5}(?!\d)/i.test(text) ||
+    /[^\s@]+@[^\s@]+\.[^\s@]+/.test(text) ||
+    /(?:^|[^\d.])\d{1,3}(?:\.\d{1,3}){3}(?:$|[^\d.])/.test(text) ||
+    containsIpv6(text) ||
+    /(?:^|[\s（(])(?:\/|~\/|[a-z]:\\|\\\\)/i.test(text) ||
+    /[A-Za-z0-9+/_=-]{32,}/.test(text)
   );
+}
+
+/** IPv6（含 :: 压缩写法、带方括号或区域标识的写法）：按可能的地址片段逐个交给 node:net 判断。 */
+function containsIpv6(value: string) {
+  for (const token of value.split(/[^0-9a-f:.%]+/i)) {
+    if ((token.match(/:/g)?.length ?? 0) < 2) continue;
+    // 超过 64 个字符、又含多个冒号的片段不可能是正常的版本号或时间，直接按敏感处理。
+    if (token.length > 64) return true;
+    const candidate = token.replace(/%.*$/, "");
+    for (let start = 0; start < candidate.length; start += 1) {
+      for (let end = candidate.length; end > start + 1; end -= 1) {
+        if (isIPv6(candidate.slice(start, end))) return true;
+      }
+    }
+  }
+  return false;
 }
 
 // ---------- 后台补齐的字段 ----------
