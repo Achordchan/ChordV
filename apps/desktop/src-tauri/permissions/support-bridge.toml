@@ -1,0 +1,7 @@
+# 工单窗口唯一可用的原生命令：接收 Achord Connect 页面发来的桥接消息。
+# 这份权限不写进任何静态 capability，只在打开工单窗口时按“该窗口 + 后台配置的工单站点”在运行时授予。
+
+[[permission]]
+identifier = "support-bridge"
+description = "工单窗口向 ChordV 报告未读数、会话过期和关闭请求。"
+commands.allow = ["support_bridge_message"]

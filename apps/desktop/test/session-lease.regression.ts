@@ -81,11 +81,10 @@ function testNativeLeaseHeartbeatUsesGrace() {
     "SSE fallback refresh must not synthesize ticket_updated polls"
   );
 
-  const actionsSource = readFileSync(resolve(import.meta.dirname, "../src/hooks/useRuntimeActions.ts"), "utf8");
-  assert.match(
-    actionsSource,
-    /isSyntheticTicketEvent && !runtimeEvent\.ticketId/,
-    "synthetic ticket events without ticketId must be ignored"
+  assert.doesNotMatch(
+    clientSource,
+    /createClientRuntimeFallbackRefreshEventTypes\([^)]*\)[^{]*\{[^}]*"support_unread_updated"/,
+    "SSE fallback refresh must not synthesize support unread polls"
   );
 }
 

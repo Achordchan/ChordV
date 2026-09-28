@@ -113,6 +113,7 @@ jobs:
           node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/user-facing-errors.regression.ts
           node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/local-files.regression.ts
           node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/presence-keepalive.regression.ts
+          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/support-portal.regression.ts
       - name: Verify updater API and signatures
         run: |
           pnpm --filter @chordv/api db:generate

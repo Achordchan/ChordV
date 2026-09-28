@@ -562,6 +562,53 @@ export async function openExternalUrl(url: string) {
   return invoke<{ ok: boolean }>("open_external_url", { url: normalizedUrl });
 }
 
+/** 桌面端有独立工单窗口；安卓端和网页预览用系统浏览器打开。 */
+export function supportsSupportWindow() {
+  return isTauriApp() && !isAndroidPlatform();
+}
+
+/** 工单窗口仍打开且会话未过期时聚焦它并返回 true；否则返回 false，调用方需要重新签发票据。 */
+export async function focusSupportWindow() {
+  if (!supportsSupportWindow()) return false;
+  const invoke = await loadInvoke();
+  if (!invoke) return false;
+  return Boolean(await invoke<boolean>("focus_support_window"));
+}
+
+/** launchUrl 带一次性票据：只交给原生层打开，不能写进日志或错误信息。 */
+export async function openSupportWindow(input: { launchUrl: string; supportOrigin: string }) {
+  if (!supportsSupportWindow()) {
+    // 原始错误可能带出地址，统一换成不含地址的提示。
+    const result = await openExternalUrl(input.launchUrl).catch(() => ({ ok: false as const }));
+    if (!result.ok) throw new Error("无法打开工单页面，请允许弹出窗口后重试。");
+    return;
+  }
+  const invoke = await loadInvoke();
+  if (!invoke) throw new Error("无法打开工单窗口，请重新打开 ChordV 后重试。");
+  await invoke("open_support_window", { launchUrl: input.launchUrl, supportOrigin: input.supportOrigin });
+}
+
+export async function closeSupportWindow() {
+  if (!supportsSupportWindow()) return;
+  const invoke = await loadInvoke();
+  if (!invoke) return;
+  await invoke("close_support_window");
+}
+
+/** 工单页面通过原生桥接报告的未读总数（Rust 已校验为 0–99999 的整数）。 */
+export async function subscribeSupportUnread(handler: (count: number) => void) {
+  if (!supportsSupportWindow()) {
+    return () => {};
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisten = await listen<number>("chordv://support-unread", (event) => {
+    handler(event.payload);
+  });
+  return () => {
+    unlisten();
+  };
+}
+
 export async function installWindowsUpdate(_input?: {
   path?: string;
   expectedTotalBytes?: number | null;

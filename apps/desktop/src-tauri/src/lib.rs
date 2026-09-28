@@ -36,6 +36,7 @@ mod android_mobile_plugin;
 mod android_runtime;
 mod routing_diagnostics;
 mod window_transition;
+mod support_window;
 mod presence_keepalive;
 #[cfg(not(target_os = "android"))]
 mod tray_menu;
@@ -7345,7 +7346,8 @@ pub fn run() {
         .manage(Mutex::new(NativeLeaseHeartbeatSignalState::default()))
         .manage(Mutex::new(NativeClientEventStreamState::default()))
         .manage(AsyncMutex::new(NativeSessionRefreshState::default()))
-        .manage(Mutex::new(android_runtime::AndroidRuntimeState::default()));
+        .manage(Mutex::new(android_runtime::AndroidRuntimeState::default()))
+        .manage(Mutex::new(support_window::SupportWindowState::default()));
 
     #[cfg(windows)]
     {
@@ -7408,6 +7410,10 @@ pub fn run() {
             download_desktop_installer,
             open_desktop_installer,
             open_external_url,
+            support_window::focus_support_window,
+            support_window::open_support_window,
+            support_window::close_support_window,
+            support_window::support_bridge_message,
             list_local_file_locations,
             reveal_local_file,
             test_routing_rule,
@@ -7489,7 +7495,8 @@ pub fn run() {
             let _ = show_main_window_internal(app_handle);
         }
         #[cfg(not(target_os = "android"))]
-        RunEvent::WindowEvent { event, .. } => {
+        // 只有主窗口关闭时改为隐藏到托盘；工单窗口正常关闭。
+        RunEvent::WindowEvent { label, event, .. } if label == "main" => {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = hide_main_window_internal(app_handle);

@@ -1,0 +1,53 @@
+# ChordV 自己的原生命令只授权给主窗口（见 capabilities/default.json）。
+# 定义了这份权限后，Tauri 会对所有应用命令做权限检查：没有被授权的窗口（例如加载外部站点的工单窗口）
+# 无法调用这些命令。新增命令时必须同时加到这里，support_window_tests 会核对它与 generate_handler! 一致。
+
+[[permission]]
+identifier = "main-window-commands"
+description = "主窗口可调用的全部 ChordV 原生命令。"
+commands.allow = [
+  "app_ready",
+  "transition_main_window",
+  "api_request",
+  "start_client_event_stream",
+  "stop_client_event_stream",
+  "nudge_client_presence",
+  "record_client_diagnostic",
+  "refresh_session_native",
+  "load_session",
+  "save_session",
+  "clear_session",
+  "probe_nodes",
+  "show_main_window",
+  "hide_main_window",
+  "quit_application",
+  "download_desktop_installer",
+  "open_desktop_installer",
+  "open_external_url",
+  "focus_support_window",
+  "open_support_window",
+  "close_support_window",
+  "list_local_file_locations",
+  "reveal_local_file",
+  "test_routing_rule",
+  "install_windows_update",
+  "quit_for_update",
+  "consume_desktop_update_install_report",
+  "desktop_runtime_environment",
+  "ensure_bundled_runtime_components",
+  "get_runtime_component_local_info",
+  "fetch_remote_text",
+  "check_runtime_component_file",
+  "download_runtime_component",
+  "cancel_runtime_component_download",
+  "update_shell_summary",
+  "runtime_status",
+  "runtime_snapshot",
+  "runtime_logs",
+  "check_network_conflict",
+  "connect_runtime",
+  "disconnect_runtime",
+  "android_runtime_status",
+  "start_android_runtime",
+  "stop_android_runtime"
+]

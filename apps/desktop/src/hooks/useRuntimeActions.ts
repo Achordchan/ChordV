@@ -11,7 +11,6 @@ import type {
   SubscriptionStatusDto
 } from "@chordv/shared";
 import type { ServerProbeState } from "./useClientEvents";
-import type { LoadTicketDetailOptions, LoadTicketListOptions } from "./useSupportTickets";
 import {
   connectSession,
   disconnectSession,
@@ -56,10 +55,6 @@ import {
   pickAlternativeNode,
   sameGuidance
 } from "../lib/connectionGuidance";
-import {
-  clearSupportTicketBackgroundDetailRefresh,
-  markSupportTicketBackgroundDetailRefresh
-} from "../lib/supportTickets";
 
 type NoticeInput = {
   color: "green" | "yellow" | "red" | "blue" | "cyan";
@@ -115,9 +110,6 @@ type UseRuntimeActionsOptions = {
   runtimeRef: MutableRefObject<GeneratedRuntimeConfigDto | null>;
   selectedNodeIdRef: MutableRefObject<string | null>;
   probeResultsRef: MutableRefObject<Record<string, RuntimeNodeProbeResult>>;
-  ticketCenterOpenedRef: MutableRefObject<boolean>;
-  ticketCreateModeRef: MutableRefObject<boolean>;
-  selectedTicketIdRef: MutableRefObject<string | null>;
   leaseHeartbeatFailedAtRef: MutableRefObject<number | null>;
   lastGuidanceToastRef: MutableRefObject<string | null>;
   lastForegroundSyncErrorRef: MutableRefObject<string | null>;
@@ -130,9 +122,6 @@ type UseRuntimeActionsOptions = {
   notify: (notice: NoticeInput) => void;
   setServerProbe: Dispatch<SetStateAction<ServerProbeState>>;
   mergeSubscriptionState: (subscription: SubscriptionStatusDto) => void;
-  loadTicketList: (preferredTicketId?: string | null, options?: LoadTicketListOptions) => Promise<void>;
-  loadTicketDetail: (ticketId: string, options?: LoadTicketDetailOptions) => Promise<void>;
-  markTicketUnread: (ticketId: string) => void;
   recoverSessionAfterUnauthorized: () => Promise<AuthSessionDto | null> | AuthSessionDto | null;
   getRuntimeSyncEpoch: () => number;
   isRuntimeStopping: () => boolean;
@@ -589,9 +578,6 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           !latestOptions.current.isRuntimeStopping() &&
           event.sessionId === (latestOptions.current.runtimeRef.current?.sessionId ?? latestOptions.current.desktopStatus.activeSessionId)));
       const eventType = event.type as string;
-      const runtimeEvent = event as ClientRuntimeEventDto & {
-        ticketId?: string | null;
-      };
       const isAdminPausedConnection =
         event.reasonMessage?.includes("管理员已暂停当前连接") || event.reasonMessage?.includes("连接已被管理员暂停");
       const shouldSyncForegroundState =
@@ -683,53 +669,6 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           source: "refresh",
           silent: isSyntheticRefresh
         });
-      }
-
-      if (eventType === "ticket_updated" || eventType === "ticket_read_state_updated") {
-        const isSyntheticTicketEvent = Boolean((event as ClientRuntimeEventDto & { synthetic?: boolean }).synthetic);
-        // 合成兜底事件没有真实 ticketId，不应触发工单列表/详情刷新。
-        if (isSyntheticTicketEvent && !runtimeEvent.ticketId) {
-          return;
-        }
-        const preferredTicketId = runtimeEvent.ticketId ?? options.selectedTicketIdRef.current;
-        const isVisibleSelectedTicket =
-          options.ticketCenterOpenedRef.current &&
-          !options.ticketCreateModeRef.current &&
-          Boolean(runtimeEvent.ticketId) &&
-          runtimeEvent.ticketId === options.selectedTicketIdRef.current;
-        const shouldMarkIncomingTicketRead =
-          eventType === "ticket_updated" &&
-          runtimeEvent.ticketStatus === "waiting_user" &&
-          isVisibleSelectedTicket;
-        if (
-          eventType === "ticket_updated" &&
-          runtimeEvent.ticketId &&
-          runtimeEvent.ticketStatus === "waiting_user" &&
-          !shouldMarkIncomingTicketRead
-        ) {
-          options.markTicketUnread(runtimeEvent.ticketId);
-        }
-        const shouldRefreshDetail =
-          options.ticketCenterOpenedRef.current && !options.ticketCreateModeRef.current && Boolean(preferredTicketId);
-        if (shouldRefreshDetail && preferredTicketId) {
-          markSupportTicketBackgroundDetailRefresh(preferredTicketId);
-          try {
-            if (shouldMarkIncomingTicketRead) {
-              await options.loadTicketDetail(preferredTicketId, { markRead: true, silent: true });
-              await options.loadTicketList(preferredTicketId, { silent: true });
-            } else {
-              await Promise.all([
-                options.loadTicketDetail(preferredTicketId, { markRead: false, silent: true }),
-                options.loadTicketList(preferredTicketId, { silent: true })
-              ]);
-            }
-          } finally {
-            clearSupportTicketBackgroundDetailRefresh(preferredTicketId);
-          }
-        } else if (options.ticketCenterOpenedRef.current || runtimeEvent.ticketId) {
-          // 工单中心关闭时，仅在带 ticketId 的真实事件下刷新列表以更新未读角标。
-          await options.loadTicketList(preferredTicketId, { silent: true });
-        }
       }
 
       if (

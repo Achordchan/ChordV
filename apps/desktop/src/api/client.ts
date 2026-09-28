@@ -8,22 +8,18 @@ import type {
   ClientRuntimeComponentsPlanDto,
   ClientRuntimeEventDto,
   ClientRuntimeComponentFailureReportInputDto,
-  ClientSupportTicketDetailDto,
-  ClientSupportTicketSummaryDto,
+  ClientSupportLaunchDto,
+  ClientSupportStatusDto,
   ClientRoutingRuleDto,
   ClientRoutingRuleTestResultDto,
   ConnectionMode,
   CreateClientRoutingRuleInputDto,
-  CreateClientSupportTicketInputDto,
   GeneratedRuntimeConfigDto,
   NodeSummaryDto,
   PlatformTarget,
-  ReplyClientSupportTicketInputDto,
   SessionLeaseStatusDto,
   SubscriptionStatusDto,
-  UpdateClientRoutingRuleInputDto,
-  UploadedSupportTicketAttachmentInputDto,
-  UploadedSupportTicketAttachmentReferenceInputDto
+  UpdateClientRoutingRuleInputDto
 } from "@chordv/shared";
 import type {
   ClientRuntimeComponentsPlan,
@@ -36,7 +32,6 @@ import { normalizeSha256Hex } from "../lib/checksum";
 const API_BASE = readApiBaseUrl();
 const DEFAULT_RELEASE_CHANNEL = "stable";
 const JSON_REQUEST_TIMEOUT_MS = 60_000;
-const FORM_REQUEST_TIMEOUT_MS = 60_000;
 
 export type ReleaseChannel = "stable" | "beta";
 export type UpdateDeliveryMode = "desktop_installer_download" | "desktop_full_replace" | "apk_download" | "external_download" | "none";
@@ -101,7 +96,7 @@ type ClientRuntimeEventType = ClientRuntimeEventDto["type"];
 
 export function createClientRuntimeFallbackRefreshEventTypes(includeVersion: boolean): ClientRuntimeEventType[] {
   // SSE 断流时的兜底只刷新账号/节点/订阅等关键状态。
-  // 工单必须走真实 ticket_updated 事件，避免每 15 秒假轮询刷列表。
+  // 工单未读数走真实 support_unread_updated 推送和重连后的状态查询，不参与兜底轮询。
   return [
     "subscription_updated",
     "node_access_updated",
@@ -191,41 +186,6 @@ async function request<T>(path: string, init?: RequestInit) {
 function readApiBaseUrl() {
   const env = (import.meta as ImportMeta & { env?: { VITE_API_BASE_URL?: string } }).env;
   return env?.VITE_API_BASE_URL ?? "https://v.achord.cn";
-}
-
-async function requestForm<T>(path: string, body: FormData, init?: Omit<RequestInit, "body">) {
-  const startedAt = performance.now();
-  const controller = new AbortController();
-  const timeout = window.setTimeout(() => {
-    controller.abort(new Error("请求超时"));
-  }, FORM_REQUEST_TIMEOUT_MS);
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE}/api${path}`, {
-      ...init,
-      body,
-      signal: init?.signal ?? controller.signal,
-      headers: {
-        ...(init?.headers ?? {})
-      }
-    });
-  } catch (error) {
-    throw normalizeNetworkRequestError(error);
-  } finally {
-    window.clearTimeout(timeout);
-  }
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw createApiRequestError(path, response.status, text);
-  }
-
-  const responseBody = await response.text();
-  return {
-    data: responseBody ? (JSON.parse(responseBody) as T) : ({} as T),
-    status: response.status,
-    elapsedMs: Math.max(0, Math.round(performance.now() - startedAt))
-  };
 }
 
 function normalizeNetworkRequestError(error: unknown) {
@@ -533,144 +493,21 @@ export function fetchSubscription(accessToken: string) {
   });
 }
 
-export async function fetchSupportTickets(accessToken: string) {
-  try {
-    const tickets = await request<ClientSupportTicketSummaryDto[]>("/client/tickets", {
-      headers: {
-        Authorization: `Bearer ${accessToken}`
-      }
-    });
-    const unreadCount = tickets.filter((ticket) => ticket.hasUnreadMessages || ticket.unreadCount > 0).length;
-    void recordClientDiagnosticLog("client-ticket", `loaded ${tickets.length} tickets, unread=${unreadCount}`);
-    return tickets;
-  } catch (error) {
-    void recordClientDiagnosticLog(
-      "client-ticket",
-      `list failed: ${error instanceof Error ? error.message : String(error)}`
-    );
-    throw error;
-  }
-}
-
-export function fetchSupportTicketDetail(accessToken: string, ticketId: string) {
-  return request<ClientSupportTicketDetailDto>(`/client/tickets/${encodeURIComponent(ticketId)}`, {
+export function fetchSupportStatus(accessToken: string) {
+  return request<ClientSupportStatusDto>("/client/support/status", {
     headers: {
       Authorization: `Bearer ${accessToken}`
     }
   });
 }
 
-export function markSupportTicketRead(accessToken: string, ticketId: string) {
-  return request<{ ok: boolean }>(`/client/tickets/${encodeURIComponent(ticketId)}/read`, {
+/** 返回一次性打开地址（票据在 URL 片段里，60 秒内有效）：只用于立即打开工单窗口，不能写进任何日志。 */
+export function launchSupportPortal(accessToken: string) {
+  return request<ClientSupportLaunchDto>("/client/support/launch", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`
     }
-  });
-}
-
-export function createSupportTicket(accessToken: string, input: CreateClientSupportTicketInputDto) {
-  return request<ClientSupportTicketDetailDto>("/client/tickets", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`
-    },
-    body: JSON.stringify(input)
-  });
-}
-
-export function replySupportTicket(accessToken: string, ticketId: string, input: ReplyClientSupportTicketInputDto) {
-  return request<ClientSupportTicketDetailDto>(`/client/tickets/${encodeURIComponent(ticketId)}/replies`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`
-    },
-    body: JSON.stringify(input)
-  });
-}
-
-export async function replySupportTicketWithAttachment(
-  accessToken: string,
-  ticketId: string,
-  input: UploadedSupportTicketAttachmentInputDto,
-  file: File
-) {
-  const body = new FormData();
-  if (input.body?.trim()) {
-    body.set("body", input.body.trim());
-  }
-  body.set("file", file);
-  const result = await requestForm<ClientSupportTicketDetailDto>(`/client/tickets/${encodeURIComponent(ticketId)}/attachments`, body, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`
-    }
-  });
-  return result.data;
-}
-
-export function uploadSupportTicketAttachment(
-  accessToken: string,
-  ticketId: string,
-  file: File,
-  onProgress?: (progress: number) => void
-) {
-  return new Promise<UploadedSupportTicketAttachmentReferenceInputDto>((resolve, reject) => {
-    const path = `/client/tickets/${encodeURIComponent(ticketId)}/attachments/upload`;
-    const xhr = new XMLHttpRequest();
-    const form = new FormData();
-    let settled = false;
-    form.set("file", file);
-
-    const settle = (callback: () => void) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      callback();
-    };
-
-    xhr.open("POST", `${API_BASE}/api${path}`);
-    xhr.setRequestHeader("Authorization", `Bearer ${accessToken}`);
-    xhr.timeout = FORM_REQUEST_TIMEOUT_MS;
-    xhr.upload.onprogress = (event) => {
-      if (!event.lengthComputable || event.total <= 0) {
-        onProgress?.(15);
-        return;
-      }
-      const percent = Math.max(1, Math.min(95, Math.round((event.loaded / event.total) * 95)));
-      onProgress?.(percent);
-    };
-    xhr.onload = () => {
-      settle(() => {
-        if (xhr.status < 200 || xhr.status >= 300) {
-          reject(createApiRequestError(path, xhr.status, xhr.responseText));
-          return;
-        }
-        try {
-          const body = xhr.responseText ? (JSON.parse(xhr.responseText) as UploadedSupportTicketAttachmentReferenceInputDto) : null;
-          if (!body?.uploadToken || !body?.url || !body.fileName || !body.mimeType) {
-            reject(new ApiRequestError(xhr.status, "附件上传失败，请重新上传。"));
-            return;
-          }
-          onProgress?.(100);
-          resolve(body);
-        } catch (error) {
-          reject(error instanceof Error ? error : new ApiRequestError(xhr.status, "附件上传失败，请重新上传。"));
-        }
-      });
-    };
-    xhr.onerror = () => {
-      settle(() => reject(new ApiRequestError(null, "网络连接失败，请检查网络后重试。")));
-    };
-    xhr.ontimeout = () => {
-      settle(() => reject(new ApiRequestError(null, "附件上传超时，请检查网络后重试。")));
-    };
-    xhr.onabort = () => {
-      settle(() => reject(new ApiRequestError(null, "附件上传已取消。")));
-    };
-    onProgress?.(1);
-    xhr.send(form);
   });
 }
 
