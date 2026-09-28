@@ -607,7 +607,11 @@ async function testReconciliationWatermarkAndConcurrentEvents() {
   const upstreamNow = new Date(Date.now() - 30_000);
   skewed.fetchImpl = async () => json(200, { data: { externalUserId: "user_1", unreadCount: 0, requests: [] } }, upstreamNow);
   assert.equal(await skewed.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), 0);
-  assert.equal(skewedDb.state("user_1")?.sourceAt?.getTime(), Math.floor(upstreamNow.getTime() / 1000) * 1000 - 1000, "水位线取响应头 Date 减 1 秒");
+  const responseDate = Math.floor(upstreamNow.getTime() / 1000) * 1000;
+  assert.equal(skewedDb.state("user_1")?.sourceAt?.getTime(), responseDate - 4000, "水位线取响应头 Date 减去请求超时再减 1 秒");
+  // 读取未读数可能早于生成响应：Date 之前几秒内的事件不能当成已包含而丢掉。
+  await skewed.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_edge", unreadCount: 1, contactUnreadCount: 1, createdAt: new Date(responseDate - 2000).toISOString() })));
+  assert.equal(skewedDb.state("user_1")?.unreadCount, 1, "读取与响应之间产生的事件照常接受");
   const afterSnapshot = new Date(upstreamNow.getTime() + 5_000).toISOString();
   await skewed.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 2, contactUnreadCount: 2, createdAt: afterSnapshot })));
   assert.equal(skewedDb.state("user_1")?.unreadCount, 2, "工单系统时间晚于快照的事件照常接受");
@@ -684,6 +688,18 @@ async function testIncompleteBaselineAndMixedOrdering() {
     };
     assert.equal((await service.getClientStatus("user_1")).unreadCount, 3);
   }
+}
+
+function testPublishingKeepsNewestRevision() {
+  const { service, published } = createService();
+  const publish = (change: { previous: number; next: number; revision: number }) =>
+    (service as unknown as { publishIfChanged: (userId: string, change: unknown) => void }).publishIfChanged("user_1", change);
+  // 两个事务先后提交（版本 5、6），但版本 6 的推送先执行：版本 5 的旧结果不能再推给客户端。
+  publish({ previous: 3, next: 1, revision: 6 });
+  publish({ previous: 2, next: 3, revision: 5 });
+  publish({ previous: 1, next: 1, revision: 7 });
+  publish({ previous: 1, next: 4, revision: 8 });
+  assert.deepEqual(published.map((item) => item.count), [1, 4]);
 }
 
 function testResyncRateLimits() {
@@ -945,6 +961,7 @@ async function main() {
   await testReconciliationWatermarkAndConcurrentEvents();
   await testIncompleteBaselineAndMixedOrdering();
   testResyncRateLimits();
+  testPublishingKeepsNewestRevision();
   await testAdminConfigNeverReturnsSecrets();
   await testLegacyTicketWriteGuards();
   testSupportModuleDependenciesAreExported();

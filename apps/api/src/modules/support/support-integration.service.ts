@@ -42,6 +42,8 @@ export const SUPPORT_UNAVAILABLE_MESSAGE = "工单系统暂时无法连接，请
 const LAUNCH_TIMEOUT_MS = 8_000;
 /** 查询状态时顺带校准未读数：等待时间要短，工单系统慢或不可用时直接用本地值。 */
 const RESYNC_TIMEOUT_MS = 3_000;
+/** 校准水位线相对响应头 Date 的回退量，见 resyncUnread 的说明。 */
+const SNAPSHOT_WATERMARK_MARGIN_MS = RESYNC_TIMEOUT_MS + 1000;
 /** 本地未读数超过这个时间没有得到权威值时，查询状态会先向工单系统校准。 */
 export const SUPPORT_UNREAD_RESYNC_AFTER_MS = 5 * 60_000;
 /**
@@ -64,7 +66,8 @@ export type AchordConnectWebhookRequest = {
 
 export type AchordConnectWebhookResult = "accepted" | "duplicate" | "ignored";
 
-type UnreadTotalChange = { previous: number; next: number };
+/** revision 是写入后的版本号；推送时据此丢弃乱序到达的旧结果。 */
+type UnreadTotalChange = { previous: number; next: number; revision: number };
 
 @Injectable()
 export class SupportIntegrationService {
@@ -73,6 +76,7 @@ export class SupportIntegrationService {
   fetchImpl: AchordConnectFetch = (input, init) => fetch(input, init);
   private readonly resyncAttempts = new Map<string, number>();
   private readonly recentResyncs: number[] = [];
+  private readonly publishedRevisions = new Map<string, number>();
   private unreadEndpointMissingLogged = false;
   private lastRejectedWebhookLogAt = 0;
 
@@ -237,7 +241,7 @@ export class SupportIntegrationService {
       await tx.supportUnreadState.createMany({ data: [{ userId }], skipDuplicates: true });
       await tx.$queryRaw`SELECT "userId" FROM "SupportUnreadState" WHERE "userId" = ${userId} FOR UPDATE`;
       const state = await tx.supportUnreadState.findUniqueOrThrow({ where: { userId } });
-      const unchanged = { previous: state.unreadCount, next: state.unreadCount };
+      const unchanged = { previous: state.unreadCount, next: state.unreadCount, revision: state.revision };
       if (state.sourceAt && eventAt.getTime() < state.sourceAt.getTime()) {
         return unchanged;
       }
@@ -263,7 +267,7 @@ export class SupportIntegrationService {
         data = { syncedAt: null };
       }
       await tx.supportUnreadState.update({ where: { userId }, data: { ...data, revision: { increment: 1 } } });
-      return { previous: state.unreadCount, next: data.unreadCount ?? state.unreadCount };
+      return { previous: state.unreadCount, next: data.unreadCount ?? state.unreadCount, revision: state.revision + 1 };
     });
   }
 
@@ -274,8 +278,10 @@ export class SupportIntegrationService {
    * 查询结果不带版本号，无法与查询期间到达的 Webhook 比较先后：查询前记下本地版本号，写回时若版本已变
    * （查询期间处理过 Webhook），就放弃这次结果、保留 Webhook 的值，不标记为已校准，下次查询状态时再试。
    * 写回的是总数；按请求记录不动，并记为“与总数无法对齐”，之后旧版格式的事件不再据此推算总数。
-   * 水位线取工单系统响应头 Date 减 1 秒（工单系统的时钟），早于它的事件视为已包含在结果里；
-   * 边界附近的事件即使被重复接受，也会被随后更新的事件纠正。没有 Date 时不推进水位线。
+   * 水位线用工单系统的时钟：响应头 Date 减去“请求超时 + 1 秒”。Date 是生成响应的时间（精确到秒），
+   * 工单系统读取未读数一定发生在这次请求之内，而整个请求不超过超时时间，所以读取时刻不早于这条水位线；
+   * 早于水位线的事件必然已包含在结果里。水位线之后、读取之前的事件会被再次接受，
+   * 每个事件带的都是当时的总数，随后更新的事件会纠正结果，不会出现误丢事件后无法恢复的情况。没有 Date 时不推进水位线。
    */
   async resyncUnread(userId: string, credentials: AchordConnectCredentials): Promise<number | null> {
     const before = await this.prisma.supportUnreadState.findUnique({ where: { userId }, select: { revision: true } });
@@ -303,7 +309,7 @@ export class SupportIntegrationService {
         if (state.revision !== expectedRevision) {
           return null;
         }
-        const snapshotWatermark = remote.serverTime ? new Date(remote.serverTime.getTime() - 1000) : null;
+        const snapshotWatermark = remote.serverTime ? new Date(remote.serverTime.getTime() - SNAPSHOT_WATERMARK_MARGIN_MS) : null;
         const sourceAt = snapshotWatermark && (!state.sourceAt || snapshotWatermark.getTime() > state.sourceAt.getTime())
           ? snapshotWatermark
           : state.sourceAt;
@@ -311,7 +317,7 @@ export class SupportIntegrationService {
           where: { userId },
           data: { unreadCount: remote.unreadCount, sourceAt, syncedAt: new Date(), requestsComplete: false, revision: { increment: 1 } }
         });
-        return { previous: state.unreadCount, next: remote.unreadCount };
+        return { previous: state.unreadCount, next: remote.unreadCount, revision: state.revision + 1 };
       });
     } catch (error) {
       this.logger.warn(`Achord Connect 未读校准写入失败（用户 ${userId}）：${error instanceof Error ? error.message : String(error)}`);
@@ -339,9 +345,26 @@ export class SupportIntegrationService {
 
   // ---------- 内部 ----------
 
+  /**
+   * 行锁保证了数据库写入的先后，但事务提交后到推送之间可能被并发的另一次写入插队：
+   * 按写入后的版本号推送，比已推送版本旧的结果直接丢弃，客户端最终停在最新值上。
+   * （版本记录在本进程内；生产环境是单个 API 进程。）
+   */
   private publishIfChanged(userId: string, change: UnreadTotalChange) {
     if (change.previous === change.next) {
       return;
+    }
+    const published = this.publishedRevisions.get(userId);
+    if (published !== undefined && change.revision <= published) {
+      return;
+    }
+    this.publishedRevisions.delete(userId);
+    this.publishedRevisions.set(userId, change.revision);
+    if (this.publishedRevisions.size > RESYNC_ATTEMPT_TRACKING_LIMIT) {
+      const oldest = this.publishedRevisions.keys().next().value;
+      if (oldest !== undefined) {
+        this.publishedRevisions.delete(oldest);
+      }
     }
     this.clientEventsPublisher.publishSupportUnreadUpdated(userId, change.next);
   }
