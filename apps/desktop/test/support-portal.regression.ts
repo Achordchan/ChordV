@@ -453,10 +453,10 @@ async function testBadgeFollowsStatusEventsAndBridge() {
       closeSupportWindow: async () => { nativeEvents.push("close"); nativeEpoch += 1; },
       subscribeSupportWindowEvents: async (handlers: {
         onUnread: (event: { unreadCount: number; epoch: number }) => void;
-        onClosed: (event: { epoch: number }) => void;
+        onEnded: (event: { epoch: number }) => void;
       }) => {
         bridgeHandler = handlers.onUnread;
-        closedHandler = handlers.onClosed;
+        closedHandler = handlers.onEnded;
         return () => undefined;
       }
     },

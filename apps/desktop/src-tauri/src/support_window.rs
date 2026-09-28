@@ -18,8 +18,9 @@ pub const SUPPORT_WINDOW_LABEL_PREFIX: &str = "support-";
 pub const SUPPORT_BRIDGE_PERMISSION: &str = "support-bridge";
 /// 桥接收到的未读数只发给主窗口。
 pub const SUPPORT_UNREAD_EVENT: &str = "chordv://support-unread";
-/// 工单窗口关闭（含被重开取代）时通知主窗口：未读数改回以后台推送 / 状态接口为准。
-pub const SUPPORT_WINDOW_CLOSED_EVENT: &str = "chordv://support-window-closed";
+/// 工单窗口不再能提供未读数时通知主窗口（窗口关闭 / 被重开取代，或门户报告会话过期）：
+/// 未读数改回以后台推送 / 状态接口为准。
+pub const SUPPORT_BRIDGE_ENDED_EVENT: &str = "chordv://support-bridge-ended";
 pub const SUPPORT_BRIDGE_SOURCE: &str = "achord-connect-v1";
 /// 一次性票据的有效期：窗口打开后这么久门户仍没确认就绪，就允许重新签发票据。
 pub const SUPPORT_LAUNCH_GRACE: Duration = Duration::from_secs(60);
@@ -230,12 +231,19 @@ impl SupportWindowRecord {
     pub fn can_focus(&self, now: Instant) -> bool {
         !self.expired && (self.ready || now.saturating_duration_since(self.opened_at) < SUPPORT_LAUNCH_GRACE)
     }
+
+    /// 顶层文档重新加载（刷新、同源整页跳转）：新文档必须重新确认 ready，并重新计算加载宽限期，
+    /// 否则刷新后落在 502 等错误页时会一直只聚焦错误页。
+    pub fn restart_loading(&mut self, now: Instant) {
+        self.ready = false;
+        self.opened_at = now;
+    }
 }
 
 /// 工单窗口关闭事件（带批次号，前端只处理当前账号的窗口）。
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct SupportWindowClosedEvent {
+pub struct SupportBridgeEndedEvent {
     pub epoch: u64,
 }
 
@@ -310,7 +318,9 @@ pub struct SupportFocusResult {
 use std::sync::{Mutex, MutexGuard};
 #[cfg(not(target_os = "android"))]
 use tauri::{
-    ipc::CapabilityBuilder, webview::NewWindowResponse, AppHandle, Emitter, Manager, State,
+    ipc::CapabilityBuilder,
+    webview::{NewWindowResponse, PageLoadEvent},
+    AppHandle, Emitter, Manager, State,
     WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
@@ -453,6 +463,21 @@ pub async fn open_support_window(
             }
             SupportNavigation::Block => false,
         })
+        .on_page_load({
+            let loading_app = app.clone();
+            let loading_label = label.clone();
+            move |_window, payload| {
+                // 只有顶层文档的加载会触发（单页应用内切换不会）。
+                if payload.event() != PageLoadEvent::Started {
+                    return;
+                }
+                if let Ok(mut guard) = loading_app.state::<Mutex<SupportWindowState>>().lock() {
+                    if let Some(record) = guard.current.as_mut().filter(|record| record.label == loading_label) {
+                        record.restart_loading(Instant::now());
+                    }
+                }
+            }
+        })
         .on_new_window(|url, _features| {
             if let Some(external) = classify_support_new_window(&url) {
                 open_in_system_browser(external);
@@ -475,7 +500,7 @@ pub async fn open_support_window(
             if let Ok(mut guard) = closed_app.state::<Mutex<SupportWindowState>>().lock() {
                 guard.discard(&closed_label);
             }
-            let _ = closed_app.emit_to("main", SUPPORT_WINDOW_CLOSED_EVENT, SupportWindowClosedEvent { epoch });
+            let _ = closed_app.emit_to("main", SUPPORT_BRIDGE_ENDED_EVENT, SupportBridgeEndedEvent { epoch });
         }
     });
 
@@ -536,7 +561,11 @@ pub fn support_bridge_message(
             let event = SupportUnreadEvent { unread_count, epoch: record.epoch };
             let _ = app.emit_to("main", SUPPORT_UNREAD_EVENT, event);
         }
-        SupportBridgeMessage::SessionExpired => record.expired = true,
+        SupportBridgeMessage::SessionExpired => {
+            // 过期的门户不会再报告未读数：通知主窗口改回以后台为准。
+            record.expired = true;
+            let _ = app.emit_to("main", SUPPORT_BRIDGE_ENDED_EVENT, SupportBridgeEndedEvent { epoch: record.epoch });
+        }
         SupportBridgeMessage::CloseRequested => {
             guard.current = None;
             drop(guard);

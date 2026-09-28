@@ -49,7 +49,7 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
   // 当前账号打开的工单窗口所属的原生批次号；桥接未读事件只接受这个批次，换账号时清空。
   const bridgeEpochRef = useRef<number | null>(null);
   // 工单窗口打开且门户通过桥接报告过未读数：此时角标以桥接为准，后台推送和状态查询不覆盖；
-  // 窗口关闭后改回以后台为准，并立即重新查询一次。
+  // 窗口关闭或门户报告会话过期后改回以后台为准，并立即重新查询一次。
   const bridgeActiveRef = useRef(false);
 
   const setUnreadCount = useCallback((value: unknown) => {
@@ -200,7 +200,7 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
         bridgeActiveRef.current = true;
         setUnreadCount(event.unreadCount);
       },
-      onClosed: (event) => {
+      onEnded: (event) => {
         if (!isCurrentWindow(event.epoch) || !bridgeActiveRef.current) return;
         bridgeActiveRef.current = false;
         void refreshSupportStatus();

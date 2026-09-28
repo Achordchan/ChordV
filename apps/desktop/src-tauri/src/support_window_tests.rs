@@ -237,8 +237,22 @@ fn support_window_fits_the_work_area() {
 }
 
 #[test]
+fn bridge_authority_ends_on_close_and_session_expiry() {
+    let source = normalized(include_str!("support_window.rs"));
+    // 会话过期：通知主窗口改回以后台为准。
+    let expired = source.find("SupportBridgeMessage::SessionExpired => {").expect("session-expired branch");
+    let branch_end = source[expired..].find("SupportBridgeMessage::CloseRequested").expect("next branch");
+    assert!(source[expired..expired + branch_end].contains("emit_to(\"main\", SUPPORT_BRIDGE_ENDED_EVENT"));
+    // 窗口销毁：同样通知。
+    assert!(source.contains("tauri::WindowEvent::Destroyed"));
+    // 顶层文档重新加载时重新要求就绪。
+    assert!(source.contains("payload.event() != PageLoadEvent::Started"));
+    assert!(source.contains("record.restart_loading(Instant::now())"));
+}
+
+#[test]
 fn window_closed_event_carries_the_epoch() {
-    let json = serde_json::to_value(SupportWindowClosedEvent { epoch: 5 }).unwrap();
+    let json = serde_json::to_value(SupportBridgeEndedEvent { epoch: 5 }).unwrap();
     assert_eq!(json, serde_json::json!({ "epoch": 5 }));
 }
 
@@ -297,6 +311,12 @@ fn a_launch_that_never_becomes_ready_can_be_relaunched_after_the_ticket_expires(
     // 门户确认就绪后一直可以聚焦。
     record.ready = true;
     assert!(record.can_focus(opened + Duration::from_secs(3600)));
+    // 就绪后整页刷新：新文档要重新确认就绪；刷新后落在错误页时，宽限期过后可重新签发。
+    let reloaded = opened + Duration::from_secs(600);
+    record.restart_loading(reloaded);
+    assert!(record.can_focus(reloaded + Duration::from_secs(5)));
+    assert!(!record.can_focus(reloaded + SUPPORT_LAUNCH_GRACE));
+    record.ready = true;
     // 会话过期后必须重开。
     record.expired = true;
     assert!(!record.can_focus(opened + Duration::from_secs(1)));
