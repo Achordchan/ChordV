@@ -270,8 +270,9 @@ async function configure(service: SupportIntegrationService, extra: Record<strin
   });
 }
 
-function json(status: number, body: unknown) {
-  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+/** 模拟工单系统响应；Date 头是工单系统的时钟，默认与本机一致，测试时钟偏差时单独指定。 */
+function json(status: number, body: unknown, serverTime = new Date()) {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", date: serverTime.toUTCString() } });
 }
 
 function sign(rawBody: string | Buffer, timestamp: string, secret = WEBHOOK_SECRET) {
@@ -530,8 +531,7 @@ async function testStatusFallbackAndResync() {
   assert.deepEqual(await service.getClientStatus("user_1"), { enabled: false, unreadCount: 0, supportOrigin: null }, "未启用时不报错也不暴露地址");
   await service.updateAdminConfig({ enabled: true });
 
-  // 工单系统尚未提供未读查询接口（404）：用 Webhook 维护的值，只记一次日志。
-  // 事件时间取当前之前：校准结果只取代比它更早的记录。
+  // 未读查询接口返回 404：用 Webhook 维护的值，只记一次日志。
   await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 2, createdAt: new Date(Date.now() - 60_000).toISOString() })));
   respond(async () => json(404, { error: { code: "NOT_FOUND", message: "missing" } }));
   assert.deepEqual(await service.getClientStatus("user_1"), { enabled: true, unreadCount: 2, supportOrigin: BASE_URL });
@@ -551,13 +551,12 @@ async function testStatusFallbackAndResync() {
   });
   assert.deepEqual(await service.getClientStatus("user_1"), { enabled: true, unreadCount: 2, supportOrigin: BASE_URL });
 
-  // 校准成功：写回总数与按请求记录，并推送变化。
+  // 校准成功：写回总数并推送变化。
   (service as unknown as { resyncAttempts: Map<string, number> }).resyncAttempts.clear();
-  respond(async () => json(200, { data: { externalUserId: "user_1", unreadCount: 6, requests: [{ id: "req_b", number: 2, title: "t", status: "OPEN", unreadCount: 6, updatedAt: "2026-09-28T10:00:00.000Z" }] } }));
+  respond(async () => json(200, { data: { externalUserId: "user_1", unreadCount: 6, requests: [{ id: "req_b", number: 2, title: "t", status: "WAITING_CUSTOMER", unreadCount: 6, updatedAt: "2026-09-28T10:00:00.000Z" }] } }));
   assert.equal((await service.getClientStatus("user_1")).unreadCount, 6);
   assert.equal(db.state("user_1")?.unreadCount, 6);
-  assert.equal(db.request("user_1", "req_a"), null, "校准结果取代之前的按请求记录");
-  assert.equal(db.request("user_1", "req_b")?.unreadCount, 6);
+  assert.equal(db.state("user_1")?.requestsComplete, false, "接受过权威总数后，不再由按请求记录推算");
   assert.deepEqual(published.at(-1), { userId: "user_1", count: 6 });
 
   // 刚校准过：不再请求工单系统。
@@ -566,8 +565,8 @@ async function testStatusFallbackAndResync() {
   assert.equal((await service.getClientStatus("user_1")).unreadCount, 6);
   assert.equal(fetchCalls.length, callsBefore, `${SUPPORT_UNREAD_RESYNC_AFTER_MS / 60_000} 分钟内已校准的值直接使用`);
 
-  // 校准后收到不带总数的事件：在校准结果基础上求和。
-  await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_c", unreadCount: 1, createdAt: new Date(Date.now() + 1000).toISOString() })));
+  // 校准后收到带总数的事件：直接用它。
+  await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_c", unreadCount: 1, contactUnreadCount: 7, createdAt: new Date(Date.now() + 1000).toISOString() })));
   assert.equal(db.state("user_1")?.unreadCount, 7);
 }
 
@@ -581,7 +580,7 @@ async function testReconciliationWatermarkAndConcurrentEvents() {
   respond(async () => json(200, { data: { externalUserId: "user_1", unreadCount: 0, requests: [] } }));
   assert.equal(await service.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), 0);
   assert.equal(await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_late", unreadCount: 3, createdAt: past(60_000) }))), "accepted");
-  assert.equal(db.request("user_1", "req_late"), null, "早于校准的事件不再建立按请求记录");
+  assert.equal(db.request("user_1", "req_late"), null, "早于校准的事件已包含在结果里，不再改动");
   assert.equal(db.state("user_1")?.unreadCount, 0);
 
   // 校准查询进行中处理了 Webhook：快照与该事件谁更新无法判断，放弃快照、保留 Webhook 的值，也不标记为已校准。
@@ -596,25 +595,28 @@ async function testReconciliationWatermarkAndConcurrentEvents() {
   assert.equal(racingDb.state("user_1")?.unreadCount, 1, "保留查询期间 Webhook 写入的值");
   assert.equal(racingDb.state("user_1")?.syncedAt, null, "放弃的快照不算校准，下次查询状态会重试");
   assert.equal(racingDb.request("user_1", "req_b")?.unreadCount, 1);
-  assert.equal(racingDb.request("user_1", "req_c"), null);
   assert.deepEqual(racingPublished.map((item) => item.count), [4, 1]);
   // 没有并发写入时，下一次校准正常写回。
   racing.fetchImpl = async () => json(200, { data: { externalUserId: "user_1", unreadCount: 6, requests: [{ id: "req_b", unreadCount: 2 }, { id: "req_c", unreadCount: 4 }] } });
   assert.equal(await racing.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), 6);
-  assert.equal(racingDb.request("user_1", "req_c")?.unreadCount, 4);
+  assert.equal(racingDb.state("user_1")?.unreadCount, 6);
 
-  // 请求很多时不截断：每个请求都保留；明细与总数一致时，之后的按请求事件照常求和。
-  const { service: many, db: manyDb } = createService();
-  await configure(many);
-  const requests = Array.from({ length: 600 }, (_, index) => ({ id: `req_${index}`, unreadCount: 1 }));
-  many.fetchImpl = async () => json(200, { data: { externalUserId: "user_1", unreadCount: 600, requests } });
-  assert.equal(await many.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), 600);
-  assert.equal(manyDb.requestCount(), 600);
-  await many.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_599", unreadCount: 0, createdAt: new Date(Date.now() + 1_000).toISOString() })));
-  assert.equal(manyDb.state("user_1")?.unreadCount, 599);
-  // 明细完整时，本地没有记录的请求此前就是 0 个未读。
-  await many.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_new", unreadCount: 2, createdAt: new Date(Date.now() + 2_000).toISOString() })));
-  assert.equal(manyDb.state("user_1")?.unreadCount, 601);
+  // 水位线用工单系统的时钟：本机时钟比工单系统快 30 秒时，校准之后工单系统产生的事件不能被当成旧事件丢掉。
+  const { service: skewed, db: skewedDb } = createService();
+  await configure(skewed);
+  const upstreamNow = new Date(Date.now() - 30_000);
+  skewed.fetchImpl = async () => json(200, { data: { externalUserId: "user_1", unreadCount: 0, requests: [] } }, upstreamNow);
+  assert.equal(await skewed.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), 0);
+  assert.equal(skewedDb.state("user_1")?.sourceAt?.getTime(), Math.floor(upstreamNow.getTime() / 1000) * 1000 - 1000, "水位线取响应头 Date 减 1 秒");
+  const afterSnapshot = new Date(upstreamNow.getTime() + 5_000).toISOString();
+  await skewed.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 2, contactUnreadCount: 2, createdAt: afterSnapshot })));
+  assert.equal(skewedDb.state("user_1")?.unreadCount, 2, "工单系统时间晚于快照的事件照常接受");
+  // 没有 Date 头时不推进水位线。
+  const { service: noDate, db: noDateDb } = createService();
+  await configure(noDate);
+  noDate.fetchImpl = async () => new Response(JSON.stringify({ data: { externalUserId: "user_1", unreadCount: 3, requests: [] } }), { status: 200 });
+  assert.equal(await noDate.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), 3);
+  assert.equal(noDateDb.state("user_1")?.sourceAt, null);
 }
 
 async function testIncompleteBaselineAndMixedOrdering() {
@@ -629,20 +631,25 @@ async function testIncompleteBaselineAndMixedOrdering() {
     assert.equal(db.state("user_1")?.unreadCount, 7);
     assert.equal(db.state("user_1")?.requestsComplete, false);
     await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_b", unreadCount: 0, createdAt: future(1_000) })));
-    assert.equal(db.state("user_1")?.unreadCount, 7, "明细不完整时不由单个请求推算总数");
+    assert.equal(db.state("user_1")?.unreadCount, 7, "接受过权威总数后不由单个请求推算总数");
     assert.equal(db.state("user_1")?.syncedAt, null, "标记为待校准，下次查询状态会向工单系统校准");
-    // 校准结果只有总数、没有明细：同样视为不完整。
-    service.fetchImpl = async () => json(200, { data: { externalUserId: "user_1", unreadCount: 1 } });
-    assert.equal(await service.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), 1);
+  }
+
+  // 按请求记录的分布过时（A=2、B=0，而工单系统已是 A=0、B=2），即使某个总数恰好相等，也不能据此恢复求和。
+  {
+    const { service, db } = createService();
+    await configure(service);
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 2, createdAt: past(60_000) })));
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_c", unreadCount: 0, contactUnreadCount: 2, createdAt: past(30_000) })));
+    assert.equal(db.state("user_1")?.unreadCount, 2);
+    assert.equal(db.state("user_1")?.requestsComplete, false, "总数相等不代表每个请求的记录都是最新的");
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_b", unreadCount: 0, createdAt: future(1_000) })));
+    assert.equal(db.state("user_1")?.unreadCount, 2, "不按过时的分布推算出 2 以外的值，而是等待校准");
+    assert.equal(db.state("user_1")?.syncedAt, null);
+    // 校准结果同样不恢复求和，之后以带总数的事件或下一次校准为准。
+    service.fetchImpl = async () => json(200, { data: { externalUserId: "user_1", unreadCount: 0, requests: [] } });
+    assert.equal(await service.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), 0);
     assert.equal(db.state("user_1")?.requestsComplete, false);
-    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_c", unreadCount: 0, createdAt: future(2_000) })));
-    assert.equal(db.state("user_1")?.unreadCount, 1);
-    // 明细完整的校准恢复按请求求和。
-    service.fetchImpl = async () => json(200, { data: { externalUserId: "user_1", unreadCount: 1, requests: [{ id: "req_d", unreadCount: 1 }] } });
-    assert.equal(await service.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), 1);
-    assert.equal(db.state("user_1")?.requestsComplete, true);
-    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_e", unreadCount: 2, createdAt: future(3_000) })));
-    assert.equal(db.state("user_1")?.unreadCount, 3);
   }
 
   // 新旧版本事件交错：较新的按请求变化之后，才到达一个更早的权威总数，不能用旧总数覆盖。
@@ -806,6 +813,8 @@ function testSupportModuleDependenciesAreExported() {
   for (const name of ["SiteAddressService", "ClientEventsPublisher"]) {
     assert.match(exportsBlock, new RegExp(`\\b${name}\\b`), `${name} 必须由全局 DevDataModule 导出`);
   }
+  const supportModule = readFileSync(resolve(__dirname, "../src/modules/support/support.module.ts"), "utf8");
+  assert.match(supportModule, /imports: \[DevDataModule\]/, "SupportModule 显式导入提供这些依赖的模块");
   const prismaModule = readFileSync(resolve(__dirname, "../src/modules/common/prisma.module.ts"), "utf8");
   assert.match(prismaModule, /@Global\(\)[\s\S]*exports: \[PrismaService\]/);
 }

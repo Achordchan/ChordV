@@ -908,8 +908,8 @@ model SupportUnreadState {
   syncedAt    DateTime?
   // 每次写入加一；校准查询期间若有 Webhook 写入，放弃这次查询结果，避免旧快照覆盖新事件。
   revision    Int       @default(0)
-  // 本地按请求记录能否完整解释总数。为 false 时（总数来自权威值而本地缺少部分请求），
-  // 不再用单个请求的变化推算总数，而是等待下次校准。
+  // 总数是否仍由逐条事件累积的按请求记录求和得出。接受过权威总数（contactUnreadCount 或服务端查询）后为 false，
+  // 此后旧版格式（不带总数）的事件不再据此推算总数，而是标记待校准。
   requestsComplete Boolean @default(true)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt

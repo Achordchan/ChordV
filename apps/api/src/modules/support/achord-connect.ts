@@ -98,7 +98,7 @@ export async function createAchordConnectLaunchTicket(
   user: AchordConnectLaunchUser,
   timeoutMs: number
 ): Promise<{ launchUrl: string; expiresAt: string }> {
-  const payload = await requestAchordConnect(fetchImpl, credentials, {
+  const { payload } = await requestAchordConnect(fetchImpl, credentials, {
     method: "POST",
     path: LAUNCH_TICKETS_PATH,
     body: buildLaunchTicketBody(user),
@@ -116,6 +116,8 @@ export async function createAchordConnectLaunchTicket(
 export type AchordConnectContactUnread = {
   unreadCount: number;
   requests: Array<{ id: string; unreadCount: number }>;
+  /** 工单系统响应头 Date 给出的服务器时间（工单系统的时钟，精确到秒）；没有或无法解析时为 null。 */
+  serverTime: Date | null;
 };
 
 export async function fetchAchordConnectContactUnread(
@@ -124,7 +126,7 @@ export async function fetchAchordConnectContactUnread(
   externalUserId: string,
   timeoutMs: number
 ): Promise<AchordConnectContactUnread> {
-  const payload = await requestAchordConnect(fetchImpl, credentials, {
+  const { payload, serverTime } = await requestAchordConnect(fetchImpl, credentials, {
     method: "GET",
     path: `/api/v1/integrations/universal/contacts/${encodeURIComponent(externalUserId)}/unread`,
     timeoutMs
@@ -143,14 +145,14 @@ export async function fetchAchordConnectContactUnread(
       requests.push({ id, unreadCount: count });
     }
   }
-  return { unreadCount, requests };
+  return { unreadCount, requests, serverTime };
 }
 
 async function requestAchordConnect(
   fetchImpl: AchordConnectFetch,
   credentials: AchordConnectCredentials,
   input: { method: "GET" | "POST"; path: string; body?: unknown; timeoutMs: number }
-): Promise<unknown> {
+): Promise<{ payload: unknown; serverTime: Date | null }> {
   const url = new URL(input.path, credentials.baseUrl).toString();
   const headers: Record<string, string> = {
     Accept: "application/json",
@@ -186,7 +188,8 @@ async function requestAchordConnect(
     const code = readErrorCode(payload);
     throw new AchordConnectRequestError("http", response.status, code, `${input.method} ${input.path} returned HTTP ${response.status}${code ? ` ${code}` : ""}`);
   }
-  return payload;
+  const serverTimeMs = Date.parse(response.headers.get("date") ?? "");
+  return { payload, serverTime: Number.isFinite(serverTimeMs) ? new Date(serverTimeMs) : null };
 }
 
 export type WebhookSignatureInput = {

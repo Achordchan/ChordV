@@ -220,12 +220,12 @@ export class SupportIntegrationService {
 
   /**
    * 在一个事务里记录事件 ID（去重）并更新未读数；同一用户的事件按行锁串行处理。返回 null 表示事件已处理过。
-   * - 早于最近一次权威总数（Webhook 的 contactUnreadCount 或服务端校准）的事件已包含在总数里，只记录事件 ID；
-   *   同一请求晚到的旧事件也不会覆盖新值。
+   * 事件先后一律按工单系统的时间（事件 createdAt、未读查询响应的 Date）比较，不用本机时间。
+   * - 早于最近一次权威总数的事件已包含在总数里，只记录事件 ID；同一请求晚到的旧事件也不会覆盖新值。
    * - 带 contactUnreadCount：以它为总数；但如果本地已有比它更新的按请求变化（新旧版本事件混在一起），
-   *   两者先后无法对齐，就保留当前值并标记为待校准，而不是用旧总数覆盖。
-   * - 不带 contactUnreadCount：本地按请求记录完整时按请求求和；不完整时（总数来自权威值，
-   *   本地缺少部分请求）无法由单个请求推出总数，保留当前值并标记为待校准。
+   *   两者先后无法对齐，就保留当前值并标记为待校准。
+   * - 不带 contactUnreadCount（旧版工单系统）：只有从未接受过权威总数、本地记录由逐条事件累积而来时，
+   *   才按请求求和；一旦接受过权威总数，本地记录无法证明与之一致，改为保留当前值并标记为待校准。
    */
   async applyUnreadChange(eventId: string, type: string, change: AchordConnectUnreadChange, eventAt: Date): Promise<UnreadTotalChange | null> {
     const userId = change.externalUserId;
@@ -250,24 +250,15 @@ export class SupportIntegrationService {
           update: { unreadCount: change.unreadCount, eventAt }
         });
       }
-      const sumRequests = async () =>
-        (await tx.supportRequestUnread.aggregate({ where: { userId }, _sum: { unreadCount: true } }))._sum.unreadCount ?? 0;
       let data: { unreadCount?: number; sourceAt?: Date; syncedAt?: Date | null; requestsComplete?: boolean };
       if (change.contactUnreadCount !== null) {
         const newerRequests = await tx.supportRequestUnread.count({ where: { userId, eventAt: { gt: eventAt } } });
-        if (newerRequests > 0) {
-          data = { syncedAt: null };
-        } else {
-          const sum = await sumRequests();
-          data = {
-            unreadCount: change.contactUnreadCount,
-            sourceAt: eventAt,
-            syncedAt: new Date(),
-            requestsComplete: sum === change.contactUnreadCount
-          };
-        }
+        data = newerRequests > 0
+          ? { syncedAt: null }
+          : { unreadCount: change.contactUnreadCount, sourceAt: eventAt, syncedAt: new Date(), requestsComplete: false };
       } else if (state.requestsComplete) {
-        data = { unreadCount: await sumRequests() };
+        const sum = await tx.supportRequestUnread.aggregate({ where: { userId }, _sum: { unreadCount: true } });
+        data = { unreadCount: sum._sum.unreadCount ?? 0 };
       } else {
         data = { syncedAt: null };
       }
@@ -280,14 +271,15 @@ export class SupportIntegrationService {
 
   /**
    * 向工单系统查询该用户的未读总数并写回本地；失败时返回 null，由调用方继续使用本地值。
-   * 查询结果是工单系统某一时刻的快照，但它不带版本号，无法判断与查询期间到达的 Webhook 谁更新：
-   * 查询前记下本地版本号，写回时若版本已变（查询期间处理过 Webhook），就放弃这次结果、保留 Webhook 的值，
-   * 不标记为已校准，下次查询状态时再试。写回后，早于查询开始时间的事件都已包含在快照里，不再改动未读。
+   * 查询结果不带版本号，无法与查询期间到达的 Webhook 比较先后：查询前记下本地版本号，写回时若版本已变
+   * （查询期间处理过 Webhook），就放弃这次结果、保留 Webhook 的值，不标记为已校准，下次查询状态时再试。
+   * 写回的是总数；按请求记录不动，并记为“与总数无法对齐”，之后旧版格式的事件不再据此推算总数。
+   * 水位线取工单系统响应头 Date 减 1 秒（工单系统的时钟），早于它的事件视为已包含在结果里；
+   * 边界附近的事件即使被重复接受，也会被随后更新的事件纠正。没有 Date 时不推进水位线。
    */
   async resyncUnread(userId: string, credentials: AchordConnectCredentials): Promise<number | null> {
     const before = await this.prisma.supportUnreadState.findUnique({ where: { userId }, select: { revision: true } });
     const expectedRevision = before?.revision ?? 0;
-    const snapshotAt = new Date();
     let remote: Awaited<ReturnType<typeof fetchAchordConnectContactUnread>>;
     try {
       remote = await fetchAchordConnectContactUnread(this.fetchImpl, credentials, userId, RESYNC_TIMEOUT_MS);
@@ -311,19 +303,13 @@ export class SupportIntegrationService {
         if (state.revision !== expectedRevision) {
           return null;
         }
-        // 快照整体取代本地的按请求记录（包括快照里已经没有的请求），不截断。
-        await tx.supportRequestUnread.deleteMany({ where: { userId } });
-        if (remote.requests.length > 0) {
-          await tx.supportRequestUnread.createMany({
-            data: remote.requests.map((item) => ({ userId, requestId: item.id, unreadCount: item.unreadCount, eventAt: snapshotAt })),
-            skipDuplicates: true
-          });
-        }
-        // 查询结果只给了总数、或按请求明细加起来对不上总数时，本地记录不完整，之后不再由单个请求推算总数。
-        const requestsComplete = remote.requests.reduce((sum, item) => sum + item.unreadCount, 0) === remote.unreadCount;
+        const snapshotWatermark = remote.serverTime ? new Date(remote.serverTime.getTime() - 1000) : null;
+        const sourceAt = snapshotWatermark && (!state.sourceAt || snapshotWatermark.getTime() > state.sourceAt.getTime())
+          ? snapshotWatermark
+          : state.sourceAt;
         await tx.supportUnreadState.update({
           where: { userId },
-          data: { unreadCount: remote.unreadCount, sourceAt: snapshotAt, syncedAt: new Date(), requestsComplete, revision: { increment: 1 } }
+          data: { unreadCount: remote.unreadCount, sourceAt, syncedAt: new Date(), requestsComplete: false, revision: { increment: 1 } }
         });
         return { previous: state.unreadCount, next: remote.unreadCount };
       });
