@@ -11,6 +11,8 @@ export type StoredSupportIntegrationConfig = {
   enabled: boolean;
   /** 连接代次：地址或 Client ID 每变化一次加一。Webhook 与校准写入时核对代次，旧连接的数据不会写进新连接的状态。 */
   generation: number;
+  /** 推送代次：切换连接或启用状态变化时加一。之前的写入结果若在这之后才推送，一律丢弃。 */
+  epoch: number;
 };
 
 type SystemSettingReader = {
@@ -28,8 +30,13 @@ export function parseStoredSupportIntegrationConfig(value: unknown): StoredSuppo
     clientSecret: text("clientSecret"),
     webhookSecret: text("webhookSecret"),
     enabled: record.enabled === true,
-    generation: typeof record.generation === "number" && Number.isInteger(record.generation) && record.generation >= 0 ? record.generation : 0
+    generation: readCounter(record.generation),
+    epoch: readCounter(record.epoch)
   };
+}
+
+function readCounter(value: unknown) {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0;
 }
 
 export function readSupportIntegrationCredentials(value: StoredSupportIntegrationConfig): AchordConnectCredentials | null {
@@ -44,7 +51,8 @@ export async function readSupportIntegrationConfig(prisma: SystemSettingReader) 
 }
 
 /**
- * 新工单系统是否已启用（开关打开且凭据齐全）。
+ * 新工单系统是否已启用（开关打开，地址、凭据和 Webhook Secret 齐全）。
+ * 客户端不会定时查询状态，未读提醒依赖 Webhook，所以没有 Webhook Secret 不能算启用。
  * 旧自建工单以它为切换点：未启用前旧工单照常可写，启用后旧工单转为只读。
  * 这样后台可以先上线，等新版客户端发布、Achord Connect 配好后再一键切换。
  */
@@ -54,7 +62,7 @@ export async function isSupportIntegrationEnabled(prisma: SystemSettingReader) {
 }
 
 export function isStoredSupportIntegrationEnabled(value: StoredSupportIntegrationConfig) {
-  return value.enabled && readSupportIntegrationCredentials(value) !== null;
+  return value.enabled && readSupportIntegrationCredentials(value) !== null && Boolean(value.webhookSecret);
 }
 
 type SharedSettingLocker = { $queryRaw<T = unknown>(query: TemplateStringsArray, ...values: unknown[]): Promise<T> };

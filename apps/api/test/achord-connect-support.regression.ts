@@ -129,7 +129,7 @@ function createFakePrisma(options: { users?: string[] } = {}) {
       },
       findMany: async ({ where }: any) =>
         [...states.values()]
-          .filter((row) => row.unreadCount > where.unreadCount.gt)
+          .filter((row) => (where.unreadCount.gt !== undefined ? row.unreadCount > where.unreadCount.gt : row.unreadCount >= where.unreadCount.gte))
           .map((row) => ({ userId: row.userId, unreadCount: row.unreadCount, revision: row.revision })),
       updateMany: async ({ data }: any) => {
         const { revision, ...rest } = data;
@@ -450,7 +450,8 @@ async function testWebhookIdempotencyAndAggregation() {
   assert.equal(db.request("user_1", "req_a")?.unreadCount, 0, "被拒绝的请求不改变数据");
 
   // 未配置 Webhook Secret 时一律拒绝。
-  await service.updateAdminConfig({ webhookSecret: null });
+  await rejects(service.updateAdminConfig({ webhookSecret: null }), BadRequestException);
+  await service.updateAdminConfig({ webhookSecret: null, enabled: false });
   await rejects(service.handleWebhook(webhookRequest(bad)), UnauthorizedException);
 }
 
@@ -852,9 +853,9 @@ async function testConnectionChangeResetsUnreadState() {
   assert.ok(db.state("user_1")!.revision > revisionBefore, "版本号继续递增");
   assert.equal(db.requestCount(), 0, "旧连接的按请求记录全部删除");
   assert.deepEqual(published.slice(countBefore), [{ userId: "user_1", count: 0 }], "只给原来有未读的用户推送 0");
-  await waitFor(() => newConnectionFetches === 1, "为原来有未读的用户向新连接重新查询");
+  await waitFor(() => newConnectionFetches === 2, "为用过工单入口的两位用户都向新连接重新查询");
   await waitFor(() => db.state("user_1")?.unreadCount === 1, "新连接的结果写回");
-  assert.deepEqual(published.at(-1), { userId: "user_1", count: 1 });
+  assert.ok(published.some((item) => item.userId === "user_1" && item.count === 1));
   // 只改密钥或开关不算换连接，不清空未读。
   await service.updateAdminConfig({ webhookSecret: "whsec_rotated_fake" });
   assert.equal(db.state("user_1")?.unreadCount, 1);
@@ -897,6 +898,74 @@ async function testConnectionFenceAndEnableToggles() {
     // 启用后推送按版本继续，不会被重新启用时的推送挡住更新的值。
     await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 1, contactUnreadCount: 1, createdAt: new Date(Date.now() + 1_000).toISOString() })));
     assert.deepEqual(published.at(-1), { userId: "user_1", count: 1 });
+  }
+}
+
+async function testPublicationFenceAndReconnectCandidates() {
+  // 写入事务已提交、尚未推送时管理员停用了接入：这次结果不能在停用后把红点推回去。
+  {
+    const { service, db, published } = createService();
+    await configure(service);
+    const event = unreadEvent({ requestId: "req_a", unreadCount: 3, contactUnreadCount: 3, createdAt: new Date().toISOString() });
+    const originalApply = service.applyUnreadChange.bind(service);
+    service.applyUnreadChange = async (...args: Parameters<SupportIntegrationService["applyUnreadChange"]>) => {
+      const result = await originalApply(...args);
+      await service.updateAdminConfig({ enabled: false });
+      return result;
+    };
+    assert.equal(await service.handleWebhook(webhookRequest(event)), "accepted");
+    assert.equal(db.state("user_1")?.unreadCount, 3, "未读照常记录");
+    assert.deepEqual(published, [{ userId: "user_1", count: 0 }], "停用时推送 0；停用之前提交的 3 不在停用之后推送");
+    service.applyUnreadChange = originalApply;
+    // 切换连接同样截断之前提交的结果。
+    await service.updateAdminConfig({ enabled: true });
+    const pushesBefore = published.length;
+    service.applyUnreadChange = async (...args: Parameters<SupportIntegrationService["applyUnreadChange"]>) => {
+      const result = await originalApply(...args);
+      await service.updateAdminConfig({ clientId: "ac_fake_switched" });
+      return result;
+    };
+    service.fetchImpl = async () => {
+      throw new TypeError("fetch failed");
+    };
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_b", unreadCount: 6, contactUnreadCount: 6, createdAt: new Date(Date.now() + 1_000).toISOString() })));
+    assert.ok(published.slice(pushesBefore).every((item) => item.count === 0), "旧连接的结果不在切换后推送");
+    service.applyUnreadChange = originalApply;
+  }
+
+  // 切换连接后，本地没有未读的用户也要向新连接查询一次。
+  {
+    const { service, db } = createService();
+    await configure(service);
+    await service.handleWebhook(webhookRequest(unreadEvent({ userId: "user_2", requestId: "req_z", unreadCount: 0, contactUnreadCount: 0, createdAt: new Date().toISOString() })));
+    assert.equal(db.state("user_2")?.unreadCount, 0);
+    const queried: string[] = [];
+    service.fetchImpl = async (url) => {
+      queried.push(url);
+      return json(200, { data: { externalUserId: "user_2", unreadCount: 2, requests: [] } });
+    };
+    await service.updateAdminConfig({ baseUrl: "https://support-new.example.test" });
+    await waitFor(() => db.state("user_2")?.unreadCount === 2, "向新连接查询原来没有未读的用户");
+    assert.ok(queried.every((url) => url.startsWith("https://support-new.example.test/")));
+  }
+
+  // 启用前必须设置 Webhook Secret：客户端不会定时刷新，没有 Webhook 就收不到新的未读提醒。
+  {
+    const { service } = createService();
+    await rejects(service.updateAdminConfig({ baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, enabled: true }), BadRequestException);
+  }
+
+  // 被全进程上限挡住的后台任务不占重试次数，稍后照常执行。
+  {
+    const { service } = createService();
+    await configure(service);
+    const timers = (service as unknown as { backgroundResyncTimers: Map<string, ReturnType<typeof setTimeout>> }).backgroundResyncTimers;
+    const recent = (service as unknown as { recentResyncs: number[] }).recentResyncs;
+    for (let index = 0; index < SUPPORT_UNREAD_RESYNC_MAX_PER_MINUTE; index += 1) recent.push(Date.now());
+    await (service as unknown as { runBackgroundResync: (userId: string, attempt: number) => Promise<void> }).runBackgroundResync("user_1", 5);
+    assert.ok(timers.has("user_1"), "最后一次机会被限流时仍会重新排队");
+    for (const timer of timers.values()) clearTimeout(timer);
+    timers.clear();
   }
 }
 
@@ -1221,6 +1290,7 @@ async function main() {
   await testConnectionChangeResetsUnreadState();
   await testStatusSchedulesRetryWhenDeferred();
   await testConnectionFenceAndEnableToggles();
+  await testPublicationFenceAndReconnectCandidates();
   await testAdminConfigNeverReturnsSecrets();
   await testLegacyTicketWriteGuards();
   testSupportModuleDependenciesAreExported();

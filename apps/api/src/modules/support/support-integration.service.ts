@@ -74,9 +74,10 @@ export type AchordConnectWebhookResult = "accepted" | "duplicate" | "ignored";
 /**
  * revision 是写入后的版本号，推送时据此丢弃乱序到达的旧结果；
  * needsResync 表示这次事件无法可靠地给出总数，需要后台向工单系统重新查询；
- * publish 是提交时新工单系统是否启用（在同一事务里读取，提交后的推送不再依赖任何可能失败的查询）。
+ * publish 是提交时新工单系统是否启用（在同一事务里读取，提交后的推送不再依赖任何可能失败的查询）；
+ * epoch 是当时设置的推送代次，设置在此之后切换过连接或启用状态的，推送时丢弃。
  */
-type UnreadTotalChange = { previous: number; next: number; revision: number; publish: boolean; needsResync?: boolean };
+type UnreadTotalChange = { previous: number; next: number; revision: number; publish: boolean; epoch: number; needsResync?: boolean };
 
 @Injectable()
 export class SupportIntegrationService {
@@ -87,6 +88,8 @@ export class SupportIntegrationService {
   private readonly recentResyncs: number[] = [];
   private readonly publishedRevisions = new Map<string, number>();
   private readonly backgroundResyncTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** 本进程见过的最新推送代次。 */
+  private publicationEpoch = 0;
   private unreadEndpointMissingLogged = false;
   private lastRejectedWebhookLogAt = 0;
 
@@ -124,14 +127,21 @@ export class SupportIntegrationService {
       const current = parseStoredSupportIntegrationConfig(row.value);
       const next = applyConfigUpdate(current, input);
       const connectionChanged = current.baseUrl !== next.baseUrl || current.clientId !== next.clientId;
+      const wasEnabled = isStoredSupportIntegrationEnabled(current);
+      const nowEnabled = isStoredSupportIntegrationEnabled(next);
       if (connectionChanged) {
         next.generation = current.generation + 1;
       }
+      if (connectionChanged || wasEnabled !== nowEnabled) {
+        next.epoch = current.epoch + 1;
+      }
       const updated = await tx.systemSetting.update({ where: { key: SUPPORT_INTEGRATION_SETTING_KEY }, data: { value: next } });
-      const wasEnabled = isStoredSupportIntegrationEnabled(current);
-      const nowEnabled = isStoredSupportIntegrationEnabled(next);
       const withUnread = connectionChanged || wasEnabled !== nowEnabled
         ? await tx.supportUnreadState.findMany({ where: { unreadCount: { gt: 0 } }, select: { userId: true, unreadCount: true, revision: true } })
+        : [];
+      // 切换连接后，所有用过工单入口的用户都要向新连接查询一次（原来没有未读的用户在新连接里也可能有）。
+      const resyncCandidates = connectionChanged && nowEnabled
+        ? (await tx.supportUnreadState.findMany({ where: { unreadCount: { gte: 0 } }, select: { userId: true } })).map((item) => item.userId)
         : [];
       if (connectionChanged) {
         await tx.supportUnreadState.updateMany({
@@ -139,28 +149,34 @@ export class SupportIntegrationService {
         });
         await tx.supportRequestUnread.deleteMany({});
       }
-      return { next, updatedAt: updated.updatedAt, connectionChanged, wasEnabled, nowEnabled, withUnread };
+      return { next, updatedAt: updated.updatedAt, connectionChanged, wasEnabled, nowEnabled, withUnread, resyncCandidates };
     });
     this.afterConfigSaved(saved);
     return this.toAdminConfig(saved.next, saved.updatedAt);
   }
 
   private afterConfigSaved(saved: {
+    next: StoredSupportIntegrationConfig;
     connectionChanged: boolean;
     wasEnabled: boolean;
     nowEnabled: boolean;
     withUnread: Array<{ userId: string; unreadCount: number; revision: number }>;
+    resyncCandidates: string[];
   }) {
+    // 先推进推送代次：在这次保存之前提交、但尚未推送的结果，之后到达推送时会被丢弃。
+    this.publicationEpoch = Math.max(this.publicationEpoch, saved.next.epoch);
     if (saved.connectionChanged) {
       // 未读状态整体重置：清空本进程的已推送版本和限流记录，尽快向新连接查询。
       this.publishedRevisions.clear();
       this.resyncAttempts.clear();
     }
+    for (const userId of saved.resyncCandidates) {
+      this.scheduleBackgroundResync(userId);
+    }
     for (const item of saved.withUnread) {
       try {
         if (saved.connectionChanged) {
           if (saved.wasEnabled) this.clientEventsPublisher.publishSupportUnreadUpdated(item.userId, 0);
-          if (saved.nowEnabled) this.scheduleBackgroundResync(item.userId);
         } else if (saved.nowEnabled) {
           this.publishedRevisions.set(item.userId, item.revision);
           this.clientEventsPublisher.publishSupportUnreadUpdated(item.userId, item.unreadCount);
@@ -338,7 +354,7 @@ export class SupportIntegrationService {
       await tx.$queryRaw`SELECT "userId" FROM "SupportUnreadState" WHERE "userId" = ${userId} FOR UPDATE`;
       const state = await tx.supportUnreadState.findUniqueOrThrow({ where: { userId } });
       const publish = isStoredSupportIntegrationEnabled(config);
-      const unchanged = { previous: state.unreadCount, next: state.unreadCount, revision: state.revision, publish: false };
+      const unchanged = { previous: state.unreadCount, next: state.unreadCount, revision: state.revision, publish: false, epoch: config.epoch };
       if (state.sourceAt && eventAt.getTime() < state.sourceAt.getTime()) {
         return unchanged;
       }
@@ -387,6 +403,7 @@ export class SupportIntegrationService {
         next: data.unreadCount ?? state.unreadCount,
         revision: state.revision + 1,
         publish,
+        epoch: config.epoch,
         needsResync: data.syncedAt === null
       };
     });
@@ -455,7 +472,8 @@ export class SupportIntegrationService {
           previous: state.unreadCount,
           next: remote.unreadCount,
           revision: state.revision + 1,
-          publish: isStoredSupportIntegrationEnabled(config)
+          publish: isStoredSupportIntegrationEnabled(config),
+          epoch: config.epoch
         };
       });
     } catch (error) {
@@ -480,13 +498,14 @@ export class SupportIntegrationService {
    * 同一用户只排一个任务，遵守与状态查询相同的限流（同一用户 5 分钟一次、全进程每分钟上限），
    * 失败或被限流时按最小间隔重试，最多 BACKGROUND_RESYNC_MAX_ATTEMPTS 次；新工单系统停用后不再查询。
    */
-  scheduleBackgroundResync(userId: string, attempt = 0) {
+  scheduleBackgroundResync(userId: string, attempt = 0, throttled = false) {
     if (this.backgroundResyncTimers.has(userId) || workLifecycle.isDraining || attempt >= BACKGROUND_RESYNC_MAX_ATTEMPTS) {
       return;
     }
     const last = this.resyncAttempts.get(userId);
     const untilAllowed = last === undefined ? 0 : Math.max(0, last + SUPPORT_UNREAD_RESYNC_MIN_INTERVAL_MS - Date.now());
-    const delay = attempt === 0 ? untilAllowed : Math.max(untilAllowed, 60_000);
+    // 被全进程上限挡住时等到下一分钟窗口；失败重试至少间隔 1 分钟。
+    const delay = attempt === 0 && !throttled ? untilAllowed : Math.max(untilAllowed, throttled ? 60_000 + Math.floor(Math.random() * 30_000) : 60_000);
     const timer = setTimeout(() => {
       this.backgroundResyncTimers.delete(userId);
       if (workLifecycle.isDraining || !promotionAdmission.isApproved()) {
@@ -508,7 +527,12 @@ export class SupportIntegrationService {
       if (state?.syncedAt && Date.now() - state.syncedAt.getTime() < SUPPORT_UNREAD_RESYNC_AFTER_MS) {
         return;
       }
-      if (!this.claimResyncAttempt(userId, Date.now()) || (await this.resyncUnread(userId, credentials)) === null) {
+      if (!this.claimResyncAttempt(userId, Date.now())) {
+        // 被限流不算失败，不占重试次数，稍后再排。
+        this.scheduleBackgroundResync(userId, attempt, true);
+        return;
+      }
+      if ((await this.resyncUnread(userId, credentials)) === null) {
         this.scheduleBackgroundResync(userId, attempt + 1);
       }
     } catch (error) {
@@ -534,11 +558,16 @@ export class SupportIntegrationService {
   /**
    * 行锁保证了数据库写入的先后，但事务提交后到推送之间可能被并发的另一次写入插队：
    * 按写入后的版本号推送，比已推送版本旧的结果直接丢弃，客户端最终停在最新值上。
-   * 停用新工单系统后仍记录未读（重新启用时可直接使用），但不再推给客户端，免得停用后又亮起红点。
+   * 停用新工单系统后仍记录未读（重新启用时可直接使用），但不再推给客户端，免得停用后又亮起红点；
+   * 在切换连接或启用状态之前提交、之后才推送的结果（推送代次较旧）同样丢弃。
    * 这里没有任何等待，比较与记录版本号不会被插队。（版本记录在本进程内；生产环境是单个 API 进程。）
    */
   private publishIfChanged(userId: string, change: UnreadTotalChange) {
-    if (change.previous === change.next || !change.publish) {
+    if (change.epoch > this.publicationEpoch) {
+      // 设置已在别处（或本进程重启前）推进过代次，跟上它。
+      this.publicationEpoch = change.epoch;
+    }
+    if (change.previous === change.next || !change.publish || change.epoch < this.publicationEpoch) {
       return;
     }
     const published = this.publishedRevisions.get(userId);
@@ -581,7 +610,7 @@ export class SupportIntegrationService {
 
   private async readLaunchCredentials(): Promise<AchordConnectCredentials | null> {
     const { value } = await this.readStoredConfig();
-    return value.enabled ? readCredentials(value) : null;
+    return isStoredSupportIntegrationEnabled(value) ? readCredentials(value) : null;
   }
 
   private readStoredConfig() {
@@ -619,8 +648,9 @@ function applyConfigUpdate(current: StoredSupportIntegrationConfig, input: Updat
   if (input.enabled !== undefined) {
     next.enabled = input.enabled;
   }
-  if (next.enabled && !readCredentials(next)) {
-    throw new BadRequestException("启用前请先填写工单系统地址、Client ID 和 Client Secret");
+  if (next.enabled && (!readCredentials(next) || !next.webhookSecret)) {
+    // 客户端不会定时查询状态，未读提醒依赖 Webhook，所以启用前 Webhook Secret 也必须填写。
+    throw new BadRequestException("启用前请先填写工单系统地址、Client ID、Client Secret 和 Webhook Secret");
   }
   return next;
 }

@@ -68,9 +68,9 @@ export function SupportIntegrationModal({ opened, onClose, onSaved }: { opened: 
   };
   const clearSecret = async (key: SecretKey) => {
     const label = SECRET_LABELS[key];
-    const effect = key === "clientSecret" ? "清除后客户端将无法打开工单系统，并会自动停用接入。" : "清除后工单系统推送的未读提醒会被拒绝。";
+    const effect = key === "clientSecret" ? "清除后客户端将无法打开工单系统，并会自动停用接入。" : "清除后工单系统推送的未读提醒会被拒绝，并会自动停用接入。";
     if (!await confirmation.confirm({ title: `清除 ${label}`, message: effect, confirmLabel: "确认清除", danger: true })) return;
-    void save(key === "clientSecret" ? { clientSecret: null, enabled: false } : { webhookSecret: null }, `${label} 已清除`);
+    void save(key === "clientSecret" ? { clientSecret: null, enabled: false } : { webhookSecret: null, enabled: false }, `${label} 已清除`);
   };
   const test = async () => {
     if (busy.current) return;
@@ -114,7 +114,7 @@ export function SupportIntegrationModal({ opened, onClose, onSaved }: { opened: 
           </Group>
           <Text size="xs" c="dimmed">填到 Achord Connect 连接配置的 Webhook 地址，并订阅“未读变化”事件。地址随站点主地址变化。</Text>
         </Stack>
-        {config.enabled && !config.hasWebhookSecret ? <Alert color="yellow">尚未设置 Webhook Secret：工单系统推送的未读提醒会被拒绝，客户端的未读数只能靠定期查询校准。</Alert> : null}
+        <Text size="xs" c="dimmed">启用前需填写地址、Client ID、Client Secret 和 Webhook Secret：客户端不会定时刷新，未读提醒依靠 Webhook 推送。</Text>
         {testResult ? <Alert color={testResult.ok ? "teal" : "red"} title={testResult.ok ? "连接正常" : "连接未通过"}>
           <Text size="sm">创建工单入口：{testResult.launch.message}</Text>
           <Text size="sm">未读查询：{testResult.unread.message}</Text>

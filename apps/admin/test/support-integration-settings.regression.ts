@@ -39,7 +39,8 @@ function testModalNeverRendersStoredSecrets() {
   assert.match(modal, /if \(draft\.clientSecret\.trim\(\)\) input\.clientSecret = draft\.clientSecret\.trim\(\);/);
   assert.match(modal, /if \(draft\.webhookSecret\.trim\(\)\) input\.webhookSecret = draft\.webhookSecret\.trim\(\);/);
   assert.match(modal, /\{ clientSecret: null, enabled: false \}/);
-  assert.match(modal, /\{ webhookSecret: null \}/);
+  assert.match(modal, /\{ webhookSecret: null, enabled: false \}/, "未读提醒依赖 Webhook，清除 Webhook Secret 时同时停用");
+  assert.doesNotMatch(modal, /定期查询校准/, "不承诺不存在的定期校准");
   // 关闭弹窗后草稿（可能含新粘贴的密钥）也要清掉。
   assert.match(modal, /if \(opened\) void load\(\); else setDraft\(emptyDraft\(\)\);/);
 }

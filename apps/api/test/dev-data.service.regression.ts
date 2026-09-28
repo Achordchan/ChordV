@@ -14990,10 +14990,12 @@ async function testAdminDashboardCountsWaitingUserTicketsAsOpen() {
   assert.deepEqual(ticketCountPayloads[0].where.status, { in: ["open", "waiting_user"] });
 
   // 启用 Achord Connect（开关打开且凭据齐全）后，旧工单转为只读存档。
-  supportIntegration = { enabled: true, baseUrl: "https://support.example.test", clientId: "ac_fake", clientSecret: "acs_fake" };
+  supportIntegration = { enabled: true, baseUrl: "https://support.example.test", clientId: "ac_fake", clientSecret: "acs_fake", webhookSecret: "whsec_fake" };
   assert.equal((await service["getSupportTicketDashboardCounts"]()).legacyTicketsReadOnly, true);
-  supportIntegration = { enabled: true, baseUrl: "https://support.example.test", clientId: "ac_fake", clientSecret: null };
+  supportIntegration = { enabled: true, baseUrl: "https://support.example.test", clientId: "ac_fake", clientSecret: null, webhookSecret: "whsec_fake" };
   assert.equal((await service["getSupportTicketDashboardCounts"]()).legacyTicketsReadOnly, false, "凭据不全时不算启用");
+  supportIntegration = { enabled: true, baseUrl: "https://support.example.test", clientId: "ac_fake", clientSecret: "acs_fake", webhookSecret: null };
+  assert.equal((await service["getSupportTicketDashboardCounts"]()).legacyTicketsReadOnly, false, "没有 Webhook Secret 时不算启用");
 }
 
 async function testCreateAnnouncementKeepsLocalSaveWhenPublishFails() {

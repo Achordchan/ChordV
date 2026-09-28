@@ -81,7 +81,7 @@ const prismaStub = {
     findUnique: async ({ where }: { where: { key: string } }) =>
       where.key === "achord-connect" && supportIntegrationSetting.enabled
         ? {
-            value: { enabled: true, baseUrl: "https://support.example.test", clientId: "ac_fake", clientSecret: "acs_fake" },
+            value: { enabled: true, baseUrl: "https://support.example.test", clientId: "ac_fake", clientSecret: "acs_fake", webhookSecret: "whsec_fake" },
             updatedAt: new Date()
           }
         : null
