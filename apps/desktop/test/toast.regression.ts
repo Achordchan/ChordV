@@ -98,7 +98,19 @@ for (const tone of ["success", "warning", "danger"]) {
 assert.match(css, /--toast-icon: var\(--cv-icon-info\);/, "info is the default icon colour");
 assert.match(css, /\.icon \{[^}]*background: none;[^}]*color: var\(--toast-icon\);/, "bare icon instead of Mantine's filled circle");
 assert.match(css, /\.description \{[^}]*white-space: pre-line;/);
-assert.match(css, /\.desktop-app--mac-titlebar\)\) \.container \{ top: 38px; \}/, "toasts start below the macOS title bar");
+assert.match(css, /\.desktop-app--mac-titlebar\)\) \.container\[data-position="top-right"\] \{ top: 38px; \}/, "toasts start below the macOS title bar");
+// 1.1.11 构建 22 的 P0：容器类名会套到 Mantine 全部 6 个位置容器上。底部容器被加上 top 后上下撑满窗口，
+// 透明却接收鼠标，所有按钮都点不动。容器必须不接收鼠标，位置只能改右上角那一个。
+{
+  const rules = [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({ selector: selector.trim(), body }));
+  const bare = rules.filter(rule => /(^|[\s,)])\.container\s*$/.test(rule.selector));
+  assert.ok(bare.length > 0 && bare.every(rule => /pointer-events:\s*none/.test(rule.body) && !/\b(top|bottom|left|right|inset|height)\s*:/.test(rule.body)),
+    "the shared container class only disables pointer events and never positions every container");
+  for (const rule of rules.filter(rule => /\.container\b/.test(rule.selector) && /\b(top|bottom|left|right|inset)\s*:/.test(rule.body))) {
+    assert.match(rule.selector, /\.container\[data-position="top-right"\]/, `positioning must target the top-right container only: ${rule.selector}`);
+  }
+  assert.ok(rules.some(rule => /^\.item$/.test(rule.selector) && /pointer-events:\s*auto/.test(rule.body)), "toast cards themselves stay clickable");
+}
 
 const styles = read("src/styles.css");
 assert.doesNotMatch(styles, /cv-notification/, "the old global notification skin is gone");
