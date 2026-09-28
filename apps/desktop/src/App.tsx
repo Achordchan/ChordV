@@ -38,7 +38,6 @@ import { NodeListPanel } from "./components/NodeListPanel";
 import { RuntimeAssetsBanner } from "./components/RuntimeAssetsBanner";
 import { RoutingRulesModal } from "./components/RoutingRulesModal";
 import { SubscriptionPanel } from "./components/SubscriptionPanel";
-import { TicketCenterModal } from "./components/TicketCenterModal";
 import { UpdateCenterModal } from "./components/UpdateCenterModal";
 import {
   appReady,
@@ -105,7 +104,7 @@ import { useRuntimeActions } from "./hooks/useRuntimeActions";
 import { useComponentVersionSync } from "./hooks/useComponentVersionSync";
 import { useRuntimeAssets, type RuntimeAssetsCheckSummary } from "./hooks/useRuntimeAssets";
 import { useRuntimeStatus } from "./hooks/useRuntimeStatus";
-import { useSupportTickets } from "./hooks/useSupportTickets";
+import { useSupportPortal } from "./hooks/useSupportPortal";
 import { buildUpdatePromptKey, hasActionableUpdate, useUpdateFlow } from "./hooks/useUpdateFlow";
 import { describeRequiredUpdate } from "./lib/updateState";
 import { readAutoDownloadPreference, writeAutoDownloadPreference } from "./lib/silentUpdate";
@@ -130,7 +129,6 @@ const DownloadProgressDebug = (import.meta.env.DEV || import.meta.env.VITE_CHORD
 // 只负责展示的 hook 使用面向客户的错误读取器：原始错误不会直接出现在界面上。
 // 读取器接收完整错误对象（保留 HTTP 状态），被隐藏的原文会写入诊断日志。
 const readAnnouncementError = createLoggedUserErrorReader("announcement");
-const readTicketError = createLoggedUserErrorReader("ticket");
 const readNodeProbeError = createLoggedUserErrorReader("node_probe");
 const readServerProbeError = createLoggedUserErrorReader("server_probe");
 
@@ -175,9 +173,6 @@ export function App() {
   const nodesRef = useRef<NodeSummaryDto[]>([]);
   const selectedNodeIdRef = useRef<string | null>(null);
   const probeResultsRef = useRef<Record<string, RuntimeNodeProbeResult>>({});
-  const ticketCenterOpenedRef = useRef(false);
-  const ticketCreateModeRef = useRef(false);
-  const selectedTicketIdRef = useRef<string | null>(null);
   const shellActionRef = useRef<(() => Promise<void>) | null>(null);
   const openLogsActionRef = useRef<(() => void) | null>(null);
   const trayModeActionRef = useRef<((mode: string) => Promise<void>) | null>(null);
@@ -236,45 +231,14 @@ export function App() {
     readError: readAnnouncementError,
     notify: notifications.show
   });
-  const {
-    ticketCenterOpened,
-    setTicketCenterOpened,
-    ticketCreateMode,
-    setTicketCreateMode,
-    ticketList,
-    setTicketList,
-    selectedTicketId,
-    setSelectedTicketId,
-    ticketDetail,
-    setTicketDetail,
-    ticketDraft,
-    setTicketDraft,
-    ticketReplyDraft,
-    setTicketReplyDraft,
-    ticketReplyAttachment,
-    ticketReplyAttachmentUpload,
-    setTicketReplyAttachment,
-    ticketCenterError,
-    setTicketCenterError,
-    ticketListBusy,
-    ticketDetailBusy,
-    ticketSubmitting,
-    hasUnreadTickets,
-    loadTicketList,
-    loadTicketDetail,
-    refreshTicketCenter,
-    markTicketUnread,
-    openTicketCenter,
-    openTicketComposer,
-    closeTicketComposer,
-    handleCreateTicket,
-    handleReplyTicket
-  } = useSupportTickets({
-    accessToken: session?.accessToken ?? null,
-    onUnauthorized: recoverSessionAfterUnauthorized,
-    readError: readTicketError,
-    notify: notifications.show
-  });
+  const { supportUnreadCount, supportOpening, openSupportPortal, refreshSupportStatus, applySupportUnreadCount } =
+    useSupportPortal({
+      accessToken: session?.accessToken ?? null,
+      userId: session?.user.id ?? null,
+      onUnauthorized: recoverSessionAfterUnauthorized,
+      notify: notifications.show,
+      showError: (reason) => showErrorToast(reason, "support")
+    });
   const runtimeComponentsCheckRef = useRef<
     | ((input: {
         source: "startup" | "login" | "manual" | "refresh";
@@ -437,15 +401,6 @@ export function App() {
   const runUpdateCheckForActions = async (input: import("./hooks/useAuthBootstrap").RunUpdateCheckInput) => {
     await runUpdateCheckAndFocus(input);
   };
-  const loadTicketListForActions = async (
-    preferredTicketId?: string | null,
-    options?: import("./hooks/useSupportTickets").LoadTicketListOptions
-  ) => {
-    await loadTicketList(preferredTicketId, options);
-  };
-  const loadTicketDetailForActions = async (ticketId: string, options?: import("./hooks/useSupportTickets").LoadTicketDetailOptions) => {
-    await loadTicketDetail(ticketId, options);
-  };
   const fallbackNode = useMemo(
     () => pickAlternativeNode(nodes, currentRuntimeNodeId ?? selectedNodeId, probeResults),
     [currentRuntimeNodeId, nodes, probeResults, selectedNodeId]
@@ -569,9 +524,6 @@ export function App() {
     runtimeRef,
     selectedNodeIdRef,
     probeResultsRef,
-    ticketCenterOpenedRef,
-    ticketCreateModeRef,
-    selectedTicketIdRef,
     leaseHeartbeatFailedAtRef,
     lastGuidanceToastRef,
     lastForegroundSyncErrorRef,
@@ -584,9 +536,6 @@ export function App() {
     notify: notifications.show,
     setServerProbe,
     mergeSubscriptionState,
-    loadTicketList: loadTicketListForActions,
-    loadTicketDetail: loadTicketDetailForActions,
-    markTicketUnread,
     recoverSessionAfterUnauthorized,
     getRuntimeSyncEpoch,
     isRuntimeStopping,
@@ -604,6 +553,10 @@ export function App() {
     setServerProbe,
     handleRuntimeEvent: (event, accessToken) => {
       if (event.type === "runtime_component_updated") { componentVersionSync.requestSync(event); return Promise.resolve(); }
+      if (event.type === "support_unread_updated") {
+        if (sessionRef.current?.accessToken === accessToken) applySupportUnreadCount(event.supportUnreadCount);
+        return Promise.resolve();
+      }
       return handleRuntimeEvent(event, accessToken);
     },
     syncConnectedState: syncForegroundState,
@@ -616,6 +569,7 @@ export function App() {
         includeRuntimeComponents: false
       });
     },
+    syncOnOpen: refreshSupportStatus,
     recoverSessionAfterUnauthorized,
     readError: readServerProbeError
   });
@@ -767,18 +721,6 @@ export function App() {
   }, [selectedNodeId]);
 
   useEffect(() => {
-    ticketCenterOpenedRef.current = ticketCenterOpened;
-  }, [ticketCenterOpened]);
-
-  useEffect(() => {
-    ticketCreateModeRef.current = ticketCreateMode;
-  }, [ticketCreateMode]);
-
-  useEffect(() => {
-    selectedTicketIdRef.current = selectedTicketId;
-  }, [selectedTicketId]);
-
-  useEffect(() => {
     probeResultsRef.current = probeResults;
   }, [probeResults]);
 
@@ -789,14 +731,6 @@ export function App() {
     }
     startupInspectionKeyRef.current = null;
     setServerProbe(createIdleServerProbeState());
-    setTicketCenterOpened(false);
-    setTicketCreateMode(false);
-    setTicketList([]);
-    setSelectedTicketId(null);
-    setTicketDetail(null);
-    setTicketCenterError(null);
-    setTicketDraft({ title: "", body: "" });
-    setTicketReplyDraft("");
   }, [session]);
 
   useEffect(() => {
@@ -809,13 +743,6 @@ export function App() {
       checkedAt: current.checkedAt,
       errorMessage: null
     }));
-  }, [session?.accessToken]);
-
-  useEffect(() => {
-    if (!session) {
-      return;
-    }
-    void loadTicketList();
   }, [session?.accessToken]);
 
   const handleManualServerProbe = async () => {
@@ -848,13 +775,6 @@ export function App() {
       setServerProbeBusy(false);
     }
   };
-
-  useEffect(() => {
-    if (!ticketCenterOpened || !session || !selectedTicketId || ticketCreateMode) {
-      return;
-    }
-    void loadTicketDetail(selectedTicketId);
-  }, [selectedTicketId, session?.accessToken, ticketCenterOpened, ticketCreateMode]);
 
   useEffect(() => {
     shellActionRef.current = async () => {
@@ -1851,7 +1771,8 @@ export function App() {
                 <SubscriptionPanel
                   bootstrap={bootstrap}
                   hasUnreadAnnouncements={hasUnreadAnnouncements}
-                  hasUnreadTickets={hasUnreadTickets}
+                  supportUnreadCount={supportUnreadCount}
+                  supportOpening={supportOpening}
                   refreshing={refreshing}
                   updateBusy={updateCheckBusy}
               updateStatusDescription={updateStatusDescription}
@@ -1861,7 +1782,7 @@ export function App() {
                   serverProbeBusy={serverProbeBusy}
                   onRefreshServerProbe={() => void handleManualServerProbe()}
                   onOpenAnnouncements={openAnnouncementDrawer}
-                  onOpenTickets={openTicketCenter}
+                  onOpenTickets={() => void openSupportPortal()}
                   onRefresh={() => void handleRefresh()}
                   onCheckUpdate={() => void handleManualUpdateCheck()}
                   onOpenLocalFiles={localFilesAvailable ? () => setLocalFilesOpened(true) : undefined}
@@ -1924,7 +1845,8 @@ export function App() {
             <SubscriptionPanel
               bootstrap={bootstrap}
               hasUnreadAnnouncements={hasUnreadAnnouncements}
-              hasUnreadTickets={hasUnreadTickets}
+              supportUnreadCount={supportUnreadCount}
+              supportOpening={supportOpening}
               refreshing={refreshing}
               updateBusy={updateCheckBusy}
               updateStatusDescription={updateStatusDescription}
@@ -1935,7 +1857,7 @@ export function App() {
               serverProbeBusy={serverProbeBusy}
               onRefreshServerProbe={() => void handleManualServerProbe()}
               onOpenAnnouncements={openAnnouncementDrawer}
-              onOpenTickets={openTicketCenter}
+              onOpenTickets={() => void openSupportPortal()}
               onRefresh={() => void handleRefresh()}
               onCheckUpdate={() => void handleManualUpdateCheck()}
               onInstallUpdate={() => void handleQuitForUpdate()}
@@ -2005,39 +1927,6 @@ export function App() {
         />
       ) : null}
       <LogDrawer opened={logDrawerOpened} log={runtimeLog} onClose={() => setLogDrawerOpened(false)} />
-      <TicketCenterModal
-        opened={ticketCenterOpened}
-        email={bootstrap?.user.email ?? ""}
-        tickets={ticketList}
-        selectedTicketId={selectedTicketId}
-        ticketDetail={ticketDetail}
-        listBusy={ticketListBusy}
-        detailBusy={ticketDetailBusy}
-        submitting={ticketSubmitting}
-        createMode={ticketCreateMode}
-        error={ticketCenterError}
-        createTitle={ticketDraft.title}
-        createBody={ticketDraft.body}
-        replyBody={ticketReplyDraft}
-        replyAttachment={ticketReplyAttachment}
-        replyAttachmentUpload={ticketReplyAttachmentUpload}
-        onClose={() => setTicketCenterOpened(false)}
-        onRefresh={() => void refreshTicketCenter()}
-        onOpenCreate={openTicketComposer}
-        onCancelCreate={closeTicketComposer}
-        onSelectTicket={(ticketId) => {
-          setTicketCreateMode(false);
-          setSelectedTicketId(ticketId);
-          setTicketReplyDraft("");
-          setTicketReplyAttachment(null);
-        }}
-        onCreateTitleChange={(value) => setTicketDraft((current) => ({ ...current, title: value }))}
-        onCreateBodyChange={(value) => setTicketDraft((current) => ({ ...current, body: value }))}
-        onReplyBodyChange={setTicketReplyDraft}
-        onReplyAttachmentChange={setTicketReplyAttachment}
-        onSubmitCreate={() => void handleCreateTicket()}
-        onSubmitReply={() => void handleReplyTicket()}
-      />
 
       <AppDialog
         opened={closeHintOpened && !windowTransitioning}

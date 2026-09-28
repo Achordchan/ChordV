@@ -74,17 +74,18 @@ function testRecognizedCodesWithoutCatalogArePreserved() {
 
 function testReaderKeepsApiMetadataAndRecordsDiagnostics() {
   const recorded: Array<{ code: string | null; detail: string; context: string }> = [];
-  const reader = createUserErrorReader("ticket", { onDiagnostic: (error, context) => recorded.push({ code: error.code, detail: error.detail, context }) });
+  const reader = createUserErrorReader("support", { onDiagnostic: (error, context) => recorded.push({ code: error.code, detail: error.detail, context }) });
   // 503 + 中文业务提示：原样展示且带 http 编号（只有拿到完整错误对象才可能做到）
-  const unavailable = Object.assign(new Error("工单服务维护中，请稍后再试"), { status: 503, rawMessage: "工单服务维护中，请稍后再试" });
-  assert.equal(reader(unavailable), "工单服务维护中，请稍后再试\n错误编号：http_503");
+  const unavailable = Object.assign(new Error("工单系统暂时不可用，请稍后再试"), { status: 502, rawMessage: "工单系统暂时不可用，请稍后再试" });
+  assert.equal(reader(unavailable), "工单系统暂时不可用，请稍后再试\n错误编号：http_502");
   // 500 英文：按 HTTP 分类，而不是落到场景兜底
   const internal = Object.assign(new Error("Internal server error"), { status: 500, rawMessage: "{\"statusCode\":500,\"message\":\"Internal server error\"}" });
   assert.equal(reader(internal), `${USER_ERROR_CATALOG.http_5xx.message}\n错误编号：http_500`);
   // 未识别的原文：展示兜底，原文交给诊断记录
-  const unknown = reader(new Error("Support ticket inbox is temporarily unavailable."));
-  assertNoLeak(unknown, "ticket unknown");
-  assert.ok(recorded.some((entry) => entry.context === "ticket" && entry.detail.includes("Support ticket inbox is temporarily unavailable.")), "hidden raw text is recorded");
+  const unknown = reader(new Error("Support portal is temporarily unavailable."));
+  assertNoLeak(unknown, "support unknown");
+  assert.equal(unknown, "工单系统暂时无法打开，请稍后重试。\n错误编号：support_open_failed");
+  assert.ok(recorded.some((entry) => entry.context === "support" && entry.detail.includes("Support portal is temporarily unavailable.")), "hidden raw text is recorded");
   assert.ok(recorded.some((entry) => entry.detail.includes("Internal server error")), "mapped HTTP errors keep their raw body in diagnostics");
   // Tauri 命令以纯字符串 reject：同样要识别编号并记录原文
   const updateReader = createUserErrorReader("update_download", { onDiagnostic: (error, context) => recorded.push({ code: error.code, detail: error.detail, context }) });
@@ -93,19 +94,20 @@ function testReaderKeepsApiMetadataAndRecordsDiagnostics() {
   assert.ok(recorded.some((entry) => entry.context === "update_download" && entry.detail === tauriString));
   // 客户可读的业务提示原样展示时，不需要额外记录
   const before = recorded.length;
-  reader(Object.assign(new Error("工单已关闭，无法回复"), { status: 409 }));
+  reader(Object.assign(new Error("操作过于频繁，请稍后再试"), { status: 429 }));
   assert.equal(recorded.length, before);
 }
 
 function testDisplayHooksPassWholeErrors() {
-  for (const hook of ["useSupportTickets", "useAnnouncements", "useNodeProbe"]) {
+  for (const hook of ["useAnnouncements", "useNodeProbe"]) {
     const source = readFileSync(resolve(import.meta.dirname, `../src/hooks/${hook}.ts`), "utf8");
     assert.doesNotMatch(source, /readError \?\? defaultReadError\)\(reason\.message\)/, `${hook} must pass the whole error to the reader`);
   }
   const events = readFileSync(resolve(import.meta.dirname, "../src/hooks/useClientEvents.ts"), "utf8");
   assert.match(events, /readError\(reason\) : /);
   const app = readFileSync(resolve(import.meta.dirname, "../src/App.tsx"), "utf8");
-  assert.match(app, /createLoggedUserErrorReader\("ticket"\)/, "display readers record hidden raw text");
+  assert.match(app, /createLoggedUserErrorReader\("announcement"\)/, "display readers record hidden raw text");
+  assert.match(app, /showError: \(reason\) => showErrorToast\(reason, "support"\)/, "support errors reach the toast mapper whole");
   // 测速失败提示用原始错误映射一次，不能把已格式化的文字再映射
   assert.match(app, /onError: \(message, reason\) => showErrorToast\(reason \|\| message, "node_probe"\)/);
   const nodeProbe = readFileSync(resolve(import.meta.dirname, "../src/hooks/useNodeProbe.ts"), "utf8");
@@ -115,7 +117,7 @@ function testDisplayHooksPassWholeErrors() {
   assert.equal(deniedOnce.message, "拒绝访问该节点，请联系客服");
   assert.notEqual(deniedOnce.code, "permission_denied", "server authorization errors are not local permission failures");
   // Tauri 命令以字符串 reject：展示路径不能只认 Error，否则原文和编号都会丢失
-  for (const hook of ["useAuthBootstrap", "useRuntimeActions", "useUpdateFlow", "useSupportTickets", "useAnnouncements", "useNodeProbe", "useClientEvents"]) {
+  for (const hook of ["useAuthBootstrap", "useRuntimeActions", "useUpdateFlow", "useSupportPortal", "useAnnouncements", "useNodeProbe", "useClientEvents"]) {
     const source = readFileSync(resolve(import.meta.dirname, `../src/hooks/${hook}.ts`), "utf8");
     assert.doesNotMatch(source, /showError(?:Toast)?\??\.?\((\w+) instanceof Error \? \1 :/, `${hook}: string rejections must reach the toast mapper`);
     assert.doesNotMatch(source, /(\w+) instanceof Error\s*\?\s*(?:\(options\.readError \?\? defaultReadError\)|readError)\(\1\)/, `${hook}: string rejections must reach the reader`);
@@ -243,7 +245,7 @@ function testUpdateErrorsAreMapped() {
 function testUnknownRawErrorsNeverLeak() {
   const contexts: UserErrorContext[] = [
     "general", "login", "session", "logout", "refresh", "connect", "disconnect", "runtime_assets",
-    "update_check", "update_download", "update_install", "ticket", "announcement", "node_probe", "server_probe",
+    "update_check", "update_download", "update_install", "support", "announcement", "node_probe", "server_probe",
     "local_files"
   ];
   const raws = [
@@ -312,13 +314,13 @@ function testIdempotentAndCodePreserved() {
   // 旧的“错误代码：xxx”行会被识别并统一成“错误编号”，编号保持不变
   const legacy = toUserMessage("请先断开那个 VPN，再连接 ChordV。\n错误代码：external_vpn_conflict");
   assert.match(legacy, /\n错误编号：external_vpn_conflict$/);
-  const split = splitUserErrorText(toUserMessage("HTTP 502", { context: "ticket" }));
+  const split = splitUserErrorText(toUserMessage("HTTP 502", { context: "support" }));
   assert.equal(split.code, "http_502");
   assert.equal(split.message, USER_ERROR_CATALOG.http_5xx.message);
   assert.deepEqual(splitUserErrorText("工单已关闭"), { message: "工单已关闭", code: null });
-  const reader = createUserErrorReader("ticket");
-  assert.equal(reader("工单已关闭，无法回复"), "工单已关闭，无法回复");
-  assertNoLeak(reader("Cannot POST /api/client/support-tickets/1/replies"), "ticket reader");
+  const reader = createUserErrorReader("support");
+  assert.equal(reader("工单系统暂未开放，请稍后再试"), "工单系统暂未开放，请稍后再试");
+  assertNoLeak(reader("Cannot POST /api/client/support/launch"), "support reader");
 }
 
 function testSafeTextDetection() {
@@ -351,7 +353,7 @@ function testSafeTextDetection() {
   }
   // 中文紧贴路径、file:// 链接不会被原样展示
   for (const raw of ["无法读取文件/tmp/xray.dat", "无法打开 file:///Users/alice/image.png"]) {
-    const described = describeUserError(new Error(raw), { context: "ticket" });
+    const described = describeUserError(new Error(raw), { context: "support" });
     assert.notEqual(described.message, raw);
     assert.doesNotMatch(described.message, /\/tmp\/|file:\/\//);
     assert.equal(described.detail, raw, "path stays in diagnostics only");
@@ -419,10 +421,6 @@ function testDisplaySurfacesUseErrorNumber() {
   const routing = readFileSync(resolve(import.meta.dirname, "../src/components/RoutingRulesModal.tsx"), "utf8");
   assert.doesNotMatch(routing, /getApiErrorRawMessage/, "routing dialog never shows raw server text");
   assert.match(routing, /<ErrorCodeHint code=\{error\.code\} \/>/);
-  const ticketCenter = readFileSync(resolve(import.meta.dirname, "../src/components/TicketCenterModal.tsx"), "utf8");
-  assert.doesNotMatch(ticketCenter, /\berror\.message\b|String\(error\)|<code>\{previewOpenError\}/, "ticket preview never shows raw error text");
-  assert.match(ticketCenter, /splitUserErrorText\(message\)/, "ticket error bar shows the code via ErrorCodeHint");
-  assert.equal((ticketCenter.match(/<ErrorCodeHint code=\{splitUserErrorText\(props\.error\)\.code!\} \/>/g) ?? []).length, 2, "both the conversation pane and the narrow rail keep the error number");
   const guidanceDialog = readFileSync(resolve(import.meta.dirname, "../src/components/GuidanceDialog.tsx"), "utf8");
   assert.match(guidanceDialog, /ErrorCodeHint code=\{guidance\.errorCode\}/);
   assert.doesNotMatch(banner, /错误代码/);

@@ -23,7 +23,7 @@ export type UserErrorContext =
   | "update_check"
   | "update_download"
   | "update_install"
-  | "ticket"
+  | "support"
   | "announcement"
   | "node_probe"
   | "server_probe"
@@ -324,10 +324,10 @@ const CONTEXT_FALLBACK: Record<UserErrorContext, CatalogEntry & { code: string |
     message: "更新安装没有成功启动，请重试；如仍失败，请前往官网下载最新安装包。",
     action: "重试安装"
   },
-  ticket: {
-    code: "ticket_request_failed",
-    title: "工单操作未完成",
-    message: "工单暂时无法处理，请稍后重试。",
+  support: {
+    code: "support_open_failed",
+    title: "工单暂时无法打开",
+    message: "工单系统暂时无法打开，请稍后重试。",
     action: "重试"
   },
   announcement: {
