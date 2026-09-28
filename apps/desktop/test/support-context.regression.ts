@@ -71,6 +71,21 @@ function testRecentErrorRing() {
   }
   clearRecentErrorCodes();
   assert.deepEqual(readRecentErrorCodes(), []);
+
+  // 交替出现的错误（C、A、B、A）：重复的 A 不另占一条，C 不会被挤掉。
+  recordRecentErrorCode("code_c", t0);
+  recordRecentErrorCode("code_a", t0 + 1_000);
+  recordRecentErrorCode("code_b", t0 + 2_000);
+  recordRecentErrorCode("code_a", t0 + 3_000);
+  assert.deepEqual(readRecentErrorCodes(), [
+    { code: "code_a", at: new Date(t0 + 3_000).toISOString() },
+    { code: "code_b", at: new Date(t0 + 2_000).toISOString() },
+    { code: "code_c", at: new Date(t0).toISOString() }
+  ]);
+  // 超过 1 分钟再次出现算新的一次（同样移到最前，不重复占位）。
+  recordRecentErrorCode("code_c", t0 + 120_000);
+  assert.deepEqual(readRecentErrorCodes().map((entry) => entry.code), ["code_c", "code_a", "code_b"]);
+  clearRecentErrorCodes();
 }
 
 function testFieldFormatting() {

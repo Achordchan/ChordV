@@ -147,6 +147,11 @@ function testServerFilledFields() {
   assert.equal(describeNode({ name: "东京", protocol: "vless", security: "tls" }), "东京（VLESS TLS）");
   assert.equal(describeNode({ name: "东京", protocol: "vless", security: "none" }), "东京（VLESS）");
   assert.equal(describeNode({ name: " ", protocol: "bad proto!", security: "" }), "未命名节点");
+  // 后台设置的名称同样过敏感内容检查：以 IP、连接地址命名的节点不能把地址带给工单系统。
+  for (const name of ["203.0.113.9", "hk.example.com:443 vless://uuid@203.0.113.9", "https://sub.example.com/abc"]) {
+    assert.equal(describeNode({ name, protocol: "vless", security: "reality" }), "节点名称已隐藏（VLESS Reality）", name);
+  }
+  assert.equal(describePlan({ scope: "personal", planName: "https://pay.example.com/x", state: "active", expireAt: new Date("2026-12-31T08:00:00.000Z"), remainingTrafficGb: 1 }), "个人 · 套餐名称已隐藏 · 正常 · 2026-12-31 到期 · 剩余 1 GB");
   assert.equal(formatDuration(30_000), "不到 1 分钟");
   assert.equal(formatDuration(12 * 60_000), "12 分钟");
   assert.equal(formatDuration(120 * 60_000), "2 小时");

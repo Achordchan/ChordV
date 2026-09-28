@@ -26,12 +26,10 @@ export function normalizeRecentErrorCode(value: unknown): string | null {
 export function recordRecentErrorCode(value: unknown, now = Date.now()) {
   const code = normalizeRecentErrorCode(value);
   if (!code || !Number.isFinite(now)) return;
-  const latest = entries[0];
-  if (latest && latest.code === code && now - latest.at < REPEAT_WINDOW_MS) {
-    latest.at = Math.max(latest.at, now);
-    return;
-  }
-  entries = [{ code, at: now }, ...entries].slice(0, RECENT_ERROR_CODE_LIMIT);
+  // 1 分钟内出现过的同一编号（不论在第几条）：更新时间并移到最前，不另占一条，避免交替出现的错误挤掉其他记录。
+  const repeated = entries.find((entry) => entry.code === code && now - entry.at < REPEAT_WINDOW_MS);
+  const at = repeated ? Math.max(repeated.at, now) : now;
+  entries = [{ code, at }, ...entries.filter((entry) => entry !== repeated)].slice(0, RECENT_ERROR_CODE_LIMIT);
 }
 
 /** 新的在前。 */

@@ -121,7 +121,8 @@ export function parseSupportLaunchContext(body: unknown): ParsedSupportLaunchCon
 }
 
 /**
- * 客户端文本的最后一道防线：去掉控制字符并压缩空白；看起来像地址、邮箱、IP、文件路径或长令牌的值整项丢弃。
+ * 发给工单系统的文本（客户端上报的值、后台设置的节点名 / 套餐名）的最后一道防线：去掉控制字符并压缩空白；
+ * 看起来像地址、邮箱、IP、文件路径或长令牌的值整项丢弃。
  * 客户端本就只拼接固定来源的值，这里是防御性检查。
  */
 export function sanitizeClientText(value: string): string | null {
@@ -167,13 +168,23 @@ function describeLease(lease: SupportLeaseSnapshot, now: Date, withDuration: boo
 
 /** 节点只显示后台设置的名称和协议，不含地址、端口、UUID 或密钥。 */
 export function describeNode(node: { name: string; protocol: string; security: string }) {
-  const name = truncateUnits(node.name.replace(/\s+/g, " ").trim(), 40) || "未命名节点";
+  const name = describeAdminName(node.name, "未命名节点", "节点名称已隐藏");
   const protocol = /^[a-z0-9-]{1,20}$/i.test(node.protocol) ? node.protocol.toUpperCase() : "";
   const security = /^[a-z0-9-]{1,20}$/i.test(node.security) && !["none", ""].includes(node.security.toLowerCase())
     ? node.security.toLowerCase() === "tls" ? "TLS" : node.security.charAt(0).toUpperCase() + node.security.slice(1).toLowerCase()
     : "";
   const label = [protocol, security].filter(Boolean).join(" ");
   return label ? `${name}（${label}）` : name;
+}
+
+/**
+ * 后台设置的名称（节点名、套餐名）同样要过敏感内容检查：管理员可能用 IP 或连接地址给节点命名，
+ * 这类名称整体换成中性说明，不把地址带给工单系统。
+ */
+function describeAdminName(value: string, emptyLabel: string, hiddenLabel: string) {
+  if (!value.replace(/\s+/g, "")) return emptyLabel;
+  const clean = sanitizeClientText(value);
+  return clean === null ? hiddenLabel : truncateUnits(clean, 40);
 }
 
 /** 连接时长：不到 1 分钟、12 分钟、1 小时 12 分、2 天 3 小时。 */
@@ -238,7 +249,7 @@ export function describePlan(plan: SupportPlanSnapshot | null) {
   const amount = remaining.toFixed(1).replace(/\.0$/, "");
   return [
     plan.scope === "team" ? "团队" : "个人",
-    truncateUnits(plan.planName.replace(/\s+/g, " ").trim(), 40) || "未命名套餐",
+    describeAdminName(plan.planName, "未命名套餐", "套餐名称已隐藏"),
     SUBSCRIPTION_STATE_LABELS[plan.state] ?? plan.state,
     `${formatDate(plan.expireAt, DEFAULT_TIME_ZONE)} 到期`,
     `${plan.scope === "team" ? "团队剩余" : "剩余"} ${amount} GB`
