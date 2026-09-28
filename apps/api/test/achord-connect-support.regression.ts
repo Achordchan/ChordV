@@ -852,7 +852,11 @@ async function testConnectionChangeResetsUnreadState() {
   assert.equal(db.state("user_1")?.requestsComplete, true);
   assert.ok(db.state("user_1")!.revision > revisionBefore, "版本号继续递增");
   assert.equal(db.requestCount(), 0, "旧连接的按请求记录全部删除");
-  assert.deepEqual(published.slice(countBefore), [{ userId: "user_1", count: 0 }], "只给原来有未读的用户推送 0");
+  assert.deepEqual(
+    published.slice(countBefore).sort((a, b) => a.userId.localeCompare(b.userId)),
+    [{ userId: "user_1", count: 0 }, { userId: "user_2", count: 0 }],
+    "给所有用过工单入口的用户推送 0"
+  );
   await waitFor(() => newConnectionFetches === 2, "为用过工单入口的两位用户都向新连接重新查询");
   await waitFor(() => db.state("user_1")?.unreadCount === 1, "新连接的结果写回");
   assert.ok(published.some((item) => item.userId === "user_1" && item.count === 1));
@@ -1053,6 +1057,25 @@ async function testConfigNotificationsAndStatusRecheck() {
     };
     assert.deepEqual(await service.getClientStatus("user_1"), { enabled: true, unreadCount: 0, supportOrigin: "https://support-new.example.test" });
   }
+}
+
+async function testDisableClearsPendingZeroUpdates() {
+  // Webhook 把未读从 2 改成 0 并已提交，推送前管理员停用：停用推进了推送代次，Webhook 的 0 会被挡掉，
+  // 所以停用本身必须给这位用户推 0，否则客户端一直显示 2。
+  const { service, db, published } = createService();
+  await configure(service);
+  await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 2, contactUnreadCount: 2, createdAt: new Date(Date.now() - 5_000).toISOString() })));
+  assert.deepEqual(published, [{ userId: "user_1", count: 2 }]);
+  const originalApply = service.applyUnreadChange.bind(service);
+  service.applyUnreadChange = async (...args: Parameters<SupportIntegrationService["applyUnreadChange"]>) => {
+    const result = await originalApply(...args);
+    await service.updateAdminConfig({ enabled: false });
+    return result;
+  };
+  await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 0, contactUnreadCount: 0, createdAt: new Date().toISOString() })));
+  service.applyUnreadChange = originalApply;
+  assert.equal(db.state("user_1")?.unreadCount, 0);
+  assert.deepEqual(published, [{ userId: "user_1", count: 2 }, { userId: "user_1", count: 0 }], "停用时给记录已为 0 的用户也推送 0");
 }
 
 async function testStatusSchedulesRetryWhenDeferred() {
@@ -1378,6 +1401,7 @@ async function main() {
   await testConnectionFenceAndEnableToggles();
   await testPublicationFenceAndReconnectCandidates();
   await testConfigNotificationsAndStatusRecheck();
+  await testDisableClearsPendingZeroUpdates();
   await testAdminConfigNeverReturnsSecrets();
   await testLegacyTicketWriteGuards();
   testSupportModuleDependenciesAreExported();

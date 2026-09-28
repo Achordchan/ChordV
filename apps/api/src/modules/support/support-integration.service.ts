@@ -137,14 +137,14 @@ export class SupportIntegrationService {
         next.epoch = current.epoch + 1;
       }
       const updated = await tx.systemSetting.update({ where: { key: SUPPORT_INTEGRATION_SETTING_KEY }, data: { value: next } });
+      // 需要通知的是所有用过工单入口的用户，不只是当前记录里有未读的：记录可能刚被改成 0、但那次推送还没发出，
+      // 而这次保存会推进推送代次、把它挡掉，所以这里要给每个人都推一次最终值。
       const withUnread = connectionChanged || wasEnabled !== nowEnabled
-        ? await tx.supportUnreadState.findMany({ where: { unreadCount: { gt: 0 } }, select: { userId: true, unreadCount: true, revision: true } })
+        ? await tx.supportUnreadState.findMany({ where: { unreadCount: { gte: 0 } }, select: { userId: true, unreadCount: true, revision: true } })
         : [];
       // 切换连接或重新启用后，所有用过工单入口的用户都要查询一次：连接可能已换（原来没有未读的用户在新连接里也可能有），
       // 停用期间也可能漏掉了变化。后台任务执行前会跳过近期已校准的用户。
-      const resyncCandidates = nowEnabled && (connectionChanged || !wasEnabled)
-        ? (await tx.supportUnreadState.findMany({ where: { unreadCount: { gte: 0 } }, select: { userId: true } })).map((item) => item.userId)
-        : [];
+      const resyncCandidates = nowEnabled && (connectionChanged || !wasEnabled) ? withUnread.map((item) => item.userId) : [];
       if (connectionChanged) {
         // 重置后每位用户的版本号加一，下面的“推送 0”使用重置后的版本号。
         for (const item of withUnread) item.revision += 1;
