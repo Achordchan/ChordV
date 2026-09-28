@@ -10,8 +10,14 @@ $originalProxy = Get-ItemProperty $proxyKey
 $ownedCore = $null
 $foreignCore = $null
 function Stop-TestClient {
-  Get-Process -Name ChordV,chordv-desktop,chordv_desktop -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -and $_.Path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force
+  $clients = @(Get-Process -Name ChordV,chordv-desktop,chordv_desktop -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -and $_.Path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) })
+  $clients | Stop-Process -Force
+  # Stop-Process 只发出终止请求；等进程真正退出、释放 ChordV.exe 的映像文件锁后再继续，
+  # 否则紧接着改写安装目录里的文件会偶发“文件正被另一进程使用”。
+  foreach ($client in $clients) {
+    if (!$client.WaitForExit(15000)) { throw "Test client $($client.Id) did not exit after Stop-Process" }
+  }
 }
 function Run-Installer([string]$Path, [string]$Arguments) {
   $process = Start-Process -FilePath $Path -ArgumentList $Arguments -PassThru
@@ -135,7 +141,12 @@ try {
   # leave LastWriteTime unchanged. Backdate the installed executable first: only a
   # real re-extraction restores the packaged (build-time) timestamp.
   $marker = [DateTime]::new(2001, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
-  (Get-Item $exe).LastWriteTimeUtc = $marker
+  # 刚退出的客户端或杀毒扫描可能短暂占用文件：最多重试 15 秒。
+  $deadline = (Get-Date).AddSeconds(15)
+  while ($true) {
+    try { (Get-Item $exe).LastWriteTimeUtc = $marker; break }
+    catch { if ((Get-Date) -ge $deadline) { throw }; Start-Sleep -Milliseconds 250 }
+  }
   if ((Get-Item $exe).LastWriteTimeUtc -ne $marker) { throw 'Could not backdate the installed executable for the reinstall check' }
   $sameVersionClient = Start-Process -FilePath $exe -PassThru
   Start-Sleep -Seconds 3
