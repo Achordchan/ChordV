@@ -209,6 +209,40 @@ fn every_window_gets_a_fresh_support_label() {
     assert_eq!(state.next_label(), "support-2");
 }
 
+#[test]
+fn logout_invalidates_pending_launches() {
+    let mut state = SupportWindowState::default();
+    let record = |label: &str| SupportWindowRecord {
+        label: label.into(),
+        origin: "https://support.achord.cn".into(),
+        expired: false,
+    };
+    // 正常流程：拿到批次号 → 签发票据 → 用同一批次号打开。
+    let epoch = state.epoch;
+    assert!(state.ensure_epoch(epoch).is_ok());
+    assert!(state.finish_open(epoch, record("support-1")));
+    assert_eq!(state.current.as_ref().map(|r| r.label.as_str()), Some("support-1"));
+
+    // 票据还在路上时退出登录：旧批次号既不能开始打开，也不能在建窗后登记。
+    let pending = state.epoch;
+    assert_eq!(state.invalidate().map(|r| r.label), Some("support-1".to_string()));
+    assert!(state.current.is_none());
+    assert_eq!(state.ensure_epoch(pending), Err(SUPPORT_WINDOW_STALE_ERROR.to_string()));
+    assert!(!state.finish_open(pending, record("support-2")), "a window built for the old account is discarded");
+    assert!(state.current.is_none());
+
+    // 新账号拿到的新批次号照常可用。
+    let fresh = state.epoch;
+    assert_ne!(fresh, pending);
+    assert!(state.finish_open(fresh, record("support-3")));
+}
+
+#[test]
+fn focus_result_is_serialized_for_the_frontend() {
+    let json = serde_json::to_value(SupportFocusResult { focused: false, epoch: 3 }).unwrap();
+    assert_eq!(json, serde_json::json!({ "focused": false, "epoch": 3 }));
+}
+
 fn normalized(source: &str) -> String {
     source.replace("\r\n", "\n")
 }

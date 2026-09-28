@@ -1,16 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AuthSessionDto } from "@chordv/shared";
 import { fetchSupportStatus, isUnauthorizedApiError, launchSupportPortal } from "../api/client";
-import {
-  closeSupportWindow,
-  focusSupportWindow,
-  openSupportWindow,
-  subscribeSupportUnread
-} from "../lib/runtime";
+import { closeSupportWindow, createSupportWindowTarget, subscribeSupportUnread } from "../lib/runtime";
 import {
   createSupportPortalOpener,
   normalizeSupportUnreadCount,
-  SUPPORT_DISABLED_MESSAGE
+  SUPPORT_DISABLED_MESSAGE,
+  SupportPortalStaleError
 } from "../lib/supportPortal";
 
 type NoticeInput = {
@@ -40,10 +36,20 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
   const accessTokenRef = useRef(options.accessToken);
   accessTokenRef.current = options.accessToken;
   const enabledRef = useRef<boolean | null>(null);
+  // 账号代次：退出登录或换账号时递增，进行中的打开流程据此作废。
+  const accountGenerationRef = useRef(0);
+  const previousUserIdRef = useRef(options.userId);
+  if (previousUserIdRef.current !== options.userId) {
+    previousUserIdRef.current = options.userId;
+    accountGenerationRef.current += 1;
+  }
+  // 未读数版本：推送 / 桥接和每次状态查询都会递增，晚到的查询结果不能覆盖更新的未读数。
+  const unreadRevisionRef = useRef(0);
 
   const applySupportUnreadCount = useCallback((value: unknown) => {
     const next = normalizeSupportUnreadCount(value);
     if (next !== null && accessTokenRef.current) {
+      unreadRevisionRef.current += 1;
       setSupportUnreadCount(next);
     }
   }, []);
@@ -53,13 +59,17 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
     if (!accessToken) {
       return null;
     }
+    const revision = ++unreadRevisionRef.current;
     try {
       const status = await fetchSupportStatus(accessToken);
       if (accessTokenRef.current !== accessToken) {
         return null;
       }
       enabledRef.current = status.enabled === true;
-      applySupportUnreadCount(status.enabled ? status.unreadCount : 0);
+      const next = normalizeSupportUnreadCount(status.enabled ? status.unreadCount : 0);
+      if (unreadRevisionRef.current === revision && next !== null) {
+        setSupportUnreadCount(next);
+      }
       return status;
     } catch (reason) {
       // 状态查询失败只保留现有角标；登录失效交给统一的恢复流程。
@@ -73,29 +83,32 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
   const openerRef = useRef<ReturnType<typeof createSupportPortalOpener> | null>(null);
   if (!openerRef.current) {
     openerRef.current = createSupportPortalOpener({
+      prepareTarget: createSupportWindowTarget,
+      getAccountGeneration: () => accountGenerationRef.current,
       getKnownEnabled: () => enabledRef.current,
       refreshStatus: () => refreshSupportStatus(),
-      launch: async () => {
+      launch: async (isCurrent) => {
         const accessToken = accessTokenRef.current;
         if (!accessToken) {
-          throw new Error("请先登录后再打开工单。");
+          throw new SupportPortalStaleError();
         }
         try {
           return await launchSupportPortal(accessToken);
         } catch (reason) {
-          if (!isUnauthorizedApiError(reason)) {
+          if (!isUnauthorizedApiError(reason) || !isCurrent()) {
             throw reason;
           }
-          // 访问令牌刚好过期：恢复登录后用新令牌重试一次，票据仍是现签现用。
+          // 访问令牌刚好过期：恢复登录后用新令牌重试一次，票据仍是现签现用；恢复期间账号变化则放弃。
           const recovered = await latest.current.onUnauthorized?.();
+          if (!isCurrent()) {
+            throw new SupportPortalStaleError();
+          }
           if (!recovered?.accessToken) {
             throw reason;
           }
           return await launchSupportPortal(recovered.accessToken);
         }
       },
-      focusExisting: focusSupportWindow,
-      openWindow: openSupportWindow,
       notifyDisabled: () =>
         latest.current.notify({ color: "blue", title: "工单暂未开放", message: SUPPORT_DISABLED_MESSAGE }),
       showError: (reason) => latest.current.showError(reason)
@@ -120,11 +133,11 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
     void refreshSupportStatus(options.accessToken);
   }, [options.accessToken, refreshSupportStatus]);
 
-  // 退出登录或换账号时关闭工单窗口，避免下一个账号看到上一个账号的工单。
-  const previousUserIdRef = useRef(options.userId);
+  // 退出登录或换账号时关闭工单窗口，并作废原生层进行中的打开（避免下一个账号看到上一个账号的工单）。
+  const closedForUserIdRef = useRef(options.userId);
   useEffect(() => {
-    const previous = previousUserIdRef.current;
-    previousUserIdRef.current = options.userId;
+    const previous = closedForUserIdRef.current;
+    closedForUserIdRef.current = options.userId;
     if (previous && previous !== options.userId) {
       void closeSupportWindow().catch(() => undefined);
     }

@@ -4,7 +4,7 @@ import vm from "node:vm";
 import ts from "typescript";
 import type { ClientSupportLaunchDto, ClientSupportStatusDto } from "@chordv/shared";
 import { fetchSupportStatus, launchSupportPortal } from "../src/api/client";
-import { closeSupportWindow, focusSupportWindow, openSupportWindow } from "../src/lib/runtime";
+import { closeSupportWindow, createSupportWindowTarget } from "../src/lib/runtime";
 import * as supportPortal from "../src/lib/supportPortal";
 import {
   createSupportPortalOpener,
@@ -12,7 +12,8 @@ import {
   isSupportDisabledError,
   normalizeSupportUnreadCount,
   SUPPORT_DISABLED_MESSAGE,
-  type SupportPortalDeps
+  type SupportPortalDeps,
+  type SupportPortalTarget
 } from "../src/lib/supportPortal";
 import { describeUserError } from "../src/lib/userFacingErrors";
 
@@ -94,67 +95,66 @@ async function testApiClientUsesSupportEndpoints() {
   assert.ok(requests.every((request) => request.headers.Authorization === "Bearer token-1"));
 }
 
+function realDeps(overrides: Partial<SupportPortalDeps> = {}): SupportPortalDeps {
+  return {
+    prepareTarget: createSupportWindowTarget,
+    getAccountGeneration: () => 1,
+    getKnownEnabled: () => true,
+    refreshStatus: async () => ENABLED,
+    launch: () => launchSupportPortal("token-1"),
+    notifyDisabled: () => assert.fail("not disabled"),
+    showError: (reason) => assert.fail(`unexpected error ${String(reason)}`),
+    ...overrides
+  };
+}
+
 async function testLaunchOpensSupportWindowWithLaunchUrl() {
   const native: FakeNative = {
     calls: [],
     handlers: {
-      focus_support_window: () => false,
+      focus_support_window: () => ({ focused: false, epoch: 4 }),
       open_support_window: () => null,
       api_request: apiResponder({ "POST /client/support/launch": () => ({ status: 201, body: LAUNCH }) })
     }
   };
-  const errors: unknown[] = [];
-  let disabledNotices = 0;
-  const result = await withNative("Macintosh", native, () =>
-    createSupportPortalOpener({
-      getKnownEnabled: () => true,
-      refreshStatus: async () => ENABLED,
-      launch: () => launchSupportPortal("token-1"),
-      focusExisting: focusSupportWindow,
-      openWindow: openSupportWindow,
-      notifyDisabled: () => { disabledNotices += 1; },
-      showError: (reason) => errors.push(reason)
-    }).open()
-  );
+  const result = await withNative("Macintosh", native, () => createSupportPortalOpener(realDeps()).open());
   assert.equal(result, "opened");
-  assert.deepEqual(errors, []);
-  assert.equal(disabledNotices, 0);
   assert.deepEqual(native.calls.map(([command]) => command), ["focus_support_window", "api_request", "open_support_window"]);
-  assert.deepEqual(native.calls[2][1], { launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin });
+  assert.deepEqual(native.calls[2][1], { launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin, epoch: 4 },
+    "the native open carries the epoch from the focus check so a logout in between is rejected");
 }
 
 async function testOpenWindowFocusesExistingWithoutNewTicket() {
-  const native: FakeNative = { calls: [], handlers: { focus_support_window: () => true } };
+  const native: FakeNative = { calls: [], handlers: { focus_support_window: () => ({ focused: true, epoch: 0 }) } };
   let launches = 0;
   const result = await withNative("Windows", native, () =>
-    createSupportPortalOpener({
-      getKnownEnabled: () => true,
-      refreshStatus: async () => ENABLED,
-      launch: async () => { launches += 1; return LAUNCH; },
-      focusExisting: focusSupportWindow,
-      openWindow: openSupportWindow,
-      notifyDisabled: () => assert.fail("not disabled"),
-      showError: () => assert.fail("no error")
-    }).open()
+    createSupportPortalOpener(realDeps({ launch: async () => { launches += 1; return LAUNCH; } })).open()
   );
   assert.equal(result, "focused");
   assert.equal(launches, 0, "an open support window is focused, never re-launched");
   assert.deepEqual(native.calls.map(([command]) => command), ["focus_support_window"]);
 }
 
-function createDeps(overrides: Partial<SupportPortalDeps> & { events?: string[] } = {}): SupportPortalDeps & { events: string[] } {
+function createDeps(overrides: Partial<SupportPortalDeps> & { events?: string[]; target?: Partial<SupportPortalTarget> } = {}) {
   const events = overrides.events ?? [];
-  return {
+  const target: SupportPortalTarget = {
+    focusExisting: async () => { events.push("focus"); return false; },
+    open: async (launch) => { events.push(`open ${launch.supportOrigin}`); },
+    dispose: () => { events.push("dispose"); },
+    ...overrides.target
+  };
+  const deps: SupportPortalDeps & { events: string[] } = {
     events,
+    prepareTarget: () => { events.push("prepare"); return target; },
+    getAccountGeneration: () => 1,
     getKnownEnabled: () => true,
     refreshStatus: async () => { events.push("status"); return ENABLED; },
     launch: async () => { events.push("launch"); return LAUNCH; },
-    focusExisting: async () => { events.push("focus"); return false; },
-    openWindow: async (launch) => { events.push(`open ${launch.supportOrigin}`); },
     notifyDisabled: () => { events.push("disabled"); },
     showError: (reason) => { events.push(`error ${describeUserError(reason, { context: "support" }).message}`); },
     ...overrides
   };
+  return deps;
 }
 
 async function testDisabledSupportShowsNotice() {
@@ -162,17 +162,17 @@ async function testDisabledSupportShowsNotice() {
   const deps = createDeps({ getKnownEnabled: () => false });
   deps.refreshStatus = async () => { deps.events.push("status"); return DISABLED; };
   assert.equal(await createSupportPortalOpener(deps).open(), "disabled");
-  assert.deepEqual(deps.events, ["focus", "status", "disabled"]);
+  assert.deepEqual(deps.events, ["prepare", "focus", "status", "disabled", "dispose"]);
 
   // 后台刚刚开启：重新查询到 enabled=true 后照常打开。
   const enabledNow = createDeps({ getKnownEnabled: () => false });
   assert.equal(await createSupportPortalOpener(enabledNow).open(), "opened");
-  assert.deepEqual(enabledNow.events, ["focus", "status", "launch", "open https://support.achord.cn"]);
+  assert.deepEqual(enabledNow.events, ["prepare", "focus", "status", "launch", "open https://support.achord.cn"]);
 
   // 打开接口返回 503“暂未开放”：同样是提示而不是错误。
   const unavailable = createDeps({ launch: async () => { throw apiError(503, SUPPORT_DISABLED_MESSAGE); } });
   assert.equal(await createSupportPortalOpener(unavailable).open(), "disabled");
-  assert.deepEqual(unavailable.events, ["focus", "disabled"]);
+  assert.deepEqual(unavailable.events, ["prepare", "focus", "disabled", "dispose"]);
   assert.equal(isSupportDisabledError(apiError(503, SUPPORT_DISABLED_MESSAGE)), true);
   assert.equal(isSupportDisabledError(apiError(502, "工单系统暂时不可用，请稍后再试")), false);
   assert.equal(isSupportDisabledError(apiError(503, "服务暂时不可用")), false);
@@ -190,14 +190,50 @@ async function testLaunchErrorsAreMapped() {
   for (const [reason, expected] of cases) {
     const deps = createDeps({ launch: async () => { throw reason; } });
     assert.equal(await createSupportPortalOpener(deps).open(), "failed");
-    assert.equal(deps.events.length, 2);
-    assert.ok(deps.events[1].startsWith(`error ${expected}`), `${String(reason)} → ${deps.events[1]}`);
-    assert.doesNotMatch(deps.events[1], /act_|https?:\/\/|UNIVERSAL|Cannot POST/);
+    assert.deepEqual(deps.events.slice(0, 2), ["prepare", "focus"]);
+    assert.ok(deps.events[2].startsWith(`error ${expected}`), `${String(reason)} → ${deps.events[2]}`);
+    assert.doesNotMatch(deps.events[2], /act_|https?:\/\/|UNIVERSAL|Cannot POST/);
+    assert.equal(deps.events[3], "dispose", "a reserved browser window is released on failure");
   }
 
-  const windowFailure = createDeps({ openWindow: async () => { throw "无法打开工单窗口：webview error"; } });
+  const windowFailure = createDeps({ target: { open: async () => { throw "无法打开工单窗口：webview error"; } } });
   assert.equal(await createSupportPortalOpener(windowFailure).open(), "failed");
-  assert.deepEqual(windowFailure.events, ["focus", "launch", "error 工单系统暂时无法打开，请稍后重试。"]);
+  assert.deepEqual(windowFailure.events, ["prepare", "focus", "launch", "error 工单系统暂时无法打开，请稍后重试。", "dispose"]);
+}
+
+async function testAccountChangeCancelsPendingLaunch() {
+  // 票据还在路上时退出登录 / 换账号：不打开窗口、不提示错误。
+  let generation = 1;
+  let releaseLaunch!: () => void;
+  const gate = new Promise<void>((resolve) => { releaseLaunch = resolve; });
+  const deps = createDeps({
+    getAccountGeneration: () => generation,
+    launch: async () => { deps.events.push("launch"); await gate; return LAUNCH; }
+  });
+  const pending = createSupportPortalOpener(deps).open();
+  await flush();
+  generation = 2;
+  releaseLaunch();
+  assert.equal(await pending, "stale");
+  assert.deepEqual(deps.events, ["prepare", "focus", "launch", "dispose"], "no window is opened for the previous account");
+
+  // 打开失败发生在账号变化之后：同样静默结束。
+  let failGeneration = 1;
+  const failing = createDeps({
+    getAccountGeneration: () => failGeneration,
+    launch: async () => { failGeneration = 2; throw apiError(502, "工单系统暂时不可用"); }
+  });
+  assert.equal(await createSupportPortalOpener(failing).open(), "stale");
+  assert.ok(!failing.events.some((event) => event.startsWith("error")));
+
+  // 账号在聚焦检查期间变化：不申请票据。
+  let focusGeneration = 1;
+  const focusing = createDeps({
+    target: { focusExisting: async () => { focusGeneration = 2; return false; } },
+    getAccountGeneration: () => focusGeneration
+  });
+  assert.equal(await createSupportPortalOpener(focusing).open(), "stale");
+  assert.ok(!focusing.events.includes("launch"));
 }
 
 async function testRepeatedClicksLaunchOnce() {
@@ -212,36 +248,60 @@ async function testRepeatedClicksLaunchOnce() {
   releaseLaunch();
   assert.deepEqual(await Promise.all([first, second]), ["opened", "busy"]);
   assert.equal(deps.events.filter((event) => event === "launch").length, 1, "one click = one single-use ticket");
+  assert.equal(deps.events.filter((event) => event === "prepare").length, 1, "a repeated click does not reserve another window");
   assert.equal(opener.isBusy(), false);
 }
 
 async function testNativeAdaptersRouteByPlatform() {
   const desktop: FakeNative = {
     calls: [],
-    handlers: { focus_support_window: () => true, open_support_window: () => null, close_support_window: () => null }
+    handlers: {
+      focus_support_window: () => ({ focused: false, epoch: 7 }),
+      open_support_window: () => null,
+      close_support_window: () => null
+    }
   };
   await withNative("Windows", desktop, async () => {
-    assert.equal(await focusSupportWindow(), true);
-    await openSupportWindow({ launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin });
+    const target = createSupportWindowTarget();
+    assert.equal(await target.focusExisting(), false);
+    await target.open({ launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin });
     await closeSupportWindow();
-  });
+  }, { open: () => assert.fail("desktop never uses browser popups") });
   assert.deepEqual(desktop.calls.map(([command]) => command), ["focus_support_window", "open_support_window", "close_support_window"]);
+  assert.deepEqual(desktop.calls[1][1], { launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin, epoch: 7 });
 
-  // 安卓端没有独立窗口：交给系统浏览器，且不调用原生工单命令。
+  // 安卓端 / 网页预览：点击时同步预留空白窗口，拿到地址后再跳转，且不调用原生工单命令。
   const android: FakeNative = { calls: [], handlers: {} };
   const visited: string[] = [];
-  const popup = { opener: {} as unknown, location: { replace: (url: string) => { visited.push(url); } }, close: () => {} };
+  const opens: string[] = [];
+  const popup = {
+    opener: {} as unknown,
+    closed: false,
+    location: { replace: (url: string) => { assert.equal(popup.opener, null); visited.push(url); } },
+    close: () => { popup.closed = true; }
+  };
   await withNative("Linux; Android 14", android, async () => {
-    assert.equal(await focusSupportWindow(), false);
-    await openSupportWindow({ launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin });
-  }, { open: () => popup });
+    const target = createSupportWindowTarget();
+    assert.deepEqual(opens, ["about:blank"], "the popup is reserved synchronously inside the click");
+    assert.equal(await target.focusExisting(), false);
+    await target.open({ launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin });
+    target.dispose();
+  }, { open: (url: string) => { opens.push(url); return popup; } });
   assert.deepEqual(visited, [LAUNCH.launchUrl]);
+  assert.equal(popup.closed, false, "dispose after a successful open keeps the portal");
   assert.deepEqual(android.calls, []);
 
-  const blocked: FakeNative = { calls: [], handlers: {} };
-  await withNative("Linux; Android 14", blocked, async () => {
+  // 没有打开时释放预留窗口（网页预览）。
+  const unused = { closed: false, close: () => { unused.closed = true; } };
+  await withNative("Browser", { calls: [], handlers: {} }, async () => {
+    createSupportWindowTarget().dispose();
+  }, { __TAURI_INTERNALS__: undefined, open: () => unused });
+  assert.equal(unused.closed, true);
+
+  // 弹窗被拦截：提示不含地址。
+  await withNative("Linux; Android 14", { calls: [], handlers: {} }, async () => {
     await assert.rejects(
-      openSupportWindow({ launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin }),
+      createSupportWindowTarget().open({ launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin }),
       (error: Error) => !error.message.includes("act_secret") && error.message.includes("无法打开工单页面")
     );
   }, { open: () => null });
@@ -332,6 +392,7 @@ async function testBadgeFollowsStatusEventsAndBridge() {
   let bridgeUnsubscribed = false;
   const opened: Array<{ launchUrl: string; supportOrigin: string }> = [];
   const launchTokens: string[] = [];
+  let releaseSlowLaunch: (() => void) | null = null;
   const unauthorized = Object.assign(new Error("Unauthorized"), { status: 401 });
   const useSupportPortal = loadHook("../src/hooks/useSupportPortal.ts", "useSupportPortal", {
     "../api/client": {
@@ -342,13 +403,17 @@ async function testBadgeFollowsStatusEventsAndBridge() {
       launchSupportPortal: async (token: string) => {
         launchTokens.push(token);
         if (token === "expired") throw unauthorized;
+        if (token === "slow") await new Promise<void>((resolve) => { releaseSlowLaunch = resolve; });
         return LAUNCH;
       },
       isUnauthorizedApiError: (reason: unknown) => reason === unauthorized
     },
     "../lib/runtime": {
-      focusSupportWindow: async () => false,
-      openSupportWindow: async (launch: { launchUrl: string; supportOrigin: string }) => { opened.push(launch); },
+      createSupportWindowTarget: () => ({
+        focusExisting: async () => false,
+        open: async (launch: { launchUrl: string; supportOrigin: string }) => { opened.push(launch); },
+        dispose: () => undefined
+      }),
       closeSupportWindow: async () => { nativeEvents.push("close"); },
       subscribeSupportUnread: async (handler: (count: number) => void) => {
         bridgeHandler = handler;
@@ -389,6 +454,26 @@ async function testBadgeFollowsStatusEventsAndBridge() {
   hook = render({ accessToken: "token-1", userId: "user-1" });
   assert.equal(hook.supportUnreadCount, 0);
 
+  // 晚到的状态查询不能覆盖更新的推送 / 桥接结果（没有轮询，覆盖后会一直错）。
+  let resolveSlowStatus!: (status: ClientSupportStatusDto) => void;
+  statusResponses.push(new Promise((resolve) => { resolveSlowStatus = resolve; }));
+  const slowStatus = hook.refreshSupportStatus("token-1");
+  hook.applySupportUnreadCount(0);
+  resolveSlowStatus({ ...ENABLED, unreadCount: 8 });
+  await slowStatus;
+  hook = render({ accessToken: "token-1", userId: "user-1" });
+  assert.equal(hook.supportUnreadCount, 0, "a newer event wins over an older status query");
+  // 两次查询交错：只采用最后发起的那一次。
+  let resolveOlder!: (status: ClientSupportStatusDto) => void;
+  statusResponses.push(new Promise((resolve) => { resolveOlder = resolve; }));
+  statusResponses.push({ ...ENABLED, unreadCount: 2 });
+  const older = hook.refreshSupportStatus("token-1");
+  await hook.refreshSupportStatus("token-1");
+  resolveOlder({ ...ENABLED, unreadCount: 30 });
+  await older;
+  hook = render({ accessToken: "token-1", userId: "user-1" });
+  assert.equal(hook.supportUnreadCount, 2, "an older query never overwrites a newer one");
+
   // 推送重连（syncOnOpen）后重新同步。
   statusResponses.push({ ...ENABLED, unreadCount: 12 });
   await hook.refreshSupportStatus("token-1");
@@ -411,6 +496,25 @@ async function testBadgeFollowsStatusEventsAndBridge() {
   assert.deepEqual(launchTokens, ["expired", "fresh"]);
   assert.deepEqual(opened, [{ launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin }]);
   assert.deepEqual(errors, []);
+
+  // 票据申请途中换账号：不为上一个账号打开工单窗口，也不报错。
+  hook = render({ accessToken: "slow", userId: "user-1" });
+  await flush();
+  hook = render({ accessToken: "slow", userId: "user-1" });
+  const pendingOpen = hook.openSupportPortal();
+  await flush();
+  assert.ok(releaseSlowLaunch, "launch is pending");
+  hook = render({ accessToken: "other-token", userId: "user-2" });
+  releaseSlowLaunch!();
+  assert.equal(await pendingOpen, "stale");
+  assert.equal(opened.length, 1, "no window is opened for the previous account");
+  assert.deepEqual(errors, []);
+  assert.deepEqual(nativeEvents, ["close"], "switching accounts closes the support window and invalidates native opens");
+  nativeEvents.length = 0;
+  hook = render({ accessToken: "expired", userId: "user-1" });
+  nativeEvents.length = 0;
+  await flush();
+  hook = render({ accessToken: "expired", userId: "user-1" });
 
   // 过期的状态响应（已退出登录）不会写回角标。
   let resolveLate!: (status: ClientSupportStatusDto) => void;
@@ -475,8 +579,8 @@ function testAppWiring() {
     assert.doesNotMatch(read(path), /recordClientDiagnosticLog|console\./, `${path} never logs the launch url`);
   }
   const runtime = read("../src/lib/runtime.ts");
-  const openBody = runtime.match(/export async function openSupportWindow[\s\S]*?\n\}/)?.[0] ?? "";
-  assert.ok(openBody, "openSupportWindow exists");
+  const openBody = runtime.match(/export function createSupportWindowTarget[\s\S]*?\n\}/)?.[0] ?? "";
+  assert.ok(openBody, "createSupportWindowTarget exists");
   assert.doesNotMatch(openBody, /recordClientDiagnosticLog|console\.|\$\{input\.launchUrl\}/);
 }
 
@@ -486,6 +590,7 @@ async function main() {
   await testOpenWindowFocusesExistingWithoutNewTicket();
   await testDisabledSupportShowsNotice();
   await testLaunchErrorsAreMapped();
+  await testAccountChangeCancelsPendingLaunch();
   await testRepeatedClicksLaunchOnce();
   await testNativeAdaptersRouteByPlatform();
   testUnreadBadgeFormatting();

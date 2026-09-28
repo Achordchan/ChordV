@@ -567,25 +567,69 @@ export function supportsSupportWindow() {
   return isTauriApp() && !isAndroidPlatform();
 }
 
-/** 工单窗口仍打开且会话未过期时聚焦它并返回 true；否则返回 false，调用方需要重新签发票据。 */
-export async function focusSupportWindow() {
-  if (!supportsSupportWindow()) return false;
-  const invoke = await loadInvoke();
-  if (!invoke) return false;
-  return Boolean(await invoke<boolean>("focus_support_window"));
-}
+/** 一次“打开工单”的目标：桌面端是原生工单窗口，安卓端和网页预览是系统浏览器。 */
+export type SupportWindowTarget = {
+  /** 工单窗口仍打开且会话未过期时聚焦它并返回 true；否则返回 false，调用方需要重新签发票据。 */
+  focusExisting: () => Promise<boolean>;
+  /** launchUrl 带一次性票据：只交给原生层或预留的浏览器窗口，不能写进日志或错误信息。 */
+  open: (launch: { launchUrl: string; supportOrigin: string }) => Promise<void>;
+  /** 没有打开（已聚焦、未开放、失败、账号已变化）时释放预留的资源。 */
+  dispose: () => void;
+};
 
-/** launchUrl 带一次性票据：只交给原生层打开，不能写进日志或错误信息。 */
-export async function openSupportWindow(input: { launchUrl: string; supportOrigin: string }) {
+const SUPPORT_POPUP_BLOCKED_MESSAGE = "无法打开工单页面，请允许弹出窗口后重试。";
+
+/**
+ * 必须在点击事件里同步调用：浏览器只允许在用户手势内打开新窗口，
+ * 所以先预留一个空白窗口，拿到打开地址后再跳转。
+ */
+export function createSupportWindowTarget(): SupportWindowTarget {
   if (!supportsSupportWindow()) {
-    // 原始错误可能带出地址，统一换成不含地址的提示。
-    const result = await openExternalUrl(input.launchUrl).catch(() => ({ ok: false as const }));
-    if (!result.ok) throw new Error("无法打开工单页面，请允许弹出窗口后重试。");
-    return;
+    let popup: Window | null = null;
+    try {
+      popup = window.open("about:blank", "_blank");
+    } catch {
+      popup = null;
+    }
+    return {
+      focusExisting: async () => false,
+      open: async ({ launchUrl }) => {
+        const reserved = popup;
+        popup = null;
+        if (!reserved || reserved.closed) throw new Error(SUPPORT_POPUP_BLOCKED_MESSAGE);
+        try {
+          reserved.opener = null;
+          reserved.location.replace(launchUrl);
+        } catch {
+          // 原始错误可能带出地址，统一换成不含地址的提示。
+          reserved.close();
+          throw new Error(SUPPORT_POPUP_BLOCKED_MESSAGE);
+        }
+      },
+      dispose: () => {
+        popup?.close();
+        popup = null;
+      }
+    };
   }
-  const invoke = await loadInvoke();
-  if (!invoke) throw new Error("无法打开工单窗口，请重新打开 ChordV 后重试。");
-  await invoke("open_support_window", { launchUrl: input.launchUrl, supportOrigin: input.supportOrigin });
+
+  // 原生层每次退出登录都会换一个批次号；打开时带回聚焦时拿到的批次号，账号变化后的旧请求会被拒绝。
+  let epoch: number | null = null;
+  return {
+    focusExisting: async () => {
+      const invoke = await loadInvoke();
+      if (!invoke) throw new Error("无法打开工单窗口，请重新打开 ChordV 后重试。");
+      const result = await invoke<{ focused: boolean; epoch: number }>("focus_support_window");
+      epoch = result.epoch;
+      return result.focused;
+    },
+    open: async ({ launchUrl, supportOrigin }) => {
+      const invoke = await loadInvoke();
+      if (!invoke || epoch === null) throw new Error("无法打开工单窗口，请重新打开 ChordV 后重试。");
+      await invoke("open_support_window", { launchUrl, supportOrigin, epoch });
+    },
+    dispose: () => {}
+  };
 }
 
 export async function closeSupportWindow() {

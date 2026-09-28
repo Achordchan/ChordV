@@ -7,6 +7,7 @@
 //! - 可选的原生桥接：初始化脚本在工单站点页面上定义 window.AchordConnectNative.postMessage，
 //!   消息在原生层按固定格式校验后才处理（未读数、会话过期、请求关闭）。
 //! - launchUrl 的片段里带着一次性票据，任何日志和错误信息都不能包含它。
+use serde::Serialize;
 use serde_json::Value;
 use url::Url;
 
@@ -171,13 +172,48 @@ pub struct SupportWindowRecord {
 pub struct SupportWindowState {
     pub current: Option<SupportWindowRecord>,
     pub next_id: u64,
+    /// 退出登录 / 换账号时递增：之前开始、还没完成的打开流程一律作废。
+    pub epoch: u64,
 }
+
+pub const SUPPORT_WINDOW_STALE_ERROR: &str = "账号已变化，工单窗口未打开";
 
 impl SupportWindowState {
     pub fn next_label(&mut self) -> String {
         self.next_id += 1;
         format!("{SUPPORT_WINDOW_LABEL_PREFIX}{}", self.next_id)
     }
+
+    /// 关闭当前工单窗口并作废所有进行中的打开流程，返回需要销毁的窗口记录。
+    pub fn invalidate(&mut self) -> Option<SupportWindowRecord> {
+        self.epoch = self.epoch.wrapping_add(1);
+        self.current.take()
+    }
+
+    pub fn ensure_epoch(&self, epoch: u64) -> Result<(), String> {
+        if epoch == self.epoch {
+            Ok(())
+        } else {
+            Err(SUPPORT_WINDOW_STALE_ERROR.into())
+        }
+    }
+
+    /// 窗口建好后登记；建窗期间已退出登录时返回 false，调用方必须销毁刚建好的窗口。
+    pub fn finish_open(&mut self, epoch: u64, record: SupportWindowRecord) -> bool {
+        if epoch != self.epoch {
+            return false;
+        }
+        self.current = Some(record);
+        true
+    }
+}
+
+/// 聚焦结果带上当前的打开批次，前端打开新窗口时原样带回。
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SupportFocusResult {
+    pub focused: bool,
+    pub epoch: u64,
 }
 
 #[cfg(not(target_os = "android"))]
@@ -236,20 +272,23 @@ fn position_near_main(app: &AppHandle) -> Option<(f64, f64)> {
 }
 
 #[cfg(not(target_os = "android"))]
-/// 已打开且会话未过期时聚焦现有窗口并返回 true；否则返回 false，由前端重新签发票据。
+/// 已打开且会话未过期时聚焦现有窗口（focused=true）；否则由前端重新签发票据，
+/// 并在打开时带回这里给出的 epoch，期间退出登录则打开会被拒绝。
 #[tauri::command]
 pub async fn focus_support_window(
     app: AppHandle,
     state: State<'_, Mutex<SupportWindowState>>,
-) -> Result<bool, String> {
+) -> Result<SupportFocusResult, String> {
     let guard = lock(&state)?;
-    let Some(record) = guard.current.as_ref() else { return Ok(false) };
-    if record.expired {
-        return Ok(false);
-    }
-    let Some(window) = current_window(&app, &guard) else { return Ok(false) };
+    let epoch = guard.epoch;
+    let window = guard
+        .current
+        .as_ref()
+        .filter(|record| !record.expired)
+        .and_then(|_| current_window(&app, &guard));
+    let Some(window) = window else { return Ok(SupportFocusResult { focused: false, epoch }) };
     focus(&window)?;
-    Ok(true)
+    Ok(SupportFocusResult { focused: true, epoch })
 }
 
 #[cfg(not(target_os = "android"))]
@@ -260,6 +299,7 @@ pub async fn open_support_window(
     state: State<'_, Mutex<SupportWindowState>>,
     launch_url: String,
     support_origin: String,
+    epoch: u64,
 ) -> Result<(), String> {
     let origin_url = parse_support_origin(&support_origin)?;
     let launch = validate_support_launch_url(&launch_url, &origin_url)?;
@@ -267,6 +307,7 @@ pub async fn open_support_window(
 
     let (label, previous) = {
         let mut guard = lock(&state)?;
+        guard.ensure_epoch(epoch)?;
         let previous = current_window(&app, &guard);
         (guard.next_label(), previous)
     };
@@ -313,7 +354,11 @@ pub async fn open_support_window(
         .build()
         .map_err(|error| format!("无法打开工单窗口：{error}"))?;
 
-    lock(&state)?.current = Some(SupportWindowRecord { label, origin, expired: false });
+    // 建窗期间退出登录或换账号：不保留这个窗口。
+    if !lock(&state)?.finish_open(epoch, SupportWindowRecord { label, origin, expired: false }) {
+        let _ = window.destroy();
+        return Err(SUPPORT_WINDOW_STALE_ERROR.into());
+    }
     focus(&window)
 }
 
@@ -327,7 +372,7 @@ pub async fn close_support_window(
     let window = {
         let mut guard = lock(&state)?;
         let window = current_window(&app, &guard);
-        guard.current = None;
+        guard.invalidate();
         window
     };
     if let Some(window) = window {
@@ -375,14 +420,14 @@ pub fn support_bridge_message(
 #[cfg(target_os = "android")]
 /// 安卓端由前端直接用系统浏览器打开工单，这些命令只保证注册表一致。
 #[tauri::command]
-pub async fn focus_support_window() -> Result<bool, String> {
-    Ok(false)
+pub async fn focus_support_window() -> Result<SupportFocusResult, String> {
+    Ok(SupportFocusResult { focused: false, epoch: 0 })
 }
 
 #[cfg(target_os = "android")]
 #[tauri::command]
-pub async fn open_support_window(launch_url: String, support_origin: String) -> Result<(), String> {
-    let _ = (launch_url, support_origin);
+pub async fn open_support_window(launch_url: String, support_origin: String, epoch: u64) -> Result<(), String> {
+    let _ = (launch_url, support_origin, epoch);
     Err("安卓端请在浏览器中打开工单".into())
 }
 

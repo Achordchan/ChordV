@@ -44,46 +44,71 @@ export function isSupportDisabledError(reason: unknown) {
   return text.includes("暂未开放");
 }
 
-export type SupportPortalOpenResult = "focused" | "opened" | "disabled" | "failed" | "busy";
+export type SupportPortalOpenResult = "focused" | "opened" | "disabled" | "failed" | "busy" | "stale";
+
+/** 与 runtime.ts 的 SupportWindowTarget 一致；这里单独声明，保持本文件无运行时依赖。 */
+export type SupportPortalTarget = {
+  focusExisting: () => Promise<boolean>;
+  open: (launch: { launchUrl: string; supportOrigin: string }) => Promise<void>;
+  dispose: () => void;
+};
 
 export type SupportPortalDeps = {
+  /** 必须同步返回：浏览器端要在点击事件里预留新窗口。 */
+  prepareTarget: () => SupportPortalTarget;
+  /** 当前账号标识（登录代次）；打开流程中途变化说明已退出登录或换了账号。 */
+  getAccountGeneration: () => number;
   /** 最近一次状态查询得到的 enabled；还没查到时为 null。 */
   getKnownEnabled: () => boolean | null;
   /** 重新查询状态（用于 enabled=false 时确认后台是否刚刚开启）。 */
   refreshStatus: () => Promise<ClientSupportStatusDto | null>;
-  launch: () => Promise<ClientSupportLaunchDto>;
-  focusExisting: () => Promise<boolean>;
-  openWindow: (launch: { launchUrl: string; supportOrigin: string }) => Promise<void>;
+  /** isCurrent 在每次等待之后检查账号是否仍是发起时的账号。 */
+  launch: (isCurrent: () => boolean) => Promise<ClientSupportLaunchDto>;
   notifyDisabled: () => void;
   showError: (reason: unknown) => void;
 };
+
+/** 账号在打开途中变化时抛出，调用方静默结束，不打开任何窗口、不提示错误。 */
+export class SupportPortalStaleError extends Error {
+  constructor() {
+    super("账号已变化，工单未打开");
+    this.name = "SupportPortalStaleError";
+  }
+}
 
 /** 同一时间只处理一次点击：连续点击不会签发多张票据。 */
 export function createSupportPortalOpener(deps: SupportPortalDeps) {
   let inFlight: Promise<SupportPortalOpenResult> | null = null;
 
-  const run = async (): Promise<SupportPortalOpenResult> => {
+  const run = async (target: SupportPortalTarget): Promise<SupportPortalOpenResult> => {
+    const generation = deps.getAccountGeneration();
+    const isCurrent = () => deps.getAccountGeneration() === generation;
+    const ensureCurrent = () => {
+      if (!isCurrent()) throw new SupportPortalStaleError();
+    };
     try {
-      if (await deps.focusExisting()) {
+      if (await target.focusExisting()) {
         return "focused";
       }
-    } catch {
-      // 聚焦失败时按未打开处理，重新打开一个窗口。
-    }
+      ensureCurrent();
 
-    if (deps.getKnownEnabled() === false) {
-      const status = await deps.refreshStatus().catch(() => null);
-      if (!status?.enabled) {
-        deps.notifyDisabled();
-        return "disabled";
+      if (deps.getKnownEnabled() === false) {
+        const status = await deps.refreshStatus().catch(() => null);
+        ensureCurrent();
+        if (!status?.enabled) {
+          deps.notifyDisabled();
+          return "disabled";
+        }
       }
-    }
 
-    try {
-      const launch = await deps.launch();
-      await deps.openWindow({ launchUrl: launch.launchUrl, supportOrigin: launch.supportOrigin });
+      const launch = await deps.launch(isCurrent);
+      ensureCurrent();
+      await target.open({ launchUrl: launch.launchUrl, supportOrigin: launch.supportOrigin });
       return "opened";
     } catch (reason) {
+      if (reason instanceof SupportPortalStaleError || !isCurrent()) {
+        return "stale";
+      }
       if (isSupportDisabledError(reason)) {
         deps.notifyDisabled();
         return "disabled";
@@ -99,9 +124,15 @@ export function createSupportPortalOpener(deps: SupportPortalDeps) {
       if (inFlight) {
         return inFlight.then(() => "busy" as const);
       }
-      inFlight = run().finally(() => {
-        inFlight = null;
-      });
+      const target = deps.prepareTarget();
+      inFlight = run(target)
+        .then((result) => {
+          if (result !== "opened") target.dispose();
+          return result;
+        })
+        .finally(() => {
+          inFlight = null;
+        });
       return inFlight;
     }
   };
