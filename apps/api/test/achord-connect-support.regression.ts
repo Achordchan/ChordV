@@ -159,8 +159,17 @@ function createFakePrisma(options: { users?: string[] } = {}) {
         return { ...requests.get(key) };
       },
 
-      count: async ({ where }: any) =>
-        [...requests.values()].filter((row) => row.userId === where.userId && row.eventAt > where.eventAt.gt).length,
+      count: async ({ where }: any) => {
+        const matchesTime = (row: Row, condition: any) =>
+          condition.gt !== undefined ? row.eventAt > condition.gt : row.eventAt >= condition.gte;
+        const matches = (row: Row, clause: any) =>
+          (clause.requestId === undefined ||
+            (typeof clause.requestId === "string" ? row.requestId === clause.requestId : row.requestId !== clause.requestId.not)) &&
+          matchesTime(row, clause.eventAt);
+        return [...requests.values()].filter(
+          (row) => row.userId === where.userId && (where.OR ? where.OR.some((clause: any) => matches(row, clause)) : matches(row, where))
+        ).length;
+      },
       aggregate: async ({ where }: any) => {
         let sum: number | null = null;
         for (const row of requests.values()) {
@@ -632,12 +641,12 @@ async function testReconciliationWatermarkAndConcurrentEvents() {
   const afterSnapshot = new Date(upstreamNow.getTime() + 5_000).toISOString();
   await skewed.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 2, contactUnreadCount: 2, createdAt: afterSnapshot })));
   assert.equal(skewedDb.state("user_1")?.unreadCount, 2, "工单系统时间晚于快照的事件照常接受");
-  // 没有 Date 头时不推进水位线。
+  // 没有 Date 头时无法界定结果对应的时刻，不采用这次结果（之后晚到的旧事件就无从覆盖它）。
   const { service: noDate, db: noDateDb } = createService();
   await configure(noDate);
   noDate.fetchImpl = async () => new Response(JSON.stringify({ data: { externalUserId: "user_1", unreadCount: 3, requests: [] } }), { status: 200 });
-  assert.equal(await noDate.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), 3);
-  assert.equal(noDateDb.state("user_1")?.sourceAt, null);
+  assert.equal(await noDate.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), null);
+  assert.equal(noDateDb.state("user_1"), null);
 }
 
 async function testIncompleteBaselineAndMixedOrdering() {
@@ -710,17 +719,15 @@ async function testIncompleteBaselineAndMixedOrdering() {
 async function testPublishingKeepsNewestRevisionAndRespectsEnabled() {
   const { service, published } = createService();
   await configure(service);
-  const publish = (change: { previous: number; next: number; revision: number }) =>
-    (service as unknown as { publishIfChanged: (userId: string, change: unknown) => Promise<void> }).publishIfChanged("user_1", change);
+  const publish = (change: { previous: number; next: number; revision: number; publish?: boolean }) =>
+    (service as unknown as { publishIfChanged: (userId: string, change: unknown) => void }).publishIfChanged("user_1", { publish: true, ...change });
   // 两个事务先后提交（版本 5、6），但版本 6 的推送先执行：版本 5 的旧结果不能再推给客户端。
-  await publish({ previous: 3, next: 1, revision: 6 });
-  await publish({ previous: 2, next: 3, revision: 5 });
-  await publish({ previous: 1, next: 1, revision: 7 });
-  await publish({ previous: 1, next: 4, revision: 8 });
-  assert.deepEqual(published.map((item) => item.count), [1, 4]);
-  // 并发推送：先开始的旧版本即使后完成也不会覆盖。
-  await Promise.all([publish({ previous: 4, next: 5, revision: 9 }), publish({ previous: 5, next: 6, revision: 10 })]);
-  assert.equal(published.at(-1)?.count, 6);
+  publish({ previous: 3, next: 1, revision: 6 });
+  publish({ previous: 2, next: 3, revision: 5 });
+  publish({ previous: 1, next: 1, revision: 7 });
+  publish({ previous: 1, next: 4, revision: 8 });
+  publish({ previous: 4, next: 5, revision: 9, publish: false });
+  assert.deepEqual(published.map((item) => item.count), [1, 4], "提交时未启用的结果不推送");
 
   // 停用后仍记录未读，但不推送；推送前的启用检查也覆盖校准结果。
   await service.updateAdminConfig({ enabled: false });
@@ -730,6 +737,44 @@ async function testPublishingKeepsNewestRevisionAndRespectsEnabled() {
   service.fetchImpl = async () => json(200, { data: { externalUserId: "user_1", unreadCount: 2, requests: [] } }, new Date(Date.now() + 120_000));
   await service.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET });
   assert.equal(published.length, countBefore, "停用时校准结果也不推送");
+}
+
+async function testEqualTimestampsAndPostCommitFailures() {
+  // 同一毫秒的两个不同总数：到达顺序不能代表先后，不采用后到的那个，改为重新查询。
+  {
+    const { service, db } = createService();
+    await configure(service);
+    service.fetchImpl = async () => {
+      throw new TypeError("fetch failed");
+    };
+    const instant = new Date(Date.now() - 5_000).toISOString();
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 2, contactUnreadCount: 3, createdAt: instant })));
+    assert.equal(db.state("user_1")?.unreadCount, 3);
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_b", unreadCount: 1, contactUnreadCount: 2, createdAt: instant })));
+    assert.equal(db.state("user_1")?.unreadCount, 3, "同一时刻的不同总数不按到达顺序覆盖");
+    assert.equal(db.state("user_1")?.syncedAt, null, "标记为待校准");
+    // 同一请求更新的记录已存在时，较早的总数同样不采用。
+    const { service: sameRequest, db: sameDb } = createService();
+    await configure(sameRequest);
+    sameRequest.fetchImpl = service.fetchImpl;
+    await sameRequest.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 2, createdAt: new Date(Date.now() - 1_000).toISOString() })));
+    await sameRequest.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 5, contactUnreadCount: 5, createdAt: new Date(Date.now() - 2_000).toISOString() })));
+    assert.equal(sameDb.state("user_1")?.unreadCount, 2);
+  }
+
+  // 事件 ID 提交后推送失败：Webhook 仍返回成功，不让工单系统把重试当成已处理却什么都没做。
+  {
+    const { service, db } = createService();
+    await configure(service);
+    (service as unknown as { clientEventsPublisher: unknown }).clientEventsPublisher = {
+      publishSupportUnreadUpdated: () => {
+        throw new Error("push channel down");
+      }
+    };
+    const event = unreadEvent({ requestId: "req_a", unreadCount: 1, contactUnreadCount: 1, createdAt: new Date().toISOString() });
+    assert.equal(await service.handleWebhook(webhookRequest(event)), "accepted");
+    assert.equal(db.state("user_1")?.unreadCount, 1);
+  }
 }
 
 async function testLegacyEventsTriggerBackgroundResync() {
@@ -1032,6 +1077,7 @@ async function main() {
   testResyncRateLimits();
   await testPublishingKeepsNewestRevisionAndRespectsEnabled();
   await testLegacyEventsTriggerBackgroundResync();
+  await testEqualTimestampsAndPostCommitFailures();
   await testAdminConfigNeverReturnsSecrets();
   await testLegacyTicketWriteGuards();
   testSupportModuleDependenciesAreExported();
