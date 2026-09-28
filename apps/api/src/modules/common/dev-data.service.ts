@@ -157,6 +157,7 @@ import {
 } from "./ticket.utils";
 import { RuntimeSessionService } from "./runtime-session.service";
 import { runWithSubscriptionUsageLock } from "./usage-lock.utils";
+import { isSupportIntegrationEnabled } from "../support/support-integration.settings";
 const RELEASE_ARTIFACT_DOWNLOAD_PREFIX = "/api/downloads/releases";
 const NODE_ACCESS_FOLLOW_UP_BUDGET_MS = 300;
 const NODE_ACCESS_DEFERRED_EFFECT_DELAY_MS = 50;
@@ -563,7 +564,8 @@ export class DevDataService implements OnModuleInit {
         this.safeAdminSnapshotValue("support ticket counts", () => this.getSupportTicketDashboardCounts(), {
           openTickets: 0,
           waitingAdminTickets: 0,
-          closedTickets: 0
+          closedTickets: 0,
+          legacyTicketsReadOnly: false
         })
       ]);
 
@@ -577,7 +579,8 @@ export class DevDataService implements OnModuleInit {
         activePlans: plans.filter((item) => item.isActive).length,
         openTickets: ticketCounts.openTickets,
         waitingAdminTickets: ticketCounts.waitingAdminTickets,
-        closedTickets: ticketCounts.closedTickets
+        closedTickets: ticketCounts.closedTickets,
+        legacyTicketsReadOnly: ticketCounts.legacyTicketsReadOnly
       },
       users,
       plans,
@@ -665,7 +668,8 @@ export class DevDataService implements OnModuleInit {
       announcements,
       openTickets: ticketCounts.openTickets,
       waitingAdminTickets: ticketCounts.waitingAdminTickets,
-      closedTickets: ticketCounts.closedTickets
+      closedTickets: ticketCounts.closedTickets,
+      legacyTicketsReadOnly: ticketCounts.legacyTicketsReadOnly
     };
   }
 
@@ -1410,7 +1414,7 @@ export class DevDataService implements OnModuleInit {
   }
 
   private async getSupportTicketDashboardCounts() {
-    let counts: [number, number, number];
+    let counts: [number, number, number, boolean];
     try {
       counts = await workLifecycle.all([
         this.prisma.supportTicket.count({
@@ -1421,17 +1425,19 @@ export class DevDataService implements OnModuleInit {
         }),
         this.prisma.supportTicket.count({
           where: { status: "closed" }
-        })
+        }),
+        isSupportIntegrationEnabled(this.prisma)
       ]);
     } catch (error) {
       throwLocalReadAsServiceUnavailable(error, "Support ticket dashboard counts are temporarily unavailable.");
     }
-    const [openTickets, waitingAdminTickets, closedTickets] = counts;
+    const [openTickets, waitingAdminTickets, closedTickets, legacyTicketsReadOnly] = counts;
 
     return {
       openTickets,
       waitingAdminTickets,
-      closedTickets
+      closedTickets,
+      legacyTicketsReadOnly
     };
   }
 

@@ -109,7 +109,7 @@ function testSectionCardSupportsPageIntentAndActions() {
 }
 
 function testOverviewPrioritizesActionableWork() {
-assert.ok(overviewPageSource.indexOf("待处理事项") < overviewPageSource.indexOf("className={styles.metrics}")); for(const action of ["onOpenSyncQueue","onOpenNodes","onOpenCustomers","onOpenTeams"]) assert.ok(overviewPageSource.includes(action));
+assert.ok(overviewPageSource.indexOf("待处理事项") < overviewPageSource.indexOf("className={styles.metrics}")); for(const action of ["onOpenSyncQueue","onOpenTickets","onOpenNodes","onOpenCustomers","onOpenTeams"]) assert.ok(overviewPageSource.includes(action));
 }
 
 function testUsersPageKeepsAccountAndTeamEntrypoints() {

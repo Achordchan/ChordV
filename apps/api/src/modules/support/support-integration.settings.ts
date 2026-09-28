@@ -1,0 +1,51 @@
+import type { AchordConnectCredentials } from "./achord-connect";
+
+/** “工单系统接入”设置存放在 SystemSetting 的这一行里（与图床 Token 相同，按原样保存，永不返回给浏览器）。 */
+export const SUPPORT_INTEGRATION_SETTING_KEY = "achord-connect";
+
+export type StoredSupportIntegrationConfig = {
+  baseUrl: string | null;
+  clientId: string | null;
+  clientSecret: string | null;
+  webhookSecret: string | null;
+  enabled: boolean;
+};
+
+type SystemSettingReader = {
+  systemSetting: {
+    findUnique(args: { where: { key: string } }): Promise<{ value: unknown; updatedAt: Date } | null>;
+  };
+};
+
+export function parseStoredSupportIntegrationConfig(value: unknown): StoredSupportIntegrationConfig {
+  const record = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  const text = (key: string) => (typeof record[key] === "string" && record[key] ? (record[key] as string) : null);
+  return {
+    baseUrl: text("baseUrl"),
+    clientId: text("clientId"),
+    clientSecret: text("clientSecret"),
+    webhookSecret: text("webhookSecret"),
+    enabled: record.enabled === true
+  };
+}
+
+export function readSupportIntegrationCredentials(value: StoredSupportIntegrationConfig): AchordConnectCredentials | null {
+  return value.baseUrl && value.clientId && value.clientSecret
+    ? { baseUrl: value.baseUrl, clientId: value.clientId, clientSecret: value.clientSecret }
+    : null;
+}
+
+export async function readSupportIntegrationConfig(prisma: SystemSettingReader) {
+  const row = await prisma.systemSetting.findUnique({ where: { key: SUPPORT_INTEGRATION_SETTING_KEY } });
+  return { value: parseStoredSupportIntegrationConfig(row?.value), updatedAt: row?.updatedAt ?? null };
+}
+
+/**
+ * 新工单系统是否已启用（开关打开且凭据齐全）。
+ * 旧自建工单以它为切换点：未启用前旧工单照常可写，启用后旧工单转为只读。
+ * 这样后台可以先上线，等新版客户端发布、Achord Connect 配好后再一键切换。
+ */
+export async function isSupportIntegrationEnabled(prisma: SystemSettingReader) {
+  const { value } = await readSupportIntegrationConfig(prisma);
+  return value.enabled && readSupportIntegrationCredentials(value) !== null;
+}

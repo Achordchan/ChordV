@@ -13,6 +13,8 @@ type SystemSettingsPageProps = {
   onOpenTasks: () => void;
   onOpenPolicies: () => void;
   onOpenImageBed: () => void;
+  /** 工单系统接入设置保存后刷新仪表台，旧工单的只读状态随启用开关切换。 */
+  onSupportIntegrationChanged: () => void;
   onLogout: () => void;
 };
 
@@ -23,7 +25,7 @@ export function SystemSettingsPage(props: SystemSettingsPageProps) {
   return <div className={styles.page}>
     <StorageManager opened={storageOpened} onClose={()=>setStorageOpened(false)} onOpenAttachments={props.onOpenImageBed}/>
     <NetworkSettingsModal opened={networkOpened} onClose={()=>setNetworkOpened(false)}/>
-    <SupportIntegrationModal opened={supportOpened} onClose={()=>setSupportOpened(false)}/>
+    <SupportIntegrationModal opened={supportOpened} onClose={()=>setSupportOpened(false)} onSaved={props.onSupportIntegrationChanged}/>
     <section className={styles.section} aria-labelledby="settings-account"><h2 id="settings-account">账号与安全</h2>
       <div className={styles.row}><IconShieldLock className={styles.icon} size={22}/><div className={styles.copy}><h3>管理员账号</h3><p>当前登录：{props.accountLabel}</p><small>管理登录账号与密码</small></div><Button variant="default" onClick={props.onOpenSecurity}>账号安全</Button></div>
     </section>

@@ -57,8 +57,24 @@ function createFakePrisma(options: { users?: string[] } = {}) {
   const prisma: any = {
     systemSetting: {
       findUnique: async ({ where }: any) => (settings.has(where.key) ? { ...settings.get(where.key) } : null),
-      upsert: async ({ where, create, update }: any) => {
-        const row = { key: where.key, value: structuredClone(settings.has(where.key) ? update.value : create.value), updatedAt: new Date() };
+      findUniqueOrThrow: async ({ where }: any) => {
+        if (!settings.has(where.key)) throw new Error("not found");
+        return { ...settings.get(where.key) };
+      },
+      createMany: async ({ data, skipDuplicates }: any) => {
+        let count = 0;
+        for (const item of data) {
+          if (settings.has(item.key)) {
+            if (!skipDuplicates) throw new Error("unique violation");
+            continue;
+          }
+          settings.set(item.key, { key: item.key, value: structuredClone(item.value), updatedAt: new Date() });
+          count += 1;
+        }
+        return { count };
+      },
+      update: async ({ where, data }: any) => {
+        const row = { ...settings.get(where.key), value: structuredClone(data.value), updatedAt: new Date() };
         settings.set(where.key, row);
         return { ...row };
       }
@@ -133,6 +149,13 @@ function createFakePrisma(options: { users?: string[] } = {}) {
         requests.set(key, { ...requests.get(key), ...data });
         return { ...requests.get(key) };
       },
+      upsert: async ({ where, create, update }: any) => {
+        const key = requestKey(where.userId_requestId.userId, where.userId_requestId.requestId);
+        requests.set(key, requests.has(key) ? { ...requests.get(key), ...update } : { ...create });
+        return { ...requests.get(key) };
+      },
+      findMany: async ({ where }: any) =>
+        [...requests.values()].filter((row) => row.userId === where.userId && row.eventAt > where.eventAt.gt).map((row) => ({ ...row })),
       aggregate: async ({ where }: any) => {
         let sum: number | null = null;
         for (const row of requests.values()) {
@@ -169,6 +192,7 @@ function createFakePrisma(options: { users?: string[] } = {}) {
       locks.push(String(values[0]));
       return [];
     },
+    seedRequest: (row: Row) => requests.set(requestKey(row.userId, row.requestId), { ...row }),
     $transaction: async (fn: (tx: unknown) => Promise<unknown>) => {
       const snapshot = { settings: clone(settings), events: clone(events), states: clone(states), requests: clone(requests) };
       try {
@@ -188,6 +212,7 @@ function createFakePrisma(options: { users?: string[] } = {}) {
     requestCount: () => requests.size,
     eventCount: () => events.size,
     setting: (key: string) => settings.get(key)?.value ?? null,
+    seedRequest: (row: Row) => prisma.seedRequest(row),
     seedEvent: (eventId: string, receivedAt: Date) => events.set(eventId, { eventId, type: "request.unread.changed", receivedAt })
   };
 }
@@ -340,7 +365,8 @@ async function testWebhookIdempotencyAndAggregation() {
     { userId: "user_1", count: 5 },
     { userId: "user_1", count: 3 }
   ], "总数变化时推送 support_unread_updated，重复事件不重复推送");
-  assert.ok(db.locks.every((userId) => userId === "user_1"), "按用户加行锁串行处理");
+  assert.ok(db.locks.includes("achord-connect"), "保存设置时对设置行加锁");
+  assert.ok(db.locks.filter((key) => key !== "achord-connect").every((userId) => userId === "user_1"), "按用户加行锁串行处理");
 
   // 晚到的旧事件（重试）不能覆盖更新的请求未读数。
   assert.equal(await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 9, createdAt: "2026-09-28T09:59:00.000Z" }))), "accepted");
@@ -537,6 +563,46 @@ async function testStatusFallbackAndResync() {
   assert.equal(db.state("user_1")?.unreadCount, 7);
 }
 
+async function testReconciliationWatermarkAndConcurrentEvents() {
+  const { service, db, respond } = createService();
+  await configure(service);
+  const past = (ms: number) => new Date(Date.now() - ms).toISOString();
+
+  // 校准结果为 0 之后，晚到的更早事件（重试）不能把已读的请求重新变成未读。
+  await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 1, createdAt: past(120_000) })));
+  respond(async () => json(200, { data: { externalUserId: "user_1", unreadCount: 0, requests: [] } }));
+  assert.equal(await service.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), 0);
+  assert.equal(await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_late", unreadCount: 3, createdAt: past(60_000) }))), "accepted");
+  assert.equal(db.request("user_1", "req_late"), null, "早于校准的事件不再建立按请求记录");
+  assert.equal(db.state("user_1")?.unreadCount, 0);
+
+  // 校准查询进行中到达的更新事件：保留它的请求记录，并计入校准后的总数。
+  const { service: racing, db: racingDb } = createService();
+  await configure(racing);
+  respond(async () => json(200, {}));
+  racing.fetchImpl = async () => {
+    // 查询返回之前，Webhook 已把 req_b 从 4 改成 1（事件时间晚于查询开始）。
+    racingDb.seedRequest({ userId: "user_1", requestId: "req_b", unreadCount: 1, eventAt: new Date(Date.now() + 5_000) });
+    return json(200, { data: { externalUserId: "user_1", unreadCount: 6, requests: [{ id: "req_b", unreadCount: 4 }, { id: "req_c", unreadCount: 2 }] } });
+  };
+  assert.equal(await racing.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), 3, "6 - 4 + 1");
+  assert.equal(racingDb.request("user_1", "req_b")?.unreadCount, 1, "查询期间的新值不被旧的查询结果覆盖");
+  assert.equal(racingDb.request("user_1", "req_c")?.unreadCount, 2);
+
+  // 请求很多时不截断：每个请求都保留，之后按变化量增减总数。
+  const { service: many, db: manyDb } = createService();
+  await configure(many);
+  const requests = Array.from({ length: 600 }, (_, index) => ({ id: `req_${index}`, unreadCount: 1 }));
+  many.fetchImpl = async () => json(200, { data: { externalUserId: "user_1", unreadCount: 600, requests } });
+  assert.equal(await many.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), 600);
+  assert.equal(manyDb.requestCount(), 600);
+  await many.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_599", unreadCount: 0, createdAt: new Date(Date.now() + 1_000).toISOString() })));
+  assert.equal(manyDb.state("user_1")?.unreadCount, 599);
+  // 本地没有记录的请求（例如早于上线的请求）按变化量计入，不会把总数重算成局部之和。
+  await many.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_new", unreadCount: 2, createdAt: new Date(Date.now() + 2_000).toISOString() })));
+  assert.equal(manyDb.state("user_1")?.unreadCount, 601);
+}
+
 // ---------- 后台设置 ----------
 
 async function testAdminConfigNeverReturnsSecrets() {
@@ -602,13 +668,24 @@ async function testAdminConfigNeverReturnsSecrets() {
 
 // ---------- 旧工单写接口 ----------
 
-function testLegacyTicketWriteGuards() {
-  assert.throws(() => new LegacyClientTicketWriteGuard().canActivate(), (error: unknown) => {
+async function testLegacyTicketWriteGuards() {
+  const { service, db } = createService();
+  const clientGuard = new LegacyClientTicketWriteGuard(db.prisma);
+  const adminGuard = new LegacyAdminTicketWriteGuard(db.prisma);
+  // 未启用新工单系统前（后台先上线、新版客户端尚未发布），旧工单照常可写。
+  assert.equal(await clientGuard.canActivate(), true);
+  assert.equal(await adminGuard.canActivate(), true);
+  await configure(service, { enabled: false });
+  assert.equal(await clientGuard.canActivate(), true, "配置了但未启用，仍不切换");
+  await service.updateAdminConfig({ enabled: true });
+  await assert.rejects(clientGuard.canActivate(), (error: unknown) => {
     assert.ok(error instanceof GoneException);
     assert.equal((error.getResponse() as { message: string }).message, "工单系统已升级，请更新到最新版客户端后提交工单");
     return true;
   });
-  assert.throws(() => new LegacyAdminTicketWriteGuard().canActivate(), GoneException);
+  await assert.rejects(adminGuard.canActivate(), GoneException);
+  await service.updateAdminConfig({ enabled: false });
+  assert.equal(await clientGuard.canActivate(), true, "停用后可以回退到旧工单");
   // 客户端对 4xx 的中文业务提示原样展示，不会被替换成“工单暂时无法处理”之类的通用文案。
   const described = describeUserError({ status: 410, message: LEGACY_CLIENT_TICKET_WRITE_MESSAGE, rawMessage: JSON.stringify({ statusCode: 410, message: LEGACY_CLIENT_TICKET_WRITE_MESSAGE }) }, { context: "ticket" });
   assert.equal(described.message, LEGACY_CLIENT_TICKET_WRITE_MESSAGE);
@@ -737,8 +814,9 @@ async function main() {
   await testWebhookEventPruning();
   await testLaunchTicketRequestAndErrorMapping();
   await testStatusFallbackAndResync();
+  await testReconciliationWatermarkAndConcurrentEvents();
   await testAdminConfigNeverReturnsSecrets();
-  testLegacyTicketWriteGuards();
+  await testLegacyTicketWriteGuards();
   await testRoutesWithRawBodyParser();
   console.log("achord connect support regression checks passed");
 }

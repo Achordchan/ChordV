@@ -27,8 +27,15 @@ import {
   type AchordConnectLaunchUser,
   type AchordConnectUnreadChange
 } from "./achord-connect";
+import {
+  SUPPORT_INTEGRATION_SETTING_KEY,
+  parseStoredSupportIntegrationConfig,
+  readSupportIntegrationConfig,
+  readSupportIntegrationCredentials as readCredentials,
+  type StoredSupportIntegrationConfig
+} from "./support-integration.settings";
 
-export const SUPPORT_INTEGRATION_SETTING_KEY = "achord-connect";
+export { SUPPORT_INTEGRATION_SETTING_KEY } from "./support-integration.settings";
 export const SUPPORT_NOT_OPEN_MESSAGE = "工单系统暂未开放，请稍后再试";
 export const SUPPORT_RATE_LIMITED_MESSAGE = "操作太频繁，请稍后再试";
 export const SUPPORT_UNAVAILABLE_MESSAGE = "工单系统暂时无法连接，请稍后再试";
@@ -40,17 +47,8 @@ export const SUPPORT_UNREAD_RESYNC_AFTER_MS = 5 * 60_000;
 /** 同一用户两次校准之间至少间隔，工单系统不可用时也不会被每次状态查询放大请求。 */
 export const SUPPORT_UNREAD_RESYNC_MIN_INTERVAL_MS = 60_000;
 const RESYNC_ATTEMPT_TRACKING_LIMIT = 10_000;
-const RESYNC_REQUEST_ROWS_LIMIT = 500;
 export const WEBHOOK_EVENT_RETENTION_DAYS = 30;
 const CONNECTION_TEST_USER: AchordConnectLaunchUser = { id: "chordv-connection-test", email: "", displayName: "ChordV 连接测试" };
-
-type StoredSupportIntegrationConfig = {
-  baseUrl: string | null;
-  clientId: string | null;
-  clientSecret: string | null;
-  webhookSecret: string | null;
-  enabled: boolean;
-};
 
 export type AchordConnectWebhookRequest = {
   rawBody: Buffer;
@@ -85,33 +83,20 @@ export class SupportIntegrationService {
     return this.toAdminConfig(stored.value, stored.updatedAt);
   }
 
+  /**
+   * 部分更新：省略的字段保持不变。读取与写回在同一事务里并对设置行加锁，
+   * 两位管理员同时保存时后者基于前者的结果修改，不会把对方清除的密钥或关闭的开关写回去。
+   */
   async updateAdminConfig(input: UpdateAdminSupportIntegrationConfigInputDto): Promise<AdminSupportIntegrationConfigDto> {
-    const current = (await this.readStoredConfig()).value;
-    const next: StoredSupportIntegrationConfig = { ...current };
-    if (input.baseUrl !== undefined) {
-      next.baseUrl = input.baseUrl?.trim() ? normalizeAchordConnectBaseUrl(input.baseUrl) : null;
-    }
-    if (input.clientId !== undefined) {
-      next.clientId = input.clientId?.trim() ? normalizeAchordConnectClientId(input.clientId) : null;
-    }
-    if (input.clientSecret !== undefined) {
-      next.clientSecret = input.clientSecret === null ? null : normalizeAchordConnectSecret(input.clientSecret, "Client Secret");
-    }
-    if (input.webhookSecret !== undefined) {
-      next.webhookSecret = input.webhookSecret === null ? null : normalizeAchordConnectSecret(input.webhookSecret, "Webhook Secret");
-    }
-    if (input.enabled !== undefined) {
-      next.enabled = input.enabled;
-    }
-    if (next.enabled && !readCredentials(next)) {
-      throw new BadRequestException("启用前请先填写工单系统地址、Client ID 和 Client Secret");
-    }
-    const row = await this.prisma.systemSetting.upsert({
-      where: { key: SUPPORT_INTEGRATION_SETTING_KEY },
-      create: { key: SUPPORT_INTEGRATION_SETTING_KEY, value: next },
-      update: { value: next }
+    const saved = await this.prisma.$transaction(async (tx) => {
+      await tx.systemSetting.createMany({ data: [{ key: SUPPORT_INTEGRATION_SETTING_KEY, value: {} }], skipDuplicates: true });
+      await tx.$queryRaw`SELECT "key" FROM "SystemSetting" WHERE "key" = ${SUPPORT_INTEGRATION_SETTING_KEY} FOR UPDATE`;
+      const row = await tx.systemSetting.findUniqueOrThrow({ where: { key: SUPPORT_INTEGRATION_SETTING_KEY } });
+      const next = applyConfigUpdate(parseStoredSupportIntegrationConfig(row.value), input);
+      const updated = await tx.systemSetting.update({ where: { key: SUPPORT_INTEGRATION_SETTING_KEY }, data: { value: next } });
+      return { next, updatedAt: updated.updatedAt };
     });
-    return this.toAdminConfig(next, row.updatedAt);
+    return this.toAdminConfig(saved.next, saved.updatedAt);
   }
 
   /** 用已保存的设置测试：为测试用户创建一次票据（不会被兑换，60 秒后自动失效），并查询一次未读。 */
@@ -225,8 +210,9 @@ export class SupportIntegrationService {
 
   /**
    * 在一个事务里记录事件 ID（去重）并更新未读数；同一用户的事件按行锁串行处理。
-   * 事件带 contactUnreadCount 时以它为总数，否则按请求求和；晚到的旧事件不会覆盖更新的值。
-   * 返回 null 表示事件已处理过。
+   * 事件带 contactUnreadCount 时以它为总数；不带时按这个请求未读数的变化量增减总数（等价于按请求求和，
+   * 但不依赖本地记录齐全）。早于最近一次权威总数（Webhook 总数或服务端校准）的事件已包含在总数里，
+   * 只记录事件 ID、不再改动；同一请求晚到的旧事件也不会覆盖更新的值。返回 null 表示事件已处理过。
    */
   async applyUnreadChange(eventId: string, type: string, change: AchordConnectUnreadChange, eventAt: Date): Promise<UnreadTotalChange | null> {
     const userId = change.externalUserId;
@@ -238,23 +224,27 @@ export class SupportIntegrationService {
       await tx.supportUnreadState.createMany({ data: [{ userId }], skipDuplicates: true });
       await tx.$queryRaw`SELECT "userId" FROM "SupportUnreadState" WHERE "userId" = ${userId} FOR UPDATE`;
       const state = await tx.supportUnreadState.findUniqueOrThrow({ where: { userId } });
-      const key = { userId_requestId: { userId, requestId: change.requestId } };
-      const existing = await tx.supportRequestUnread.findUnique({ where: key, select: { eventAt: true } });
-      if (!existing) {
-        await tx.supportRequestUnread.create({ data: { userId, requestId: change.requestId, unreadCount: change.unreadCount, eventAt } });
-      } else if (existing.eventAt.getTime() <= eventAt.getTime()) {
-        await tx.supportRequestUnread.update({ where: key, data: { unreadCount: change.unreadCount, eventAt } });
+      const unchanged = { previous: state.unreadCount, next: state.unreadCount };
+      if (state.sourceAt && eventAt.getTime() < state.sourceAt.getTime()) {
+        return unchanged;
       }
-      const data: { unreadCount: number; sourceAt?: Date; syncedAt?: Date } = { unreadCount: state.unreadCount };
+      const key = { userId_requestId: { userId, requestId: change.requestId } };
+      const existing = await tx.supportRequestUnread.findUnique({ where: key, select: { unreadCount: true, eventAt: true } });
+      const requestIsNewer = !existing || existing.eventAt.getTime() <= eventAt.getTime();
+      if (requestIsNewer) {
+        await tx.supportRequestUnread.upsert({
+          where: key,
+          create: { userId, requestId: change.requestId, unreadCount: change.unreadCount, eventAt },
+          update: { unreadCount: change.unreadCount, eventAt }
+        });
+      }
+      let data: { unreadCount: number; sourceAt?: Date; syncedAt?: Date };
       if (change.contactUnreadCount !== null) {
-        if (!state.sourceAt || state.sourceAt.getTime() <= eventAt.getTime()) {
-          data.unreadCount = change.contactUnreadCount;
-          data.sourceAt = eventAt;
-          data.syncedAt = new Date();
-        }
+        data = { unreadCount: change.contactUnreadCount, sourceAt: eventAt, syncedAt: new Date() };
+      } else if (requestIsNewer) {
+        data = { unreadCount: Math.max(0, state.unreadCount + change.unreadCount - (existing?.unreadCount ?? 0)) };
       } else {
-        const sum = await tx.supportRequestUnread.aggregate({ where: { userId }, _sum: { unreadCount: true } });
-        data.unreadCount = sum._sum.unreadCount ?? 0;
+        return unchanged;
       }
       await tx.supportUnreadState.update({ where: { userId }, data });
       return { previous: state.unreadCount, next: data.unreadCount };
@@ -290,22 +280,30 @@ export class SupportIntegrationService {
           // 查询期间已收到更新的权威总数，保留它。
           return { previous: state.unreadCount, next: state.unreadCount };
         }
-        // 查询结果取代它之前的按请求记录；查询期间到达的更新事件保留。
+        // 查询期间到达的按请求事件比查询结果新：保留这些记录，并把它们相对查询结果的变化计入总数。
+        const remoteCounts = new Map(remote.requests.map((item) => [item.id, item.unreadCount]));
+        const newer = await tx.supportRequestUnread.findMany({
+          where: { userId, eventAt: { gt: snapshotAt } },
+          select: { requestId: true, unreadCount: true }
+        });
+        const newerIds = new Set(newer.map((row) => row.requestId));
+        const total = Math.max(0, newer.reduce(
+          (sum, row) => sum + row.unreadCount - (remoteCounts.get(row.requestId) ?? 0),
+          remote.unreadCount
+        ));
+        // 其余记录由查询结果整体取代（包括查询结果里已经没有的请求）。
         await tx.supportRequestUnread.deleteMany({ where: { userId, eventAt: { lte: snapshotAt } } });
-        const rows = remote.requests.slice(0, RESYNC_REQUEST_ROWS_LIMIT).map((item) => ({
-          userId,
-          requestId: item.id,
-          unreadCount: item.unreadCount,
-          eventAt: snapshotAt
-        }));
+        const rows = remote.requests
+          .filter((item) => !newerIds.has(item.id))
+          .map((item) => ({ userId, requestId: item.id, unreadCount: item.unreadCount, eventAt: snapshotAt }));
         if (rows.length > 0) {
           await tx.supportRequestUnread.createMany({ data: rows, skipDuplicates: true });
         }
         await tx.supportUnreadState.update({
           where: { userId },
-          data: { unreadCount: remote.unreadCount, sourceAt: snapshotAt, syncedAt: new Date() }
+          data: { unreadCount: total, sourceAt: snapshotAt, syncedAt: new Date() }
         });
-        return { previous: state.unreadCount, next: remote.unreadCount };
+        return { previous: state.unreadCount, next: total };
       });
     } catch (error) {
       this.logger.warn(`Achord Connect 未读校准写入失败（用户 ${userId}）：${error instanceof Error ? error.message : String(error)}`);
@@ -357,9 +355,8 @@ export class SupportIntegrationService {
     return value.enabled ? readCredentials(value) : null;
   }
 
-  private async readStoredConfig(): Promise<{ value: StoredSupportIntegrationConfig; updatedAt: Date | null }> {
-    const row = await this.prisma.systemSetting.findUnique({ where: { key: SUPPORT_INTEGRATION_SETTING_KEY } });
-    return { value: parseStoredConfig(row?.value), updatedAt: row?.updatedAt ?? null };
+  private readStoredConfig() {
+    return readSupportIntegrationConfig(this.prisma);
   }
 
   private async toAdminConfig(value: StoredSupportIntegrationConfig, updatedAt: Date | null): Promise<AdminSupportIntegrationConfigDto> {
@@ -376,22 +373,27 @@ export class SupportIntegrationService {
   }
 }
 
-function parseStoredConfig(value: unknown): StoredSupportIntegrationConfig {
-  const record = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-  const text = (key: string) => (typeof record[key] === "string" && record[key] ? (record[key] as string) : null);
-  return {
-    baseUrl: text("baseUrl"),
-    clientId: text("clientId"),
-    clientSecret: text("clientSecret"),
-    webhookSecret: text("webhookSecret"),
-    enabled: record.enabled === true
-  };
-}
-
-function readCredentials(value: StoredSupportIntegrationConfig): AchordConnectCredentials | null {
-  return value.baseUrl && value.clientId && value.clientSecret
-    ? { baseUrl: value.baseUrl, clientId: value.clientId, clientSecret: value.clientSecret }
-    : null;
+function applyConfigUpdate(current: StoredSupportIntegrationConfig, input: UpdateAdminSupportIntegrationConfigInputDto): StoredSupportIntegrationConfig {
+  const next: StoredSupportIntegrationConfig = { ...current };
+  if (input.baseUrl !== undefined) {
+    next.baseUrl = input.baseUrl?.trim() ? normalizeAchordConnectBaseUrl(input.baseUrl) : null;
+  }
+  if (input.clientId !== undefined) {
+    next.clientId = input.clientId?.trim() ? normalizeAchordConnectClientId(input.clientId) : null;
+  }
+  if (input.clientSecret !== undefined) {
+    next.clientSecret = input.clientSecret === null ? null : normalizeAchordConnectSecret(input.clientSecret, "Client Secret");
+  }
+  if (input.webhookSecret !== undefined) {
+    next.webhookSecret = input.webhookSecret === null ? null : normalizeAchordConnectSecret(input.webhookSecret, "Webhook Secret");
+  }
+  if (input.enabled !== undefined) {
+    next.enabled = input.enabled;
+  }
+  if (next.enabled && !readCredentials(next)) {
+    throw new BadRequestException("启用前请先填写工单系统地址、Client ID 和 Client Secret");
+  }
+  return next;
 }
 
 function describeInternalError(error: unknown) {

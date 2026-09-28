@@ -847,6 +847,8 @@ export interface DashboardSnapshotDto {
   openTickets: number;
   waitingAdminTickets: number;
   closedTickets: number;
+  /** 已启用新工单系统（Achord Connect）：自建工单转为只读存档，“待回复”不再是待处理事项。 */
+  legacyTicketsReadOnly?: boolean;
 }
 
 export interface AdminSnapshotDto {

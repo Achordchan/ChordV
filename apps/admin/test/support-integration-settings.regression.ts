@@ -50,7 +50,8 @@ function testModalShowsWebhookUrlAndConnectionTest() {
 }
 
 function testSystemSettingsLinksToModal() {
-  assert.match(settingsPage, /<SupportIntegrationModal opened=\{supportOpened\} onClose=\{\(\)=>setSupportOpened\(false\)\}\/>/);
+  assert.match(settingsPage, /<SupportIntegrationModal opened=\{supportOpened\} onClose=\{\(\)=>setSupportOpened\(false\)\} onSaved=\{props\.onSupportIntegrationChanged\}\/>/);
+  assert.match(modal, /apply\(next\);\s*onSaved\?\.\(\);/, "保存后通知刷新仪表台，旧工单只读状态随开关切换");
   assert.match(settingsPage, /<h3>工单系统接入<\/h3>/);
   assert.match(settingsPage, /onClick=\{\(\)=>setSupportOpened\(true\)\}>管理接入</);
 }

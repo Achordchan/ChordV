@@ -15,7 +15,7 @@ const SECRET_LABELS: Record<SecretKey, string> = { clientSecret: "Client Secret"
  * 工单系统（Achord Connect）接入设置。两个密钥只写不读：接口只告诉我们“已设置 / 未设置”，
  * 输入框里只有管理员这次新粘贴的值，保存或关闭后立即清空。
  */
-export function SupportIntegrationModal({ opened, onClose }: { opened: boolean; onClose: () => void }) {
+export function SupportIntegrationModal({ opened, onClose, onSaved }: { opened: boolean; onClose: () => void; onSaved?: () => void }) {
   const [config, setConfig] = useState<AdminSupportIntegrationConfigDto | null>(null);
   const [draft, setDraft] = useState<Draft>(emptyDraft());
   const [loading, setLoading] = useState(false), [saving, setSaving] = useState(false), [testing, setTesting] = useState(false);
@@ -45,6 +45,7 @@ export function SupportIntegrationModal({ opened, onClose }: { opened: boolean; 
       const next = await updateSupportIntegrationConfig(input);
       if (id !== epoch.current) return;
       apply(next);
+      onSaved?.();
       notifications.show({ color: "teal", message });
     } catch (reason) { if (id === epoch.current) setError(readError(reason, "保存失败，请重新读取确认当前设置")); }
     finally { busy.current = false; if (id === epoch.current) setSaving(false); }
@@ -91,7 +92,7 @@ export function SupportIntegrationModal({ opened, onClose }: { opened: boolean; 
       {error && <Alert color="red">{error}<Button variant="subtle" disabled={disabled} onClick={() => void load()}>重新读取</Button></Alert>}
       {loading ? <Text role="status">正在读取工单系统接入设置…</Text> : config ? <>
         <Text size="sm" c="dimmed">客户端的“工单”入口会打开 Achord Connect。请在 Achord Connect 的连接配置里复制地址和凭据填到这里，并把下面的 Webhook 地址填回 Achord Connect。密钥保存后不会再显示。</Text>
-        <Switch label="启用新工单系统" description="关闭时客户端提示“工单系统暂未开放”" checked={draft.enabled} disabled={disabled} onChange={e => setDraft({ ...draft, enabled: e.currentTarget.checked })}/>
+        <Switch label="启用新工单系统" description="启用后客户端使用新工单系统，自建工单转为只读（旧版客户端提交工单会提示升级）；关闭时客户端提示“工单系统暂未开放”" checked={draft.enabled} disabled={disabled} onChange={e => setDraft({ ...draft, enabled: e.currentTarget.checked })}/>
         <TextInput label="工单系统地址" description="例如 https://support.achord.cn" value={draft.baseUrl} disabled={disabled} onChange={e => setDraft({ ...draft, baseUrl: e.currentTarget.value })}/>
         <TextInput label="Client ID" value={draft.clientId} disabled={disabled} onChange={e => setDraft({ ...draft, clientId: e.currentTarget.value })}/>
         {secretField("clientSecret")}

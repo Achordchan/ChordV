@@ -17,16 +17,16 @@ const overviewPage = read(join(adminRoot, "src", "pages", "OverviewPage.tsx"));
 const app = read(join(adminRoot, "src", "App.tsx"));
 
 assert.match(overviewPage, /待处理事项/);
-// 自建工单已迁移到 Achord Connect 且只读，历史“待回复”数量不再作为待处理事项展示。
-assert.doesNotMatch(overviewPage, /待回复工单/);
-assert.doesNotMatch(overviewPage, /onOpenTickets/);
+assert.match(overviewPage, /待回复工单/);
 assert.match(overviewPage, /后台同步/);
 assert.match(overviewPage, /异常节点/);
+assert.match(overviewPage, /onOpenTickets: \(\) => void/);
 assert.match(overviewPage, /onOpenSyncQueue: \(\) => void/);
 assert.ok(
   overviewPage.indexOf("待处理事项") < overviewPage.indexOf("className={styles.metrics}"),
   "overview should show actionable work before passive metrics"
 );
+assert.match(app, /onOpenTickets=\{\(\) => selectSection\("tickets"\)\}/);
 assert.match(app, /onOpenSyncQueue=\{\(\) => openLeaseRevocationQueue\(\)\}/);
 
 // The badge must not hide an unhealthy agent behind a healthy TCP probe: the

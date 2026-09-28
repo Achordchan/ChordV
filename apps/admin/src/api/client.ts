@@ -16,6 +16,7 @@ import type {
   CreateReleaseInputDto,
   DeleteAdminImageBedFileResultDto,
   CreateRuntimeComponentInputDto,
+  ReplyClientSupportTicketInputDto,
   ReleaseArtifactType,
   ReleaseStatus,
   RuntimeComponentArchitecture,
@@ -24,6 +25,7 @@ import type {
   SupportTicketStatus,
   UpdateDeliveryMode,
   UpdateAdminImageBedConfigInputDto,
+  UploadedSupportTicketAttachmentInputDto,
   UpdateReleaseArtifactInputDto,
   UpdateReleaseInputDto,
   UpdateRuntimeComponentInputDto
@@ -36,6 +38,7 @@ const IMAGE_BED_LIST_TIMEOUT_MS = 10 * 1000;
 const IMAGE_BED_LIST_TIMEOUT_MESSAGE = "图床文件列表加载超时，请稍后重试或缩小搜索范围。";
 const IMAGE_BED_CONFIG_SAVE_TIMEOUT_MESSAGE = "图床配置保存请求仍在处理，请稍后刷新图床配置确认结果。";
 const IMAGE_BED_MANAGE_TIMEOUT_MESSAGE = "图床管理请求仍在处理，请稍后刷新文件列表确认结果。";
+const TICKET_ATTACHMENT_TIMEOUT_MS = 90 * 1000;
 const ADMIN_READ_TIMEOUT_MS = 60 * 1000;
 const ADMIN_ACTION_TIMEOUT_MS = 60 * 1000;
 const LONG_ADMIN_ACTION_TIMEOUT_MS = 10 * 60 * 1000;
@@ -107,6 +110,7 @@ export type AdminSupportTicketDetailDto = SharedAdminSupportTicketDetailDto;
 export type { AdminUploadLimitsDto };
 export type CreateAdminReleaseArtifactInputDto = Omit<CreateReleaseArtifactInputDto, "defaultMirrorPrefix" | "allowClientMirror">;
 export type UpdateAdminReleaseArtifactInputDto = Omit<UpdateReleaseArtifactInputDto, "defaultMirrorPrefix" | "allowClientMirror">;
+export type ReplyAdminSupportTicketInputDto = ReplyClientSupportTicketInputDto;
 export type AdminRuntimeEventDto = {
   type:
     | "keepalive"
@@ -760,6 +764,45 @@ function parseAdminEventStreamBuffer(
 export async function fetchAdminSupportTicketDetail(ticketId: string) {
   return request<SharedAdminSupportTicketDetailDto>(`/admin/tickets/${ticketId}`, {
     timeoutMs: ADMIN_READ_TIMEOUT_MS
+  });
+}
+
+export async function replyAdminSupportTicket(ticketId: string, input: ReplyAdminSupportTicketInputDto) {
+  return request<SharedAdminSupportTicketDetailDto>(`/admin/tickets/${ticketId}/replies`, {
+    method: "POST",
+    body: JSON.stringify(input),
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
+  });
+}
+
+export async function replyAdminSupportTicketWithAttachment(
+  ticketId: string,
+  input: UploadedSupportTicketAttachmentInputDto,
+  file: File
+) {
+  const body = new FormData();
+  if (input.body?.trim()) {
+    body.set("body", input.body.trim());
+  }
+  body.set("file", file);
+  return request<SharedAdminSupportTicketDetailDto>(`/admin/tickets/${ticketId}/attachments`, {
+    method: "POST",
+    body,
+    timeoutMs: TICKET_ATTACHMENT_TIMEOUT_MS
+  });
+}
+
+export async function closeAdminSupportTicket(ticketId: string) {
+  return request<SharedAdminSupportTicketDetailDto>(`/admin/tickets/${ticketId}/close`, {
+    method: "POST",
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
+  });
+}
+
+export async function reopenAdminSupportTicket(ticketId: string) {
+  return request<SharedAdminSupportTicketDetailDto>(`/admin/tickets/${ticketId}/reopen`, {
+    method: "POST",
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
 }
 
