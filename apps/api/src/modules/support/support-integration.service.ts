@@ -469,6 +469,8 @@ export class SupportIntegrationService {
   async resyncUnread(userId: string, credentials: AchordConnectCredentials): Promise<number | null> {
     const before = await this.prisma.supportUnreadState.findUnique({ where: { userId }, select: { revision: true } });
     const expectedRevision = before?.revision ?? 0;
+    // 同时记下查询前的设置代次：用户还没有未读记录时，停用再启用、切换连接都改不到他的版本号，只能靠代次判断。
+    const configBefore = (await this.readStoredConfig()).value;
     let remote: Awaited<ReturnType<typeof fetchAchordConnectContactUnread>>;
     try {
       remote = await fetchAchordConnectContactUnread(this.fetchImpl, credentials, userId, RESYNC_TIMEOUT_MS);
@@ -498,10 +500,12 @@ export class SupportIntegrationService {
         const currentConnection = readCredentials(config);
         if (
           state.revision !== expectedRevision ||
+          config.generation !== configBefore.generation ||
+          config.epoch !== configBefore.epoch ||
           currentConnection?.baseUrl !== credentials.baseUrl ||
           currentConnection?.clientId !== credentials.clientId
         ) {
-          // 查询期间处理过 Webhook，或连接已被切换：结果不再适用。
+          // 查询期间处理过 Webhook，或连接、启用状态已变：结果不再适用。
           return null;
         }
         const snapshotWatermark = new Date(serverTime.getTime() - SNAPSHOT_WATERMARK_MARGIN_MS);

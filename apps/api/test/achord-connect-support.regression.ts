@@ -1235,6 +1235,20 @@ async function testResponseLimitsReenableFenceAndStatusRecheck() {
     assert.equal(db.state("user_1")?.syncedAt, null, "仍为待校准，后台任务会重新查询");
   }
 
+  // 用户第一次校准（还没有未读记录）期间停用又启用：没有记录可加版本号，靠设置代次判断，旧结果不写入。
+  {
+    const { service, db, published } = createService();
+    await configure(service);
+    service.fetchImpl = async () => {
+      await service.updateAdminConfig({ enabled: false });
+      await service.updateAdminConfig({ enabled: true });
+      return json(200, { data: { externalUserId: "user_1", unreadCount: 7, requests: [] } });
+    };
+    assert.equal(await service.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), null);
+    assert.ok(!db.state("user_1") || db.state("user_1")?.syncedAt === null, "不标记为已校准");
+    assert.ok(published.every((item) => item.count !== 7), "旧结果不推送");
+  }
+
   // 本地值新鲜、不需要校准的路径同样复核设置：查询期间被停用就按未启用返回。
   {
     const { service, db } = createService();
