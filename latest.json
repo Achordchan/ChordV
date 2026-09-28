@@ -1,0 +1,17 @@
+{
+  "version": "0.0.29",
+  "channel": "stable",
+  "tag": "backend-v0.0.29",
+  "publishedAt": "2026-09-28T10:13:19Z",
+  "htmlUrl": "https://github.com/Achordchan/ChordV/releases/tag/backend-v0.0.29",
+  "changelog": [
+    "后台工单页按当前后台风格重做，启用新工单系统后为只读历史存档",
+    "打开工单时自动附带客户端版本、系统、时区、连接状态、套餐等信息到工单系统联系人资料",
+    "工单系统接入设置页列出需要在工单系统声明的联系人资料字段，测试连接会检查字段是否可用"
+  ],
+  "artifact": {
+    "url": "https://github.com/Achordchan/ChordV/releases/download/backend-v0.0.29/chordv-backend-0.0.29.tar.gz",
+    "sha256": "692633e7b5d79a5c724e2f90f0b7a1a39576266289d495bccf31457fa6b04830",
+    "sizeBytes": 104000800
+  }
+}
