@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Alert, Avatar, Button } from "@mantine/core";
-import { IconAlertCircle, IconArrowLeft, IconArrowUpRight } from "@tabler/icons-react";
+import { IconAlertCircle, IconArrowUpRight } from "@tabler/icons-react";
 import type { AdminSupportTicketDetailDto } from "@chordv/shared";
 import { formatDateTimeWithYear } from "../../utils/admin-format";
 import { summarizeAdminDiagnosticMessage } from "../../utils/admin-filters";
@@ -30,7 +30,6 @@ export type TicketDetailProps = {
   onStatusAction: (ticket: AdminSupportTicketDetailDto, next: "close" | "reopen") => void;
   onPreviewAttachment: (attachment: TicketAttachmentPreview) => void;
   onOpenCustomer?: (target: TicketCustomerTarget) => void;
-  onBack: () => void;
   /** 回复框由页面持有草稿与附件状态；只读存档时即使传入也不会渲染。 */
   composer?: ReactNode;
 };
@@ -45,10 +44,6 @@ export function TicketDetail(props: TicketDetailProps) {
 
   return (
     <>
-      <button type="button" className={styles.backButton} onClick={props.onBack}>
-        <IconArrowLeft size={17} />
-        返回列表
-      </button>
       <header className={styles.detailHeader}>
         <div className={styles.detailTitle}>
           <h1>{ticket.title}</h1>

@@ -67,7 +67,6 @@ function renderDetail(ticket: AdminSupportTicketDetailDto, readOnly: boolean, wi
     onStatusAction: noop,
     onPreviewAttachment: noop,
     onOpenCustomer: withCustomerLink ? noop : undefined,
-    onBack: noop,
     // 页面在只读时本就不传回复框；这里故意传入，确认详情本身也不会渲染。
     composer: createElement("div", { "data-composer": "yes" }, "REPLY-COMPOSER")
   }));

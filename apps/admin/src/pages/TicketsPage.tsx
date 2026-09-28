@@ -2,7 +2,7 @@ import { DataSkeleton } from "../features/shared/DataSkeleton";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Button, Modal, Stack } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { IconAlertCircle, IconArchive, IconExternalLink, IconMessageCircle } from "@tabler/icons-react";
+import { IconAlertCircle, IconArchive, IconArrowLeft, IconExternalLink, IconMessageCircle } from "@tabler/icons-react";
 import {
   closeAdminSupportTicket,
   fetchAdminUploadLimits,
@@ -434,6 +434,11 @@ export function TicketsPage(props: TicketsPageProps) {
           />
 
           <main className={styles.detail}>
+            {/* 窄屏返回按钮放在详情分支之外，详情加载中或失败时也能回到列表。 */}
+            <button type="button" className={styles.backButton} onClick={() => setMobileDetail(false)}>
+              <IconArrowLeft size={17} />
+              返回列表
+            </button>
             {detailError ? (
               <Alert color="red" variant="light" icon={<IconAlertCircle size={20} />} className={styles.errorNotice}>
                 <span>{detailError}</span>
@@ -456,7 +461,6 @@ export function TicketsPage(props: TicketsPageProps) {
                 onStatusAction={(ticket, next) => void handleStatusAction(ticket, next)}
                 onPreviewAttachment={setPreviewAttachment}
                 onOpenCustomer={props.onOpenCustomer}
-                onBack={() => setMobileDetail(false)}
                 composer={
                   props.readOnly ? null : (
                     <TicketComposer

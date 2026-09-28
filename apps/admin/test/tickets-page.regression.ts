@@ -82,6 +82,12 @@ function testTicketsPageSharesAdminAppearance() {
   assert.match(source, /<DataSkeleton variant="workspace" rows=\{5\} \/>/);
 }
 
+function testMobileBackStaysAvailableWhenDetailFails() {
+  // 窄屏选中工单后列表隐藏；返回按钮在详情成功分支之外，详情加载中或失败时仍可返回。
+  assert.match(source, /<main className=\{styles\.detail\}>[\s\S]*?className=\{styles\.backButton\} onClick=\{\(\) => setMobileDetail\(false\)\}[\s\S]*?\{detailError \? \(/);
+  assert.doesNotMatch(detail, /backButton/);
+}
+
 function testTicketCustomerLinksOpenCustomerWorkspace() {
   assert.match(detail, /const customerTarget = props\.onOpenCustomer \? readTicketCustomerTarget\(ticket\) : null;/);
   assert.match(
@@ -163,6 +169,7 @@ testTicketAttachmentImagesExposeLoadingFailureAndRecoveryStates();
 testTicketWorkspaceUsesScopedStyles();
 testTicketsPageSharesAdminAppearance();
 testTicketCustomerLinksOpenCustomerWorkspace();
+testMobileBackStaysAvailableWhenDetailFails();
 testTicketReplyAlwaysReleasesBusyState();
 testTicketStatusActionHandlesUncertainStateAndReleasesBusyState();
 testTicketReplyAndStatusActionsAreMutuallyExclusive();
