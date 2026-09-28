@@ -36,7 +36,7 @@ function testModalNeverRendersStoredSecrets() {
   assert.match(modal, /if \(draft\.clientId\.trim\(\) !== \(config\.clientId \?\? ""\)\) input\.clientId = draft\.clientId\.trim\(\) \|\| null;/);
   assert.doesNotMatch(modal, /\{ enabled: draft\.enabled, baseUrl:/, "不能整体提交读取到的旧值");
   // 更换连接时提示需要新的 Webhook Secret（后台会拒绝沿用旧密钥的更换）。
-  assert.match(modal, /更换工单系统地址或 Client ID 时，需要同时粘贴新连接的 Webhook Secret/);
+  assert.match(modal, /更换工单系统地址或 Client ID 时，需要同时粘贴新连接的 Webhook Secret（不能与当前的相同/);
   // 留空不提交（保持不变），清除才提交 null。
   assert.match(modal, /if \(draft\.clientSecret\.trim\(\)\) input\.clientSecret = draft\.clientSecret\.trim\(\);/);
   assert.match(modal, /if \(draft\.webhookSecret\.trim\(\)\) input\.webhookSecret = draft\.webhookSecret\.trim\(\);/);

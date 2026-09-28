@@ -107,7 +107,7 @@ export function SupportIntegrationModal({ opened, onClose, onSaved }: { opened: 
         <TextInput label="Client ID" value={draft.clientId} disabled={disabled} onChange={e => setDraft({ ...draft, clientId: e.currentTarget.value })}/>
         {secretField("clientSecret")}
         {secretField("webhookSecret")}
-        {connectionEdited ? <Text size="xs" c="orange.8">更换工单系统地址或 Client ID 时，需要同时粘贴新连接的 Webhook Secret（旧连接的 Webhook 会因此被拒绝）。</Text> : null}
+        {connectionEdited ? <Text size="xs" c="orange.8">更换工单系统地址或 Client ID 时，需要同时粘贴新连接的 Webhook Secret（不能与当前的相同，旧连接的 Webhook 会因此被拒绝）。</Text> : null}
         <Stack gap={6}>
           <Text size="sm" fw={500}>Webhook 地址</Text>
           <Group gap="xs" wrap="nowrap">

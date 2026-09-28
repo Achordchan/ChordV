@@ -694,8 +694,8 @@ function applyConfigUpdate(current: StoredSupportIntegrationConfig, input: Updat
   // 仍带着旧密钥的签名，沿用旧密钥就无法把它们挡在外面。
   const switchingConnection = Boolean(current.baseUrl && current.clientId) &&
     (current.baseUrl !== next.baseUrl || current.clientId !== next.clientId);
-  if (switchingConnection && typeof input.webhookSecret !== "string") {
-    throw new BadRequestException("更换工单系统地址或 Client ID 时，请同时填写新连接的 Webhook Secret");
+  if (switchingConnection && (typeof input.webhookSecret !== "string" || next.webhookSecret === current.webhookSecret)) {
+    throw new BadRequestException("更换工单系统地址或 Client ID 时，请同时填写新连接的 Webhook Secret（不能与当前的相同）");
   }
   if (next.enabled && (!readCredentials(next) || !next.webhookSecret)) {
     // 客户端不会定时查询状态，未读提醒依赖 Webhook，所以启用前 Webhook Secret 也必须填写。

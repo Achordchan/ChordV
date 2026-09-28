@@ -1139,6 +1139,7 @@ async function testConnectionSwitchNeedsNewWebhookSecretAndLegacyBaseline() {
     await configure(service);
     await rejects(service.updateAdminConfig({ baseUrl: "https://support-new.example.test" }), BadRequestException);
     await rejects(service.updateAdminConfig({ clientId: "ac_fake_other" }), BadRequestException);
+    await rejects(service.updateAdminConfig({ clientId: "ac_fake_other", webhookSecret: ` ${WEBHOOK_SECRET} ` }), BadRequestException);
     assert.equal(db.setting("achord-connect").baseUrl, BASE_URL, "被拒绝的保存不改动设置");
     await service.updateAdminConfig({ clientId: "ac_fake_other", webhookSecret: NEW_WEBHOOK_SECRET });
     // 切换后，旧连接用旧密钥签名的 Webhook 一律 401。
