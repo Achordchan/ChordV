@@ -1,0 +1,76 @@
+/*
+ * 提示卡片（1.1.9 设计语言）：白色实底 + 细边框 + 柔和阴影，左侧语义图标取代 Mantine 默认的彩色竖条。
+ * 卡片停在右上角、贴齐主内容 12px 边距，宽 320px，与右侧控制栏同宽区域对齐，
+ * 最多 3 条，不会压到中部的连接按钮。
+ */
+.container {
+  top: 12px;
+  right: 12px;
+  width: calc(100% - 24px);
+}
+/* macOS 透明标题栏（28px）占据窗口顶部：提示从标题栏下方开始，不遮挡交通灯和拖拽区。 */
+:global(:root:has(.desktop-app--mac-titlebar)) .container { top: 38px; }
+/* 移动端避开状态栏安全区。 */
+:global(:root:has(.desktop-app--mobile)) .container { top: max(12px, calc(env(safe-area-inset-top) + 8px)); }
+
+.item + .item { margin-top: 8px; }
+
+.toast[data-tone] {
+  --toast-icon: var(--cv-icon-info);
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 8px 10px 12px;
+  border: 1px solid var(--cv-border);
+  border-radius: var(--cv-radius-lg);
+  background: var(--cv-surface);
+  box-shadow: var(--cv-shadow-lg);
+  color: var(--cv-text);
+}
+.toast[data-tone="success"] { --toast-icon: var(--cv-icon-success); }
+.toast[data-tone="warning"] { --toast-icon: var(--cv-icon-warning); }
+.toast[data-tone="danger"] { --toast-icon: var(--cv-icon-danger); }
+.toast[data-tone]::before { display: none; }
+
+/* 18px 图标对齐第一行文字（标题 14px / 行高 20px）。 */
+.icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 20px;
+  margin: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--toast-icon);
+}
+
+.body { min-width: 0; margin: 0; }
+
+.title {
+  margin-bottom: 1px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+  color: var(--cv-text);
+  overflow-wrap: anywhere;
+}
+
+.description {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--cv-text-muted);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+/* 没有标题时正文就是主信息：用正文色，并与图标首行对齐。 */
+.description:not([data-with-title]) { color: var(--cv-text); line-height: 20px; }
+
+.message { display: block; }
+/* 错误编号是次要信息：独立一行，样式与弹窗 / 面板里的 ErrorCodeHint 一致。 */
+.code { display: flex; min-width: 0; margin-top: 4px; }
+
+.close {
+  flex-shrink: 0;
+  margin: -2px -2px 0 0;
+  border-radius: var(--cv-radius-sm);
+  color: var(--cv-text-muted);
+}
+.close:hover { background: var(--cv-surface-muted); color: var(--cv-text); }

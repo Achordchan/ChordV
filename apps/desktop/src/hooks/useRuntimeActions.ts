@@ -35,7 +35,6 @@ import {
   type RuntimeStatus
 } from "../lib/runtime";
 import type { RuntimeAssetsUiState } from "../lib/runtimeComponents";
-import { toneToToastColor } from "../lib/appState";
 import { buildProtectedAccessNotice, resolveProtectedAccessReason } from "../lib/sessionLeaseState";
 import type { UserErrorContext } from "../lib/userFacingErrors";
 import {
@@ -55,13 +54,7 @@ import {
   pickAlternativeNode,
   sameGuidance
 } from "../lib/connectionGuidance";
-
-type NoticeInput = {
-  color: "green" | "yellow" | "red" | "blue" | "cyan";
-  title: string;
-  message: string;
-  autoClose?: number;
-};
+import type { ToastInput } from "../lib/toast";
 
 type EnsureRuntimeAssetsOptions = {
   source: "startup" | "connect" | "retry";
@@ -119,7 +112,7 @@ type UseRuntimeActionsOptions = {
   setGuidanceDialog: Dispatch<SetStateAction<ConnectionGuidance | null>>;
   readError: (message: string) => string;
   showErrorToast: (reason: unknown, context?: UserErrorContext) => void;
-  notify: (notice: NoticeInput) => void;
+  notify: (notice: ToastInput) => void;
   setServerProbe: Dispatch<SetStateAction<ServerProbeState>>;
   mergeSubscriptionState: (subscription: SubscriptionStatusDto) => void;
   recoverSessionAfterUnauthorized: () => Promise<AuthSessionDto | null> | AuthSessionDto | null;
@@ -155,7 +148,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       const notice = buildProtectedAccessNotice(accessReason);
       await options.clearSession(true);
       options.notify({
-        color: "yellow",
+        tone: "warning",
         title: notice.title,
         message: notice.message
       });
@@ -182,7 +175,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       }
       options.lastGuidanceToastRef.current = key;
       options.notify({
-        color: toneToToastColor(guidance.tone),
+        tone: guidance.tone,
         title: guidance.title,
         message: formatGuidanceMessage(guidance),
         autoClose: 4000
@@ -273,7 +266,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         if (message.includes("当前没有可用订阅")) {
           await options.clearSession(true);
           options.notify({
-            color: "yellow",
+            tone: "warning",
             title: "订阅不可用",
             message: "当前账号暂无可用订阅，请续费或联系客服后再使用。"
           });
@@ -336,7 +329,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         if (message.includes("当前没有可用订阅")) {
           await options.clearSession(true);
           options.notify({
-            color: "yellow",
+            tone: "warning",
             title: "订阅不可用",
             message: "当前账号暂无可用订阅，请续费或联系客服后再使用。"
           });
@@ -419,7 +412,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         if (message.includes("当前没有可用订阅") || message.includes("失去可用订阅")) {
           await options.clearSession(true);
           options.notify({
-            color: "yellow",
+            tone: "warning",
             title: "订阅不可用",
             message: "当前账号暂无可用订阅，请续费或联系客服后再使用。"
           });
@@ -432,7 +425,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         if (message.includes("当前没有可用订阅")) {
           await options.clearSession(true);
           options.notify({
-            color: "yellow",
+            tone: "warning",
             title: "订阅不可用",
             message: "当前账号暂无可用订阅，请续费或联系客服后再使用。"
           });
@@ -538,7 +531,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         }
         options.lastForegroundSyncErrorRef.current = message;
         options.notify({
-          color: "yellow",
+          tone: "warning",
           title: "暂时无法同步服务端状态",
           message,
           autoClose: 4000
@@ -606,7 +599,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         }
         await options.clearSession(true);
         options.notify({
-          color: "yellow",
+          tone: "warning",
           title: "登录已失效",
           message: event.reasonMessage ?? "账号信息已更新，请重新登录。"
         });
@@ -630,7 +623,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           if (isAdminPausedConnection) {
             await disconnectCurrentRuntime({ notifyServer: false });
             options.notify({
-              color: "yellow",
+              tone: "warning",
               title: "当前连接已被管理员暂停",
               message: "管理员已立即断开你的当前连接，请稍后重试或联系管理员。"
             });
@@ -638,7 +631,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           }
           await options.clearSession(true);
           options.notify({
-            color: "yellow",
+            tone: "warning",
             title:
               event.reasonCode === "account_disabled"
                 ? "账号已禁用"
@@ -1014,7 +1007,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       await options.forceStopLocalRuntime();
       options.setConnectionGuidance(null);
       options.notify({
-        color: "green",
+        tone: "success",
         title: "本地内核已停止",
         message: options.session
           ? "当前连接已在本机断开，系统代理已恢复。"

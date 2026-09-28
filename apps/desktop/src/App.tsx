@@ -6,7 +6,7 @@ import { shouldReportNodeAccessRevoked } from "./lib/startupReadiness";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { Button, Checkbox, LoadingOverlay, Stack, Text, ThemeIcon, UnstyledButton } from "@mantine/core";
-import { notifications } from "./lib/notifications";
+import { showToast } from "./components/Toast";
 import { IconHome2, IconStack2, IconUserCircle } from "@tabler/icons-react";
 import type {
   AuthSessionDto,
@@ -229,14 +229,14 @@ export function App() {
     },
     onUnauthorized: recoverSessionAfterUnauthorized,
     readError: readAnnouncementError,
-    notify: notifications.show
+    notify: showToast
   });
   const { supportUnreadCount, supportOpening, openSupportPortal, refreshSupportStatus, applySupportUnreadCount } =
     useSupportPortal({
       accessToken: session?.accessToken ?? null,
       userId: session?.user.id ?? null,
       onUnauthorized: recoverSessionAfterUnauthorized,
-      notify: notifications.show,
+      notify: showToast,
       showError: (reason) => showErrorToast(reason, "support")
     });
   const runtimeComponentsCheckRef = useRef<
@@ -255,7 +255,7 @@ export function App() {
   const clearLegacyDownloadMirror = () => {
     localStorage.removeItem(RUNTIME_COMPONENT_MIRROR_PREFIX_KEY);
     setRuntimeMirrorPrefix("");
-    notifications.show({message:"旧下载镜像已清除，请重新下载。",color:"teal"});
+    showToast({message:"旧下载镜像已清除，请重新下载。",tone:"success"});
   };
   const [updateChannel, setUpdateChannel] = useState<ReleaseChannel>(() => {
     try { return localStorage.getItem(UPDATE_CHANNEL_KEY) === "beta" ? "beta" : "stable"; } catch { return "stable"; }
@@ -284,7 +284,7 @@ export function App() {
     backgroundDownloadAllowed: !booting && !windowTransitioning && mainLayoutReady && Boolean(session && bootstrap),
     // Forced updates install on their own (after a visible countdown), even from the login window.
     forcedUpdateAllowed: !booting && !windowTransitioning,
-    notify: notifications.show,
+    notify: showToast,
     showError: showErrorToast,
     onUnauthorized: recoverSessionAfterUnauthorized,
     isPromptBlocked: () =>
@@ -348,7 +348,7 @@ export function App() {
     appVersion,
     platformTarget: desktopStatus.platformTarget,
     accessToken: session?.accessToken ?? null,
-    notify: notifications.show,
+    notify: showToast,
     onUnauthorized: recoverSessionAfterUnauthorized,
     readError
   });
@@ -533,7 +533,7 @@ export function App() {
     setGuidanceDialog,
     readError,
     showErrorToast,
-    notify: notifications.show,
+    notify: showToast,
     setServerProbe,
     mergeSubscriptionState,
     recoverSessionAfterUnauthorized,
@@ -578,7 +578,7 @@ export function App() {
     let disposed=false;
     let unlisten:(()=>void)|undefined;
     void subscribeNativeExitFailure(message=>{
-      if(!disposed)notifications.show({id:"native-exit-failure",title:"退出未完成",color:"red",autoClose:false,
+      if(!disposed)showToast({id:"native-exit-failure",title:"退出未完成",tone:"danger",autoClose:false,
         message:`${message}。请稍后再次选择“退出 ChordV”重试。`});
     }).then(cleanup=>{if(disposed)cleanup();else unlisten=cleanup;}).catch(()=>null);
     return ()=>{disposed=true;unlisten?.();};
@@ -624,8 +624,8 @@ export function App() {
       }
       const notice = buildProtectedAccessNotice(accessReason);
       await clearSession(true);
-      notifications.show({
-        color: "yellow",
+      showToast({
+        tone: "warning",
         title: notice.title,
         message: notice.message,
         autoClose: 4000
@@ -779,8 +779,8 @@ export function App() {
   useEffect(() => {
     shellActionRef.current = async () => {
       if (!sessionRef.current) {
-        notifications.show({
-          color: "blue",
+        showToast({
+          tone: "info",
           title: "请先登录",
           message: "登录后才可以连接节点。"
         });
@@ -827,8 +827,8 @@ export function App() {
   useEffect(() => {
     openLogsActionRef.current = () => {
       if (!sessionRef.current) {
-        notifications.show({
-          color: "blue",
+        showToast({
+          tone: "info",
           title: "请先登录",
           message: "登录后才可以查看连接诊断。"
         });
@@ -1146,8 +1146,8 @@ export function App() {
             return;
           }
           await clearSession(true);
-          notifications.show({
-            color: "yellow",
+          showToast({
+            tone: "warning",
             title: "登录已失效",
             message: "当前登录态无法继续续租连接，请重新登录。"
           });
@@ -1505,8 +1505,8 @@ export function App() {
       return;
     }
     runtimeRescueTriggeredRef.current = true;
-    notifications.show({
-      color: "yellow",
+    showToast({
+      tone: "warning",
       title: "本地连接仍在运行",
       message: "登录态暂时不可用，请重新登录后继续接管当前连接，或手动断开。"
     });

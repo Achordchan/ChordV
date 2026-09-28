@@ -1,9 +1,9 @@
 .title { font-size: 16px; font-weight: 600; line-height: 1.4; }
 .titleRow { display: inline-flex; align-items: center; gap: 8px; }
-.titleIcon { flex-shrink: 0; color: var(--cv-info-text); }
-.titleIcon[data-tone="warning"] { color: #c27803; }
-.titleIcon[data-tone="danger"] { color: #d0453e; }
-.titleIcon[data-tone="success"] { color: #16a36a; }
+.titleIcon { flex-shrink: 0; color: var(--cv-icon-info); }
+.titleIcon[data-tone="warning"] { color: var(--cv-icon-warning); }
+.titleIcon[data-tone="danger"] { color: var(--cv-icon-danger); }
+.titleIcon[data-tone="success"] { color: var(--cv-icon-success); }
 .header { padding: 14px 20px 8px; }
 /* Only the main area scrolls, so the footer stays reachable in the small window. */
 .content { display: flex; flex-direction: column; }

@@ -9,19 +9,14 @@ import {
   SUPPORT_UPGRADING_MESSAGE,
   SupportPortalStaleError
 } from "../lib/supportPortal";
-
-type NoticeInput = {
-  color: "green" | "yellow" | "red" | "blue";
-  title: string;
-  message: string;
-};
+import type { ToastInput } from "../lib/toast";
 
 type UseSupportPortalOptions = {
   accessToken: string | null;
   /** 账号变化（退出登录、换账号）时关闭工单窗口。 */
   userId: string | null;
   onUnauthorized?: () => Promise<AuthSessionDto | null> | AuthSessionDto | null;
-  notify: (notice: NoticeInput) => void;
+  notify: (notice: ToastInput) => void;
   showError: (reason: unknown) => void;
 };
 
@@ -145,9 +140,9 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
         }
       },
       notifyUpgrading: () =>
-        latest.current.notify({ color: "yellow", title: "工单系统升级中", message: SUPPORT_UPGRADING_MESSAGE }),
+        latest.current.notify({ tone: "warning", title: "工单系统升级中", message: SUPPORT_UPGRADING_MESSAGE }),
       notifyDisabled: () =>
-        latest.current.notify({ color: "blue", title: "工单暂未开放", message: SUPPORT_DISABLED_MESSAGE }),
+        latest.current.notify({ tone: "info", title: "工单暂未开放", message: SUPPORT_DISABLED_MESSAGE }),
       showError: (reason) => latest.current.showError(reason)
     });
   }

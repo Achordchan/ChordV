@@ -9,14 +9,9 @@ import {
   pickPassiveAnnouncements,
   isPassiveAnnouncementUnread
 } from "../lib/announcementState";
+import type { ToastInput } from "../lib/toast";
 
 type AnnouncementPatchFn = (updater: (announcements: AnnouncementDto[]) => AnnouncementDto[]) => void;
-
-type NoticeInput = {
-  color: "green" | "yellow" | "red" | "blue";
-  title: string;
-  message: string;
-};
 
 type UseAnnouncementsOptions = {
   accessToken: string | null;
@@ -24,7 +19,7 @@ type UseAnnouncementsOptions = {
   patchAnnouncements: AnnouncementPatchFn;
   onUnauthorized?: () => Promise<unknown> | unknown;
   readError?: (reason: unknown) => string;
-  notify?: (notice: NoticeInput) => void;
+  notify?: (notice: ToastInput) => void;
 };
 
 /** 展示层读取器接收完整错误对象，便于保留 HTTP 状态等信息；默认只取 message。 */
@@ -110,7 +105,7 @@ export function useAnnouncements(options: UseAnnouncementsOptions) {
           return false;
         }
         options.notify?.({
-          color: "red",
+          tone: "danger",
           title: "公告状态同步失败",
           message:
             reason

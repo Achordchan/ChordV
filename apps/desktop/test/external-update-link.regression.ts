@@ -45,14 +45,14 @@ async function main() {
       compilerOptions: { target: ts.ScriptTarget.ES2022 }
     }).outputText;
     for (const outcome of ["success", "false", "throw"]) {
-      const notices: Array<{ color: string; title: string; message?: string }> = [];
+      const notices: Array<{ tone: string; title: string; message?: string }> = [];
       const context = {
         isCustomerSafeText,
         effectiveUpdate: { downloadUrl: "https://example.com/setup.exe", deliveryMode: "external_download" },
         resolveUpdateDownloadUrl: (value: string) => value,
         updatePlatform: "windows",
         isDesktopManagedUpdate: () => false,
-        options: { notify: (notice: { color: string; title: string; message?: string }) => notices.push(notice) },
+        options: { notify: (notice: { tone: string; title: string; message?: string }) => notices.push(notice) },
         openExternalUrl: async () => {
           if (outcome === "throw") throw new Error("Native browser failed");
           return { ok: outcome === "success" };
@@ -61,7 +61,7 @@ async function main() {
       const run = new Function(...Object.keys(context), `${compiled}; return action;`)(...Object.values(context));
       assert.equal(await run(), outcome === "success");
       assert.equal(notices.length, 1, "Exactly one result notification");
-      assert.equal(notices[0].color, outcome === "success" ? "blue" : "red");
+      assert.equal(notices[0].tone, outcome === "success" ? "info" : "danger");
       if (outcome !== "success") assert.equal(notices[0].title, "无法打开下载链接");
       if (outcome === "throw") assert.doesNotMatch(notices[0].message ?? "", /Native browser failed/, "raw English errors never reach the notice");
     }

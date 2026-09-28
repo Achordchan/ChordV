@@ -61,12 +61,7 @@ import {
   SILENT_UPDATE_LOG_CATEGORY,
   stepForcedInstallCountdown
 } from "../lib/silentUpdate";
-
-type NoticeInput = {
-  color: "green" | "yellow" | "red" | "blue";
-  title: string;
-  message: string;
-};
+import type { ToastInput } from "../lib/toast";
 
 type RunUpdateCheckOptions = {
   accessToken?: string | null;
@@ -115,7 +110,7 @@ type UseUpdateFlowOptions = {
   backgroundDownloadAllowed?: boolean;
   /** 强制更新能否自动下载并倒计时安装（启动完成、窗口没有在切换；登录界面也会执行）。 */
   forcedUpdateAllowed?: boolean;
-  notify?: (notice: NoticeInput) => void;
+  notify?: (notice: ToastInput) => void;
   showError?: (reason: unknown, context?: UserErrorContext) => void;
   onUnauthorized?: () => Promise<unknown> | unknown;
   isPromptBlocked?: () => boolean;
@@ -298,7 +293,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     if (!resolvedDownloadUrl || !effectiveUpdate) {
       if (silent) return false;
       options.notify?.({
-        color: "yellow",
+        tone: "warning",
         title: "暂无下载地址",
         message: "当前版本暂时无法下载，请稍后重试，或前往官网下载最新版本。"
       });
@@ -313,14 +308,14 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         if (!result.ok) throw new Error("无法打开系统浏览器，请检查默认浏览器设置后重试。");
       } catch (reason) {
         options.notify?.({
-          color: "red",
+          tone: "danger",
           title: "无法打开下载链接",
           message: reason instanceof Error && isCustomerSafeText(reason.message) ? reason.message : "请检查默认浏览器设置后重试。"
         });
         return false;
       }
       options.notify?.({
-        color: "blue",
+        tone: "info",
         title: effectiveUpdate.deliveryMode === "apk_download" ? "已打开 APK 下载链接" : "已打开更新下载链接",
         message:
           effectiveUpdate.deliveryMode === "apk_download"
@@ -346,7 +341,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           await openDesktopInstaller(updateDownload.localPath);
         }
         options.notify?.({
-          color: "green",
+          tone: "success",
           title: "准备安装",
           message: "本地更新包可用。请点击“安装并重启”完成安装。"
         });
@@ -356,7 +351,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         const failure = describeUserError(reason, { context: "update_install" });
         recordUpdateDiagnostic(failure, "update_install");
         options.notify?.({
-          color: "yellow",
+          tone: "warning",
           title: "本地更新包不可用",
           message: reason instanceof Error
             ? `${formatUserError(failure)}\n已切换为重新下载安装器。`
@@ -461,7 +456,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         setUpdateDownload(createIdleUpdateDownloadState());
         if (!shownInBackground) {
           options.notify?.({
-            color: "yellow",
+            tone: "warning",
             title: "可用版本已变化",
             message: "下载期间可用的新版本发生了变化，请重新下载。"
           });
@@ -476,7 +471,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       }
       if (updatePlatform === "windows") return true;
       options.notify?.({
-        color: "green",
+        tone: "success",
         title: "更新包已就绪",
         message: "下载完成。点击“安装并重启”后，应用会退出并自动完成安装。"
       });
@@ -825,7 +820,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
 
         if (runOptions.source !== "manual" && !runOptions.silent && !handledSilently) {
           options.notify?.({
-            color: result.forceUpgrade ? "red" : "blue",
+            tone: result.forceUpgrade ? "danger" : "info",
             title: result.forceUpgrade ? "发现强制更新" : "发现新版本",
             message: `${formatVersionLabel(result.latestVersion)} 已发布。`
           });
@@ -1003,14 +998,14 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       // 报告原文不可展示时不能推断安装包已打开（例如 Start-Process 本身失败），只给中性的失败说明和可操作的下一步。
       const summary = reportedSummary && isCustomerSafeText(reportedSummary) ? reportedSummary : "更新没有安装完成。请重新检查更新后再试，或到官网下载安装包手动安装。";
       options.notify?.({
-        color: "yellow",
+        tone: "warning",
         title: "更新安装未完全成功",
         message: summary
       });
       return report;
     } catch {
       options.notify?.({
-        color: "yellow",
+        tone: "warning",
         title: "无法读取更新结果",
         message: "暂时无法读取上次更新的结果。如果更新后使用异常，请联系客服。"
       });

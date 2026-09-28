@@ -38,6 +38,11 @@
   --cv-success-bg: #f1faf5;
   --cv-success-border: #cbe9d8;
   --cv-success-text: #17704a;
+  /* Status icons (AppDialog titles, toasts): saturated enough to read at 18px. */
+  --cv-icon-info: var(--cv-info-text);
+  --cv-icon-warning: #c27803;
+  --cv-icon-danger: #d0453e;
+  --cv-icon-success: #16a36a;
 }
 
 html,
@@ -767,16 +772,6 @@ body {
 
 .mantine-Drawer-content {
   border-radius: var(--cv-radius-xl) 0 0 var(--cv-radius-xl);
-}
-
-.cv-notification {
-  border: 1px solid var(--cv-border);
-  box-shadow: var(--cv-shadow-lg);
-}
-
-/* 错误通知的「错误编号：xxx」在换行之后，需要单独成行。 */
-.cv-notification .mantine-Notification-description {
-  white-space: pre-line;
 }
 
 input,
