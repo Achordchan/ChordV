@@ -583,15 +583,18 @@ const SUPPORT_POPUP_BLOCKED_MESSAGE = "无法打开工单页面，请允许弹�
  * 必须在点击事件里同步调用：网页预览中浏览器只允许在用户手势内打开新窗口，
  * 所以先预留一个空白窗口，拿到打开地址后再跳转。
  */
-export function createSupportWindowTarget(): SupportWindowTarget {
+export function createSupportWindowTarget(options: { onEpoch?: (epoch: number) => void } = {}): SupportWindowTarget {
   if (isTauriApp() && isAndroidPlatform()) {
-    // 安卓端没有独立工单窗口，也不能靠空白弹窗：交给应用统一的外部链接打开方式（与 APK 更新链接相同）。
+    // 安卓端没有独立工单窗口，WebView 里的空白弹窗也不可靠：交给原生层用系统默认应用（浏览器）打开。
     return {
       focusExisting: async () => false,
       open: async ({ launchUrl }) => {
+        const invoke = await loadInvoke();
         // 原始错误可能带出地址，统一换成不含地址的提示。
-        const result = await openExternalUrl(launchUrl).catch(() => ({ ok: false as const }));
-        if (!result.ok) throw new Error(SUPPORT_POPUP_BLOCKED_MESSAGE);
+        const opened = invoke
+          ? await invoke<{ ok: boolean }>("open_external_url", { url: launchUrl }).then((result) => result.ok, () => false)
+          : false;
+        if (!opened) throw new Error("无法打开工单页面，请确认已安装浏览器后重试。");
       },
       dispose: () => {}
     };
@@ -634,6 +637,7 @@ export function createSupportWindowTarget(): SupportWindowTarget {
       if (!invoke) throw new Error("无法打开工单窗口，请重新打开 ChordV 后重试。");
       const result = await invoke<{ focused: boolean; epoch: number }>("focus_support_window");
       epoch = result.epoch;
+      options.onEpoch?.(result.epoch);
       return result.focused;
     },
     open: async ({ launchUrl, supportOrigin }) => {
@@ -652,14 +656,16 @@ export async function closeSupportWindow() {
   await invoke("close_support_window");
 }
 
-/** 工单页面通过原生桥接报告的未读总数（Rust 已校验为 0–99999 的整数）。 */
-export async function subscribeSupportUnread(handler: (count: number) => void) {
+/** 工单页面通过原生桥接报告的未读总数（Rust 已校验为 0–99999 的整数），带着发出它的窗口所属批次号。 */
+export type SupportUnreadBridgeEvent = { unreadCount: number; epoch: number };
+
+export async function subscribeSupportUnread(handler: (event: SupportUnreadBridgeEvent) => void) {
   if (!supportsSupportWindow()) {
     return () => {};
   }
   const { listen } = await import("@tauri-apps/api/event");
-  const unlisten = await listen<number>("chordv://support-unread", (event) => {
-    handler(event.payload);
+  const unlisten = await listen<SupportUnreadBridgeEvent>("chordv://support-unread", (event) => {
+    if (event.payload) handler(event.payload);
   });
   return () => {
     unlisten();

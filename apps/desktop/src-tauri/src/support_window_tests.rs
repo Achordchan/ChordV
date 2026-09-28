@@ -1,6 +1,7 @@
 use super::*;
 use std::collections::BTreeSet;
 use std::str::FromStr;
+use std::time::{Duration, Instant};
 use tauri::utils::acl::RemoteUrlPattern;
 
 fn origin() -> Url {
@@ -139,6 +140,13 @@ fn bridge_accepts_only_known_messages() {
         parse_support_bridge_message(r#"{"source":"achord-connect-v1","type":"close-requested"}"#),
         Ok(SupportBridgeMessage::CloseRequested)
     );
+    // ChordV 自己的脚本只能报告页面已加载。
+    assert_eq!(
+        parse_support_bridge_message(r#"{"source":"chordv-host","type":"page-loaded"}"#),
+        Ok(SupportBridgeMessage::PageLoaded)
+    );
+    assert!(parse_support_bridge_message(r#"{"source":"chordv-host","type":"close-requested"}"#).is_err());
+    assert!(parse_support_bridge_message(r#"{"source":"achord-connect-v1","type":"page-loaded"}"#).is_err());
     let too_long = format!(
         r#"{{"source":"achord-connect-v1","type":"ready","padding":"{}"}}"#,
         "x".repeat(MAX_SUPPORT_BRIDGE_MESSAGE_BYTES)
@@ -170,6 +178,8 @@ fn bridge_script_is_bound_to_the_support_origin() {
     assert!(script.contains("window.location.origin !== allowedOrigin"));
     assert!(script.contains(r#"internals.invoke("support_bridge_message", { message: message })"#));
     assert!(script.contains("configurable: false"));
+    assert!(script.contains(r#"JSON.stringify({ source: "chordv-host", type: "page-loaded" })"#));
+    assert!(script.contains(r#"document.addEventListener("DOMContentLoaded", reportLoaded, { once: true })"#));
     // 来源作为 JSON 字符串嵌入，不能拼出脚本。
     let hostile = support_bridge_script("https://a\";alert(1);//");
     assert!(hostile.contains(r#"var allowedOrigin = "https://a\";alert(1);//";"#));
@@ -212,11 +222,7 @@ fn every_window_gets_a_fresh_support_label() {
 #[test]
 fn logout_invalidates_pending_launches() {
     let mut state = SupportWindowState::default();
-    let record = |label: &str| SupportWindowRecord {
-        label: label.into(),
-        origin: "https://support.achord.cn".into(),
-        expired: false,
-    };
+    let record = |label: &str| SupportWindowRecord::new(label.into(), "https://support.achord.cn".into(), 0, Instant::now());
     // 正常流程：拿到批次号 → 签发票据 → 用同一批次号打开。
     let epoch = state.epoch;
     assert!(state.ensure_epoch(epoch).is_ok());
@@ -235,6 +241,28 @@ fn logout_invalidates_pending_launches() {
     let fresh = state.epoch;
     assert_ne!(fresh, pending);
     assert!(state.finish_open(fresh, record("support-3")));
+}
+
+#[test]
+fn a_launch_that_never_loads_can_be_relaunched_after_the_ticket_expires() {
+    let opened = Instant::now();
+    let mut record = SupportWindowRecord::new("support-1".into(), "https://support.achord.cn".into(), 0, opened);
+    // 票据有效期内仍在加载：聚焦，不重复签发。
+    assert!(record.can_focus(opened + Duration::from_secs(5)));
+    // 有效期过了还没在工单站点上加载成功（例如刚打开就断网）：重新签发票据重开窗口。
+    assert!(!record.can_focus(opened + SUPPORT_LAUNCH_GRACE));
+    // 加载成功后一直可以聚焦。
+    record.loaded = true;
+    assert!(record.can_focus(opened + Duration::from_secs(3600)));
+    // 会话过期后必须重开。
+    record.expired = true;
+    assert!(!record.can_focus(opened + Duration::from_secs(1)));
+}
+
+#[test]
+fn unread_events_carry_their_window_epoch() {
+    let json = serde_json::to_value(SupportUnreadEvent { unread_count: 4, epoch: 2 }).unwrap();
+    assert_eq!(json, serde_json::json!({ "unreadCount": 4, "epoch": 2 }));
 }
 
 #[test]
@@ -272,6 +300,16 @@ fn registered_commands() -> BTreeSet<String> {
         .map(|entry| entry.trim().rsplit("::").next().unwrap_or_default().to_string())
         .filter(|name| !name.is_empty())
         .collect()
+}
+
+#[test]
+fn android_opens_external_links_natively() {
+    let lib = normalized(include_str!("lib.rs"));
+    assert!(lib.contains("#[cfg(target_os = \"android\")]\nfn open_external_url_with_system(url: &str) -> Result<(), String> {\n    android_open_url::open(url)\n}"));
+    let opener = normalized(include_str!("android_open_url.rs"));
+    assert!(opener.contains("\"android.intent.action.VIEW\""));
+    assert!(opener.contains("FLAG_ACTIVITY_NEW_TASK"));
+    assert!(opener.contains("exception_clear"));
 }
 
 #[test]

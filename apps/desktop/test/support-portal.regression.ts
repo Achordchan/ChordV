@@ -169,6 +169,12 @@ async function testDisabledSupportShowsNotice() {
   assert.equal(await createSupportPortalOpener(enabledNow).open(), "opened");
   assert.deepEqual(enabledNow.events, ["prepare", "focus", "status", "launch", "open https://support.achord.cn"]);
 
+  // 状态重查失败（不确定）不等于未开放：照常申请票据。
+  const unknownStatus = createDeps({ getKnownEnabled: () => false });
+  unknownStatus.refreshStatus = async () => { unknownStatus.events.push("status"); return null; };
+  assert.equal(await createSupportPortalOpener(unknownStatus).open(), "opened");
+  assert.deepEqual(unknownStatus.events, ["prepare", "focus", "status", "launch", "open https://support.achord.cn"]);
+
   // 打开接口返回 503“暂未开放”：同样是提示而不是错误。
   const unavailable = createDeps({ launch: async () => { throw apiError(503, SUPPORT_DISABLED_MESSAGE); } });
   assert.equal(await createSupportPortalOpener(unavailable).open(), "disabled");
@@ -296,34 +302,30 @@ async function testNativeAdaptersRouteByPlatform() {
   }, { __TAURI_INTERNALS__: undefined, open: () => unused });
   assert.equal(unused.closed, true);
 
-  // 安卓端：不预留弹窗，拿到地址后交给应用统一的外部链接打开方式，且不调用原生工单命令。
-  const android: FakeNative = { calls: [], handlers: {} };
+  // 安卓端：不预留弹窗，拿到地址后交给原生层用系统默认应用打开，且不调用原生工单命令。
+  const android: FakeNative = { calls: [], handlers: { open_external_url: () => ({ ok: true }) } };
   const androidOpens: string[] = [];
-  const androidVisited: string[] = [];
-  const androidPopup = {
-    opener: {} as unknown,
-    location: { replace: (url: string) => { androidVisited.push(url); } },
-    close: () => {}
-  };
   await withNative("Linux; Android 14", android, async () => {
     const target = createSupportWindowTarget();
-    assert.deepEqual(androidOpens, [], "android does not reserve an empty popup");
     assert.equal(await target.focusExisting(), false);
     await target.open({ launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin });
-  }, { open: (url: string) => { androidOpens.push(url); return androidPopup; } });
-  assert.deepEqual(androidVisited, [LAUNCH.launchUrl], "the issued url goes through openExternalUrl");
-  assert.deepEqual(android.calls, []);
-  const runtime = read("../src/lib/runtime.ts");
-  assert.match(runtime, /if \(isTauriApp\(\) && isAndroidPlatform\(\)\) \{[\s\S]*?await openExternalUrl\(launchUrl\)/);
+  }, { open: (url: string) => { androidOpens.push(url); return null; } });
+  assert.deepEqual(androidOpens, [], "android never relies on WebView popups");
+  assert.deepEqual(android.calls, [["open_external_url", { url: LAUNCH.launchUrl }]]);
 
   // 打不开：提示不含地址。
-  for (const userAgent of ["Linux; Android 14", "Browser"]) {
-    await withNative(userAgent, { calls: [], handlers: {} }, async () => {
+  const failures: Array<[string, FakeNative, Record<string, unknown>]> = [
+    ["Linux; Android 14", { calls: [], handlers: { open_external_url: () => { throw "没有找到可以打开链接的应用 act_secret"; } } }, {}],
+    ["Linux; Android 14", { calls: [], handlers: { open_external_url: () => ({ ok: false }) } }, {}],
+    ["Browser", { calls: [], handlers: {} }, { __TAURI_INTERNALS__: undefined, open: () => null }]
+  ];
+  for (const [userAgent, native, extra] of failures) {
+    await withNative(userAgent, native, async () => {
       await assert.rejects(
         createSupportWindowTarget().open({ launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin }),
         (error: Error) => !error.message.includes("act_secret") && error.message.includes("无法打开工单页面")
       );
-    }, userAgent === "Browser" ? { __TAURI_INTERNALS__: undefined, open: () => null } : { open: () => null });
+    }, extra);
   }
 }
 
@@ -408,8 +410,8 @@ async function testBadgeFollowsStatusEventsAndBridge() {
   const statusResponses: Array<ClientSupportStatusDto | Promise<ClientSupportStatusDto>> = [ENABLED];
   const statusCalls: string[] = [];
   const nativeEvents: string[] = [];
-  let bridgeHandler: ((count: number) => void) | null = null;
-  let bridgeUnsubscribed = false;
+  let bridgeHandler: ((event: { unreadCount: number; epoch: number }) => void) | null = null;
+  let nativeEpoch = 1;
   const opened: Array<{ launchUrl: string; supportOrigin: string }> = [];
   const launchTokens: string[] = [];
   let releaseSlowLaunch: (() => void) | null = null;
@@ -418,6 +420,7 @@ async function testBadgeFollowsStatusEventsAndBridge() {
     "../api/client": {
       fetchSupportStatus: async (token: string) => {
         statusCalls.push(token);
+        if (token === "expired") throw unauthorized;
         return await (statusResponses.shift() ?? ENABLED);
       },
       launchSupportPortal: async (token: string) => {
@@ -429,15 +432,15 @@ async function testBadgeFollowsStatusEventsAndBridge() {
       isUnauthorizedApiError: (reason: unknown) => reason === unauthorized
     },
     "../lib/runtime": {
-      createSupportWindowTarget: () => ({
-        focusExisting: async () => false,
+      createSupportWindowTarget: (options: { onEpoch?: (epoch: number) => void }) => ({
+        focusExisting: async () => { options.onEpoch?.(nativeEpoch); return false; },
         open: async (launch: { launchUrl: string; supportOrigin: string }) => { opened.push(launch); },
         dispose: () => undefined
       }),
-      closeSupportWindow: async () => { nativeEvents.push("close"); },
-      subscribeSupportUnread: async (handler: (count: number) => void) => {
+      closeSupportWindow: async () => { nativeEvents.push("close"); nativeEpoch += 1; },
+      subscribeSupportUnread: async (handler: (event: { unreadCount: number; epoch: number }) => void) => {
         bridgeHandler = handler;
-        return () => { bridgeUnsubscribed = true; };
+        return () => undefined;
       }
     },
     "../lib/supportPortal": supportPortal
@@ -452,27 +455,26 @@ async function testBadgeFollowsStatusEventsAndBridge() {
   };
   const render = (props: { accessToken: string | null; userId: string | null }) =>
     harness.render(useSupportPortal, { ...baseProps, ...props });
+  const settle = async (props: { accessToken: string | null; userId: string | null }) => {
+    render(props);
+    await flush();
+    return render(props);
+  };
+  const user1 = { accessToken: "token-1", userId: "user-1" };
 
-  let hook = render({ accessToken: "token-1", userId: "user-1" });
+  let hook = render(user1);
   assert.equal(hook.supportUnreadCount, 0);
-  await flush();
-  hook = render({ accessToken: "token-1", userId: "user-1" });
+  hook = await settle(user1);
   assert.deepEqual(statusCalls, ["token-1"], "status is loaded once after login");
   assert.equal(hook.supportUnreadCount, 3, "badge comes from GET /client/support/status");
 
   // 推送 support_unread_updated → 立即更新；无效值不改变角标。
   hook.applySupportUnreadCount(5);
-  hook = render({ accessToken: "token-1", userId: "user-1" });
+  hook = render(user1);
   assert.equal(hook.supportUnreadCount, 5);
   for (const invalid of [-2, 1.5, "9", null]) hook.applySupportUnreadCount(invalid);
-  hook = render({ accessToken: "token-1", userId: "user-1" });
+  hook = render(user1);
   assert.equal(hook.supportUnreadCount, 5);
-
-  // 工单窗口的原生桥接报告未读变化。
-  assert.ok(bridgeHandler, "bridge unread events are subscribed");
-  bridgeHandler!(0);
-  hook = render({ accessToken: "token-1", userId: "user-1" });
-  assert.equal(hook.supportUnreadCount, 0);
 
   // 晚到的状态查询不能覆盖更新的推送 / 桥接结果（没有轮询，覆盖后会一直错）。
   let resolveSlowStatus!: (status: ClientSupportStatusDto) => void;
@@ -481,7 +483,7 @@ async function testBadgeFollowsStatusEventsAndBridge() {
   hook.applySupportUnreadCount(0);
   resolveSlowStatus({ ...ENABLED, unreadCount: 8 });
   await slowStatus;
-  hook = render({ accessToken: "token-1", userId: "user-1" });
+  hook = render(user1);
   assert.equal(hook.supportUnreadCount, 0, "a newer event wins over an older status query");
   // 两次查询交错：只采用最后发起的那一次。
   let resolveOlder!: (status: ClientSupportStatusDto) => void;
@@ -491,70 +493,87 @@ async function testBadgeFollowsStatusEventsAndBridge() {
   await hook.refreshSupportStatus("token-1");
   resolveOlder({ ...ENABLED, unreadCount: 30 });
   await older;
-  hook = render({ accessToken: "token-1", userId: "user-1" });
+  hook = render(user1);
   assert.equal(hook.supportUnreadCount, 2, "an older query never overwrites a newer one");
 
-  // 推送重连（syncOnOpen）后重新同步。
+  // 推送重连（syncOnOpen）后重新同步；未启用时角标清零。
   statusResponses.push({ ...ENABLED, unreadCount: 12 });
   await hook.refreshSupportStatus("token-1");
-  hook = render({ accessToken: "token-1", userId: "user-1" });
+  hook = render(user1);
   assert.equal(hook.supportUnreadCount, 12);
-
-  // 未启用时角标清零。
   statusResponses.push(DISABLED);
   await hook.refreshSupportStatus("token-1");
-  hook = render({ accessToken: "token-1", userId: "user-1" });
+  hook = render(user1);
   assert.equal(hook.supportUnreadCount, 0);
 
-  // 打开工单：launch 访问令牌过期时恢复登录并用新令牌重试一次。
+  // 状态查询遇到登录失效：恢复登录后用新令牌重查，而不是当成“未开放”。
   statusResponses.push(ENABLED);
-  await hook.refreshSupportStatus("token-1");
-  hook = render({ accessToken: "expired", userId: "user-1" });
-  await flush();
-  hook = render({ accessToken: "expired", userId: "user-1" });
+  assert.deepEqual(await hook.refreshSupportStatus("expired"), ENABLED);
+  assert.deepEqual(statusCalls.slice(-2), ["expired", "fresh"]);
+  hook = render(user1);
+  assert.equal(hook.supportUnreadCount, 3);
+
+  // 还没打开过工单窗口：桥接消息一律不接受。
+  assert.ok(bridgeHandler, "bridge unread events are subscribed");
+  bridgeHandler!({ unreadCount: 44, epoch: nativeEpoch });
+  hook = render(user1);
+  assert.equal(hook.supportUnreadCount, 3, "bridge events are ignored until this account opens a window");
+
+  // 打开工单：launch 访问令牌过期时恢复登录并用新令牌重试一次。
+  const expiredUser1 = { accessToken: "expired", userId: "user-1" };
+  statusResponses.push(ENABLED);
+  hook = await settle(expiredUser1);
   assert.equal(await hook.openSupportPortal(), "opened");
   assert.deepEqual(launchTokens, ["expired", "fresh"]);
   assert.deepEqual(opened, [{ launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin }]);
   assert.deepEqual(errors, []);
 
+  // 工单窗口的原生桥接报告未读变化：只接受本账号窗口的批次号。
+  bridgeHandler!({ unreadCount: 0, epoch: nativeEpoch });
+  hook = render(expiredUser1);
+  assert.equal(hook.supportUnreadCount, 0);
+  bridgeHandler!({ unreadCount: 17, epoch: nativeEpoch - 1 });
+  hook = render(expiredUser1);
+  assert.equal(hook.supportUnreadCount, 0, "events from an older window epoch are dropped");
+
   // 票据申请途中换账号：不为上一个账号打开工单窗口，也不报错。
-  hook = render({ accessToken: "slow", userId: "user-1" });
-  await flush();
-  hook = render({ accessToken: "slow", userId: "user-1" });
+  const slowUser1 = { accessToken: "slow", userId: "user-1" };
+  hook = await settle(slowUser1);
+  const staleEpoch = nativeEpoch;
   const pendingOpen = hook.openSupportPortal();
   await flush();
   assert.ok(releaseSlowLaunch, "launch is pending");
   statusResponses.push(Promise.reject(new Error("offline")));
-  render({ accessToken: "other-token", userId: "user-2" });
-  hook = render({ accessToken: "other-token", userId: "user-2" });
+  const user2 = { accessToken: "other-token", userId: "user-2" };
+  render(user2);
+  hook = render(user2);
   assert.equal(hook.supportUnreadCount, 0, "the previous account's badge is cleared on account switch");
   releaseSlowLaunch!();
   assert.equal(await pendingOpen, "stale");
   assert.equal(opened.length, 1, "no window is opened for the previous account");
   assert.deepEqual(errors, []);
   assert.deepEqual(nativeEvents, ["close"], "switching accounts closes the support window and invalidates native opens");
-  nativeEvents.length = 0;
-  hook = render({ accessToken: "expired", userId: "user-1" });
-  nativeEvents.length = 0;
-  await flush();
-  hook = render({ accessToken: "expired", userId: "user-1" });
+  // 上一个账号窗口已排队的未读消息到达：丢弃。
+  bridgeHandler!({ unreadCount: 9, epoch: staleEpoch });
+  hook = await settle(user2);
+  assert.equal(hook.supportUnreadCount, 0, "queued unread events from the previous account are dropped");
 
   // 过期的状态响应（已退出登录）不会写回角标。
   let resolveLate!: (status: ClientSupportStatusDto) => void;
   statusResponses.push(new Promise((resolve) => { resolveLate = resolve; }));
-  const late = hook.refreshSupportStatus("expired");
-  render({ accessToken: null, userId: null });
-  hook = render({ accessToken: null, userId: null });
+  const late = hook.refreshSupportStatus("other-token");
+  const loggedOut = { accessToken: null, userId: null };
+  render(loggedOut);
+  hook = render(loggedOut);
   assert.equal(hook.supportUnreadCount, 0, "logout clears the badge");
-  assert.deepEqual(nativeEvents, ["close"], "logout closes the support window");
+  assert.deepEqual(nativeEvents, ["close", "close"], "logout closes the support window");
   resolveLate({ ...ENABLED, unreadCount: 40 });
   await late;
-  hook = render({ accessToken: null, userId: null });
+  hook = render(loggedOut);
   assert.equal(hook.supportUnreadCount, 0);
-  bridgeHandler!(9);
-  hook = render({ accessToken: null, userId: null });
+  bridgeHandler!({ unreadCount: 9, epoch: nativeEpoch });
+  hook = render(loggedOut);
   assert.equal(hook.supportUnreadCount, 0, "bridge events after logout are ignored");
-  assert.equal(bridgeUnsubscribed, false);
   assert.deepEqual(notices, []);
 }
 

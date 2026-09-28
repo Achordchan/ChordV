@@ -93,9 +93,10 @@ export function createSupportPortalOpener(deps: SupportPortalDeps) {
       ensureCurrent();
 
       if (deps.getKnownEnabled() === false) {
+        // 只有明确查到 enabled=false 才提示未开放；查询失败时照常申请票据，由打开接口给出准确结果。
         const status = await deps.refreshStatus().catch(() => null);
         ensureCurrent();
-        if (!status?.enabled) {
+        if (status && !status.enabled) {
           deps.notifyDisabled();
           return "disabled";
         }

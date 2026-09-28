@@ -34,6 +34,8 @@ mod connection_generation;
 mod node_probe;
 mod android_mobile_plugin;
 mod android_runtime;
+#[cfg(target_os = "android")]
+mod android_open_url;
 mod routing_diagnostics;
 mod window_transition;
 mod support_window;
@@ -4871,8 +4873,8 @@ fn open_external_url_with_system(url: &str) -> Result<(), String> {
 }
 
 #[cfg(target_os = "android")]
-fn open_external_url_with_system(_url: &str) -> Result<(), String> {
-    Err("安卓端暂不支持打开外部链接".into())
+fn open_external_url_with_system(url: &str) -> Result<(), String> {
+    android_open_url::open(url)
 }
 
 #[cfg(target_os = "macos")]

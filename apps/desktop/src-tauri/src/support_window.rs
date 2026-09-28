@@ -9,6 +9,7 @@
 //! - launchUrl 的片段里带着一次性票据，任何日志和错误信息都不能包含它。
 use serde::Serialize;
 use serde_json::Value;
+use std::time::{Duration, Instant};
 use url::Url;
 
 /// 工单窗口的标签前缀；每次打开都用新标签，避免与正在关闭的旧窗口冲突。
@@ -18,6 +19,10 @@ pub const SUPPORT_BRIDGE_PERMISSION: &str = "support-bridge";
 /// 桥接收到的未读数只发给主窗口。
 pub const SUPPORT_UNREAD_EVENT: &str = "chordv://support-unread";
 pub const SUPPORT_BRIDGE_SOURCE: &str = "achord-connect-v1";
+/// ChordV 自己注入的脚本使用的来源（只报告页面已在工单站点上加载）。
+pub const SUPPORT_HOST_SOURCE: &str = "chordv-host";
+/// 一次性票据的有效期：窗口打开后这么久仍没在工单站点上加载成功，就允许重新签发票据。
+pub const SUPPORT_LAUNCH_GRACE: Duration = Duration::from_secs(60);
 pub const MAX_SUPPORT_BRIDGE_MESSAGE_BYTES: usize = 4096;
 pub const MAX_SUPPORT_UNREAD_COUNT: u64 = 99_999;
 pub const SUPPORT_WINDOW_TITLE: &str = "ChordV 工单";
@@ -94,6 +99,8 @@ pub enum SupportBridgeMessage {
     UnreadChanged(u64),
     SessionExpired,
     CloseRequested,
+    /// ChordV 注入的脚本报告：页面已在工单站点上加载（加载失败的错误页不会发出）。
+    PageLoaded,
 }
 
 /// 校验工单页面通过 AchordConnectNative.postMessage 发来的 JSON 字符串。
@@ -103,7 +110,14 @@ pub fn parse_support_bridge_message(raw: &str) -> Result<SupportBridgeMessage, S
     }
     let value: Value = serde_json::from_str(raw).map_err(|_| "工单消息格式无效".to_string())?;
     let object = value.as_object().ok_or_else(|| "工单消息格式无效".to_string())?;
-    if object.get("source").and_then(Value::as_str) != Some(SUPPORT_BRIDGE_SOURCE) {
+    let source = object.get("source").and_then(Value::as_str);
+    if source == Some(SUPPORT_HOST_SOURCE) {
+        return match object.get("type").and_then(Value::as_str) {
+            Some("page-loaded") => Ok(SupportBridgeMessage::PageLoaded),
+            _ => Err("工单消息类型无效".into()),
+        };
+    }
+    if source != Some(SUPPORT_BRIDGE_SOURCE) {
         return Err("工单消息来源无效".into());
     }
     match object.get("type").and_then(Value::as_str) {
@@ -139,7 +153,17 @@ pub fn support_bridge_script(origin: &str) -> String {
     }}
   }});
   Object.defineProperty(window, "AchordConnectNative", {{ value: bridge, configurable: false, enumerable: false, writable: false }});
+  var reportLoaded = function () {{
+    var internals = window.__TAURI_INTERNALS__;
+    if (!internals || typeof internals.invoke !== "function") return;
+    try {{
+      Promise.resolve(internals.invoke("support_bridge_message", {{ message: JSON.stringify({{ source: "{host}", type: "page-loaded" }}) }})).catch(function () {{}});
+    }} catch (error) {{}}
+  }};
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", reportLoaded, {{ once: true }});
+  else reportLoaded();
 }})();"#,
+        host = SUPPORT_HOST_SOURCE,
         max = MAX_SUPPORT_BRIDGE_MESSAGE_BYTES
     )
 }
@@ -164,8 +188,33 @@ pub fn centered_window_origin(
 pub struct SupportWindowRecord {
     pub label: String,
     pub origin: String,
+    /// 打开这个窗口时的批次号；它发出的未读数都带着这个批次号，前端据此丢弃上一个账号的消息。
+    pub epoch: u64,
+    pub opened_at: Instant,
+    /// 页面已在工单站点上加载成功（注入脚本或门户 ready 报告）。
+    pub loaded: bool,
     /// 工单页面通过桥接报告会话已过期：下次点击“工单”要重新签发票据。
     pub expired: bool,
+}
+
+impl SupportWindowRecord {
+    pub fn new(label: String, origin: String, epoch: u64, opened_at: Instant) -> Self {
+        Self { label, origin, epoch, opened_at, loaded: false, expired: false }
+    }
+
+    /// 点击“工单”时能否直接聚焦这个窗口：会话未过期，且已加载成功或仍在票据有效期内加载中。
+    /// 票据有效期过了还没加载成功（例如刚打开就断网），就重新签发票据重开窗口。
+    pub fn can_focus(&self, now: Instant) -> bool {
+        !self.expired && (self.loaded || now.saturating_duration_since(self.opened_at) < SUPPORT_LAUNCH_GRACE)
+    }
+}
+
+/// 发给主窗口的未读数事件。
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SupportUnreadEvent {
+    pub unread_count: u64,
+    pub epoch: u64,
 }
 
 #[derive(Debug, Default)]
@@ -184,7 +233,7 @@ impl SupportWindowState {
         format!("{SUPPORT_WINDOW_LABEL_PREFIX}{}", self.next_id)
     }
 
-    /// 关闭当前工单窗口并作废所有进行中的打开流程，返回需要销毁的窗口记录。
+    /// 关闭当前工单窗口并作废所有进行中的打开流程，返回需要销毁的窗口记录（新的批次号见 `epoch`）。
     pub fn invalidate(&mut self) -> Option<SupportWindowRecord> {
         self.epoch = self.epoch.wrapping_add(1);
         self.current.take()
@@ -284,7 +333,7 @@ pub async fn focus_support_window(
     let window = guard
         .current
         .as_ref()
-        .filter(|record| !record.expired)
+        .filter(|record| record.can_focus(Instant::now()))
         .and_then(|_| current_window(&app, &guard));
     let Some(window) = window else { return Ok(SupportFocusResult { focused: false, epoch }) };
     focus(&window)?;
@@ -355,7 +404,7 @@ pub async fn open_support_window(
         .map_err(|error| format!("无法打开工单窗口：{error}"))?;
 
     // 建窗期间退出登录或换账号：不保留这个窗口。
-    if !lock(&state)?.finish_open(epoch, SupportWindowRecord { label, origin, expired: false }) {
+    if !lock(&state)?.finish_open(epoch, SupportWindowRecord::new(label, origin, epoch, Instant::now())) {
         let _ = window.destroy();
         return Err(SUPPORT_WINDOW_STALE_ERROR.into());
     }
@@ -403,9 +452,10 @@ pub fn support_bridge_message(
         return Err("工单消息来源无效".into());
     }
     match parsed {
-        SupportBridgeMessage::Ready => {}
-        SupportBridgeMessage::UnreadChanged(count) => {
-            let _ = app.emit_to("main", SUPPORT_UNREAD_EVENT, count);
+        SupportBridgeMessage::Ready | SupportBridgeMessage::PageLoaded => record.loaded = true,
+        SupportBridgeMessage::UnreadChanged(unread_count) => {
+            let event = SupportUnreadEvent { unread_count, epoch: record.epoch };
+            let _ = app.emit_to("main", SUPPORT_UNREAD_EVENT, event);
         }
         SupportBridgeMessage::SessionExpired => record.expired = true,
         SupportBridgeMessage::CloseRequested => {

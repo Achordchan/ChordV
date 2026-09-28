@@ -45,6 +45,8 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
   }
   // 未读数版本：推送 / 桥接和每次状态查询都会递增，晚到的查询结果不能覆盖更新的未读数。
   const unreadRevisionRef = useRef(0);
+  // 当前账号打开的工单窗口所属的原生批次号；桥接未读事件只接受这个批次，换账号时清空。
+  const bridgeEpochRef = useRef<number | null>(null);
 
   const applySupportUnreadCount = useCallback((value: unknown) => {
     const next = normalizeSupportUnreadCount(value);
@@ -59,10 +61,27 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
     if (!accessToken) {
       return null;
     }
+    const generation = accountGenerationRef.current;
     const revision = ++unreadRevisionRef.current;
+    const isCurrent = () => accountGenerationRef.current === generation && Boolean(accessTokenRef.current);
+    const load = async () => {
+      try {
+        return await fetchSupportStatus(accessToken);
+      } catch (reason) {
+        if (!isUnauthorizedApiError(reason) || !isCurrent()) {
+          throw reason;
+        }
+        // 登录失效：交给统一的恢复流程，恢复成功后用新令牌重查一次。
+        const recovered = await latest.current.onUnauthorized?.();
+        if (!recovered?.accessToken || !isCurrent()) {
+          throw reason;
+        }
+        return await fetchSupportStatus(recovered.accessToken);
+      }
+    };
     try {
-      const status = await fetchSupportStatus(accessToken);
-      if (accessTokenRef.current !== accessToken) {
+      const status = await load();
+      if (!isCurrent()) {
         return null;
       }
       enabledRef.current = status.enabled === true;
@@ -71,19 +90,23 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
         setSupportUnreadCount(next);
       }
       return status;
-    } catch (reason) {
-      // 状态查询失败只保留现有角标；登录失效交给统一的恢复流程。
-      if (isUnauthorizedApiError(reason) && accessTokenRef.current === accessToken) {
-        await latest.current.onUnauthorized?.();
-      }
+    } catch {
+      // 状态查询失败只保留现有角标，返回 null 表示“不确定”，不是“未开放”。
       return null;
     }
-  }, [applySupportUnreadCount]);
+  }, []);
 
   const openerRef = useRef<ReturnType<typeof createSupportPortalOpener> | null>(null);
   if (!openerRef.current) {
     openerRef.current = createSupportPortalOpener({
-      prepareTarget: createSupportWindowTarget,
+      prepareTarget: () => {
+        const generation = accountGenerationRef.current;
+        return createSupportWindowTarget({
+          onEpoch: (epoch) => {
+            if (accountGenerationRef.current === generation) bridgeEpochRef.current = epoch;
+          }
+        });
+      },
       getAccountGeneration: () => accountGenerationRef.current,
       getKnownEnabled: () => enabledRef.current,
       refreshStatus: () => refreshSupportStatus(),
@@ -135,6 +158,7 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
       return;
     }
     enabledRef.current = null;
+    bridgeEpochRef.current = null;
     unreadRevisionRef.current += 1;
     setSupportUnreadCount(0);
     if (previous) {
@@ -155,7 +179,12 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
   useEffect(() => {
     let disposed = false;
     let unsubscribe: (() => void) | null = null;
-    void subscribeSupportUnread(applySupportUnreadCount)
+    // 只接受当前账号打开的工单窗口发出的未读数：换账号前已排队的旧窗口消息会被丢弃。
+    void subscribeSupportUnread((event) => {
+      if (bridgeEpochRef.current !== null && event.epoch === bridgeEpochRef.current) {
+        applySupportUnreadCount(event.unreadCount);
+      }
+    })
       .then((dispose) => {
         if (disposed) {
           dispose();
