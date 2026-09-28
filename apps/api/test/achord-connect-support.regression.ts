@@ -16,6 +16,7 @@ import {
 } from "../src/modules/support/achord-connect";
 import {
   SUPPORT_UNREAD_RESYNC_AFTER_MS,
+  SUPPORT_UNREAD_RESYNC_MAX_PER_MINUTE,
   SUPPORT_UNREAD_RESYNC_MIN_INTERVAL_MS,
   SupportIntegrationService
 } from "../src/modules/support/support-integration.service";
@@ -117,7 +118,7 @@ function createFakePrisma(options: { users?: string[] } = {}) {
             if (!skipDuplicates) throw new Error("unique violation");
             continue;
           }
-          states.set(item.userId, { userId: item.userId, unreadCount: 0, sourceAt: null, syncedAt: null, revision: 0 });
+          states.set(item.userId, { userId: item.userId, unreadCount: 0, sourceAt: null, syncedAt: null, revision: 0, requestsComplete: true });
           count += 1;
         }
         return { count };
@@ -159,6 +160,8 @@ function createFakePrisma(options: { users?: string[] } = {}) {
         return { ...requests.get(key) };
       },
 
+      count: async ({ where }: any) =>
+        [...requests.values()].filter((row) => row.userId === where.userId && row.eventAt > where.eventAt.gt).length,
       aggregate: async ({ where }: any) => {
         let sum: number | null = null;
         for (const row of requests.values()) {
@@ -501,6 +504,8 @@ async function testLaunchTicketRequestAndErrorMapping() {
   respond(async () => json(201, { data: { launchUrl: `${BASE_URL}/embed#ticket=act_fake`, expiresAt: "not a date" } }));
   await expectLaunchError(502, "工单系统暂时无法连接，请稍后再试");
   assert.ok(logs.some((line) => line.includes("UNIVERSAL_RATE_LIMITED")), "服务端日志保留状态与错误码便于排查");
+  assert.ok(logs.some((line) => line.includes("UNIVERSAL_CREDENTIAL_INVALID") && line.includes("后台配置问题")), "401 在日志里提示是后台配置问题");
+  assert.ok(logs.some((line) => line.includes("UNIVERSAL_NATIVE_LAUNCH_DISABLED") && line.includes("没有开启原生窗口打开")), "403 在日志里提示连接未开启原生窗口");
   assert.ok(logs.every((line) => !line.includes(CLIENT_SECRET) && !line.includes(WEBHOOK_SECRET) && !line.includes("upstream detail")), "日志不含密钥与工单系统原文");
 
   // 超时：请求在超时后被中止。AbortSignal.timeout 的计时器不占住事件循环，测试里另开一个计时器保活。
@@ -598,7 +603,7 @@ async function testReconciliationWatermarkAndConcurrentEvents() {
   assert.equal(await racing.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), 6);
   assert.equal(racingDb.request("user_1", "req_c")?.unreadCount, 4);
 
-  // 请求很多时不截断：每个请求都保留，之后按变化量增减总数。
+  // 请求很多时不截断：每个请求都保留；明细与总数一致时，之后的按请求事件照常求和。
   const { service: many, db: manyDb } = createService();
   await configure(many);
   const requests = Array.from({ length: 600 }, (_, index) => ({ id: `req_${index}`, unreadCount: 1 }));
@@ -607,9 +612,90 @@ async function testReconciliationWatermarkAndConcurrentEvents() {
   assert.equal(manyDb.requestCount(), 600);
   await many.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_599", unreadCount: 0, createdAt: new Date(Date.now() + 1_000).toISOString() })));
   assert.equal(manyDb.state("user_1")?.unreadCount, 599);
-  // 本地没有记录的请求（例如早于上线的请求）按变化量计入，不会把总数重算成局部之和。
+  // 明细完整时，本地没有记录的请求此前就是 0 个未读。
   await many.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_new", unreadCount: 2, createdAt: new Date(Date.now() + 2_000).toISOString() })));
   assert.equal(manyDb.state("user_1")?.unreadCount, 601);
+}
+
+async function testIncompleteBaselineAndMixedOrdering() {
+  const past = (ms: number) => new Date(Date.now() - ms).toISOString();
+  const future = (ms: number) => new Date(Date.now() + ms).toISOString();
+
+  // 权威总数 7 只解释了 req_a 的 1 个未读，其余请求本地不知道：之后不带总数的事件不能假设未知请求原来是 0。
+  {
+    const { service, db } = createService();
+    await configure(service);
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 1, contactUnreadCount: 7, createdAt: past(60_000) })));
+    assert.equal(db.state("user_1")?.unreadCount, 7);
+    assert.equal(db.state("user_1")?.requestsComplete, false);
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_b", unreadCount: 0, createdAt: future(1_000) })));
+    assert.equal(db.state("user_1")?.unreadCount, 7, "明细不完整时不由单个请求推算总数");
+    assert.equal(db.state("user_1")?.syncedAt, null, "标记为待校准，下次查询状态会向工单系统校准");
+    // 校准结果只有总数、没有明细：同样视为不完整。
+    service.fetchImpl = async () => json(200, { data: { externalUserId: "user_1", unreadCount: 1 } });
+    assert.equal(await service.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), 1);
+    assert.equal(db.state("user_1")?.requestsComplete, false);
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_c", unreadCount: 0, createdAt: future(2_000) })));
+    assert.equal(db.state("user_1")?.unreadCount, 1);
+    // 明细完整的校准恢复按请求求和。
+    service.fetchImpl = async () => json(200, { data: { externalUserId: "user_1", unreadCount: 1, requests: [{ id: "req_d", unreadCount: 1 }] } });
+    assert.equal(await service.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), 1);
+    assert.equal(db.state("user_1")?.requestsComplete, true);
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_e", unreadCount: 2, createdAt: future(3_000) })));
+    assert.equal(db.state("user_1")?.unreadCount, 3);
+  }
+
+  // 新旧版本事件交错：较新的按请求变化之后，才到达一个更早的权威总数，不能用旧总数覆盖。
+  {
+    const { service, db } = createService();
+    await configure(service);
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 2, createdAt: past(10_000) })));
+    assert.equal(db.state("user_1")?.unreadCount, 2);
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_b", unreadCount: 1, contactUnreadCount: 1, createdAt: past(20_000) })));
+    assert.equal(db.state("user_1")?.unreadCount, 2, "旧总数没有包含更新的 req_a 变化，保留当前值");
+    assert.equal(db.state("user_1")?.syncedAt, null, "先后无法对齐时标记为待校准");
+    assert.equal(db.request("user_1", "req_b")?.unreadCount, 1);
+  }
+
+  // 状态查询：校准期间 Webhook 已写入并推送新值，放弃快照后返回当前值而不是查询前读到的旧值。
+  {
+    const { service, db, published } = createService();
+    await configure(service);
+    await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 4, createdAt: past(60_000) })));
+    service.fetchImpl = async () => {
+      await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 1, createdAt: new Date().toISOString() })));
+      return json(200, { data: { externalUserId: "user_1", unreadCount: 4, requests: [{ id: "req_a", unreadCount: 4 }] } });
+    };
+    assert.equal((await service.getClientStatus("user_1")).unreadCount, 1);
+    assert.equal(db.state("user_1")?.unreadCount, 1);
+    assert.deepEqual(published.map((item) => item.count), [4, 1]);
+    // 工单系统不可用时同样返回当前值。
+    (service as unknown as { resyncAttempts: Map<string, number> }).resyncAttempts.clear();
+    service.fetchImpl = async () => {
+      await service.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_a", unreadCount: 3, createdAt: future(1_000) })));
+      throw new TypeError("fetch failed");
+    };
+    assert.equal((await service.getClientStatus("user_1")).unreadCount, 3);
+  }
+}
+
+function testResyncRateLimits() {
+  const { service } = createService();
+  const claim = (userId: string, now: number) =>
+    (service as unknown as { claimResyncAttempt: (userId: string, now: number) => boolean }).claimResyncAttempt(userId, now);
+  const start = Date.UTC(2026, 8, 28, 10, 0, 0);
+  assert.equal(claim("user_1", start), true);
+  assert.equal(claim("user_1", start + SUPPORT_UNREAD_RESYNC_MIN_INTERVAL_MS - 1), false, "同一用户 5 分钟内最多查一次");
+  assert.equal(claim("user_1", start + SUPPORT_UNREAD_RESYNC_MIN_INTERVAL_MS), true);
+  // 整个进程每分钟有上限，远低于工单系统每连接每分钟 600 次。
+  const later = start + 10 * 60_000;
+  let granted = 0;
+  for (let index = 0; index < SUPPORT_UNREAD_RESYNC_MAX_PER_MINUTE + 20; index += 1) {
+    if (claim(`bulk_${index}`, later + index)) granted += 1;
+  }
+  assert.equal(granted, SUPPORT_UNREAD_RESYNC_MAX_PER_MINUTE);
+  assert.ok(SUPPORT_UNREAD_RESYNC_MAX_PER_MINUTE < 600);
+  assert.equal(claim("bulk_late", later + 60_000 + SUPPORT_UNREAD_RESYNC_MAX_PER_MINUTE), true, "一分钟后恢复");
 }
 
 // ---------- 后台设置 ----------
@@ -665,7 +751,13 @@ async function testAdminConfigNeverReturnsSecrets() {
   const nativeDisabled = await service.testConnection();
   assert.equal(nativeDisabled.ok, false);
   assert.match(nativeDisabled.launch.message, /没有开启原生窗口打开/);
-  assert.match(nativeDisabled.unread.message, /暂未提供未读查询接口/);
+  assert.match(nativeDisabled.unread.message, /没有提供未读查询接口/);
+  respond(async (call) => call.url.endsWith("/launch-tickets")
+    ? json(409, { error: { code: "UNIVERSAL_IFRAME_NOT_CONFIGURED", message: "upstream detail" } })
+    : json(401, { error: { code: "UNIVERSAL_CREDENTIAL_INVALID", message: "upstream detail" } }));
+  const iframeMissing = await service.testConnection();
+  assert.match(iframeMissing.launch.message, /UNIVERSAL_IFRAME_NOT_CONFIGURED/);
+  assert.match(iframeMissing.unread.message, /Client ID 或 Client Secret 不正确/, "未读查询也能验证凭据");
   respond(async (call) => call.url.endsWith("/launch-tickets")
     ? json(201, { data: { launchUrl: `${BASE_URL}/embed/connect/pub_fake#ticket=act_fake`, expiresAt: "2026-09-28T10:01:00.000Z" } })
     : json(200, { data: { externalUserId: "chordv-connection-test", unreadCount: 0, requests: [] } }));
@@ -842,6 +934,8 @@ async function main() {
   await testLaunchTicketRequestAndErrorMapping();
   await testStatusFallbackAndResync();
   await testReconciliationWatermarkAndConcurrentEvents();
+  await testIncompleteBaselineAndMixedOrdering();
+  testResyncRateLimits();
   await testAdminConfigNeverReturnsSecrets();
   await testLegacyTicketWriteGuards();
   testSupportModuleDependenciesAreExported();

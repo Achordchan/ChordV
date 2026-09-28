@@ -44,8 +44,13 @@ const LAUNCH_TIMEOUT_MS = 8_000;
 const RESYNC_TIMEOUT_MS = 3_000;
 /** 本地未读数超过这个时间没有得到权威值时，查询状态会先向工单系统校准。 */
 export const SUPPORT_UNREAD_RESYNC_AFTER_MS = 5 * 60_000;
-/** 同一用户两次校准之间至少间隔，工单系统不可用时也不会被每次状态查询放大请求。 */
-export const SUPPORT_UNREAD_RESYNC_MIN_INTERVAL_MS = 60_000;
+/**
+ * 同一用户两次校准之间至少间隔 5 分钟（不论成败）：工单系统要求由后端按需查询、不要让客户端轮询，
+ * 工单系统不可用时也不会被每次状态查询放大请求。
+ */
+export const SUPPORT_UNREAD_RESYNC_MIN_INTERVAL_MS = 5 * 60_000;
+/** 整个进程每分钟最多校准的次数，远低于工单系统每连接每分钟 600 次的限额，超出时直接用本地值。 */
+export const SUPPORT_UNREAD_RESYNC_MAX_PER_MINUTE = 120;
 const RESYNC_ATTEMPT_TRACKING_LIMIT = 10_000;
 export const WEBHOOK_EVENT_RETENTION_DAYS = 30;
 const CONNECTION_TEST_USER: AchordConnectLaunchUser = { id: "chordv-connection-test", email: "", displayName: "ChordV 连接测试" };
@@ -67,6 +72,7 @@ export class SupportIntegrationService {
   /** 对工单系统的请求入口，测试时替换。 */
   fetchImpl: AchordConnectFetch = (input, init) => fetch(input, init);
   private readonly resyncAttempts = new Map<string, number>();
+  private readonly recentResyncs: number[] = [];
   private unreadEndpointMissingLogged = false;
   private lastRejectedWebhookLogAt = 0;
 
@@ -135,6 +141,10 @@ export class SupportIntegrationService {
       const synced = await this.resyncUnread(userId, credentials);
       if (synced !== null) {
         unreadCount = synced;
+      } else {
+        // 校准失败或被放弃时，查询期间可能已有 Webhook 写入并推送了新值，重新读取，避免返回旧值覆盖客户端。
+        const current = await this.prisma.supportUnreadState.findUnique({ where: { userId }, select: { unreadCount: true } });
+        unreadCount = current?.unreadCount ?? 0;
       }
     }
     return { enabled: true, unreadCount, supportOrigin: credentials.baseUrl };
@@ -149,7 +159,7 @@ export class SupportIntegrationService {
       const ticket = await createAchordConnectLaunchTicket(this.fetchImpl, credentials, user, LAUNCH_TIMEOUT_MS);
       return { launchUrl: ticket.launchUrl, expiresAt: ticket.expiresAt, supportOrigin: credentials.baseUrl };
     } catch (error) {
-      this.logger.warn(`Achord Connect 创建票据失败（用户 ${user.id}）：${describeInternalError(error)}`);
+      this.logger.warn(`Achord Connect 创建票据失败（用户 ${user.id}）：${describeInternalError(error)}${describeLaunchConfigHint(error)}`);
       if (error instanceof AchordConnectRequestError && error.status === HttpStatus.TOO_MANY_REQUESTS) {
         throw new HttpException({ statusCode: HttpStatus.TOO_MANY_REQUESTS, message: SUPPORT_RATE_LIMITED_MESSAGE }, HttpStatus.TOO_MANY_REQUESTS);
       }
@@ -209,10 +219,13 @@ export class SupportIntegrationService {
   }
 
   /**
-   * 在一个事务里记录事件 ID（去重）并更新未读数；同一用户的事件按行锁串行处理。
-   * 事件带 contactUnreadCount 时以它为总数；不带时按这个请求未读数的变化量增减总数（等价于按请求求和，
-   * 但不依赖本地记录齐全）。早于最近一次权威总数（Webhook 总数或服务端校准）的事件已包含在总数里，
-   * 只记录事件 ID、不再改动；同一请求晚到的旧事件也不会覆盖更新的值。返回 null 表示事件已处理过。
+   * 在一个事务里记录事件 ID（去重）并更新未读数；同一用户的事件按行锁串行处理。返回 null 表示事件已处理过。
+   * - 早于最近一次权威总数（Webhook 的 contactUnreadCount 或服务端校准）的事件已包含在总数里，只记录事件 ID；
+   *   同一请求晚到的旧事件也不会覆盖新值。
+   * - 带 contactUnreadCount：以它为总数；但如果本地已有比它更新的按请求变化（新旧版本事件混在一起），
+   *   两者先后无法对齐，就保留当前值并标记为待校准，而不是用旧总数覆盖。
+   * - 不带 contactUnreadCount：本地按请求记录完整时按请求求和；不完整时（总数来自权威值，
+   *   本地缺少部分请求）无法由单个请求推出总数，保留当前值并标记为待校准。
    */
   async applyUnreadChange(eventId: string, type: string, change: AchordConnectUnreadChange, eventAt: Date): Promise<UnreadTotalChange | null> {
     const userId = change.externalUserId;
@@ -229,25 +242,37 @@ export class SupportIntegrationService {
         return unchanged;
       }
       const key = { userId_requestId: { userId, requestId: change.requestId } };
-      const existing = await tx.supportRequestUnread.findUnique({ where: key, select: { unreadCount: true, eventAt: true } });
-      const requestIsNewer = !existing || existing.eventAt.getTime() <= eventAt.getTime();
-      if (requestIsNewer) {
+      const existing = await tx.supportRequestUnread.findUnique({ where: key, select: { eventAt: true } });
+      if (!existing || existing.eventAt.getTime() <= eventAt.getTime()) {
         await tx.supportRequestUnread.upsert({
           where: key,
           create: { userId, requestId: change.requestId, unreadCount: change.unreadCount, eventAt },
           update: { unreadCount: change.unreadCount, eventAt }
         });
       }
-      let data: { unreadCount: number; sourceAt?: Date; syncedAt?: Date };
+      const sumRequests = async () =>
+        (await tx.supportRequestUnread.aggregate({ where: { userId }, _sum: { unreadCount: true } }))._sum.unreadCount ?? 0;
+      let data: { unreadCount?: number; sourceAt?: Date; syncedAt?: Date | null; requestsComplete?: boolean };
       if (change.contactUnreadCount !== null) {
-        data = { unreadCount: change.contactUnreadCount, sourceAt: eventAt, syncedAt: new Date() };
-      } else if (requestIsNewer) {
-        data = { unreadCount: Math.max(0, state.unreadCount + change.unreadCount - (existing?.unreadCount ?? 0)) };
+        const newerRequests = await tx.supportRequestUnread.count({ where: { userId, eventAt: { gt: eventAt } } });
+        if (newerRequests > 0) {
+          data = { syncedAt: null };
+        } else {
+          const sum = await sumRequests();
+          data = {
+            unreadCount: change.contactUnreadCount,
+            sourceAt: eventAt,
+            syncedAt: new Date(),
+            requestsComplete: sum === change.contactUnreadCount
+          };
+        }
+      } else if (state.requestsComplete) {
+        data = { unreadCount: await sumRequests() };
       } else {
-        return unchanged;
+        data = { syncedAt: null };
       }
       await tx.supportUnreadState.update({ where: { userId }, data: { ...data, revision: { increment: 1 } } });
-      return { previous: state.unreadCount, next: data.unreadCount };
+      return { previous: state.unreadCount, next: data.unreadCount ?? state.unreadCount };
     });
   }
 
@@ -294,9 +319,11 @@ export class SupportIntegrationService {
             skipDuplicates: true
           });
         }
+        // 查询结果只给了总数、或按请求明细加起来对不上总数时，本地记录不完整，之后不再由单个请求推算总数。
+        const requestsComplete = remote.requests.reduce((sum, item) => sum + item.unreadCount, 0) === remote.unreadCount;
         await tx.supportUnreadState.update({
           where: { userId },
-          data: { unreadCount: remote.unreadCount, sourceAt: snapshotAt, syncedAt: new Date(), revision: { increment: 1 } }
+          data: { unreadCount: remote.unreadCount, sourceAt: snapshotAt, syncedAt: new Date(), requestsComplete, revision: { increment: 1 } }
         });
         return { previous: state.unreadCount, next: remote.unreadCount };
       });
@@ -338,6 +365,13 @@ export class SupportIntegrationService {
     if (last !== undefined && now - last < SUPPORT_UNREAD_RESYNC_MIN_INTERVAL_MS) {
       return false;
     }
+    while (this.recentResyncs.length > 0 && now - this.recentResyncs[0] >= 60_000) {
+      this.recentResyncs.shift();
+    }
+    if (this.recentResyncs.length >= SUPPORT_UNREAD_RESYNC_MAX_PER_MINUTE) {
+      return false;
+    }
+    this.recentResyncs.push(now);
     this.resyncAttempts.delete(userId);
     this.resyncAttempts.set(userId, now);
     if (this.resyncAttempts.size > RESYNC_ATTEMPT_TRACKING_LIMIT) {
@@ -402,6 +436,17 @@ function describeInternalError(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** 创建票据失败时给服务端日志补一句排查提示，区分“后台配置有误”和工单系统本身的问题。 */
+function describeLaunchConfigHint(error: unknown) {
+  if (!(error instanceof AchordConnectRequestError) || error.kind !== "http") return "";
+  if (error.status === 401) return "（后台配置问题：Client ID 或 Client Secret 不正确、凭据已撤销，或 Achord Connect 连接未激活）";
+  if (error.code === "UNIVERSAL_NATIVE_LAUNCH_DISABLED") return "（后台配置问题：Achord Connect 连接没有开启原生窗口打开）";
+  if (error.code === "UNIVERSAL_IFRAME_NOT_CONFIGURED") return "（请求缺少原生窗口参数，且连接没有配置 iframe 来源）";
+  if (error.status === 422) return "（工单系统拒绝了请求参数）";
+  if (error.status === 429) return "（触发工单系统限流）";
+  return "";
+}
+
 /** 给管理员看的测试结果：可以带状态码和工单系统的错误码，但不带工单系统返回的原文。 */
 function describeConnectionTestFailure(error: unknown, target: "launch" | "unread") {
   if (!(error instanceof AchordConnectRequestError)) {
@@ -416,11 +461,14 @@ function describeConnectionTestFailure(error: unknown, target: "launch" | "unrea
   if (target === "launch" && error.code === "UNIVERSAL_NATIVE_LAUNCH_DISABLED") {
     return "凭据有效，但工单系统的连接没有开启原生窗口打开（allowNativeLaunch）";
   }
+  if (target === "launch" && error.code === "UNIVERSAL_IFRAME_NOT_CONFIGURED") {
+    return `工单系统没有收到原生窗口参数，且连接没有配置 iframe 来源${code}`;
+  }
   if (target === "launch" && error.status === 422) {
-    return `工单系统不接受原生窗口参数，可能还没有升级到支持原生窗口的版本${code}`;
+    return `工单系统不接受这次的请求参数${code}`;
   }
   if (target === "unread" && error.status === 404) {
-    return "工单系统暂未提供未读查询接口；未读数先按 Webhook 维护，工单系统升级后自动启用";
+    return "工单系统没有提供未读查询接口（HTTP 404），请确认地址指向已升级的 Achord Connect；未读数暂时只按 Webhook 维护";
   }
   return `工单系统返回异常（HTTP ${error.status ?? "未知"}${code}）`;
 }

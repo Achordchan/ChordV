@@ -908,6 +908,9 @@ model SupportUnreadState {
   syncedAt    DateTime?
   // 每次写入加一；校准查询期间若有 Webhook 写入，放弃这次查询结果，避免旧快照覆盖新事件。
   revision    Int       @default(0)
+  // 本地按请求记录能否完整解释总数。为 false 时（总数来自权威值而本地缺少部分请求），
+  // 不再用单个请求的变化推算总数，而是等待下次校准。
+  requestsComplete Boolean @default(true)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)

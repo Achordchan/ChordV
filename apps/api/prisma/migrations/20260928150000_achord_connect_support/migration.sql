@@ -6,6 +6,7 @@ CREATE TABLE "SupportUnreadState" (
     "sourceAt" TIMESTAMP(3),
     "syncedAt" TIMESTAMP(3),
     "revision" INTEGER NOT NULL DEFAULT 0,
+    "requestsComplete" BOOLEAN NOT NULL DEFAULT true,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
