@@ -620,6 +620,11 @@ function testAppWiring() {
   for (const path of ["../src/hooks/useSupportPortal.ts", "../src/lib/supportPortal.ts"]) {
     assert.doesNotMatch(read(path), /recordClientDiagnosticLog|console\./, `${path} never logs the launch url`);
   }
+  // 旧工单中心已移除：生产后台没有新工单接口时禁止发布客户端。
+  const release = read("../../../.github/workflows/release-desktop.yml");
+  assert.match(release, /Require new support endpoints on production backend/);
+  assert.match(release, /for path in client\/support\/status client\/support\/launch; do/);
+  assert.match(release, /401\|403\) ;;\s*\*\) echo "生产后台的/);
   const runtime = read("../src/lib/runtime.ts");
   const openBody = runtime.match(/export function createSupportWindowTarget[\s\S]*?\n\}/)?.[0] ?? "";
   assert.ok(openBody, "createSupportWindowTarget exists");

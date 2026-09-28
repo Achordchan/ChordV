@@ -36,6 +36,20 @@ jobs:
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+      # 客户端已移除旧工单中心，只能通过新工单系统接口打开工单；生产后台还没上线这些接口时不能发版，
+      # 否则用户会失去应用内工单入口。接口存在时未登录访问返回 401，不存在返回 404。
+      - name: Require new support endpoints on production backend
+        run: |
+          for path in client/support/status client/support/launch; do
+            method=GET
+            [ "$path" = client/support/launch ] && method=POST
+            status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -X "$method" "https://v.achord.cn/api/${path}" || echo 000)"
+            echo "${method} /api/${path} -> ${status}"
+            case "$status" in
+              401|403) ;;
+              *) echo "生产后台的 /api/${path} 不可用（HTTP ${status}），请先发布包含新工单系统接口的后台版本再发布客户端。" >&2; exit 1 ;;
+            esac
+          done
 
   build:
     name: Build ${{ matrix.platform }}

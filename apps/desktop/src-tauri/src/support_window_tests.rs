@@ -140,12 +140,7 @@ fn bridge_accepts_only_known_messages() {
         parse_support_bridge_message(r#"{"source":"achord-connect-v1","type":"close-requested"}"#),
         Ok(SupportBridgeMessage::CloseRequested)
     );
-    // ChordV 自己的脚本只能报告页面已加载。
-    assert_eq!(
-        parse_support_bridge_message(r#"{"source":"chordv-host","type":"page-loaded"}"#),
-        Ok(SupportBridgeMessage::PageLoaded)
-    );
-    assert!(parse_support_bridge_message(r#"{"source":"chordv-host","type":"close-requested"}"#).is_err());
+    assert!(parse_support_bridge_message(r#"{"source":"chordv-host","type":"page-loaded"}"#).is_err());
     assert!(parse_support_bridge_message(r#"{"source":"achord-connect-v1","type":"page-loaded"}"#).is_err());
     let too_long = format!(
         r#"{{"source":"achord-connect-v1","type":"ready","padding":"{}"}}"#,
@@ -178,8 +173,7 @@ fn bridge_script_is_bound_to_the_support_origin() {
     assert!(script.contains("window.location.origin !== allowedOrigin"));
     assert!(script.contains(r#"internals.invoke("support_bridge_message", { message: message })"#));
     assert!(script.contains("configurable: false"));
-    assert!(script.contains(r#"JSON.stringify({ source: "chordv-host", type: "page-loaded" })"#));
-    assert!(script.contains(r#"document.addEventListener("DOMContentLoaded", reportLoaded, { once: true })"#));
+
     // 来源作为 JSON 字符串嵌入，不能拼出脚本。
     let hostile = support_bridge_script("https://a\";alert(1);//");
     assert!(hostile.contains(r#"var allowedOrigin = "https://a\";alert(1);//";"#));
@@ -244,15 +238,15 @@ fn logout_invalidates_pending_launches() {
 }
 
 #[test]
-fn a_launch_that_never_loads_can_be_relaunched_after_the_ticket_expires() {
+fn a_launch_that_never_becomes_ready_can_be_relaunched_after_the_ticket_expires() {
     let opened = Instant::now();
     let mut record = SupportWindowRecord::new("support-1".into(), "https://support.achord.cn".into(), 0, opened);
     // 票据有效期内仍在加载：聚焦，不重复签发。
     assert!(record.can_focus(opened + Duration::from_secs(5)));
-    // 有效期过了还没在工单站点上加载成功（例如刚打开就断网）：重新签发票据重开窗口。
+    // 有效期过了门户仍未确认就绪（刚打开就断网、同源 502 错误页等）：重新签发票据重开窗口。
     assert!(!record.can_focus(opened + SUPPORT_LAUNCH_GRACE));
-    // 加载成功后一直可以聚焦。
-    record.loaded = true;
+    // 门户确认就绪后一直可以聚焦。
+    record.ready = true;
     assert!(record.can_focus(opened + Duration::from_secs(3600)));
     // 会话过期后必须重开。
     record.expired = true;

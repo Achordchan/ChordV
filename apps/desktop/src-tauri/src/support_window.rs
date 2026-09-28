@@ -19,9 +19,7 @@ pub const SUPPORT_BRIDGE_PERMISSION: &str = "support-bridge";
 /// 桥接收到的未读数只发给主窗口。
 pub const SUPPORT_UNREAD_EVENT: &str = "chordv://support-unread";
 pub const SUPPORT_BRIDGE_SOURCE: &str = "achord-connect-v1";
-/// ChordV 自己注入的脚本使用的来源（只报告页面已在工单站点上加载）。
-pub const SUPPORT_HOST_SOURCE: &str = "chordv-host";
-/// 一次性票据的有效期：窗口打开后这么久仍没在工单站点上加载成功，就允许重新签发票据。
+/// 一次性票据的有效期：窗口打开后这么久门户仍没确认就绪，就允许重新签发票据。
 pub const SUPPORT_LAUNCH_GRACE: Duration = Duration::from_secs(60);
 pub const MAX_SUPPORT_BRIDGE_MESSAGE_BYTES: usize = 4096;
 pub const MAX_SUPPORT_UNREAD_COUNT: u64 = 99_999;
@@ -99,8 +97,6 @@ pub enum SupportBridgeMessage {
     UnreadChanged(u64),
     SessionExpired,
     CloseRequested,
-    /// ChordV 注入的脚本报告：页面已在工单站点上加载（加载失败的错误页不会发出）。
-    PageLoaded,
 }
 
 /// 校验工单页面通过 AchordConnectNative.postMessage 发来的 JSON 字符串。
@@ -110,14 +106,7 @@ pub fn parse_support_bridge_message(raw: &str) -> Result<SupportBridgeMessage, S
     }
     let value: Value = serde_json::from_str(raw).map_err(|_| "工单消息格式无效".to_string())?;
     let object = value.as_object().ok_or_else(|| "工单消息格式无效".to_string())?;
-    let source = object.get("source").and_then(Value::as_str);
-    if source == Some(SUPPORT_HOST_SOURCE) {
-        return match object.get("type").and_then(Value::as_str) {
-            Some("page-loaded") => Ok(SupportBridgeMessage::PageLoaded),
-            _ => Err("工单消息类型无效".into()),
-        };
-    }
-    if source != Some(SUPPORT_BRIDGE_SOURCE) {
+    if object.get("source").and_then(Value::as_str) != Some(SUPPORT_BRIDGE_SOURCE) {
         return Err("工单消息来源无效".into());
     }
     match object.get("type").and_then(Value::as_str) {
@@ -153,17 +142,7 @@ pub fn support_bridge_script(origin: &str) -> String {
     }}
   }});
   Object.defineProperty(window, "AchordConnectNative", {{ value: bridge, configurable: false, enumerable: false, writable: false }});
-  var reportLoaded = function () {{
-    var internals = window.__TAURI_INTERNALS__;
-    if (!internals || typeof internals.invoke !== "function") return;
-    try {{
-      Promise.resolve(internals.invoke("support_bridge_message", {{ message: JSON.stringify({{ source: "{host}", type: "page-loaded" }}) }})).catch(function () {{}});
-    }} catch (error) {{}}
-  }};
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", reportLoaded, {{ once: true }});
-  else reportLoaded();
 }})();"#,
-        host = SUPPORT_HOST_SOURCE,
         max = MAX_SUPPORT_BRIDGE_MESSAGE_BYTES
     )
 }
@@ -191,21 +170,21 @@ pub struct SupportWindowRecord {
     /// 打开这个窗口时的批次号；它发出的未读数都带着这个批次号，前端据此丢弃上一个账号的消息。
     pub epoch: u64,
     pub opened_at: Instant,
-    /// 页面已在工单站点上加载成功（注入脚本或门户 ready 报告）。
-    pub loaded: bool,
+    /// 门户通过桥接确认已就绪（ready）。页面“加载完成”不算：同源的 502 错误页也会加载完成。
+    pub ready: bool,
     /// 工单页面通过桥接报告会话已过期：下次点击“工单”要重新签发票据。
     pub expired: bool,
 }
 
 impl SupportWindowRecord {
     pub fn new(label: String, origin: String, epoch: u64, opened_at: Instant) -> Self {
-        Self { label, origin, epoch, opened_at, loaded: false, expired: false }
+        Self { label, origin, epoch, opened_at, ready: false, expired: false }
     }
 
-    /// 点击“工单”时能否直接聚焦这个窗口：会话未过期，且已加载成功或仍在票据有效期内加载中。
-    /// 票据有效期过了还没加载成功（例如刚打开就断网），就重新签发票据重开窗口。
+    /// 点击“工单”时能否直接聚焦这个窗口：会话未过期，且门户已确认就绪，或仍在票据有效期内（加载中不重复签发）。
+    /// 票据有效期过了门户仍未就绪（刚打开就断网、502 错误页等），就重新签发票据重开窗口。
     pub fn can_focus(&self, now: Instant) -> bool {
-        !self.expired && (self.loaded || now.saturating_duration_since(self.opened_at) < SUPPORT_LAUNCH_GRACE)
+        !self.expired && (self.ready || now.saturating_duration_since(self.opened_at) < SUPPORT_LAUNCH_GRACE)
     }
 }
 
@@ -452,7 +431,7 @@ pub fn support_bridge_message(
         return Err("工单消息来源无效".into());
     }
     match parsed {
-        SupportBridgeMessage::Ready | SupportBridgeMessage::PageLoaded => record.loaded = true,
+        SupportBridgeMessage::Ready => record.ready = true,
         SupportBridgeMessage::UnreadChanged(unread_count) => {
             let event = SupportUnreadEvent { unread_count, epoch: record.epoch };
             let _ = app.emit_to("main", SUPPORT_UNREAD_EVENT, event);
