@@ -1315,6 +1315,20 @@ async function testUsersSeenWhileDisabledAreRefreshedOnEnable() {
   assert.deepEqual(published.at(-1), { userId: "user_2", count: 4 });
 }
 
+async function testStatusRegistrationRacingEnable() {
+  // 第一次读到未启用，登记用户之前管理员启用了：启用时的名单里没有他，状态接口要自己按启用处理。
+  const { service, db } = createService();
+  await configure(service, { enabled: false });
+  const originalCreateMany = db.prisma.supportUnreadState.createMany;
+  db.prisma.supportUnreadState.createMany = async (args: unknown) => {
+    db.prisma.supportUnreadState.createMany = originalCreateMany;
+    await service.updateAdminConfig({ enabled: true });
+    return originalCreateMany(args);
+  };
+  service.fetchImpl = async () => json(200, { data: { externalUserId: "user_2", unreadCount: 3, requests: [] } });
+  assert.deepEqual(await service.getClientStatus("user_2"), { enabled: true, unreadCount: 3, supportOrigin: BASE_URL });
+}
+
 async function testStatusSchedulesRetryWhenDeferred() {
   const { service } = createService();
   await configure(service);
@@ -1645,6 +1659,7 @@ async function main() {
   await testResponseLimitsReenableFenceAndStatusRecheck();
   await testLaunchFencedAgainstConfigChanges();
   await testUsersSeenWhileDisabledAreRefreshedOnEnable();
+  await testStatusRegistrationRacingEnable();
   await testAdminConfigNeverReturnsSecrets();
   await testLegacyTicketWriteGuards();
   testSupportModuleDependenciesAreExported();

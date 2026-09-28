@@ -218,13 +218,18 @@ export class SupportIntegrationService {
 
   // ---------- 客户端接口 ----------
 
-  async getClientStatus(userId: string): Promise<ClientSupportStatusDto> {
+  async getClientStatus(userId: string, rechecked = false): Promise<ClientSupportStatusDto> {
     const credentials = await this.readLaunchCredentials();
     if (!credentials) {
       // 记下查询过状态的用户：之后启用时，他们在线的客户端不会主动刷新，需要由后台查询并推送未读。
       await this.prisma.supportUnreadState.createMany({ data: [{ userId }], skipDuplicates: true }).catch((error: unknown) => {
         this.logger.warn(`记录工单状态查询用户失败（用户 ${userId}）：${error instanceof Error ? error.message : String(error)}`);
       });
+      // 登记之后再看一次：如果管理员恰好在登记前启用（启用时的名单里没有这位用户），直接按启用处理。
+      // 登记之后才启用的，启用时的名单已包含他。
+      if (!rechecked && (await this.readLaunchCredentials())) {
+        return this.getClientStatus(userId, true);
+      }
       return { enabled: false, unreadCount: 0, supportOrigin: null };
     }
     const state = await this.prisma.supportUnreadState.findUnique({
