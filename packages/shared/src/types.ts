@@ -74,6 +74,7 @@ export type ClientRuntimeEventType =
   | "announcement_read_state_updated"
   | "ticket_updated"
   | "ticket_read_state_updated"
+  | "support_unread_updated"
   | "version_updated"
   | "runtime_component_updated"
   | "release_center_updated"
@@ -1115,6 +1116,27 @@ export interface ClientRuntimeEventDto {
   subscriptionState?: SubscriptionState | null;
   state?: SubscriptionState | null;
   reconnectRecommended?: boolean | null;
+  /** support_unread_updated：新工单系统（Achord Connect）里该用户全部工单的未读总数。 */
+  supportUnreadCount?: number | null;
+}
+
+/**
+ * 新工单系统（Achord Connect）接入约定。
+ * 客户端不接触 Client Secret：由后台用 launchMode "native" 创建一次性票据，客户端在应用内独立窗口顶层打开 launchUrl。
+ */
+export interface ClientSupportLaunchDto {
+  /** 一次性地址，60 秒内有效、只能打开一次；票据在 URL 片段里。 */
+  launchUrl: string;
+  expiresAt: string;
+  /** 工单系统的站点来源（如 https://support.achord.cn），客户端据此判断哪些链接留在工单窗口内。 */
+  supportOrigin: string;
+}
+
+export interface ClientSupportStatusDto {
+  /** 后台是否已配置并启用新工单系统；未启用时客户端提示“工单系统暂未开放”。 */
+  enabled: boolean;
+  unreadCount: number;
+  supportOrigin: string | null;
 }
 
 export interface CreateSubscriptionInputDto {
