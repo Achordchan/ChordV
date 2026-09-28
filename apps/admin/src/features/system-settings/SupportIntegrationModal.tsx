@@ -51,10 +51,19 @@ export function SupportIntegrationModal({ opened, onClose, onSaved }: { opened: 
     finally { busy.current = false; if (id === epoch.current) setSaving(false); }
   };
   const saveDraft = () => {
-    const input: UpdateAdminSupportIntegrationConfigInputDto = { enabled: draft.enabled, baseUrl: draft.baseUrl.trim() || null, clientId: draft.clientId.trim() || null };
+    if (!config) return;
+    // 只提交这次改动过的字段：别的管理员同时改过的字段（例如刚关闭的开关）不会被这里读到的旧值写回去。
+    const input: UpdateAdminSupportIntegrationConfigInputDto = {};
+    if (draft.enabled !== config.enabled) input.enabled = draft.enabled;
+    if (draft.baseUrl.trim() !== (config.baseUrl ?? "")) input.baseUrl = draft.baseUrl.trim() || null;
+    if (draft.clientId.trim() !== (config.clientId ?? "")) input.clientId = draft.clientId.trim() || null;
     // 密钥输入框留空表示保持不变，只有新粘贴的值才提交。
     if (draft.clientSecret.trim()) input.clientSecret = draft.clientSecret.trim();
     if (draft.webhookSecret.trim()) input.webhookSecret = draft.webhookSecret.trim();
+    if (Object.keys(input).length === 0) {
+      notifications.show({ color: "gray", message: "没有需要保存的修改" });
+      return;
+    }
     void save(input, "工单系统接入设置已保存");
   };
   const clearSecret = async (key: SecretKey) => {

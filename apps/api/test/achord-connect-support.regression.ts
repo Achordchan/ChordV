@@ -34,6 +34,8 @@ import {
   LegacyClientTicketWriteGuard
 } from "../src/modules/common/legacy-support-tickets.guard";
 import { describeUserError } from "../../desktop/src/lib/userFacingErrors";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 // 全部为明显的假值，不是任何真实凭据。
 const BASE_URL = "https://support.example.test";
@@ -115,7 +117,7 @@ function createFakePrisma(options: { users?: string[] } = {}) {
             if (!skipDuplicates) throw new Error("unique violation");
             continue;
           }
-          states.set(item.userId, { userId: item.userId, unreadCount: 0, sourceAt: null, syncedAt: null });
+          states.set(item.userId, { userId: item.userId, unreadCount: 0, sourceAt: null, syncedAt: null, revision: 0 });
           count += 1;
         }
         return { count };
@@ -130,7 +132,9 @@ function createFakePrisma(options: { users?: string[] } = {}) {
           failures.stateUpdate -= 1;
           throw new Error("database write failed");
         }
-        const row = { ...states.get(where.userId), ...data };
+        const current = states.get(where.userId)!;
+        const { revision, ...rest } = data;
+        const row = { ...current, ...rest, revision: revision?.increment ? current.revision + revision.increment : current.revision };
         states.set(where.userId, row);
         return { ...row };
       }
@@ -154,8 +158,7 @@ function createFakePrisma(options: { users?: string[] } = {}) {
         requests.set(key, requests.has(key) ? { ...requests.get(key), ...update } : { ...create });
         return { ...requests.get(key) };
       },
-      findMany: async ({ where }: any) =>
-        [...requests.values()].filter((row) => row.userId === where.userId && row.eventAt > where.eventAt.gt).map((row) => ({ ...row })),
+
       aggregate: async ({ where }: any) => {
         let sum: number | null = null;
         for (const row of requests.values()) {
@@ -166,7 +169,7 @@ function createFakePrisma(options: { users?: string[] } = {}) {
       deleteMany: async ({ where }: any) => {
         let count = 0;
         for (const [key, row] of requests) {
-          if (row.userId === where.userId && row.eventAt <= where.eventAt.lte) {
+          if (row.userId === where.userId && (!where.eventAt || row.eventAt <= where.eventAt.lte)) {
             requests.delete(key);
             count += 1;
           }
@@ -192,7 +195,7 @@ function createFakePrisma(options: { users?: string[] } = {}) {
       locks.push(String(values[0]));
       return [];
     },
-    seedRequest: (row: Row) => requests.set(requestKey(row.userId, row.requestId), { ...row }),
+
     $transaction: async (fn: (tx: unknown) => Promise<unknown>) => {
       const snapshot = { settings: clone(settings), events: clone(events), states: clone(states), requests: clone(requests) };
       try {
@@ -212,7 +215,7 @@ function createFakePrisma(options: { users?: string[] } = {}) {
     requestCount: () => requests.size,
     eventCount: () => events.size,
     setting: (key: string) => settings.get(key)?.value ?? null,
-    seedRequest: (row: Row) => prisma.seedRequest(row),
+
     seedEvent: (eventId: string, receivedAt: Date) => events.set(eventId, { eventId, type: "request.unread.changed", receivedAt })
   };
 }
@@ -576,18 +579,24 @@ async function testReconciliationWatermarkAndConcurrentEvents() {
   assert.equal(db.request("user_1", "req_late"), null, "早于校准的事件不再建立按请求记录");
   assert.equal(db.state("user_1")?.unreadCount, 0);
 
-  // 校准查询进行中到达的更新事件：保留它的请求记录，并计入校准后的总数。
-  const { service: racing, db: racingDb } = createService();
+  // 校准查询进行中处理了 Webhook：快照与该事件谁更新无法判断，放弃快照、保留 Webhook 的值，也不标记为已校准。
+  const { service: racing, db: racingDb, published: racingPublished } = createService();
   await configure(racing);
-  respond(async () => json(200, {}));
+  await racing.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_b", unreadCount: 4, createdAt: past(120_000) })));
   racing.fetchImpl = async () => {
-    // 查询返回之前，Webhook 已把 req_b 从 4 改成 1（事件时间晚于查询开始）。
-    racingDb.seedRequest({ userId: "user_1", requestId: "req_b", unreadCount: 1, eventAt: new Date(Date.now() + 5_000) });
-    return json(200, { data: { externalUserId: "user_1", unreadCount: 6, requests: [{ id: "req_b", unreadCount: 4 }, { id: "req_c", unreadCount: 2 }] } });
+    await racing.handleWebhook(webhookRequest(unreadEvent({ requestId: "req_b", unreadCount: 1, createdAt: new Date().toISOString() })));
+    return json(200, { data: { externalUserId: "user_1", unreadCount: 6, requests: [{ id: "req_b", unreadCount: 2 }, { id: "req_c", unreadCount: 4 }] } });
   };
-  assert.equal(await racing.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), 3, "6 - 4 + 1");
-  assert.equal(racingDb.request("user_1", "req_b")?.unreadCount, 1, "查询期间的新值不被旧的查询结果覆盖");
-  assert.equal(racingDb.request("user_1", "req_c")?.unreadCount, 2);
+  assert.equal(await racing.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), null);
+  assert.equal(racingDb.state("user_1")?.unreadCount, 1, "保留查询期间 Webhook 写入的值");
+  assert.equal(racingDb.state("user_1")?.syncedAt, null, "放弃的快照不算校准，下次查询状态会重试");
+  assert.equal(racingDb.request("user_1", "req_b")?.unreadCount, 1);
+  assert.equal(racingDb.request("user_1", "req_c"), null);
+  assert.deepEqual(racingPublished.map((item) => item.count), [4, 1]);
+  // 没有并发写入时，下一次校准正常写回。
+  racing.fetchImpl = async () => json(200, { data: { externalUserId: "user_1", unreadCount: 6, requests: [{ id: "req_b", unreadCount: 2 }, { id: "req_c", unreadCount: 4 }] } });
+  assert.equal(await racing.resyncUnread("user_1", { baseUrl: BASE_URL, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }), 6);
+  assert.equal(racingDb.request("user_1", "req_c")?.unreadCount, 4);
 
   // 请求很多时不截断：每个请求都保留，之后按变化量增减总数。
   const { service: many, db: manyDb } = createService();
@@ -689,6 +698,24 @@ async function testLegacyTicketWriteGuards() {
   // 客户端对 4xx 的中文业务提示原样展示，不会被替换成“工单暂时无法处理”之类的通用文案。
   const described = describeUserError({ status: 410, message: LEGACY_CLIENT_TICKET_WRITE_MESSAGE, rawMessage: JSON.stringify({ statusCode: 410, message: LEGACY_CLIENT_TICKET_WRITE_MESSAGE }) }, { context: "ticket" });
   assert.equal(described.message, LEGACY_CLIENT_TICKET_WRITE_MESSAGE);
+}
+
+// ---------- 依赖注入 ----------
+
+function testSupportModuleDependenciesAreExported() {
+  // 路由测试直接替换了服务实例，这里单独确认真实启动时构造函数依赖都能从全局模块拿到。
+  const service = readFileSync(resolve(__dirname, "../src/modules/support/support-integration.service.ts"), "utf8");
+  const constructorBlock = /constructor\(([\s\S]*?)\)\s*\{\}/.exec(service)?.[1] ?? "";
+  const dependencies = [...constructorBlock.matchAll(/:\s*(\w+)/g)].map((match) => match[1]);
+  assert.deepEqual(dependencies, ["PrismaService", "SiteAddressService", "ClientEventsPublisher"]);
+  const devDataModule = readFileSync(resolve(__dirname, "../src/modules/common/dev-data.module.ts"), "utf8");
+  const exportsBlock = /exports:\s*\[([\s\S]*?)\]/.exec(devDataModule)?.[1] ?? "";
+  assert.match(devDataModule, /@Global\(\)/);
+  for (const name of ["SiteAddressService", "ClientEventsPublisher"]) {
+    assert.match(exportsBlock, new RegExp(`\\b${name}\\b`), `${name} 必须由全局 DevDataModule 导出`);
+  }
+  const prismaModule = readFileSync(resolve(__dirname, "../src/modules/common/prisma.module.ts"), "utf8");
+  assert.match(prismaModule, /@Global\(\)[\s\S]*exports: \[PrismaService\]/);
 }
 
 // ---------- 路由：原始正文与认证 ----------
@@ -817,6 +844,7 @@ async function main() {
   await testReconciliationWatermarkAndConcurrentEvents();
   await testAdminConfigNeverReturnsSecrets();
   await testLegacyTicketWriteGuards();
+  testSupportModuleDependenciesAreExported();
   await testRoutesWithRawBodyParser();
   console.log("achord connect support regression checks passed");
 }

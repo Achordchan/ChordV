@@ -29,6 +29,12 @@ function testModalNeverRendersStoredSecrets() {
   assert.match(modal, /<PasswordInput[^>]*autoComplete="new-password"[^>]*value=\{draft\[key\]\}/);
   assert.doesNotMatch(modal, /<TextInput[^>]*value=\{draft\.(clientSecret|webhookSecret)\}/, "密钥不能用明文输入框");
   assert.match(modal, /\{hasValue \? "已设置" : "未设置"\}/);
+  // 只提交改动过的字段，避免把另一位管理员刚改过的开关或地址用旧值写回去。
+  assert.match(modal, /const input: UpdateAdminSupportIntegrationConfigInputDto = \{\};/);
+  assert.match(modal, /if \(draft\.enabled !== config\.enabled\) input\.enabled = draft\.enabled;/);
+  assert.match(modal, /if \(draft\.baseUrl\.trim\(\) !== \(config\.baseUrl \?\? ""\)\) input\.baseUrl = draft\.baseUrl\.trim\(\) \|\| null;/);
+  assert.match(modal, /if \(draft\.clientId\.trim\(\) !== \(config\.clientId \?\? ""\)\) input\.clientId = draft\.clientId\.trim\(\) \|\| null;/);
+  assert.doesNotMatch(modal, /\{ enabled: draft\.enabled, baseUrl:/, "不能整体提交读取到的旧值");
   // 留空不提交（保持不变），清除才提交 null。
   assert.match(modal, /if \(draft\.clientSecret\.trim\(\)\) input\.clientSecret = draft\.clientSecret\.trim\(\);/);
   assert.match(modal, /if \(draft\.webhookSecret\.trim\(\)\) input\.webhookSecret = draft\.webhookSecret\.trim\(\);/);

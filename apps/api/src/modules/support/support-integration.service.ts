@@ -246,15 +246,22 @@ export class SupportIntegrationService {
       } else {
         return unchanged;
       }
-      await tx.supportUnreadState.update({ where: { userId }, data });
+      await tx.supportUnreadState.update({ where: { userId }, data: { ...data, revision: { increment: 1 } } });
       return { previous: state.unreadCount, next: data.unreadCount };
     });
   }
 
   // ---------- 未读校准 ----------
 
-  /** 向工单系统查询该用户的未读总数并写回本地；失败时返回 null，由调用方继续使用本地值。 */
+  /**
+   * 向工单系统查询该用户的未读总数并写回本地；失败时返回 null，由调用方继续使用本地值。
+   * 查询结果是工单系统某一时刻的快照，但它不带版本号，无法判断与查询期间到达的 Webhook 谁更新：
+   * 查询前记下本地版本号，写回时若版本已变（查询期间处理过 Webhook），就放弃这次结果、保留 Webhook 的值，
+   * 不标记为已校准，下次查询状态时再试。写回后，早于查询开始时间的事件都已包含在快照里，不再改动未读。
+   */
   async resyncUnread(userId: string, credentials: AchordConnectCredentials): Promise<number | null> {
+    const before = await this.prisma.supportUnreadState.findUnique({ where: { userId }, select: { revision: true } });
+    const expectedRevision = before?.revision ?? 0;
     const snapshotAt = new Date();
     let remote: Awaited<ReturnType<typeof fetchAchordConnectContactUnread>>;
     try {
@@ -270,43 +277,35 @@ export class SupportIntegrationService {
       }
       return null;
     }
-    let result: UnreadTotalChange;
+    let result: UnreadTotalChange | null;
     try {
       result = await this.prisma.$transaction(async (tx) => {
         await tx.supportUnreadState.createMany({ data: [{ userId }], skipDuplicates: true });
         await tx.$queryRaw`SELECT "userId" FROM "SupportUnreadState" WHERE "userId" = ${userId} FOR UPDATE`;
         const state = await tx.supportUnreadState.findUniqueOrThrow({ where: { userId } });
-        if (state.sourceAt && state.sourceAt.getTime() > snapshotAt.getTime()) {
-          // 查询期间已收到更新的权威总数，保留它。
-          return { previous: state.unreadCount, next: state.unreadCount };
+        if (state.revision !== expectedRevision) {
+          return null;
         }
-        // 查询期间到达的按请求事件比查询结果新：保留这些记录，并把它们相对查询结果的变化计入总数。
-        const remoteCounts = new Map(remote.requests.map((item) => [item.id, item.unreadCount]));
-        const newer = await tx.supportRequestUnread.findMany({
-          where: { userId, eventAt: { gt: snapshotAt } },
-          select: { requestId: true, unreadCount: true }
-        });
-        const newerIds = new Set(newer.map((row) => row.requestId));
-        const total = Math.max(0, newer.reduce(
-          (sum, row) => sum + row.unreadCount - (remoteCounts.get(row.requestId) ?? 0),
-          remote.unreadCount
-        ));
-        // 其余记录由查询结果整体取代（包括查询结果里已经没有的请求）。
-        await tx.supportRequestUnread.deleteMany({ where: { userId, eventAt: { lte: snapshotAt } } });
-        const rows = remote.requests
-          .filter((item) => !newerIds.has(item.id))
-          .map((item) => ({ userId, requestId: item.id, unreadCount: item.unreadCount, eventAt: snapshotAt }));
-        if (rows.length > 0) {
-          await tx.supportRequestUnread.createMany({ data: rows, skipDuplicates: true });
+        // 快照整体取代本地的按请求记录（包括快照里已经没有的请求），不截断。
+        await tx.supportRequestUnread.deleteMany({ where: { userId } });
+        if (remote.requests.length > 0) {
+          await tx.supportRequestUnread.createMany({
+            data: remote.requests.map((item) => ({ userId, requestId: item.id, unreadCount: item.unreadCount, eventAt: snapshotAt })),
+            skipDuplicates: true
+          });
         }
         await tx.supportUnreadState.update({
           where: { userId },
-          data: { unreadCount: total, sourceAt: snapshotAt, syncedAt: new Date() }
+          data: { unreadCount: remote.unreadCount, sourceAt: snapshotAt, syncedAt: new Date(), revision: { increment: 1 } }
         });
-        return { previous: state.unreadCount, next: total };
+        return { previous: state.unreadCount, next: remote.unreadCount };
       });
     } catch (error) {
       this.logger.warn(`Achord Connect 未读校准写入失败（用户 ${userId}）：${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+    if (!result) {
+      this.logger.log(`Achord Connect 未读校准期间收到新的 Webhook，已保留 Webhook 的值（用户 ${userId}）`);
       return null;
     }
     this.publishIfChanged(userId, result);

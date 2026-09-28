@@ -5,6 +5,7 @@ CREATE TABLE "SupportUnreadState" (
     "unreadCount" INTEGER NOT NULL DEFAULT 0,
     "sourceAt" TIMESTAMP(3),
     "syncedAt" TIMESTAMP(3),
+    "revision" INTEGER NOT NULL DEFAULT 0,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 

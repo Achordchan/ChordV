@@ -906,6 +906,8 @@ model SupportUnreadState {
   sourceAt    DateTime?
   // 最近一次拿到权威总数的本地时间；为空或过久时，客户端查询状态会先向工单系统重新同步。
   syncedAt    DateTime?
+  // 每次写入加一；校准查询期间若有 Webhook 写入，放弃这次查询结果，避免旧快照覆盖新事件。
+  revision    Int       @default(0)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
