@@ -1,24 +1,8 @@
 import { DataSkeleton } from "../features/shared/DataSkeleton";
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  Alert,
-  Badge,
-  Button,
-  Card,
-  FileButton,
-  Group,
-  Modal,
-  Paper,
-  Select,
-  Stack,
-  Text,
-  TextInput,
-  Textarea,
-  Title
-} from "@mantine/core";
+import { Alert, Button, Modal, Stack } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import type { SupportTicketStatus } from "@chordv/shared";
-import { IconPaperclip, IconRefresh, IconSend, IconX } from "@tabler/icons-react";
+import { IconAlertCircle, IconArchive, IconExternalLink, IconMessageCircle } from "@tabler/icons-react";
 import {
   closeAdminSupportTicket,
   fetchAdminUploadLimits,
@@ -30,59 +14,50 @@ import {
   type AdminSupportTicketDetailDto,
   type AdminSupportTicketSummaryDto
 } from "../api/client";
-import { SectionCard } from "../features/shared/SectionCard";
-import { StatusBadge } from "../features/shared/StatusBadge";
+import { fetchSupportIntegrationConfig } from "../api/support-integration";
+import { TicketList } from "../features/tickets/TicketList";
+import { TicketDetail } from "../features/tickets/TicketDetail";
+import { TicketComposer } from "../features/tickets/TicketComposer";
+import { TicketAttachmentPreviewContent } from "../features/tickets/TicketAttachments";
 import {
-  filterByKeyword,
+  filterTickets,
+  LEGACY_TICKETS_READ_ONLY_NOTICE,
+  readSafeExternalUrl,
+  type TicketAttachmentPreview,
+  type TicketCustomerTarget,
+  type TicketOwnerFilter,
+  type TicketStatusFilter
+} from "../features/tickets/ticket-model";
+import styles from "../features/tickets/TicketsWorkspace.module.css";
+import {
   isPotentiallyCompletedMutationFailure,
   isSupportTicketAttachmentUploadFailure,
   buildUncertainMutationMessage,
-  isUncertainRequestFailure,
   readError,
   summarizeAdminDiagnosticMessage
 } from "../utils/admin-filters";
-import { formatDateTime, formatDateTimeWithYear } from "../utils/admin-format";
 
-type TicketOwnerFilter = "all" | "personal" | "team";
-type TicketStatusFilter = "all" | SupportTicketStatus;
-type TicketAttachmentPreview = {
-  url: string;
-  fileName: string;
-};
-type TicketAttachmentImageState = "loading" | "loaded" | "failed";
-
-/** 启用新工单系统（Achord Connect）后，自建工单只保留历史记录的查看与搜索，不能回复或修改状态。 */
-export const LEGACY_TICKETS_READ_ONLY_NOTICE = "工单系统已迁移到 Achord Connect，这里仅保留历史记录，只读。";
+export { LEGACY_TICKETS_READ_ONLY_NOTICE };
 
 const ADMIN_TICKET_REPLY_MAX_BODY_LENGTH = 4000;
 const DEFAULT_ADMIN_TICKET_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
-
-const ticketStatusOptions = [
-  { value: "all", label: "全部状态" },
-  { value: "open", label: "处理中" },
-  { value: "waiting_admin", label: "待管理员回复" },
-  { value: "waiting_user", label: "待用户回复" },
-  { value: "closed", label: "已关闭" }
-] as const;
-
-const ownerTypeOptions = [
-  { value: "all", label: "全部归属" },
-  { value: "personal", label: "个人订阅" },
-  { value: "team", label: "Team 订阅" }
-] as const;
 
 type TicketsPageProps = {
   refreshSignal?: number;
   /** 已启用新工单系统：只读存档，隐藏回复、附件、关闭、重开（后台接口同样拒绝）。 */
   readOnly?: boolean;
   onTicketMutated?: () => void;
+  /** 从工单跳到“客户与订阅”并定位到对应客户或团队。 */
+  onOpenCustomer?: (target: TicketCustomerTarget) => void;
 };
 
 export function TicketsPage(props: TicketsPageProps) {
+  const readOnly = props.readOnly === true;
   const [keyword, setKeyword] = useState("");
   const [statusFilter, setStatusFilter] = useState<TicketStatusFilter>("all");
   const [ownerFilter, setOwnerFilter] = useState<TicketOwnerFilter>("all");
-  const [userEmailFilter, setUserEmailFilter] = useState("");
+  const [mobileDetail, setMobileDetail] = useState(false);
+  const [connectUrl, setConnectUrl] = useState<string | null>(null);
   const [tickets, setTickets] = useState<AdminSupportTicketSummaryDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -149,26 +124,29 @@ export function TicketsPage(props: TicketsPageProps) {
     void loadTicketDetail(selectedTicketId);
   }, [selectedTicketId]);
 
-  const visibleTickets = useMemo(() => {
-    const byKeyword = filterByKeyword(tickets, keyword, (item) => [
-      item.title,
-      item.userDisplayName,
-      item.userEmail,
-      item.teamName ?? "",
-      item.lastMessagePreview ?? ""
-    ]);
-
-    return byKeyword
-      .filter((item) => {
-        if (statusFilter !== "all" && item.status !== statusFilter) return false;
-        if (ownerFilter !== "all" && item.ownerType !== ownerFilter) return false;
-        if (userEmailFilter.trim() && !item.userEmail.toLowerCase().includes(userEmailFilter.trim().toLowerCase())) {
-          return false;
-        }
-        return true;
+  // 只读存档提供“打开 Achord Connect”入口；地址取自“工单系统接入”设置，读取失败时不显示入口。
+  useEffect(() => {
+    if (!readOnly) {
+      setConnectUrl(null);
+      return;
+    }
+    let disposed = false;
+    fetchSupportIntegrationConfig()
+      .then((config) => {
+        if (!disposed) setConnectUrl(readSafeExternalUrl(config.baseUrl));
       })
-      .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
-  }, [keyword, ownerFilter, statusFilter, tickets, userEmailFilter]);
+      .catch(() => {
+        if (!disposed) setConnectUrl(null);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [readOnly]);
+
+  const visibleTickets = useMemo(
+    () => filterTickets(tickets, { keyword, status: statusFilter, owner: ownerFilter }),
+    [keyword, ownerFilter, statusFilter, tickets]
+  );
 
   useEffect(() => {
     setSelectedTicketId((current) => {
@@ -391,334 +369,129 @@ export function TicketsPage(props: TicketsPageProps) {
     }
   }
 
-  const orderedMessages = useMemo(
-    () =>
-      [...(selectedTicket?.messages ?? [])].sort(
-        (left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()
-      ),
-    [selectedTicket?.messages]
-  );
   const replyClosed = !selectedTicket || selectedTicket.status === "closed";
   const canSendReply = Boolean(selectedTicket && selectedTicket.status !== "closed" && (replyDraft.trim() || replyAttachment));
+  const detailPending = detailLoading && selectedTicket?.id !== selectedTicketId;
+
+  function reloadTickets() {
+    void loadTickets();
+    const ticketId = selectedTicketIdRef.current;
+    if (ticketId) {
+      void loadTicketDetail(ticketId);
+    }
+  }
 
   return (
-    <Stack gap="lg">
-      <SectionCard searchValue={keyword} onSearchChange={setKeyword}>
-        <Stack gap="md">
-          {props.readOnly ? (
-            <Alert color="blue" variant="light" className="admin-tickets-readonly-notice">
-              {LEGACY_TICKETS_READ_ONLY_NOTICE}
-            </Alert>
-          ) : null}
-          <Group align="end" wrap="wrap">
-            <Select
-              label="状态"
-              data={ticketStatusOptions.map((item) => ({ value: item.value, label: item.label }))}
-              value={statusFilter}
-              onChange={(value) => setStatusFilter((value as TicketStatusFilter) || "all")}
-              w={180}
-            />
-            <TextInput
-              label="用户邮箱"
-              placeholder="按邮箱筛选"
-              value={userEmailFilter}
-              onChange={(event) => setUserEmailFilter(event.currentTarget.value)}
-              w={260}
-            />
-            <Select
-              label="归属"
-              data={ownerTypeOptions.map((item) => ({ value: item.value, label: item.label }))}
-              value={ownerFilter}
-              onChange={(value) => setOwnerFilter((value as TicketOwnerFilter) || "all")}
-              w={180}
-            />
-            <Button
-              variant="light"
-              leftSection={<IconRefresh size={16} />}
-              onClick={() => {
-                void loadTickets();
-                const ticketId = selectedTicketIdRef.current;
-                if (ticketId) {
-                  void loadTicketDetail(ticketId);
+    <Stack gap="md">
+      {props.readOnly ? (
+        <Alert color="teal.9" variant="light" icon={<IconArchive size={20} />} className={styles.archiveNotice}>
+          <div className={styles.archiveNoticeBody}>
+            <span>{LEGACY_TICKETS_READ_ONLY_NOTICE}</span>
+            {connectUrl ? (
+              <Button component="a" href={connectUrl} target="_blank" rel="noreferrer" size="xs" variant="default" rightSection={<IconExternalLink size={14} />}>
+                打开 Achord Connect
+              </Button>
+            ) : null}
+          </div>
+        </Alert>
+      ) : null}
+
+      {error ? (
+        <Alert color="red" variant="light" icon={<IconAlertCircle size={20} />} className={styles.errorNotice}>
+          <span>{error}</span>
+          <Button variant="subtle" color="red" size="xs" onClick={reloadTickets}>
+            重新加载
+          </Button>
+        </Alert>
+      ) : null}
+
+      {loading && tickets.length === 0 ? (
+        <DataSkeleton variant="workspace" rows={5} />
+      ) : (
+        <div className={[styles.workspace, readOnly ? styles.archived : "", mobileDetail && selectedTicketId ? styles.detailOpen : ""].join(" ")}>
+          <TicketList
+            tickets={visibleTickets}
+            totalCount={tickets.length}
+            selectedId={selectedTicketId}
+            onSelect={(ticketId) => {
+              setSelectedTicketId(ticketId);
+              setMobileDetail(true);
+            }}
+            keyword={keyword}
+            onKeywordChange={setKeyword}
+            status={statusFilter}
+            onStatusChange={setStatusFilter}
+            owner={ownerFilter}
+            onOwnerChange={setOwnerFilter}
+            onClearFilters={() => {
+              setKeyword("");
+              setStatusFilter("all");
+              setOwnerFilter("all");
+            }}
+            readOnly={readOnly}
+            refreshing={loading || detailLoading}
+            onRefresh={reloadTickets}
+          />
+
+          <main className={styles.detail}>
+            {detailError ? (
+              <Alert color="red" variant="light" icon={<IconAlertCircle size={20} />} className={styles.errorNotice}>
+                <span>{detailError}</span>
+                {selectedTicketId ? (
+                  <Button variant="subtle" color="red" size="xs" onClick={() => void loadTicketDetail(selectedTicketId)}>
+                    重试
+                  </Button>
+                ) : null}
+              </Alert>
+            ) : null}
+
+            {detailPending ? (
+              <DataSkeleton variant="page" rows={4} />
+            ) : selectedTicket ? (
+              <TicketDetail
+                ticket={selectedTicket}
+                readOnly={readOnly}
+                statusChanging={statusChanging}
+                replySaving={replySaving}
+                onStatusAction={(ticket, next) => void handleStatusAction(ticket, next)}
+                onPreviewAttachment={setPreviewAttachment}
+                onOpenCustomer={props.onOpenCustomer}
+                onBack={() => setMobileDetail(false)}
+                composer={
+                  props.readOnly ? null : (
+                    <TicketComposer
+                      draft={replyDraft}
+                      onDraftChange={setReplyDraft}
+                      maxLength={ADMIN_TICKET_REPLY_MAX_BODY_LENGTH}
+                      attachment={replyAttachment}
+                      onAttachmentChange={handleReplyAttachmentChange}
+                      attachmentResetRef={replyAttachmentResetRef}
+                      closed={replyClosed}
+                      sending={replySaving}
+                      sendDisabled={!canSendReply || replySaving || statusChanging !== null}
+                      onSend={() => void handleReply()}
+                    />
+                  )
                 }
-              }}
-              loading={loading || detailLoading}
-            >
-              刷新
-            </Button>
-          </Group>
-
-          {error ? (
-            <Alert color="red" variant="light">
-              {error}
-            </Alert>
-          ) : null}
-
-          {loading && tickets.length === 0 ? (
-            <DataSkeleton rows={5}/>
-          ) : (
-            <div className="admin-tickets-workspace">
-              <Card withBorder radius="xl" p="lg" className="admin-tickets-list-card">
-                <Stack gap="sm" h="100%">
-                  <Group justify="space-between">
-                    <Title order={4}>工单列表</Title>
-                    <Text size="sm" c="dimmed">
-                      共 {visibleTickets.length} 条
-                    </Text>
-                  </Group>
-
-                  <div className="admin-tickets-list">
-                    {visibleTickets.length === 0 ? (
-                      <Text c="dimmed" ta="center" py="xl">
-                        暂无符合条件的工单
-                      </Text>
-                    ) : (
-                      visibleTickets.map((item) => {
-                        const active = item.id === selectedTicketId;
-                        return (
-                          <button
-                            key={item.id}
-                            type="button"
-                            className={active ? "admin-ticket-list-item admin-ticket-list-item--active" : "admin-ticket-list-item"}
-                            onClick={() => setSelectedTicketId(item.id)}
-                          >
-                            <div className="admin-ticket-list-item__head">
-                              <Text fw={700} lineClamp={1}>
-                                {item.title}
-                              </Text>
-                              <StatusBadge color={ticketStatusColor(item.status)} label={translateTicketStatus(item.status)} />
-                            </div>
-                            <Text size="sm" c="dimmed" lineClamp={2}>
-                              {item.lastMessagePreview ?? "暂无内容"}
-                            </Text>
-                            <div className="admin-ticket-list-item__meta">
-                              <Text size="xs" c="dimmed" lineClamp={1}>
-                                {item.userDisplayName} · {item.userEmail}
-                              </Text>
-                              <Text size="xs" c="dimmed">
-                                {formatDateTime(item.updatedAt)}
-                              </Text>
-                            </div>
-                            <div className="admin-ticket-list-item__foot">
-                              <Badge variant="light">{translateTicketSource(item.source)}</Badge>
-                              <Text size="xs" c="dimmed" lineClamp={1}>
-                                {item.teamName ?? "个人订阅"}
-                              </Text>
-                            </div>
-                          </button>
-                        );
-                      })
-                    )}
-                  </div>
-                </Stack>
-              </Card>
-
-              <Card withBorder radius="xl" p="lg" className="admin-ticket-detail-card">
-                <Stack gap="md" h="100%">
-                  <div className="admin-ticket-detail-head">
-                    <div>
-                      <Title order={4}>工单详情</Title>
-                      {selectedTicket ? (
-                        <Text size="sm" c="dimmed">
-                          来源：{translateTicketSource(selectedTicket.source)}
-                        </Text>
-                      ) : null}
-                    </div>
-                    <Group gap="xs">
-                      {selectedTicket ? (
-                        <StatusBadge color={ticketStatusColor(selectedTicket.status)} label={translateTicketStatus(selectedTicket.status)} />
-                      ) : null}
-                      {selectedTicket && !props.readOnly ? (
-                        selectedTicket.status === "closed" ? (
-                          <Button
-                            variant="default"
-                            size="xs"
-                            loading={statusChanging === selectedTicket.id}
-                            disabled={replySaving || (statusChanging !== null && statusChanging !== selectedTicket.id)}
-                            onClick={() => void handleStatusAction(selectedTicket, "reopen")}
-                          >
-                            重开工单
-                          </Button>
-                        ) : (
-                          <Button
-                            variant="default"
-                            color="red"
-                            size="xs"
-                            loading={statusChanging === selectedTicket.id}
-                            disabled={replySaving || (statusChanging !== null && statusChanging !== selectedTicket.id)}
-                            onClick={() => void handleStatusAction(selectedTicket, "close")}
-                          >
-                            关闭工单
-                          </Button>
-                        )
-                      ) : null}
-                    </Group>
-                  </div>
-
-                  {detailError ? (
-                    <Alert color="red" variant="light">
-                      {detailError}
-                    </Alert>
-                  ) : null}
-
-                  {detailLoading && selectedTicket?.id !== selectedTicketId ? (
-                    <DataSkeleton variant="page" rows={4}/>
-                  ) : !selectedTicket ? (
-                    <Text c="dimmed">请选择左侧工单查看详情。</Text>
-                  ) : (
-                    <>
-                      {selectedTicket.attachmentUploadStatus === "failed" ? (
-                        <Alert color="yellow" variant="light">
-                          文字回复已保存，附件上传失败：
-                          {summarizeAdminDiagnosticMessage(
-                            selectedTicket.attachmentUploadError,
-                            "请检查图床配置或稍后重试。"
-                          )}
-                        </Alert>
-                      ) : null}
-
-                      <div className="admin-ticket-summary">
-                        <Paper withBorder radius="lg" p="md">
-                          <Text size="xs" c="dimmed">标题</Text>
-                          <Text fw={700}>{selectedTicket.title}</Text>
-                        </Paper>
-                        <Paper withBorder radius="lg" p="md">
-                          <Text size="xs" c="dimmed">用户</Text>
-                          <Text fw={700}>{selectedTicket.userDisplayName}</Text>
-                          <Text size="sm" c="dimmed">{selectedTicket.userEmail}</Text>
-                        </Paper>
-                        <Paper withBorder radius="lg" p="md">
-                          <Text size="xs" c="dimmed">归属</Text>
-                          <Text fw={700}>{selectedTicket.teamName ?? "个人订阅"}</Text>
-                          <Text size="sm" c="dimmed">{selectedTicket.ownerType === "team" ? "Team 订阅" : "个人订阅"}</Text>
-                        </Paper>
-                        <Paper withBorder radius="lg" p="md">
-                          <Text size="xs" c="dimmed">最近更新时间</Text>
-                          <Text fw={700}>{formatDateTimeWithYear(selectedTicket.updatedAt)}</Text>
-                        </Paper>
-                      </div>
-
-                      <Stack gap="sm" className="admin-ticket-conversation">
-                        <Group justify="space-between">
-                          <Title order={5}>会话</Title>
-                          <Text size="sm" c="dimmed">共 {orderedMessages.length} 条消息</Text>
-                        </Group>
-                        <div className="admin-ticket-message-list">
-                          {orderedMessages.map((message) => {
-                            const adminMessage = message.authorRole === "admin";
-                            return (
-                              <div
-                                key={message.id}
-                                className={adminMessage ? "admin-ticket-message-row admin-ticket-message-row--admin" : "admin-ticket-message-row"}
-                              >
-                                <Paper
-                                  withBorder
-                                  radius="lg"
-                                  p="md"
-                                  className={adminMessage ? "admin-ticket-message admin-ticket-message--admin" : "admin-ticket-message"}
-                                >
-                                  <Group justify="space-between" align="start" gap="md" wrap="nowrap">
-                                    <Stack gap={2}>
-                                      <Text fw={700}>{readMessageAuthorLabel(message.authorRole, message.authorDisplayName)}</Text>
-                                      <Text size="xs" c="dimmed">
-                                        {message.authorEmail ?? translateMessageRole(message.authorRole)}
-                                      </Text>
-                                    </Stack>
-                                    <Text size="xs" c="dimmed" className="admin-ticket-message__time">
-                                      {formatDateTimeWithYear(message.createdAt)}
-                                    </Text>
-                                  </Group>
-                                  <Text mt="sm" style={{ whiteSpace: "pre-wrap" }}>
-                                    {message.body}
-                                  </Text>
-                                  {(message.attachments ?? []).length > 0 ? (
-                                    <Group mt="sm" gap="xs">
-                                      {(message.attachments ?? []).map((attachment) => (
-                                        <button
-                                          key={attachment.id}
-                                          type="button"
-                                          className="admin-ticket-attachment-preview-button"
-                                          onClick={() => setPreviewAttachment({ url: attachment.url, fileName: attachment.fileName })}
-                                        >
-                                          <TicketAttachmentThumbnail url={attachment.url} fileName={attachment.fileName} />
-                                        </button>
-                                      ))}
-                                    </Group>
-                                  ) : null}
-                                </Paper>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </Stack>
-
-                      {props.readOnly ? null : <Stack gap="sm" className="admin-ticket-reply">
-                        <Group justify="space-between" align="center">
-                          <Title order={5}>回复</Title>
-                          <Text size="xs" c="dimmed">
-                            {replyDraft.length} 字
-                          </Text>
-                        </Group>
-                        <Textarea
-                          minRows={3}
-                          placeholder={selectedTicket.status === "closed" ? "工单已关闭，请先重开再回复。" : "输入回复内容"}
-                          value={replyDraft}
-                          onChange={(event) => setReplyDraft(event.currentTarget.value)}
-                          disabled={replyClosed}
-                        />
-                        <Group justify="space-between" align="center" wrap="wrap" className="admin-ticket-reply__toolbar">
-                          <Group gap="xs" className="admin-ticket-attachment-actions">
-                            {replyAttachment ? (
-                              <Button
-                                size="xs"
-                                variant="light"
-                                rightSection={<IconX size={14} />}
-                                className="admin-ticket-attachment-pill"
-                                onClick={() => {
-                                  setReplyAttachment(null);
-                                  replyAttachmentResetRef.current?.();
-                                }}
-                              >
-                                {replyAttachment.name}
-                              </Button>
-                            ) : null}
-                            <FileButton
-                              resetRef={replyAttachmentResetRef}
-                              onChange={handleReplyAttachmentChange}
-                              accept="image/png,image/jpeg,image/webp,image/gif"
-                            >
-                              {(fileButtonProps) => (
-                                <Button
-                                  {...fileButtonProps}
-                                  size="xs"
-                                  variant="default"
-                                  leftSection={<IconPaperclip size={14} />}
-                                  disabled={replySaving || replyClosed}
-                                >
-                                  添加附件
-                                </Button>
-                              )}
-                            </FileButton>
-                          </Group>
-                          <Button
-                            className="admin-ticket-send-button"
-                            leftSection={<IconSend size={15} />}
-                            onClick={() => void handleReply()}
-                            loading={replySaving}
-                            disabled={!canSendReply || replySaving || statusChanging !== null}
-                          >
-                            发送回复
-                          </Button>
-                        </Group>
-                      </Stack>}
-                    </>
-                  )}
-                </Stack>
-              </Card>
-            </div>
-          )}
-        </Stack>
-      </SectionCard>
+              />
+            ) : detailError ? null : (
+              <div className={styles.empty}>
+                {readOnly ? <IconArchive size={32} /> : <IconMessageCircle size={32} />}
+                <h2>{tickets.length === 0 ? (readOnly ? "没有历史工单" : "暂无工单") : "选择一条工单"}</h2>
+                <p>
+                  {tickets.length === 0
+                    ? readOnly
+                      ? "迁移到 Achord Connect 之前没有留下自建工单记录。"
+                      : "用户在客户端提交工单后，会在这里查看会话并回复。"
+                    : visibleTickets.length === 0
+                      ? "当前筛选条件下没有工单，调整筛选后查看详情。"
+                      : "从左侧列表选择工单，查看会话记录与客户信息。"}
+                </p>
+              </div>
+            )}
+          </main>
+        </div>
+      )}
       <Modal
         opened={previewAttachment !== null}
         onClose={() => setPreviewAttachment(null)}
@@ -730,148 +503,6 @@ export function TicketsPage(props: TicketsPageProps) {
       </Modal>
     </Stack>
   );
-}
-
-function TicketAttachmentThumbnail(props: { url: string; fileName: string }) {
-  const [imageState, setImageState] = useState<TicketAttachmentImageState>("loading");
-
-  useEffect(() => {
-    setImageState("loading");
-  }, [props.url]);
-
-  return (
-    <Paper withBorder radius="md" p={6} className="admin-ticket-attachment-card">
-      <Stack gap={4}>
-        <div className="admin-ticket-attachment-thumb-frame" aria-busy={imageState === "loading"}>
-          {imageState !== "failed" ? (
-            <img
-              src={props.url}
-              alt={props.fileName}
-              onLoad={() => setImageState("loaded")}
-              onError={() => setImageState("failed")}
-            />
-          ) : null}
-          {imageState === "loading" ? (
-            <div className="admin-ticket-attachment-image-state">
-              <DataSkeleton variant="image"/>
-            </div>
-          ) : null}
-          {imageState === "failed" ? (
-            <div className="admin-ticket-attachment-image-state admin-ticket-attachment-image-state--failed">
-              <Text size="xs" fw={600}>
-                缩略图加载失败
-              </Text>
-              <Text size="xs" c="dimmed">
-                点击查看原图
-              </Text>
-            </div>
-          ) : null}
-        </div>
-        <Text size="xs" lineClamp={1}>
-          {props.fileName}
-        </Text>
-      </Stack>
-    </Paper>
-  );
-}
-
-function TicketAttachmentPreviewContent(props: { attachment: TicketAttachmentPreview }) {
-  const [imageState, setImageState] = useState<TicketAttachmentImageState>("loading");
-  const [retryToken, setRetryToken] = useState(0);
-
-  useEffect(() => {
-    setImageState("loading");
-    setRetryToken(0);
-  }, [props.attachment.url]);
-
-  const previewUrl = retryToken === 0 ? props.attachment.url : appendImageRetryToken(props.attachment.url, retryToken);
-
-  return (
-    <Stack gap="sm">
-      <div className="admin-ticket-attachment-preview-frame" aria-busy={imageState === "loading"}>
-        {imageState !== "failed" ? (
-          <img
-            key={previewUrl}
-            src={previewUrl}
-            alt={props.attachment.fileName}
-            onLoad={() => setImageState("loaded")}
-            onError={() => setImageState("failed")}
-          />
-        ) : null}
-        {imageState === "loading" ? (
-          <div className="admin-ticket-attachment-preview-state">
-            <DataSkeleton variant="image"/>
-          </div>
-        ) : null}
-        {imageState === "failed" ? (
-          <div className="admin-ticket-attachment-preview-state admin-ticket-attachment-preview-state--failed">
-            <Text fw={600}>预览加载失败</Text>
-            <Text size="sm" c="dimmed">
-              可以重试，或在新窗口打开原图。
-            </Text>
-          </div>
-        ) : null}
-      </div>
-      <Group justify="flex-end">
-        {imageState === "failed" ? (
-          <Button
-            variant="light"
-            onClick={() => {
-              setImageState("loading");
-              setRetryToken((current) => current + 1);
-            }}
-          >
-            重试
-          </Button>
-        ) : null}
-        <Button component="a" href={props.attachment.url} target="_blank" rel="noreferrer" variant="default">
-          打开原图
-        </Button>
-      </Group>
-    </Stack>
-  );
-}
-
-function appendImageRetryToken(url: string, retryToken: number) {
-  const hashIndex = url.indexOf("#");
-  const baseUrl = hashIndex >= 0 ? url.slice(0, hashIndex) : url;
-  const hash = hashIndex >= 0 ? url.slice(hashIndex) : "";
-  const separator = baseUrl.includes("?") ? "&" : "?";
-  return `${baseUrl}${separator}previewRetry=${retryToken}${hash}`;
-}
-
-function translateTicketStatus(status: SupportTicketStatus) {
-  if (status === "open") return "处理中";
-  if (status === "waiting_admin") return "待管理员回复";
-  if (status === "waiting_user") return "待用户回复";
-  return "已关闭";
-}
-
-function ticketStatusColor(status: SupportTicketStatus) {
-  if (status === "open") return "blue";
-  if (status === "waiting_admin") return "orange";
-  if (status === "waiting_user") return "teal";
-  return "gray";
-}
-
-function translateTicketSource(source: AdminSupportTicketSummaryDto["source"]) {
-  return source === "desktop" ? "桌面端" : source;
-}
-
-function translateMessageRole(role: AdminSupportTicketDetailDto["messages"][number]["authorRole"]) {
-  if (role === "admin") return "管理员";
-  if (role === "user") return "用户";
-  return "系统";
-}
-
-function readMessageAuthorLabel(
-  role: AdminSupportTicketDetailDto["messages"][number]["authorRole"],
-  authorDisplayName: string | null
-) {
-  if (authorDisplayName) {
-    return authorDisplayName;
-  }
-  return translateMessageRole(role);
 }
 
 function formatUploadBytes(value: number) {

@@ -21,7 +21,7 @@ const theme = createTheme({
   }
 });
 
-/** React theme context also reaches portal dropdowns; no root CSS variables or ticket styles are changed. */
-export function AdminAppearance({ enabled, children }: { enabled: boolean; children: ReactNode }) {
-  return <MantineProvider theme={enabled ? theme : {}} withCssVariables={false}>{children}</MantineProvider>;
+/** React theme context also reaches portal dropdowns; root CSS variables are not changed. 工单页已按后台设计重做，不再单独沿用旧主题。 */
+export function AdminAppearance({ children }: { children: ReactNode }) {
+  return <MantineProvider theme={theme} withCssVariables={false}>{children}</MantineProvider>;
 }
