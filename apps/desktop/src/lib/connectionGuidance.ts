@@ -621,6 +621,11 @@ export function isDialogOnlyGuidance(code: ConnectionGuidanceCode) {
   return code === "desktop_external_vpn_conflict" || code === "desktop_external_proxy_conflict";
 }
 
+/** 只有“其他 VPN/代理占用”这类冲突，才允许用户确认后强制接管系统代理。 */
+export function canForceConnectGuidance(code: ConnectionGuidanceCode) {
+  return code === "desktop_external_vpn_conflict" || code === "desktop_external_proxy_conflict";
+}
+
 export function extractRuntimeReasonCode(message: string) {
   return RUNTIME_REASON_CODES.find((code) => message.includes(code)) ?? null;
 }

@@ -711,8 +711,10 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
     [handleForcedGuidance, options, syncAnnouncementsState, syncSubscriptionState]
   );
 
-  const handleConnect = useCallback(async (connectOptions?: { bypassStatusGate?: boolean; nodeId?: string | null; mode?: ConnectionMode }) => {
+  const handleConnect = useCallback(async (connectOptions?: { bypassStatusGate?: boolean; nodeId?: string | null; mode?: ConnectionMode; forceTakeover?: boolean }) => {
     const bypassStatusGate = Boolean(connectOptions?.bypassStatusGate);
+    // 仅本次连接有效：由用户在确认框里明确同意，重连、切换节点等路径不会沿用。
+    const forceTakeover = connectOptions?.forceTakeover === true;
     // A mode chosen in the same tick (tray switch) is not in options yet.
     const connectMode = connectOptions?.mode ?? options.mode;
     const preferredNodeId =
@@ -753,7 +755,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       const connectionIdentity = options.getCurrentSessionIdentity();
       const isCurrentLogin = () => connectionIdentity !== null && options.getCurrentSessionIdentity() === connectionIdentity;
       try {
-        await checkRuntimeNetworkConflict();
+        if (!forceTakeover) await checkRuntimeNetworkConflict();
       } catch (reason) {
         if (!isCurrentLogin()) return;
         const message = reason instanceof Error ? options.readError(reason.message) : options.readError(String(reason));
@@ -857,7 +859,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           sessionId: config.sessionId,
           nodeId: config.node.id
         });
-        await connectRuntime(config);
+        await connectRuntime(config, forceTakeover ? { forceTakeover } : undefined);
         if (!isCurrentLogin()) {
           void disconnectSession(configAccessToken, config.sessionId).catch(() => null);
           await options.refreshRuntime();
@@ -1020,6 +1022,13 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
     }
   }, [actionBusy, options]);
 
+  /** 冲突弹窗里用户确认“强制连接”后调用：关闭提示并以接管模式连接一次。 */
+  const handleForceConnect = useCallback(async () => {
+    options.setConnectionGuidance(null);
+    options.setGuidanceDialog(null);
+    await handleConnect({ forceTakeover: true });
+  }, [handleConnect, options]);
+
   const handlePrimaryAction = useCallback(async () => {
     debugAndroidConnect("handlePrimaryAction", {
       status: options.desktopStatus.status,
@@ -1047,6 +1056,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
     applyGuidance,
     handleRuntimeEvent,
     handlePrimaryAction,
+    handleForceConnect,
     handleDisconnect,
     handleReconnect,
     handleSwitchConnection,

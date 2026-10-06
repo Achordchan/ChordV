@@ -63,6 +63,7 @@ import { localFileKindForComponent, resolveLocalFileVersions, supportsLocalFiles
 import { readStoredGeoVersionLabel } from "./lib/geoUpdate";
 import { readStoredXrayInstalledIdentity } from "./lib/xrayInstall";
 import {
+  canForceConnectGuidance,
   clearResolvedGuidance,
   composeRuntimeFailureText,
   ConnectionGuidance,
@@ -529,6 +530,7 @@ export function App() {
     applyGuidance,
     handleRuntimeEvent,
     handlePrimaryAction,
+    handleForceConnect,
     handleDisconnect,
     handleReconnect,
     handleSwitchConnection,
@@ -1991,7 +1993,17 @@ export function App() {
         </DialogText>
       </AppDialog>
 
-      <GuidanceDialog guidance={guidanceDialog} onClose={dismissGuidanceDialog} />
+      <GuidanceDialog guidance={guidanceDialog}
+        onClose={dismissGuidanceDialog}
+        forceConnect={
+          guidanceDialog && canForceConnectGuidance(guidanceDialog.code)
+            ? {
+                kind: guidanceDialog.code === "desktop_external_vpn_conflict" ? "vpn" : "proxy",
+                onConfirm: () => void handleForceConnect()
+              }
+            : undefined
+        }
+      />
 
       <UpdateCenterModal
         state={updateCenter}

@@ -78,7 +78,9 @@ use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
 use windows_sys::Win32::Networking::WinInet::{
-    InternetSetOptionW, INTERNET_OPTION_REFRESH, INTERNET_OPTION_SETTINGS_CHANGED,
+    InternetSetOptionW, INTERNET_OPTION_PER_CONNECTION_OPTION, INTERNET_OPTION_REFRESH,
+    INTERNET_OPTION_SETTINGS_CHANGED, INTERNET_PER_CONN_FLAGS, INTERNET_PER_CONN_OPTIONW,
+    INTERNET_PER_CONN_OPTIONW_0, INTERNET_PER_CONN_OPTION_LISTW, PROXY_TYPE_DIRECT,
 };
 
 #[cfg(windows)]
@@ -3433,19 +3435,20 @@ async fn check_network_conflict(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn connect_runtime(app: AppHandle, config: GeneratedRuntimeConfigDto) -> Result<CommandResult, String> {
+async fn connect_runtime(app: AppHandle, config: GeneratedRuntimeConfigDto, force_takeover: Option<bool>) -> Result<CommandResult, String> {
     EXIT_CLEANUP.ensure_running()?;
     let generation = CONNECTION_GENERATION.capture();
-    tauri::async_runtime::spawn_blocking(move || connect_runtime_blocking(&app, config, generation))
+    let force_takeover = force_takeover.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || connect_runtime_blocking(&app, config, generation, force_takeover))
         .await.map_err(|error| error.to_string())?
 }
 
-fn connect_runtime_blocking(app: &AppHandle, config: GeneratedRuntimeConfigDto, generation: u64) -> Result<CommandResult, String> {
+fn connect_runtime_blocking(app: &AppHandle, config: GeneratedRuntimeConfigDto, generation: u64, force_takeover: bool) -> Result<CommandResult, String> {
     ensure_startup_ready(&app)?;
     let session_id = config.session_id.clone();
     static NEXT_ATTEMPT:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
     let attempt=NEXT_ATTEMPT.fetch_add(1,std::sync::atomic::Ordering::Relaxed)+1;
-    let result = connect_runtime_inner(app, config, generation, attempt);
+    let result = connect_runtime_inner(app, config, generation, attempt, force_takeover);
     if let Err(error) = &result {
         let binding = app.state::<Mutex<RuntimeState>>();
         if let Ok(mut state) = binding.lock() {
@@ -3478,7 +3481,7 @@ fn owns_failed_connection(state:&RuntimeState,attempt:u64,session:&str)->bool {
     state.active_attempt==Some(attempt) && state.active_session_id.as_deref()==Some(session) && state.status!="connected"
 }
 
-fn connect_runtime_inner(app: &AppHandle, config: GeneratedRuntimeConfigDto, generation: u64, attempt:u64) -> Result<CommandResult, String> {
+fn connect_runtime_inner(app: &AppHandle, config: GeneratedRuntimeConfigDto, generation: u64, attempt:u64, force_takeover: bool) -> Result<CommandResult, String> {
     let state = app.state::<Mutex<RuntimeState>>();
     {
         let mut state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
@@ -3500,9 +3503,14 @@ fn connect_runtime_inner(app: &AppHandle, config: GeneratedRuntimeConfigDto, gen
             let _ = clear_system_proxy();
         }
 
-        if let Err(error) =
+        // 用户在界面上确认“强制连接”后，不再检测其他 VPN/代理，而是先清空系统代理，
+        // 之后沿用正常流程写入 ChordV 的代理。只在这一次连接生效。
+        let conflict = if force_takeover {
+            force_clear_system_proxy().map_err(|error| format!("清空系统代理失败：{error}"))
+        } else {
             detect_external_network_conflict(config.local_http_port, config.local_socks_port)
-        {
+        };
+        if let Err(error) = conflict {
             state.status = "error".into();
             state.active_session_id = None;
             state.active_node_id = None;
@@ -6006,6 +6014,88 @@ fn clear_system_proxy_within_budget() -> Result<(), io::Error> {
     }
 }
 
+/// 强制连接专用：无条件关闭系统代理，不判断是不是 ChordV 自己设置的。
+fn force_clear_system_proxy() -> Result<(), io::Error> {
+    with_command_budget(Duration::from_secs(15), || force_clear_system_proxy_within_budget())
+}
+
+fn force_clear_system_proxy_within_budget() -> Result<(), io::Error> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut first_error = None;
+        for service in network_services()? {
+            // 自动代理（PAC）和自动发现代理（WPAD）可能抢在手动代理之前生效，必须一并关闭，否则接管不完整。
+            for option in ["-setwebproxystate", "-setsecurewebproxystate", "-setsocksfirewallproxystate", "-setautoproxystate", "-setproxyautodiscovery"] {
+                if let Err(error) = run_networksetup(&[option, &service, "off"]) {
+                    if first_error.is_none() { first_error = Some(error); }
+                }
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
+    #[cfg(windows)]
+    {
+        // 先关 PAC / 自动发现，再清手动代理；清手动代理的最后一步会刷新系统代理设置。
+        // WinINet 实际生效的开关存在 Connections\DefaultConnectionSettings 里，只改注册表值不可靠。
+        disable_windows_auto_proxy_flags()?;
+        for (args, required) in WINDOWS_FORCE_AUTO_PROXY_RESET {
+            let result = run_windows_reg(args);
+            // 本来就没配置 PAC 时，删除会报“找不到值”，不算失败。
+            if *required { result?; }
+        }
+        clear_windows_proxy()
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        Ok(())
+    }
+}
+
+/// 通过 WinINet 把 LAN 连接的代理类型改成“直接连接”，同时清掉 PAC 与自动检测两个标志位。
+/// ChordV 的手动代理随后由 set_windows_proxy 写入。
+#[cfg(windows)]
+fn disable_windows_auto_proxy_flags() -> Result<(), io::Error> {
+    let mut option = INTERNET_PER_CONN_OPTIONW {
+        dwOption: INTERNET_PER_CONN_FLAGS,
+        Value: INTERNET_PER_CONN_OPTIONW_0 { dwValue: PROXY_TYPE_DIRECT },
+    };
+    let mut list = INTERNET_PER_CONN_OPTION_LISTW {
+        dwSize: std::mem::size_of::<INTERNET_PER_CONN_OPTION_LISTW>() as u32,
+        pszConnection: std::ptr::null_mut(),
+        dwOptionCount: 1,
+        dwOptionError: 0,
+        pOptions: &mut option,
+    };
+    let ok = unsafe {
+        InternetSetOptionW(
+            std::ptr::null(),
+            INTERNET_OPTION_PER_CONNECTION_OPTION,
+            &mut list as *mut INTERNET_PER_CONN_OPTION_LISTW as *const core::ffi::c_void,
+            std::mem::size_of::<INTERNET_PER_CONN_OPTION_LISTW>() as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// 强制连接时，除手动代理外还要关闭的 Windows 自动代理：删除 PAC 地址、关闭自动发现。
+/// 第二项为 true 表示必须成功。与平台无关，方便在任意系统上做回归；只有 Windows 构建会执行。
+#[cfg_attr(not(windows), allow(dead_code))]
+const WINDOWS_FORCE_AUTO_PROXY_RESET: &[(&[&str], bool)] = &[
+    (
+        &["delete", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings", "/v", "AutoConfigURL", "/f"],
+        false,
+    ),
+    (
+        &["add", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings", "/v", "AutoDetect", "/t", "REG_DWORD", "/d", "0", "/f"],
+        true,
+    ),
+];
+
 fn detect_external_network_conflict(http_port: u16, socks_port: u16) -> Result<(), String> {
     with_command_budget(Duration::from_millis(2500), || detect_external_network_conflict_within_budget(http_port, socks_port))
 }
@@ -7749,6 +7839,15 @@ mod update_trust_tests {
 #[cfg(test)]
 mod runtime_failure_tests {
     use super::*;
+    #[test]
+    fn windows_force_takeover_disables_pac_and_auto_detect() {
+        let has = |value: &str, name: &str, required: bool| WINDOWS_FORCE_AUTO_PROXY_RESET.iter()
+            .any(|(args, req)| *req == required && args.first() == Some(&value) && args.contains(&name));
+        assert!(has("delete", "AutoConfigURL", false), "PAC address must be removed, tolerating an absent value");
+        assert!(has("add", "AutoDetect", true), "automatic discovery must be switched off and must succeed");
+        let detect = WINDOWS_FORCE_AUTO_PROXY_RESET.iter().find(|(args, _)| args.contains(&"AutoDetect")).unwrap().0;
+        assert_eq!(detect[detect.iter().position(|a| *a == "/d").unwrap() + 1], "0");
+    }
     #[test]
     fn rejected_duplicate_does_not_own_the_original_start(){
         let mut state=RuntimeState::default();state.status="starting".into();state.active_session_id=Some("same-session".into());state.active_attempt=Some(1);
