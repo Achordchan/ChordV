@@ -55,12 +55,19 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
   const [testResult, setTestResult] = useState<ClientRoutingRuleTestResultDto | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
+  // 只在打开时重置表单；令牌刷新只重新加载规则，不能丢掉正在编辑的内容。
   useEffect(() => {
     if (!props.opened) {
       return;
     }
     resetForm();
     setView("list");
+  }, [props.opened]);
+
+  useEffect(() => {
+    if (!props.opened) {
+      return;
+    }
     void loadRules();
   }, [props.opened, props.accessToken]);
 
