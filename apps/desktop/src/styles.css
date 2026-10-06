@@ -660,8 +660,20 @@ body {
   animation: cv-connect-complete 280ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
 }
 
-.control-primary-action[data-fill="disconnecting"]::after {
+/* "releasing" keeps the same drain running (same animation name, so it continues rather than restarts). */
+.control-primary-action[data-fill="disconnecting"]::after,
+.control-primary-action[data-fill="releasing"]::after {
   animation: cv-disconnect-drain 6s cubic-bezier(0.08, 0.82, 0.17, 1) forwards;
+}
+
+/* Disconnect finished: a track-coloured cover sweeps in from the right and wipes what is left of the
+ * bar, so the bar retreats to the left instead of vanishing. It sits above the bar (z-index 1) and
+ * below the label (later in tree order). */
+.control-primary-action[data-fill="releasing"]::before {
+  z-index: 1;
+  background: var(--cv-fill-track);
+  transform-origin: right center;
+  animation: cv-disconnect-release 280ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
 }
 
 @keyframes cv-connect-fill {
@@ -670,6 +682,11 @@ body {
 }
 
 @keyframes cv-connect-complete {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+@keyframes cv-disconnect-release {
   from { transform: scaleX(0); }
   to { transform: scaleX(1); }
 }
