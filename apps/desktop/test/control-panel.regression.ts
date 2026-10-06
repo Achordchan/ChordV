@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { resolvePrimaryFillPhase, shouldCompleteFill } from "../src/lib/primaryActionFill.ts";
+import { resolvePrimaryFillPhase, shouldCompleteFill, shouldReleaseFill } from "../src/lib/primaryActionFill.ts";
 import { describeRequiredUpdate } from "../src/lib/updateState.ts";
 
 const styles = readFileSync(resolve(import.meta.dirname, "../src/styles.css"), "utf8");
@@ -20,6 +20,12 @@ assert.equal(shouldCompleteFill("connecting", "idle", "connected"), true);
 assert.equal(shouldCompleteFill("connecting", "idle", "error"), false);
 assert.equal(shouldCompleteFill("connecting", "idle", "idle"), false);
 assert.equal(shouldCompleteFill("disconnecting", "idle", "idle"), false);
+// A disconnect that really ended idle sweeps the remaining bar away; a failed stop, a connect, or no change does not.
+assert.equal(shouldReleaseFill("disconnecting", "idle", "idle"), true);
+assert.equal(shouldReleaseFill("disconnecting", "idle", "error"), false);
+assert.equal(shouldReleaseFill("disconnecting", "idle", "connected"), false);
+assert.equal(shouldReleaseFill("connecting", "idle", "idle"), false);
+assert.equal(shouldReleaseFill("idle", "idle", "idle"), false);
 // transform-only animation, completion sweep, and a reduced-motion fallback.
 assert.match(styles, /@keyframes cv-connect-fill \{\s*from \{ transform: scaleX\([\d.]+\); \}\s*to \{ transform: scaleX\(0\.9\d?\); \}/);
 assert.match(styles, /\[data-fill="completing"\]::before \{\s*animation: cv-connect-complete/);

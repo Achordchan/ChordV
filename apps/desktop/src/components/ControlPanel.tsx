@@ -7,8 +7,10 @@ import type { RuntimeStatus } from "../lib/runtime";
 import { NoticeRow } from "./NoticeRow";
 import {
   PRIMARY_FILL_COMPLETE_MS,
+  PRIMARY_FILL_RELEASE_MS,
   resolvePrimaryFillPhase,
   shouldCompleteFill,
+  shouldReleaseFill,
   type PrimaryBusyAction,
   type PrimaryFillPhase
 } from "../lib/primaryActionFill";
@@ -42,9 +44,11 @@ export function ControlPanel(props: ControlPanelProps) {
         : "正在连接…"
       : fillPhase === "disconnecting"
         ? "正在断开…"
-        : fillPhase === "completing"
-          ? "已连接"
-          : props.primaryLabel;
+        : fillPhase === "releasing"
+          ? "已断开"
+          : fillPhase === "completing"
+            ? "已连接"
+            : props.primaryLabel;
   const renderPrimaryButton = (size: "md" | "xl") => (
     <Button
       size={size}
@@ -221,17 +225,26 @@ function usePrimaryFillPhase(status: string, busyAction: PrimaryBusyAction): Pri
   const phase = resolvePrimaryFillPhase(status, busyAction);
   const [trackedPhase, setTrackedPhase] = useState(phase);
   const [completing, setCompleting] = useState(false);
+  const [releasing, setReleasing] = useState(false);
   if (trackedPhase !== phase) {
-    // Adjusted during render so the green idle button never flashes before the sweep.
+    // Adjusted during render so the idle button never flashes before the sweep.
     setTrackedPhase(phase);
     setCompleting(shouldCompleteFill(trackedPhase, phase, status));
+    setReleasing(shouldReleaseFill(trackedPhase, phase, status));
   }
   useEffect(() => {
     if (!completing) return;
     const timer = window.setTimeout(() => setCompleting(false), PRIMARY_FILL_COMPLETE_MS);
     return () => window.clearTimeout(timer);
   }, [completing]);
-  return completing && phase === "idle" && status === "connected" ? "completing" : phase;
+  useEffect(() => {
+    if (!releasing) return;
+    const timer = window.setTimeout(() => setReleasing(false), PRIMARY_FILL_RELEASE_MS);
+    return () => window.clearTimeout(timer);
+  }, [releasing]);
+  if (completing && phase === "idle" && status === "connected") return "completing";
+  if (releasing && phase === "idle" && status === "idle") return "releasing";
+  return phase;
 }
 
 function readRuntimeInstallLabel(
