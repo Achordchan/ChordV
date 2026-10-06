@@ -32,8 +32,8 @@ const FORCE_CONNECT_CONSEQUENCES = [
 
 export function GuidanceDialog({ guidance, onClose, forceConnect }: { guidance: GuidanceDialogContent | null; onClose: () => void; forceConnect?: GuidanceForceConnect }) {
   const [confirming, setConfirming] = useState(false);
-  // 提示被关闭或换成别的提示后，确认步骤一并重置。
-  useEffect(() => { if (guidance === null) setConfirming(false); }, [guidance]);
+  // 提示被关闭或被另一条提示替换后，确认步骤一并重置，避免新提示被藏住。
+  useEffect(() => { setConfirming(false); }, [guidance]);
 
   return (
     <>

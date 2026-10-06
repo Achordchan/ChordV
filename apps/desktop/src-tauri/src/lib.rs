@@ -6022,13 +6022,12 @@ fn force_clear_system_proxy_within_budget() -> Result<(), io::Error> {
     {
         let mut first_error = None;
         for service in network_services()? {
-            for option in ["-setwebproxystate", "-setsecurewebproxystate", "-setsocksfirewallproxystate"] {
+            // 自动代理（PAC）可能抢在手动代理之前生效，必须一并关闭，否则接管不完整。
+            for option in ["-setwebproxystate", "-setsecurewebproxystate", "-setsocksfirewallproxystate", "-setautoproxystate"] {
                 if let Err(error) = run_networksetup(&[option, &service, "off"]) {
                     if first_error.is_none() { first_error = Some(error); }
                 }
             }
-            // 自动代理（PAC）可能抢在手动代理之前生效，关不掉也不影响连接。
-            let _ = run_networksetup(&["-setautoproxystate", &service, "off"]);
         }
         first_error.map_or(Ok(()), Err)
     }
