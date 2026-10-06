@@ -168,6 +168,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
     }
 
     const session = editorSession.current;
+    let saved = false;
     setBusy("save");
     setError(null);
     try {
@@ -178,11 +179,13 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
       } else {
         await createRoutingRule(props.accessToken, { ...input, enabled: true });
       }
+      saved = true;
       if (session === editorSession.current) backToList();
       await loadRules();
       await applyIfConnected("规则已保存");
     } catch (reason) {
-      if (session === editorSession.current) showFailure(reason);
+      // 保存请求本身失败且编辑器已被放弃时才静默；保存之后的刷新/重连失败必须让用户看到。
+      if (saved || session === editorSession.current) showFailure(reason);
     } finally {
       setBusy(null);
     }
