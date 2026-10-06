@@ -351,7 +351,7 @@ fn only_the_bundled_loading_page_may_load_in_the_support_window() {
 }
 
 #[test]
-fn a_loading_window_is_adopted_by_the_same_epoch_and_origin_only() {
+fn a_loading_window_is_adopted_by_the_same_epoch_origin_and_label_only() {
     let origin_text = "https://support.achord.cn";
     let opened = Instant::now();
     let mut state = SupportWindowState::default();
@@ -360,9 +360,10 @@ fn a_loading_window_is_adopted_by_the_same_epoch_and_origin_only() {
     record.loading = true;
     assert!(state.begin_open(epoch, record).is_ok());
 
-    // 站点或批次对不上：不接管，调用方新建窗口。
-    assert_eq!(state.adopt_loading_window(epoch, "https://other.example.com", opened), None);
-    assert_eq!(state.adopt_loading_window(epoch + 1, origin_text, opened), None);
+    // 站点、批次或标签对不上：不接管。
+    assert_eq!(state.adopt_loading_window(epoch, "https://other.example.com", Some("support-1"), opened), None);
+    assert_eq!(state.adopt_loading_window(epoch + 1, origin_text, Some("support-1"), opened), None);
+    assert_eq!(state.adopt_loading_window(epoch, origin_text, Some("support-9"), opened), None, "another attempt's window");
     assert!(state.current.as_ref().unwrap().loading);
 
     // 接管：转为正常加载，宽限期从跳转时重新计算，之前的就绪/过期状态清空。
@@ -372,32 +373,49 @@ fn a_loading_window_is_adopted_by_the_same_epoch_and_origin_only() {
         record.ready = true;
         record.expired = true;
     }
-    assert_eq!(state.adopt_loading_window(epoch, origin_text, later), Some("support-1".to_string()));
+    assert_eq!(state.adopt_loading_window(epoch, origin_text, Some("support-1"), later), Some("support-1".to_string()));
     let adopted = state.current.as_ref().unwrap();
     assert!(!adopted.loading && !adopted.ready && !adopted.expired);
     assert!(adopted.can_focus(later + Duration::from_secs(5)));
     assert!(!adopted.can_focus(later + SUPPORT_LAUNCH_GRACE));
     // 已经接管过的窗口不能被第二次接管。
-    assert_eq!(state.adopt_loading_window(epoch, origin_text, later), None);
+    assert_eq!(state.adopt_loading_window(epoch, origin_text, Some("support-1"), later), None);
 }
 
 #[test]
-fn cancelling_only_removes_a_loading_window_of_the_same_epoch() {
+fn cancelling_only_removes_that_attempts_loading_window() {
     let mut state = SupportWindowState::default();
     let epoch = state.epoch;
     let mut loading = SupportWindowRecord::new("support-1".into(), "https://support.achord.cn".into(), epoch, Instant::now());
     loading.loading = true;
     assert!(state.begin_open(epoch, loading).is_ok());
+    assert!(state.has_loading_window(epoch, "support-1"));
 
-    assert!(state.cancel_loading_window(epoch + 1).is_none(), "another account's batch cannot cancel it");
-    assert_eq!(state.cancel_loading_window(epoch).map(|record| record.label), Some("support-1".to_string()));
+    assert!(state.cancel_loading_window(epoch + 1, "support-1").is_none(), "another account's batch cannot cancel it");
+    assert!(state.cancel_loading_window(epoch, "support-2").is_none(), "another attempt's cleanup cannot cancel it");
+    assert_eq!(state.cancel_loading_window(epoch, "support-1").map(|record| record.label), Some("support-1".to_string()));
     assert!(state.current.is_none());
 
+    // 快速重试：上一次的收尾迟到，只认旧标签，不会销毁重试新建的占位窗口。
+    let mut retry = SupportWindowRecord::new("support-3".into(), "https://support.achord.cn".into(), epoch, Instant::now());
+    retry.loading = true;
+    assert!(state.begin_open(epoch, retry).is_ok());
+    assert!(state.cancel_loading_window(epoch, "support-1").is_none());
+    assert!(state.has_loading_window(epoch, "support-3"));
+
     // 已经正常打开的窗口（非占位）不会被取消。
-    let normal = SupportWindowRecord::new("support-2".into(), "https://support.achord.cn".into(), epoch, Instant::now());
+    let normal = SupportWindowRecord::new("support-4".into(), "https://support.achord.cn".into(), epoch, Instant::now());
     assert!(state.begin_open(epoch, normal).is_ok());
-    assert!(state.cancel_loading_window(epoch).is_none());
+    assert!(state.cancel_loading_window(epoch, "support-4").is_none());
     assert!(state.current.is_some());
+}
+
+#[test]
+fn a_leftover_loading_placeholder_is_never_focused_as_an_open_window() {
+    let opened = Instant::now();
+    let mut record = SupportWindowRecord::new("support-1".into(), "https://support.achord.cn".into(), 0, opened);
+    record.loading = true;
+    assert!(!record.can_focus(opened + Duration::from_secs(1)), "a new click restarts the attempt instead of focusing an abandoned placeholder");
 }
 
 #[test]

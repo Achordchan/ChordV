@@ -249,7 +249,8 @@ impl SupportWindowRecord {
     /// 点击“工单”时能否直接聚焦这个窗口：会话未过期，且门户已确认就绪，或仍在票据有效期内（加载中不重复签发）。
     /// 票据有效期过了门户仍未就绪（刚打开就断网、502 错误页等），就重新签发票据重开窗口。
     pub fn can_focus(&self, now: Instant) -> bool {
-        !self.expired && (self.ready || now.saturating_duration_since(self.opened_at) < SUPPORT_LAUNCH_GRACE)
+        // 占位窗口只属于正在进行的那次打开；新的点击遇到它说明上一次没收尾，应当重新开始而不是聚焦它。
+        !self.loading && !self.expired && (self.ready || now.saturating_duration_since(self.opened_at) < SUPPORT_LAUNCH_GRACE)
     }
 
     /// 顶层文档重新加载（刷新、同源整页跳转）：新文档必须重新确认 ready，并重新计算加载宽限期，
@@ -321,13 +322,13 @@ impl SupportWindowState {
         epoch == self.epoch && self.current.as_ref().is_some_and(|record| record.label == label)
     }
 
-    /// 票据到手：接管同一批次、同一站点的占位窗口，转为正常加载（重新计算加载宽限期），返回它的标签。
-    /// 站点不一致（期间后台改了地址）或没有占位窗口时返回 None，调用方按原有流程新建窗口。
-    pub fn adopt_loading_window(&mut self, epoch: u64, origin: &str, now: Instant) -> Option<String> {
-        let record = self
-            .current
-            .as_mut()
-            .filter(|record| record.loading && record.epoch == epoch && record.origin == origin)?;
+    /// 票据到手：接管占位窗口，转为正常加载（重新计算加载宽限期），返回它的标签。
+    /// label 是 begin_support_window 返回的占位窗口标签：必须就是这一个窗口，同一批次、同一站点才接管，
+    /// 避免上一次打开的收尾误碰下一次打开的窗口。站点不一致或没有占位窗口时返回 None。
+    pub fn adopt_loading_window(&mut self, epoch: u64, origin: &str, label: Option<&str>, now: Instant) -> Option<String> {
+        let record = self.current.as_mut().filter(|record| {
+            record.loading && record.epoch == epoch && record.origin == origin && label.map_or(true, |label| record.label == label)
+        })?;
         record.loading = false;
         record.ready = false;
         record.expired = false;
@@ -335,13 +336,19 @@ impl SupportWindowState {
         Some(record.label.clone())
     }
 
-    /// 取消还没跳转的占位窗口（票据没拿到：失败、未开放、账号变化）。只取消同一批次的占位窗口，已正常打开的不动。
-    pub fn cancel_loading_window(&mut self, epoch: u64) -> Option<SupportWindowRecord> {
-        if self.current.as_ref().is_some_and(|record| record.loading && record.epoch == epoch) {
+    /// 取消还没跳转的占位窗口（票据没拿到：失败、未开放、账号变化）。只取消标签相同、同一批次的占位窗口：
+    /// 之后新开的窗口（包括快速重试的占位窗口）和已正常打开的窗口都不受影响。
+    pub fn cancel_loading_window(&mut self, epoch: u64, label: &str) -> Option<SupportWindowRecord> {
+        if self.current.as_ref().is_some_and(|record| record.loading && record.epoch == epoch && record.label == label) {
             self.current.take()
         } else {
             None
         }
+    }
+
+    /// 预开的占位窗口还在（标签、批次相同，仍是占位状态）。
+    pub fn has_loading_window(&self, epoch: u64, label: &str) -> bool {
+        self.current.as_ref().is_some_and(|record| record.loading && record.epoch == epoch && record.label == label)
     }
 
     /// 建窗失败时撤销预先登记的记录（只撤销自己的，不影响之后的打开）。
@@ -462,7 +469,7 @@ fn create_support_window(
     epoch: u64,
     url: WebviewUrl,
     loading: bool,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let origin = support_origin_string(origin_url);
 
     let (label, previous) = {
@@ -569,10 +576,12 @@ fn create_support_window(
     // 加载失败的恢复：登记时 ready=false，只有门户通过桥接确认 ready 才算打开成功。若打开后断网、
     // 落在同源错误页等导致门户一直未就绪，SupportWindowRecord::can_focus 会在票据有效期
     // （SUPPORT_LAUNCH_GRACE，60 秒）过后返回 false，下次点击“工单”即重新签发票据并在原位置重开窗口。
-    focus(&window)
+    focus(&window)?;
+    Ok(label)
 }
 
-/// 点击“工单”后立刻弹出占位窗口（本地“正在打开工单…”页），不等后台签发票据。
+/// 点击“工单”后立刻弹出占位窗口（本地“正在打开工单…”页），不等后台签发票据；返回占位窗口的标签。
+/// 每次都新建（取代旧窗口），不复用已有的占位窗口：上一次打开的收尾只会取消它自己的标签。
 /// origin 来自状态接口；站点无效时报错，前端退回到拿到票据后再开窗的流程。
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
@@ -581,34 +590,22 @@ pub async fn begin_support_window(
     state: State<'_, Mutex<SupportWindowState>>,
     support_origin: String,
     epoch: u64,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let origin_url = parse_support_origin(&support_origin)?;
-    let origin = support_origin_string(&origin_url);
-    {
-        let guard = lock(&state)?;
-        guard.ensure_epoch(epoch)?;
-        // 已经有同一站点的占位窗口：只聚焦，不重复建窗。
-        let existing = guard
-            .current
-            .as_ref()
-            .filter(|record| record.loading && record.epoch == epoch && record.origin == origin)
-            .and_then(|_| current_window(&app, &guard));
-        if let Some(window) = existing {
-            return focus(&window);
-        }
-    }
     create_support_window(&app, &state, &origin_url, epoch, WebviewUrl::App(SUPPORT_LOADING_PAGE.into()), true)
 }
 
-/// 票据没拿到（失败、未开放、账号变化）：关掉还停在占位页的窗口。已经跳转到工单站点的窗口不受影响。
+/// 票据没拿到（失败、未开放、账号变化）：关掉这次打开预开的、还停在占位页的窗口。
+/// 已经跳转到工单站点的窗口、其他打开留下的窗口都不受影响。
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub async fn cancel_support_loading_window(
     app: AppHandle,
     state: State<'_, Mutex<SupportWindowState>>,
     epoch: u64,
+    label: String,
 ) -> Result<(), String> {
-    let record = lock(&state)?.cancel_loading_window(epoch);
+    let record = lock(&state)?.cancel_loading_window(epoch, &label);
     if let Some(window) = record.and_then(|record| app.get_webview_window(&record.label)) {
         let _ = window.destroy();
     }
@@ -616,7 +613,7 @@ pub async fn cancel_support_loading_window(
 }
 
 /// 打开工单窗口：有同站点的占位窗口就让它跳转到一次性 launchUrl，否则（旧流程）新建窗口并顶层加载 launchUrl。
-/// prepared=true 表示前端已经预开了占位窗口；它被用户关掉后不再重新弹出。
+/// prepared 是前端预开的占位窗口标签：它被用户关掉、被取消或被取代后不再重新弹出（返回 support_window_closed）。
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub async fn open_support_window(
@@ -625,7 +622,7 @@ pub async fn open_support_window(
     launch_url: String,
     support_origin: String,
     epoch: u64,
-    prepared: Option<bool>,
+    prepared: Option<String>,
 ) -> Result<(), String> {
     let origin_url = parse_support_origin(&support_origin)?;
     let launch = validate_support_launch_url(&launch_url, &origin_url)?;
@@ -634,8 +631,9 @@ pub async fn open_support_window(
     let adopted = {
         let mut guard = lock(&state)?;
         guard.ensure_epoch(epoch)?;
-        let adopted = guard.adopt_loading_window(epoch, &origin, Instant::now());
-        if adopted.is_none() && prepared.unwrap_or(false) && guard.current.is_none() {
+        let adopted = guard.adopt_loading_window(epoch, &origin, prepared.as_deref(), Instant::now());
+        // 占位窗口还在但站点变了：按旧流程新建；占位窗口已不在（用户关了、被取消、被取代）：静默结束。
+        if adopted.is_none() && prepared.as_deref().is_some_and(|label| !guard.has_loading_window(epoch, label)) {
             return Err(SUPPORT_WINDOW_CLOSED_ERROR.into());
         }
         adopted
@@ -654,7 +652,7 @@ pub async fn open_support_window(
         }
         return focus(&window);
     }
-    create_support_window(&app, &state, &origin_url, epoch, WebviewUrl::External(launch), false)
+    create_support_window(&app, &state, &origin_url, epoch, WebviewUrl::External(launch), false).map(|_| ())
 }
 
 #[cfg(not(target_os = "android"))]
@@ -727,22 +725,22 @@ pub async fn focus_support_window() -> Result<SupportFocusResult, String> {
 
 #[cfg(target_os = "android")]
 #[tauri::command]
-pub async fn open_support_window(launch_url: String, support_origin: String, epoch: u64, prepared: Option<bool>) -> Result<(), String> {
+pub async fn open_support_window(launch_url: String, support_origin: String, epoch: u64, prepared: Option<String>) -> Result<(), String> {
     let _ = (launch_url, support_origin, epoch, prepared);
     Err("安卓端请在浏览器中打开工单".into())
 }
 
 #[cfg(target_os = "android")]
 #[tauri::command]
-pub async fn begin_support_window(support_origin: String, epoch: u64) -> Result<(), String> {
+pub async fn begin_support_window(support_origin: String, epoch: u64) -> Result<String, String> {
     let _ = (support_origin, epoch);
     Err("安卓端请在浏览器中打开工单".into())
 }
 
 #[cfg(target_os = "android")]
 #[tauri::command]
-pub async fn cancel_support_loading_window(epoch: u64) -> Result<(), String> {
-    let _ = epoch;
+pub async fn cancel_support_loading_window(epoch: u64, label: String) -> Result<(), String> {
+    let _ = (epoch, label);
     Ok(())
 }
 
