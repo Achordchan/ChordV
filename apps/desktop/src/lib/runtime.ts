@@ -235,7 +235,8 @@ export async function checkRuntimeNetworkConflict() {
   await invoke("check_network_conflict");
 }
 
-export async function connectRuntime(config: GeneratedRuntimeConfigDto) {
+/** forceTakeover: 用户已确认，先清空系统代理再写入 ChordV 代理，不再因其他 VPN/代理而拒绝连接。 */
+export async function connectRuntime(config: GeneratedRuntimeConfigDto, options?: { forceTakeover?: boolean }) {
   const invoke = await loadInvoke();
   if (!invoke) {
     return { ok: true, mocked: true };
@@ -245,7 +246,7 @@ export async function connectRuntime(config: GeneratedRuntimeConfigDto) {
     return invoke("start_android_runtime", { config });
   }
 
-  return invoke("connect_runtime", { config });
+  return invoke("connect_runtime", { config, forceTakeover: options?.forceTakeover === true });
 }
 
 export async function disconnectRuntime() {

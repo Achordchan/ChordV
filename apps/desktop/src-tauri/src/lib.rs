@@ -3433,19 +3433,20 @@ async fn check_network_conflict(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn connect_runtime(app: AppHandle, config: GeneratedRuntimeConfigDto) -> Result<CommandResult, String> {
+async fn connect_runtime(app: AppHandle, config: GeneratedRuntimeConfigDto, force_takeover: Option<bool>) -> Result<CommandResult, String> {
     EXIT_CLEANUP.ensure_running()?;
     let generation = CONNECTION_GENERATION.capture();
-    tauri::async_runtime::spawn_blocking(move || connect_runtime_blocking(&app, config, generation))
+    let force_takeover = force_takeover.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || connect_runtime_blocking(&app, config, generation, force_takeover))
         .await.map_err(|error| error.to_string())?
 }
 
-fn connect_runtime_blocking(app: &AppHandle, config: GeneratedRuntimeConfigDto, generation: u64) -> Result<CommandResult, String> {
+fn connect_runtime_blocking(app: &AppHandle, config: GeneratedRuntimeConfigDto, generation: u64, force_takeover: bool) -> Result<CommandResult, String> {
     ensure_startup_ready(&app)?;
     let session_id = config.session_id.clone();
     static NEXT_ATTEMPT:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
     let attempt=NEXT_ATTEMPT.fetch_add(1,std::sync::atomic::Ordering::Relaxed)+1;
-    let result = connect_runtime_inner(app, config, generation, attempt);
+    let result = connect_runtime_inner(app, config, generation, attempt, force_takeover);
     if let Err(error) = &result {
         let binding = app.state::<Mutex<RuntimeState>>();
         if let Ok(mut state) = binding.lock() {
@@ -3478,7 +3479,7 @@ fn owns_failed_connection(state:&RuntimeState,attempt:u64,session:&str)->bool {
     state.active_attempt==Some(attempt) && state.active_session_id.as_deref()==Some(session) && state.status!="connected"
 }
 
-fn connect_runtime_inner(app: &AppHandle, config: GeneratedRuntimeConfigDto, generation: u64, attempt:u64) -> Result<CommandResult, String> {
+fn connect_runtime_inner(app: &AppHandle, config: GeneratedRuntimeConfigDto, generation: u64, attempt:u64, force_takeover: bool) -> Result<CommandResult, String> {
     let state = app.state::<Mutex<RuntimeState>>();
     {
         let mut state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
@@ -3500,9 +3501,14 @@ fn connect_runtime_inner(app: &AppHandle, config: GeneratedRuntimeConfigDto, gen
             let _ = clear_system_proxy();
         }
 
-        if let Err(error) =
+        // 用户在界面上确认“强制连接”后，不再检测其他 VPN/代理，而是先清空系统代理，
+        // 之后沿用正常流程写入 ChordV 的代理。只在这一次连接生效。
+        let conflict = if force_takeover {
+            force_clear_system_proxy().map_err(|error| format!("清空系统代理失败：{error}"))
+        } else {
             detect_external_network_conflict(config.local_http_port, config.local_socks_port)
-        {
+        };
+        if let Err(error) = conflict {
             state.status = "error".into();
             state.active_session_id = None;
             state.active_node_id = None;
@@ -5997,6 +6003,38 @@ fn clear_system_proxy_within_budget() -> Result<(), io::Error> {
         if !windows_proxy_owned_by_chordv()? {
             return Ok(());
         }
+        clear_windows_proxy()
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        Ok(())
+    }
+}
+
+/// 强制连接专用：无条件关闭系统代理，不判断是不是 ChordV 自己设置的。
+fn force_clear_system_proxy() -> Result<(), io::Error> {
+    with_command_budget(Duration::from_secs(15), || force_clear_system_proxy_within_budget())
+}
+
+fn force_clear_system_proxy_within_budget() -> Result<(), io::Error> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut first_error = None;
+        for service in network_services()? {
+            for option in ["-setwebproxystate", "-setsecurewebproxystate", "-setsocksfirewallproxystate"] {
+                if let Err(error) = run_networksetup(&[option, &service, "off"]) {
+                    if first_error.is_none() { first_error = Some(error); }
+                }
+            }
+            // 自动代理（PAC）可能抢在手动代理之前生效，关不掉也不影响连接。
+            let _ = run_networksetup(&["-setautoproxystate", &service, "off"]);
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
+    #[cfg(windows)]
+    {
         clear_windows_proxy()
     }
 

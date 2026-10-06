@@ -4,11 +4,12 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
 
-async function scenario(signOut: boolean, conflict = false, rotation: "config" | "native" | null = null, signOutNative = false, relogin = false) {
+async function scenario(signOut: boolean, conflict = false, rotation: "config" | "native" | null = null, signOutNative = false, relogin = false, force = false) {
   let identity: string | null = "login-1:user";
   let token: string | null = "token";
   let sessionCalls = 0, nativeCalls = 0, saves = 0, preflightCalls = 0, assetCalls = 0;
   let revoked=0;
+  let forcedStart: boolean | null = null;
   let shownGuidance: any = null;
   let resolveConfig!: (config: unknown) => void;
   const configTask = new Promise(resolve=> { resolveConfig = resolve; });
@@ -21,7 +22,7 @@ async function scenario(signOut: boolean, conflict = false, rotation: "config" |
     if (id === "../api/client") return { connectSession: ()=>{sessionCalls++; return configTask;}, disconnectSession: async()=>{revoked++;} };
     if (id === "../lib/runtime") return {
       checkRuntimeNetworkConflict: async()=>{preflightCalls++;if(conflict)throw new Error("external_proxy_conflict: 系统代理已由其他应用占用");},
-      connectRuntime: async()=>{nativeCalls++;if(rotation==="native")token="rotated";if(signOutNative)identity=null;}, focusDesktopWindow: async()=>undefined
+      connectRuntime: async(_config: unknown, runtimeOptions?: { forceTakeover?: boolean })=>{nativeCalls++;forcedStart=runtimeOptions?.forceTakeover===true;if(rotation==="native")token="rotated";if(signOutNative)identity=null;}, focusDesktopWindow: async()=>undefined
     };
     if (id === "../lib/connectionGuidance") return guidance;
     return {};
@@ -39,22 +40,23 @@ async function scenario(signOut: boolean, conflict = false, rotation: "config" |
     getCurrentAccessToken: ()=>token, getCurrentSessionIdentity: ()=>identity, refreshRuntime: async()=>undefined,
     setRuntime: ()=>{saves++;},
   } as Record<string, unknown>, { get:(target,key:string)=>key in target?target[key]:()=>undefined });
-  const { handlePrimaryAction: handleConnect } = exports.useRuntimeActions(options);
-  const first = handleConnect();
-  const second = handleConnect();
+  const actions = exports.useRuntimeActions(options);
+  const first = force ? actions.handleForceConnect() : actions.handlePrimaryAction();
+  const second = force ? Promise.resolve() : actions.handlePrimaryAction();
   for(let turn=0;turn<10;turn++) await Promise.resolve();
-  assert.equal(preflightCalls, 1, "duplicate clicks must share the in-flight guard before preflight");
-  assert.equal(sessionCalls, conflict ? 0 : 1, "conflicts must be detected before any backend request");
-  assert.equal(assetCalls, conflict ? 0 : 1, "conflicts must not wait for component downloads");
+  assert.equal(preflightCalls, force ? 0 : 1, force ? "an explicitly confirmed force connect must skip the conflict preflight" : "duplicate clicks must share the in-flight guard before preflight");
+  assert.equal(sessionCalls, conflict && !force ? 0 : 1, "conflicts must be detected before any backend request");
+  assert.equal(assetCalls, conflict && !force ? 0 : 1, "conflicts must not wait for component downloads");
   if (signOut) { token = null; identity=null; }
   if (rotation==="config") token="rotated";
   if (relogin) identity="login-2:user";
   resolveConfig({ sessionId: "session", node });
   await Promise.all([first, second]);
-  assert.equal(nativeCalls, signOut || conflict || relogin ? 0 : 1);
-  assert.equal(saves, signOut || conflict || signOutNative || relogin ? 0 : 1, "late connection results must not restore a signed-out account");
+  assert.equal(nativeCalls, signOut || (conflict && !force) || relogin ? 0 : 1);
+  if (nativeCalls) assert.equal(forcedStart, force, "only the confirmed attempt may carry forceTakeover to the native layer");
+  assert.equal(saves, signOut || (conflict && !force) || signOutNative || relogin ? 0 : 1, "late connection results must not restore a signed-out account");
   if(signOutNative) assert.equal(revoked,1,"stale completed starts must revoke their server lease");
-  if(conflict) assert.equal(shownGuidance?.code,"desktop_external_proxy_conflict");
+  if(conflict && !force) assert.equal(shownGuidance?.code,"desktop_external_proxy_conflict");
 }
 await scenario(false);
 await scenario(true);
@@ -63,4 +65,6 @@ await scenario(false,false,"config");
 await scenario(false,false,"native");
 await scenario(false,false,null,true);
 await scenario(false,false,null,false,true);
+await scenario(false,true,null,false,false,true);
+await scenario(false,false,null,false,false,true);
 console.log("connection duplicate, logout/relogin and token-rotation race checks passed");
