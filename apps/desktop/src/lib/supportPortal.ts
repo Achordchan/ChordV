@@ -58,8 +58,11 @@ export function isSupportEndpointMissing(reason: unknown) {
 /** 与 runtime.ts 的 SupportWindowTarget 一致；这里单独声明，保持本文件无运行时依赖。 */
 export type SupportPortalTarget = {
   focusExisting: () => Promise<boolean>;
+  /** 确认要申请票据后立刻调用（不等待）：桌面端先弹出占位窗口，票据到手后同一个窗口再跳转。可选。 */
+  prepare?: () => void;
   open: (launch: { launchUrl: string; supportOrigin: string }) => Promise<void>;
-  dispose: () => void;
+  /** 异步清理返回 Promise：opener 等它做完才结束这次点击，下一次点击不会和上一次的收尾交叠。 */
+  dispose: () => void | Promise<void>;
 };
 
 export type SupportPortalDeps = {
@@ -113,6 +116,8 @@ export function createSupportPortalOpener(deps: SupportPortalDeps) {
         }
       }
 
+      // 不等票据：先让窗口出现，等待发生在窗口里。
+      target.prepare?.();
       const launch = await deps.launch(isCurrent);
       ensureCurrent();
       await target.open({ launchUrl: launch.launchUrl, supportOrigin: launch.supportOrigin });
@@ -142,8 +147,14 @@ export function createSupportPortalOpener(deps: SupportPortalDeps) {
       }
       const target = deps.prepareTarget();
       inFlight = run(target)
-        .then((result) => {
-          if (result !== "opened") target.dispose();
+        .then(async (result) => {
+          if (result !== "opened") {
+            try {
+              await target.dispose();
+            } catch {
+              // 清理失败不改变本次结果。
+            }
+          }
           return result;
         })
         .finally(() => {

@@ -145,6 +145,185 @@ async function testOpenWindowFocusesExistingWithoutNewTicket() {
   assert.deepEqual(native.calls.map(([command]) => command), ["focus_support_window"]);
 }
 
+const ORIGIN_DEPS = { getSupportOrigin: () => "https://support.achord.cn" };
+
+async function testPlaceholderWindowOpensBeforeTheTicketArrives() {
+  // 点击后先 begin（占位窗口），票据到手后再 open；open 带 prepared，窗口复用而不是新建。
+  const native: FakeNative = {
+    calls: [],
+    handlers: {
+      focus_support_window: () => ({ focused: false, epoch: 4 }),
+      begin_support_window: () => "support-7",
+      open_support_window: () => null,
+      api_request: apiResponder({ "POST /client/support/launch": () => ({ status: 201, body: LAUNCH }) })
+    }
+  };
+  const result = await withNative("Macintosh", native, () =>
+    createSupportPortalOpener(realDeps({ prepareTarget: () => createSupportWindowTarget(ORIGIN_DEPS) })).open()
+  );
+  assert.equal(result, "opened");
+  const commands = native.calls.map(([command]) => command);
+  assert.equal(commands[0], "focus_support_window");
+  assert.equal(commands.at(-1), "open_support_window");
+  assert.ok(commands.includes("begin_support_window") && commands.includes("api_request"));
+  assert.ok(commands.indexOf("begin_support_window") < commands.indexOf("open_support_window"), "the placeholder is requested before the ticket is used");
+  assert.deepEqual(native.calls.find(([command]) => command === "begin_support_window")?.[1], { supportOrigin: "https://support.achord.cn", epoch: 4 });
+  assert.deepEqual(native.calls.at(-1)?.[1], { launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin, epoch: 4, prepared: "support-7" },
+    "open names the exact placeholder window it expects to adopt");
+  assert.ok(!commands.includes("cancel_support_loading_window"), "a successful open keeps the window");
+}
+
+async function testPlaceholderWindowFallsBackAndCleansUp() {
+  // 没有站点来源（旧后台/状态未取到）：不预开，行为与以前完全一致。
+  const noOrigin: FakeNative = {
+    calls: [],
+    handlers: {
+      focus_support_window: () => ({ focused: false, epoch: 4 }),
+      open_support_window: () => null,
+      api_request: apiResponder({ "POST /client/support/launch": () => ({ status: 201, body: LAUNCH }) })
+    }
+  };
+  await withNative("Macintosh", noOrigin, () =>
+    createSupportPortalOpener(realDeps({ prepareTarget: () => createSupportWindowTarget({ getSupportOrigin: () => null }) })).open()
+  );
+  assert.deepEqual(noOrigin.calls.map(([command]) => command), ["focus_support_window", "api_request", "open_support_window"]);
+  assert.deepEqual(noOrigin.calls[2][1], { launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin, epoch: 4 });
+
+  // 占位窗口建不起来：照常在拿到票据后开窗。
+  const beginFails: FakeNative = {
+    calls: [],
+    handlers: {
+      focus_support_window: () => ({ focused: false, epoch: 4 }),
+      begin_support_window: () => { throw "占位失败"; },
+      open_support_window: () => null,
+      api_request: apiResponder({ "POST /client/support/launch": () => ({ status: 201, body: LAUNCH }) })
+    }
+  };
+  const fallback = await withNative("Windows", beginFails, () =>
+    createSupportPortalOpener(realDeps({ prepareTarget: () => createSupportWindowTarget(ORIGIN_DEPS) })).open()
+  );
+  assert.equal(fallback, "opened");
+  assert.deepEqual(beginFails.calls.at(-1)?.[1], { launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin, epoch: 4 }, "no prepared flag when the placeholder failed");
+
+  // 票据没拿到：关掉占位窗口，并按原样提示失败。
+  const launchFails: FakeNative = {
+    calls: [],
+    handlers: {
+      focus_support_window: () => ({ focused: false, epoch: 4 }),
+      begin_support_window: () => "support-7",
+      cancel_support_loading_window: () => null,
+      api_request: apiResponder({ "POST /client/support/launch": () => ({ status: 502, body: { message: "工单系统暂时不可用，请稍后再试" } }) })
+    }
+  };
+  const errors: unknown[] = [];
+  const failed = await withNative("Macintosh", launchFails, async () => {
+    const outcome = await createSupportPortalOpener(realDeps({
+      prepareTarget: () => createSupportWindowTarget(ORIGIN_DEPS),
+      showError: (reason) => { errors.push(reason); }
+    })).open();
+    await new Promise((resolve) => setTimeout(resolve, 30)); // 关闭占位窗口是异步清理
+    return outcome;
+  });
+  assert.equal(failed, "failed");
+  assert.equal(errors.length, 1);
+  assert.deepEqual(launchFails.calls.find(([command]) => command === "cancel_support_loading_window")?.[1], { epoch: 4, label: "support-7" });
+
+  // 票据拿到了但原生层拒绝打开（例如地址校验不通过）：占位窗口也要关掉，不能一直停在“正在打开工单…”。
+  const openRejected: FakeNative = {
+    calls: [],
+    handlers: {
+      focus_support_window: () => ({ focused: false, epoch: 4 }),
+      begin_support_window: () => "support-7",
+      open_support_window: () => { throw "工单打开地址与工单站点不一致"; },
+      cancel_support_loading_window: () => null,
+      api_request: apiResponder({ "POST /client/support/launch": () => ({ status: 201, body: LAUNCH }) })
+    }
+  };
+  const rejected = await withNative("Macintosh", openRejected, async () => {
+    const outcome = await createSupportPortalOpener(realDeps({
+      prepareTarget: () => createSupportWindowTarget(ORIGIN_DEPS),
+      showError: () => undefined
+    })).open();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    return outcome;
+  });
+  assert.equal(rejected, "failed");
+  assert.deepEqual(openRejected.calls.find(([command]) => command === "cancel_support_loading_window")?.[1], { epoch: 4, label: "support-7" });
+
+  // 用户在占位窗口等待期间把它关了：静默结束，不提示错误、不再弹出。
+  const closedByUser: FakeNative = {
+    calls: [],
+    handlers: {
+      focus_support_window: () => ({ focused: false, epoch: 4 }),
+      begin_support_window: () => "support-7",
+      open_support_window: () => { throw "support_window_closed"; },
+      cancel_support_loading_window: () => null,
+      api_request: apiResponder({ "POST /client/support/launch": () => ({ status: 201, body: LAUNCH }) })
+    }
+  };
+  const closed = await withNative("Macintosh", closedByUser, () =>
+    createSupportPortalOpener(realDeps({ prepareTarget: () => createSupportWindowTarget(ORIGIN_DEPS) })).open()
+  );
+  assert.equal(closed, "stale");
+
+  // 已有窗口直接聚焦：不预开占位窗口。
+  const focused: FakeNative = { calls: [], handlers: { focus_support_window: () => ({ focused: true, epoch: 0 }) } };
+  assert.equal(await withNative("Macintosh", focused, () =>
+    createSupportPortalOpener(realDeps({ prepareTarget: () => createSupportWindowTarget(ORIGIN_DEPS) })).open()
+  ), "focused");
+  assert.deepEqual(focused.calls.map(([command]) => command), ["focus_support_window"]);
+}
+
+async function testOpenerPreparesOnlyWhenATicketIsRequested() {
+  const events: string[] = [];
+  const target: Partial<SupportPortalTarget> = { prepare: () => { events.push("begin"); } };
+  const ok = createDeps({ events, target });
+  assert.equal(await createSupportPortalOpener(ok).open(), "opened");
+  assert.deepEqual(events, ["prepare", "focus", "begin", "launch", "open https://support.achord.cn"]);
+
+  // 未开放：不预开占位窗口。
+  const disabledEvents: string[] = [];
+  const disabled = createDeps({ events: disabledEvents, getKnownEnabled: () => false, target: { prepare: () => { disabledEvents.push("begin"); } } });
+  disabled.refreshStatus = async () => { disabledEvents.push("status"); return DISABLED; };
+  assert.equal(await createSupportPortalOpener(disabled).open(), "disabled");
+  assert.ok(!disabledEvents.includes("begin"));
+
+  // 窗口已打开直接聚焦：不预开。
+  const focusEvents: string[] = [];
+  const focused = createDeps({ events: focusEvents, target: { focusExisting: async () => { focusEvents.push("focus"); return true; }, prepare: () => { focusEvents.push("begin"); } } });
+  assert.equal(await createSupportPortalOpener(focused).open(), "focused");
+  assert.ok(!focusEvents.includes("begin"));
+}
+
+async function testCleanupFinishesBeforeTheNextClickIsAccepted() {
+  // 票据失败后占位窗口的清理还没做完时，新的点击不能开始：否则迟到的清理可能碰到重试新开的窗口。
+  const events: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const deps = createDeps({
+    events,
+    launch: async () => { throw apiError(502, "工单系统暂时不可用，请稍后再试"); },
+    target: {
+      dispose: async () => { events.push("cleanup-start"); await gate; events.push("cleanup-end"); }
+    }
+  });
+  const opener = createSupportPortalOpener(deps);
+  const first = opener.open();
+  for (let turn = 0; turn < 20; turn++) await Promise.resolve();
+  assert.ok(events.includes("cleanup-start") && !events.includes("cleanup-end"));
+  assert.equal(opener.isBusy(), true, "the attempt is not over until its cleanup is done");
+  // 清理期间的再次点击会排在这次之后（返回 busy），不会和清理交叠。
+  let retryDone = false;
+  const retry = opener.open().then((result) => { retryDone = true; return result; });
+  for (let turn = 0; turn < 20; turn++) await Promise.resolve();
+  assert.equal(retryDone, false, "the retry waits for the cleanup instead of racing it");
+  release();
+  assert.equal(await first, "failed");
+  assert.equal(await retry, "busy");
+  assert.equal(opener.isBusy(), false);
+  assert.ok(events.indexOf("cleanup-end") > -1);
+}
+
 function createDeps(overrides: Partial<SupportPortalDeps> & { events?: string[]; target?: Partial<SupportPortalTarget> } = {}) {
   const events = overrides.events ?? [];
   const target: SupportPortalTarget = {
@@ -719,6 +898,10 @@ async function main() {
   await testApiClientUsesSupportEndpoints();
   await testLaunchOpensSupportWindowWithLaunchUrl();
   await testOpenWindowFocusesExistingWithoutNewTicket();
+  await testPlaceholderWindowOpensBeforeTheTicketArrives();
+  await testPlaceholderWindowFallsBackAndCleansUp();
+  await testOpenerPreparesOnlyWhenATicketIsRequested();
+  await testCleanupFinishesBeforeTheNextClickIsAccepted();
   await testDisabledSupportShowsNotice();
   await testLaunchErrorsAreMapped();
   await testAccountChangeCancelsPendingLaunch();
