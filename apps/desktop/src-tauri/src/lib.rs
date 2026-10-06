@@ -6022,8 +6022,8 @@ fn force_clear_system_proxy_within_budget() -> Result<(), io::Error> {
     {
         let mut first_error = None;
         for service in network_services()? {
-            // 自动代理（PAC）可能抢在手动代理之前生效，必须一并关闭，否则接管不完整。
-            for option in ["-setwebproxystate", "-setsecurewebproxystate", "-setsocksfirewallproxystate", "-setautoproxystate"] {
+            // 自动代理（PAC）和自动发现代理（WPAD）可能抢在手动代理之前生效，必须一并关闭，否则接管不完整。
+            for option in ["-setwebproxystate", "-setsecurewebproxystate", "-setsocksfirewallproxystate", "-setautoproxystate", "-setproxyautodiscovery"] {
                 if let Err(error) = run_networksetup(&[option, &service, "off"]) {
                     if first_error.is_none() { first_error = Some(error); }
                 }
