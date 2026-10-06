@@ -4,7 +4,7 @@ import { showToast } from "./Toast";
 import { logUserErrorDiagnostic } from "../lib/appState";
 import { describeUserError, shouldRecordDiagnostic, type UserErrorContext } from "../lib/userFacingErrors";
 import { IconArrowLeft, IconChevronRight, IconPlus, IconRefresh, IconSearch, IconTrash } from "@tabler/icons-react";
-import { AppDialog, ErrorCodeHint } from "./AppDialog";
+import { AppDialog, DialogText, ErrorCodeHint } from "./AppDialog";
 import { NoticeRow } from "./NoticeRow";
 import styles from "./RoutingRulesModal.module.css";
 import type {
@@ -56,6 +56,8 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
   const [actionChosen, setActionChosen] = useState(false);
   const [testResult, setTestResult] = useState<ClientRoutingRuleTestResultDto | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  // 有未保存修改时，关闭弹窗或返回列表前先让用户确认；记录用户想去哪里。
+  const [pendingLeave, setPendingLeave] = useState<"list" | "close" | null>(null);
 
   // 只在打开时重置表单；令牌刷新只重新加载规则，不能丢掉正在编辑的内容。
   useEffect(() => {
@@ -236,6 +238,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
     setActionChosen(false);
     setTestResult(null);
     setConfirmingDelete(false);
+    setPendingLeave(null);
     setError(null);
   }
 
@@ -251,6 +254,26 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
       ? editing ? "域名已修改，请先查询再保存。" : "先查询匹配结果，再选择处理方式并保存。"
       : null;
 
+  const dirty = view === "edit" && (editing
+    ? name.trim() !== (editing.name ?? "") || trimmedValue !== editing.value.trim() || action !== editing.action
+    : name.trim() !== "" || trimmedValue !== "" || actionChosen);
+
+  function requestLeave(target: "list" | "close") {
+    if (dirty && busy === null) {
+      setPendingLeave(target);
+      return;
+    }
+    if (target === "list") backToList();
+    else props.onClose();
+  }
+
+  function confirmLeave() {
+    const target = pendingLeave;
+    setPendingLeave(null);
+    if (target === "list") backToList();
+    else if (target === "close") props.onClose();
+  }
+
   const editorTitle = editing ? "编辑规则" : "添加规则";
   const editorActions = confirmingDelete && editing ? (
     <>
@@ -261,7 +284,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
     </>
   ) : (
     <>
-      <Button variant="default" onClick={backToList} disabled={busy !== null}>取消</Button>
+      <Button variant="default" onClick={() => requestLeave("list")} disabled={busy !== null}>取消</Button>
       <Button loading={busy === "save"} disabled={!canSave || (busy !== null && busy !== "save")} onClick={() => void handleSave()}>保存</Button>
     </>
   );
@@ -274,9 +297,10 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
   ) : null;
 
   return (
+    <>
     <AppDialog
       opened={props.opened}
-      onClose={props.onClose}
+      onClose={() => requestLeave("close")}
       size={520}
       title={view === "edit" ? editorTitle : "自定义分流"}
       closeLabel="关闭自定义分流"
@@ -359,7 +383,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
               color="gray"
               size="compact-sm"
               leftSection={<IconArrowLeft size={14} />}
-              onClick={backToList}
+              onClick={() => requestLeave("list")}
               disabled={busy !== null}
             >
               返回规则列表
@@ -431,6 +455,22 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
         )}
       </div>
     </AppDialog>
+    <AppDialog
+      opened={pendingLeave !== null}
+      onClose={() => setPendingLeave(null)}
+      title="放弃未保存的修改？"
+      tone="warning"
+      closeLabel="继续编辑"
+      actions={
+        <>
+          <Button variant="default" color="red" onClick={confirmLeave}>放弃修改</Button>
+          <Button data-autofocus onClick={() => setPendingLeave(null)}>继续编辑</Button>
+        </>
+      }
+    >
+      <DialogText>这条规则还没有保存，现在离开会丢掉刚才填写的内容。</DialogText>
+    </AppDialog>
+    </>
   );
 }
 
