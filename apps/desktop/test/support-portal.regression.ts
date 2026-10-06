@@ -227,6 +227,28 @@ async function testPlaceholderWindowFallsBackAndCleansUp() {
   assert.equal(errors.length, 1);
   assert.deepEqual(launchFails.calls.find(([command]) => command === "cancel_support_loading_window")?.[1], { epoch: 4 });
 
+  // 票据拿到了但原生层拒绝打开（例如地址校验不通过）：占位窗口也要关掉，不能一直停在“正在打开工单…”。
+  const openRejected: FakeNative = {
+    calls: [],
+    handlers: {
+      focus_support_window: () => ({ focused: false, epoch: 4 }),
+      begin_support_window: () => null,
+      open_support_window: () => { throw "工单打开地址与工单站点不一致"; },
+      cancel_support_loading_window: () => null,
+      api_request: apiResponder({ "POST /client/support/launch": () => ({ status: 201, body: LAUNCH }) })
+    }
+  };
+  const rejected = await withNative("Macintosh", openRejected, async () => {
+    const outcome = await createSupportPortalOpener(realDeps({
+      prepareTarget: () => createSupportWindowTarget(ORIGIN_DEPS),
+      showError: () => undefined
+    })).open();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    return outcome;
+  });
+  assert.equal(rejected, "failed");
+  assert.deepEqual(openRejected.calls.find(([command]) => command === "cancel_support_loading_window")?.[1], { epoch: 4 });
+
   // 用户在占位窗口等待期间把它关了：静默结束，不提示错误、不再弹出。
   const closedByUser: FakeNative = {
     calls: [],

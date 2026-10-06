@@ -669,9 +669,10 @@ export function createSupportWindowTarget(
       const invoke = await loadInvoke();
       if (!invoke || epoch === null) throw new Error("无法打开工单窗口，请重新打开 ChordV 后重试。");
       const prepared = preparing ? await preparing : false;
-      preparing = null;
       try {
         await invoke("open_support_window", { launchUrl, supportOrigin, epoch, ...(prepared ? { prepared: true } : {}) });
+        // 打开成功才放下清理句柄；失败（地址校验不通过等）时保留，由 dispose 关掉还停在占位页的窗口。
+        preparing = null;
       } catch (reason) {
         // 用户在占位窗口等待期间把它关了：静默结束，不再弹出，也不提示错误。
         const text = typeof reason === "string" ? reason : reason instanceof Error ? reason.message : "";
