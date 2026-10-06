@@ -53,7 +53,13 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
   const [value, setValue] = useState("");
   const [action, setAction] = useState<ClientRoutingRuleAction | null>(null);
   // 用户手动选过（或编辑已有规则）后，不再被查询结果自动改写。
-  const [actionChosen, setActionChosen] = useState(false);
+  const [actionChosen, setActionChosenState] = useState(false);
+  // 异步查询返回时要读最新的“是否手动选过”，闭包里的 state 可能已过期。
+  const actionChosenRef = useRef(false);
+  function setActionChosen(chosen: boolean) {
+    actionChosenRef.current = chosen;
+    setActionChosenState(chosen);
+  }
   const [testResult, setTestResult] = useState<ClientRoutingRuleTestResultDto | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   // 每次重置表单（切换、放弃、重新打开）都换一个编辑会话；迟到的查询/保存结果不能作用到新的编辑器上。
@@ -124,6 +130,8 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
   }
 
   async function handleTest() {
+    // 回车可以连按；查询进行中不再发起第二次，避免两个响应互相覆盖。
+    if (busy !== null) return;
     const normalizedValue = value.trim();
     if (!normalizedValue) {
       setError("请输入要检测的域名或名称。");
@@ -142,7 +150,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
       if (session !== editorSession.current) return;
       setTestResult(result);
       // 强制规则的意义是改变现状，新建时默认选与当前结果相反的处理方式；每次新的查询都重新计算，手动选过的除外。
-      if (!actionChosen) setAction(result.action === "proxy" ? "direct" : "proxy");
+      if (!actionChosenRef.current) setAction(result.action === "proxy" ? "direct" : "proxy");
     } catch (reason) {
       if (session !== editorSession.current) return;
       setTestResult(null);
