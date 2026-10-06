@@ -78,7 +78,9 @@ use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
 use windows_sys::Win32::Networking::WinInet::{
-    InternetSetOptionW, INTERNET_OPTION_REFRESH, INTERNET_OPTION_SETTINGS_CHANGED,
+    InternetSetOptionW, INTERNET_OPTION_PER_CONNECTION_OPTION, INTERNET_OPTION_REFRESH,
+    INTERNET_OPTION_SETTINGS_CHANGED, INTERNET_PER_CONN_FLAGS, INTERNET_PER_CONN_OPTIONW,
+    INTERNET_PER_CONN_OPTIONW_0, INTERNET_PER_CONN_OPTION_LISTW, PROXY_TYPE_DIRECT,
 };
 
 #[cfg(windows)]
@@ -6035,6 +6037,8 @@ fn force_clear_system_proxy_within_budget() -> Result<(), io::Error> {
     #[cfg(windows)]
     {
         // 先关 PAC / 自动发现，再清手动代理；清手动代理的最后一步会刷新系统代理设置。
+        // WinINet 实际生效的开关存在 Connections\DefaultConnectionSettings 里，只改注册表值不可靠。
+        disable_windows_auto_proxy_flags()?;
         for (args, required) in WINDOWS_FORCE_AUTO_PROXY_RESET {
             let result = run_windows_reg(args);
             // 本来就没配置 PAC 时，删除会报“找不到值”，不算失败。
@@ -6047,6 +6051,35 @@ fn force_clear_system_proxy_within_budget() -> Result<(), io::Error> {
     {
         Ok(())
     }
+}
+
+/// 通过 WinINet 把 LAN 连接的代理类型改成“直接连接”，同时清掉 PAC 与自动检测两个标志位。
+/// ChordV 的手动代理随后由 set_windows_proxy 写入。
+#[cfg(windows)]
+fn disable_windows_auto_proxy_flags() -> Result<(), io::Error> {
+    let mut option = INTERNET_PER_CONN_OPTIONW {
+        dwOption: INTERNET_PER_CONN_FLAGS,
+        Value: INTERNET_PER_CONN_OPTIONW_0 { dwValue: PROXY_TYPE_DIRECT },
+    };
+    let mut list = INTERNET_PER_CONN_OPTION_LISTW {
+        dwSize: std::mem::size_of::<INTERNET_PER_CONN_OPTION_LISTW>() as u32,
+        pszConnection: std::ptr::null_mut(),
+        dwOptionCount: 1,
+        dwOptionError: 0,
+        pOptions: &mut option,
+    };
+    let ok = unsafe {
+        InternetSetOptionW(
+            std::ptr::null(),
+            INTERNET_OPTION_PER_CONNECTION_OPTION,
+            &mut list as *mut INTERNET_PER_CONN_OPTION_LISTW as *const core::ffi::c_void,
+            std::mem::size_of::<INTERNET_PER_CONN_OPTION_LISTW>() as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// 强制连接时，除手动代理外还要关闭的 Windows 自动代理：删除 PAC 地址、关闭自动发现。
