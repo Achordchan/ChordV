@@ -259,7 +259,8 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
     : name.trim() !== "" || trimmedValue !== "" || actionChosen);
 
   function requestLeave(target: "list" | "close") {
-    if (dirty && busy === null) {
+    // 查询或保存进行中也要确认：保存可能失败，关掉后重新打开会重置表单，草稿就丢了。
+    if (dirty) {
       setPendingLeave(target);
       return;
     }
