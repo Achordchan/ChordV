@@ -52,6 +52,8 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
   const [action, setAction] = useState<ClientRoutingRuleAction | null>(null);
+  // 用户手动选过（或编辑已有规则）后，不再被查询结果自动改写。
+  const [actionChosen, setActionChosen] = useState(false);
   const [testResult, setTestResult] = useState<ClientRoutingRuleTestResultDto | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
@@ -133,8 +135,8 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
         customRoutingRules: rules.length > 0 ? rules : props.policies.customRoutingRules
       });
       setTestResult(result);
-      // 强制规则的意义是改变现状，新建时默认选与当前结果相反的处理方式。
-      setAction((current) => current ?? (result.action === "proxy" ? "direct" : "proxy"));
+      // 强制规则的意义是改变现状，新建时默认选与当前结果相反的处理方式；每次新的查询都重新计算，手动选过的除外。
+      if (!actionChosen) setAction(result.action === "proxy" ? "direct" : "proxy");
     } catch (reason) {
       setTestResult(null);
       showFailure(reason);
@@ -217,6 +219,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
     setName(rule.name ?? "");
     setValue(rule.value);
     setAction(rule.action);
+    setActionChosen(true);
     setView("edit");
   }
 
@@ -230,6 +233,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
     setName("");
     setValue("");
     setAction(null);
+    setActionChosen(false);
     setTestResult(null);
     setConfirmingDelete(false);
     setError(null);
@@ -407,7 +411,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
                   fullWidth
                   variant={action === "direct" ? "filled" : "default"}
                   aria-pressed={action === "direct"}
-                  onClick={() => setAction("direct")}
+                  onClick={() => { setAction("direct"); setActionChosen(true); }}
                   disabled={busy !== null}
                 >
                   强制直连
@@ -416,7 +420,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
                   fullWidth
                   variant={action === "proxy" ? "filled" : "default"}
                   aria-pressed={action === "proxy"}
-                  onClick={() => setAction("proxy")}
+                  onClick={() => { setAction("proxy"); setActionChosen(true); }}
                   disabled={busy !== null}
                 >
                   强制代理
