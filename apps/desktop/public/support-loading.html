@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ChordV 工单</title>
+    <style>
+      :root { color-scheme: light dark; --bg: #f3f6f9; --text: #142333; --muted: #66768a; --track: #dbe3ea; --accent: #15aabf; }
+      @media (prefers-color-scheme: dark) {
+        :root { --bg: #0f1720; --text: #e6edf3; --muted: #8b9bb0; --track: #243142; --accent: #3bc9db; }
+      }
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+        background: var(--bg); color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        -webkit-user-select: none; user-select: none; cursor: default;
+      }
+      .spinner { width: 28px; height: 28px; border-radius: 50%; border: 3px solid var(--track); border-top-color: var(--accent); animation: spin 0.9s linear infinite; }
+      .title { margin: 0; font-size: 15px; font-weight: 600; }
+      .hint { margin: 0; font-size: 13px; color: var(--muted); }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
+    </style>
+  </head>
+  <body>
+    <div class="spinner" role="progressbar" aria-label="正在打开工单"></div>
+    <p class="title">正在打开工单…</p>
+    <p class="hint">正在连接工单系统，请稍候</p>
+  </body>
+</html>

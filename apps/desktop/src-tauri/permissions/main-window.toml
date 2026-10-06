@@ -25,6 +25,8 @@ commands.allow = [
   "open_desktop_installer",
   "open_external_url",
   "focus_support_window",
+  "begin_support_window",
+  "cancel_support_loading_window",
   "open_support_window",
   "close_support_window",
   "list_local_file_locations",

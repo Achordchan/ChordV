@@ -35,6 +35,8 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
   const accessTokenRef = useRef(options.accessToken);
   accessTokenRef.current = options.accessToken;
   const enabledRef = useRef<boolean | null>(null);
+  // 状态接口给出的工单站点来源：点击“工单”时用它提前弹出占位窗口；没取到就退回到拿到票据后再开窗。
+  const supportOriginRef = useRef<string | null>(null);
   // 账号代次：退出登录或换账号时递增，进行中的打开流程据此作废。
   const accountGenerationRef = useRef(0);
   const previousUserIdRef = useRef(options.userId);
@@ -95,6 +97,7 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
         return null;
       }
       enabledRef.current = status.enabled === true;
+      supportOriginRef.current = status.enabled === true && typeof status.supportOrigin === "string" ? status.supportOrigin : null;
       const next = normalizeSupportUnreadCount(status.enabled ? status.unreadCount : 0);
       if (unreadRevisionRef.current === revision && bridgeActiveRef.current === null && next !== null) {
         setSupportUnreadCount(next);
@@ -114,7 +117,8 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
         return createSupportWindowTarget({
           onEpoch: (epoch) => {
             if (accountGenerationRef.current === generation) bridgeEpochRef.current = epoch;
-          }
+          },
+          getSupportOrigin: () => (accountGenerationRef.current === generation ? supportOriginRef.current : null)
         });
       },
       getAccountGeneration: () => accountGenerationRef.current,
@@ -177,6 +181,7 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
       return;
     }
     enabledRef.current = null;
+    supportOriginRef.current = null;
     bridgeEpochRef.current = null;
     bridgeActiveRef.current = null;
     unreadRevisionRef.current += 1;
@@ -191,6 +196,7 @@ export function useSupportPortal(options: UseSupportPortalOptions) {
   useEffect(() => {
     if (!options.accessToken) {
       enabledRef.current = null;
+      supportOriginRef.current = null;
       setSupportUnreadCount(0);
       return;
     }

@@ -7544,6 +7544,8 @@ pub fn run() {
             open_desktop_installer,
             open_external_url,
             support_window::focus_support_window,
+            support_window::begin_support_window,
+            support_window::cancel_support_loading_window,
             support_window::open_support_window,
             support_window::close_support_window,
             support_window::support_bridge_message,

@@ -12,6 +12,7 @@ import type {
 } from "./runtimeComponents";
 import type { RuntimeComponentLocalInfo } from "./geoUpdate";
 import type { LocalFileEntry, LocalFileKind } from "./localFiles";
+import { SupportPortalStaleError } from "./supportPortal";
 
 export type RuntimeStatus = {
   status: string;
@@ -572,19 +573,25 @@ export function supportsSupportWindow() {
 export type SupportWindowTarget = {
   /** 工单窗口仍打开且会话未过期时聚焦它并返回 true；否则返回 false，调用方需要重新签发票据。 */
   focusExisting: () => Promise<boolean>;
+  /** 确认要申请票据后立刻调用（不等待）：桌面端先弹出占位窗口，票据到手后同一个窗口再跳转。 */
+  prepare?: () => void;
   /** launchUrl 带一次性票据：只交给原生层或预留的浏览器窗口，不能写进日志或错误信息。 */
   open: (launch: { launchUrl: string; supportOrigin: string }) => Promise<void>;
   /** 没有打开（已聚焦、未开放、失败、账号已变化）时释放预留的资源。 */
   dispose: () => void;
 };
 
+/** 与原生层 SUPPORT_WINDOW_CLOSED_ERROR 一致：占位窗口被用户关掉。 */
+const SUPPORT_WINDOW_CLOSED_ERROR = "support_window_closed";
 const SUPPORT_POPUP_BLOCKED_MESSAGE = "无法打开工单页面，请允许弹出窗口后重试。";
 
 /**
  * 必须在点击事件里同步调用：网页预览中浏览器只允许在用户手势内打开新窗口，
  * 所以先预留一个空白窗口，拿到打开地址后再跳转。
  */
-export function createSupportWindowTarget(options: { onEpoch?: (epoch: number) => void } = {}): SupportWindowTarget {
+export function createSupportWindowTarget(
+  options: { onEpoch?: (epoch: number) => void; getSupportOrigin?: () => string | null } = {}
+): SupportWindowTarget {
   if (isTauriApp() && isAndroidPlatform()) {
     // 安卓端没有独立工单窗口，WebView 里的空白弹窗也不可靠：交给原生层用系统默认应用（浏览器）打开。
     return {
@@ -632,7 +639,24 @@ export function createSupportWindowTarget(options: { onEpoch?: (epoch: number) =
 
   // 原生层每次退出登录都会换一个批次号；打开时带回聚焦时拿到的批次号，账号变化后的旧请求会被拒绝。
   let epoch: number | null = null;
+  // 占位窗口：点击后先弹出本地“正在打开工单…”页，票据到手后同一个窗口再跳转。失败时退回到拿到票据后再开窗。
+  let preparing: Promise<boolean> | null = null;
   return {
+    prepare: () => {
+      const supportOrigin = options.getSupportOrigin?.();
+      if (preparing || epoch === null || !supportOrigin) return;
+      const preparedEpoch = epoch;
+      preparing = (async () => {
+        try {
+          const invoke = await loadInvoke();
+          if (!invoke) return false;
+          await invoke("begin_support_window", { supportOrigin, epoch: preparedEpoch });
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+    },
     focusExisting: async () => {
       const invoke = await loadInvoke();
       if (!invoke) throw new Error("无法打开工单窗口，请重新打开 ChordV 后重试。");
@@ -644,9 +668,29 @@ export function createSupportWindowTarget(options: { onEpoch?: (epoch: number) =
     open: async ({ launchUrl, supportOrigin }) => {
       const invoke = await loadInvoke();
       if (!invoke || epoch === null) throw new Error("无法打开工单窗口，请重新打开 ChordV 后重试。");
-      await invoke("open_support_window", { launchUrl, supportOrigin, epoch });
+      const prepared = preparing ? await preparing : false;
+      preparing = null;
+      try {
+        await invoke("open_support_window", { launchUrl, supportOrigin, epoch, ...(prepared ? { prepared: true } : {}) });
+      } catch (reason) {
+        // 用户在占位窗口等待期间把它关了：静默结束，不再弹出，也不提示错误。
+        const text = typeof reason === "string" ? reason : reason instanceof Error ? reason.message : "";
+        if (prepared && text === SUPPORT_WINDOW_CLOSED_ERROR) throw new SupportPortalStaleError();
+        throw reason;
+      }
     },
-    dispose: () => {}
+    dispose: () => {
+      // 没有走到打开（失败、未开放、账号变化）：关掉还停在占位页的窗口。
+      const pending = preparing;
+      const cancelEpoch = epoch;
+      preparing = null;
+      if (!pending || cancelEpoch === null) return;
+      void pending.then(async (started) => {
+        if (!started) return;
+        const invoke = await loadInvoke();
+        await invoke?.("cancel_support_loading_window", { epoch: cancelEpoch });
+      }).catch(() => undefined);
+    }
   };
 }
 

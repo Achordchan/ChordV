@@ -325,6 +325,91 @@ fn a_launch_that_never_becomes_ready_can_be_relaunched_after_the_ticket_expires(
 }
 
 #[test]
+fn only_the_bundled_loading_page_may_load_in_the_support_window() {
+    for allowed in [
+        "tauri://localhost/support-loading.html",
+        "http://tauri.localhost/support-loading.html",
+        "https://tauri.localhost/support-loading.html",
+        "http://localhost:5173/support-loading.html",
+    ] {
+        assert!(is_support_loading_page(&url(allowed)), "{allowed}");
+    }
+    for rejected in [
+        "tauri://localhost/index.html",
+        "tauri://localhost/support-loading.html/../index.html",
+        "tauri://other/support-loading.html",
+        "https://support.achord.cn/support-loading.html",
+        "https://evil.example.com/support-loading.html",
+        "http://tauri.localhost/support-loading.html.evil",
+        "https://user:pass@tauri.localhost/support-loading.html",
+        "file:///support-loading.html",
+    ] {
+        assert!(!is_support_loading_page(&url(rejected)), "{rejected}");
+    }
+    // 应用本身的页面仍被导航策略拦截，占位页是单独放行的唯一例外。
+    assert_eq!(classify_support_navigation(&url("tauri://localhost/support-loading.html"), &origin()), SupportNavigation::Block);
+}
+
+#[test]
+fn a_loading_window_is_adopted_by_the_same_epoch_and_origin_only() {
+    let origin_text = "https://support.achord.cn";
+    let opened = Instant::now();
+    let mut state = SupportWindowState::default();
+    let epoch = state.epoch;
+    let mut record = SupportWindowRecord::new("support-1".into(), origin_text.into(), epoch, opened);
+    record.loading = true;
+    assert!(state.begin_open(epoch, record).is_ok());
+
+    // 站点或批次对不上：不接管，调用方新建窗口。
+    assert_eq!(state.adopt_loading_window(epoch, "https://other.example.com", opened), None);
+    assert_eq!(state.adopt_loading_window(epoch + 1, origin_text, opened), None);
+    assert!(state.current.as_ref().unwrap().loading);
+
+    // 接管：转为正常加载，宽限期从跳转时重新计算，之前的就绪/过期状态清空。
+    let later = opened + Duration::from_secs(20);
+    {
+        let record = state.current.as_mut().unwrap();
+        record.ready = true;
+        record.expired = true;
+    }
+    assert_eq!(state.adopt_loading_window(epoch, origin_text, later), Some("support-1".to_string()));
+    let adopted = state.current.as_ref().unwrap();
+    assert!(!adopted.loading && !adopted.ready && !adopted.expired);
+    assert!(adopted.can_focus(later + Duration::from_secs(5)));
+    assert!(!adopted.can_focus(later + SUPPORT_LAUNCH_GRACE));
+    // 已经接管过的窗口不能被第二次接管。
+    assert_eq!(state.adopt_loading_window(epoch, origin_text, later), None);
+}
+
+#[test]
+fn cancelling_only_removes_a_loading_window_of_the_same_epoch() {
+    let mut state = SupportWindowState::default();
+    let epoch = state.epoch;
+    let mut loading = SupportWindowRecord::new("support-1".into(), "https://support.achord.cn".into(), epoch, Instant::now());
+    loading.loading = true;
+    assert!(state.begin_open(epoch, loading).is_ok());
+
+    assert!(state.cancel_loading_window(epoch + 1).is_none(), "another account's batch cannot cancel it");
+    assert_eq!(state.cancel_loading_window(epoch).map(|record| record.label), Some("support-1".to_string()));
+    assert!(state.current.is_none());
+
+    // 已经正常打开的窗口（非占位）不会被取消。
+    let normal = SupportWindowRecord::new("support-2".into(), "https://support.achord.cn".into(), epoch, Instant::now());
+    assert!(state.begin_open(epoch, normal).is_ok());
+    assert!(state.cancel_loading_window(epoch).is_none());
+    assert!(state.current.is_some());
+}
+
+#[test]
+fn closed_placeholder_error_matches_the_frontend_constant() {
+    let runtime = include_str!("../../src/lib/runtime.ts");
+    assert!(
+        runtime.contains(&format!("const SUPPORT_WINDOW_CLOSED_ERROR = \"{SUPPORT_WINDOW_CLOSED_ERROR}\";")),
+        "runtime.ts must use the same marker the native layer returns when the placeholder was closed"
+    );
+}
+
+#[test]
 fn unread_events_carry_their_window_epoch() {
     let json = serde_json::to_value(SupportUnreadEvent { unread_count: 4, epoch: 2, window: "support-3".into() }).unwrap();
     assert_eq!(json, serde_json::json!({ "unreadCount": 4, "epoch": 2, "window": "support-3" }));
