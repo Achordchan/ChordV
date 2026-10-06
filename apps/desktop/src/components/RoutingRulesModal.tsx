@@ -160,11 +160,12 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
     setBusy("save");
     setError(null);
     try {
-      const input = { name: name.trim() || null, value: trimmedValue, action, enabled: editing ? editing.enabled : true };
+      const input = { name: name.trim() || null, value: trimmedValue, action };
       if (editing) {
+        // 编辑不带 enabled：以服务端当前启停状态为准，避免用打开编辑页时的快照覆盖别处的改动。
         await updateRoutingRule(props.accessToken, editing.id, input);
       } else {
-        await createRoutingRule(props.accessToken, input);
+        await createRoutingRule(props.accessToken, { ...input, enabled: true });
       }
       backToList();
       await loadRules();
