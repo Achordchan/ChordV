@@ -1,18 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
-import { ActionIcon, Badge, Button, Collapse, Group, Switch, Text, TextInput, UnstyledButton } from "@mantine/core";
+import { useEffect, useRef, useState } from "react";
+import { Badge, Button, Group, Switch, Text, TextInput, UnstyledButton } from "@mantine/core";
 import { showToast } from "./Toast";
 import { logUserErrorDiagnostic } from "../lib/appState";
 import { describeUserError, shouldRecordDiagnostic, type UserErrorContext } from "../lib/userFacingErrors";
-import {
-  IconChevronDown,
-  IconChevronRight,
-  IconEdit,
-  IconRefresh,
-  IconSearch,
-  IconTrash,
-  IconX
-} from "@tabler/icons-react";
-import { AppDialog, ErrorCodeHint } from "./AppDialog";
+import { IconArrowLeft, IconChevronRight, IconPlus, IconRefresh, IconSearch, IconTrash } from "@tabler/icons-react";
+import { AppDialog, DialogText, ErrorCodeHint } from "./AppDialog";
 import { NoticeRow } from "./NoticeRow";
 import styles from "./RoutingRulesModal.module.css";
 import type {
@@ -54,18 +46,40 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
     if (shouldRecordDiagnostic(failure)) logUserErrorDiagnostic(failure, context ?? "general");
     setErrorState({ message: failure.message, code: failure.code });
   };
-  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  // 列表是主视图；添加和编辑共用同一个二级页（editing 为 null 表示添加）。
+  const [view, setView] = useState<"list" | "edit">("list");
+  const [editing, setEditing] = useState<ClientRoutingRuleDto | null>(null);
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
+  const [action, setAction] = useState<ClientRoutingRuleAction | null>(null);
+  // 用户手动选过（或编辑已有规则）后，不再被查询结果自动改写。
+  const [actionChosen, setActionChosenState] = useState(false);
+  // 异步查询返回时要读最新的“是否手动选过”，闭包里的 state 可能已过期。
+  const actionChosenRef = useRef(false);
+  function setActionChosen(chosen: boolean) {
+    actionChosenRef.current = chosen;
+    setActionChosenState(chosen);
+  }
   const [testResult, setTestResult] = useState<ClientRoutingRuleTestResultDto | null>(null);
-  const [rulesExpanded, setRulesExpanded] = useState(true);
-  const [showAllRules, setShowAllRules] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  // 每次重置表单（切换、放弃、重新打开）都换一个编辑会话；迟到的查询/保存结果不能作用到新的编辑器上。
+  const editorSession = useRef(0);
+  // 有未保存修改时，关闭弹窗或返回列表前先让用户确认；记录用户想去哪里。
+  const [pendingLeave, setPendingLeave] = useState<"list" | "close" | null>(null);
+
+  // 只在打开时重置表单；令牌刷新只重新加载规则，不能丢掉正在编辑的内容。
+  useEffect(() => {
+    if (!props.opened) {
+      return;
+    }
+    resetForm();
+    setView("list");
+  }, [props.opened]);
 
   useEffect(() => {
     if (!props.opened) {
       return;
     }
-    setShowAllRules(false);
     void loadRules();
   }, [props.opened, props.accessToken]);
 
@@ -116,55 +130,70 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
   }
 
   async function handleTest() {
+    // 回车可以连按；查询进行中不再发起第二次，避免两个响应互相覆盖。
+    if (busy !== null) return;
     const normalizedValue = value.trim();
     if (!normalizedValue) {
       setError("请输入要检测的域名或名称。");
       return;
     }
+    const session = editorSession.current;
     setBusy("test");
     setError(null);
     try {
-      setTestResult(
-        await testRoutingRule({
-          value: normalizedValue,
-          mode: props.mode,
-          features: props.policies.features,
-          customRoutingRules: rules.length > 0 ? rules : props.policies.customRoutingRules
-        })
-      );
+      const result = await testRoutingRule({
+        value: normalizedValue,
+        mode: props.mode,
+        features: props.policies.features,
+        customRoutingRules: rules.length > 0 ? rules : props.policies.customRoutingRules
+      });
+      if (session !== editorSession.current) return;
+      setTestResult(result);
+      // 强制规则的意义是改变现状，新建时默认选与当前结果相反的处理方式；每次新的查询都重新计算，手动选过的除外。
+      if (!actionChosenRef.current) setAction(result.action === "proxy" ? "direct" : "proxy");
     } catch (reason) {
+      if (session !== editorSession.current) return;
       setTestResult(null);
       showFailure(reason);
     } finally {
-      setBusy(null);
+      // 编辑会话已换掉时，busy 由 resetForm 处理，不能清掉新编辑器的状态。
+      if (session === editorSession.current) setBusy(null);
     }
   }
 
-  async function handleSave(nextAction: ClientRoutingRuleAction) {
-    const normalizedValue = value.trim();
-    if (!normalizedValue) {
+  async function handleSave() {
+    if (!trimmedValue) {
       setError("请输入要保存的域名或名称。");
       return;
     }
-    if (!isCurrentQueryResult(testResult, normalizedValue)) {
-      setError("请先查询当前输入，再选择强制直连或强制代理。");
+    if (!verified) {
+      setError("域名已修改，请先查询当前输入再保存。");
+      return;
+    }
+    if (!action) {
+      setError("请选择强制直连或强制代理。");
       return;
     }
 
-    setBusy(`save:${nextAction}`);
+    const session = editorSession.current;
+    let saved = false;
+    setBusy("save");
     setError(null);
     try {
-      const input = { name: name.trim() || null, value: normalizedValue, action: nextAction, enabled: true };
-      if (editingRuleId) {
-        await updateRoutingRule(props.accessToken, editingRuleId, input);
+      const input = { name: name.trim() || null, value: trimmedValue, action };
+      if (editing) {
+        // 编辑不带 enabled：以服务端当前启停状态为准，避免用打开编辑页时的快照覆盖别处的改动。
+        await updateRoutingRule(props.accessToken, editing.id, input);
       } else {
-        await createRoutingRule(props.accessToken, input);
+        await createRoutingRule(props.accessToken, { ...input, enabled: true });
       }
-      resetForm();
+      saved = true;
+      if (session === editorSession.current) backToList();
       await loadRules();
       await applyIfConnected("规则已保存");
     } catch (reason) {
-      showFailure(reason);
+      // 保存请求本身失败且编辑器已被放弃时才静默；保存之后的刷新/重连失败必须让用户看到。
+      if (saved || session === editorSession.current) showFailure(reason);
     } finally {
       setBusy(null);
     }
@@ -185,13 +214,12 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
   }
 
   async function handleDelete(ruleId: string) {
+    const session = editorSession.current;
     setBusy(`delete:${ruleId}`);
     setError(null);
     try {
       await deleteRoutingRule(props.accessToken, ruleId);
-      if (editingRuleId === ruleId) {
-        resetForm();
-      }
+      if (session === editorSession.current) backToList();
       await loadRules();
       await applyIfConnected("规则已删除");
     } catch (reason) {
@@ -201,34 +229,107 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
     }
   }
 
-  function startEdit(rule: ClientRoutingRuleDto) {
-    setEditingRuleId(rule.id);
+  function openAdd() {
+    resetForm();
+    setView("edit");
+  }
+
+  function openEdit(rule: ClientRoutingRuleDto) {
+    resetForm();
+    setEditing(rule);
     setName(rule.name ?? "");
     setValue(rule.value);
-    setTestResult(null);
-    setRulesExpanded(true);
+    setAction(rule.action);
+    setActionChosen(true);
+    setView("edit");
+  }
+
+  function backToList() {
+    resetForm();
+    setView("list");
   }
 
   function resetForm() {
-    setEditingRuleId(null);
+    editorSession.current += 1;
+    // 放弃一次还在进行的查询：它的结果会被忽略，busy 也不能一直卡着。
+    setBusy((current) => (current === "test" ? null : current));
+    setEditing(null);
     setName("");
     setValue("");
+    setAction(null);
+    setActionChosen(false);
     setTestResult(null);
+    setConfirmingDelete(false);
+    setPendingLeave(null);
     setError(null);
   }
 
   const trimmedValue = value.trim();
   const queryReady = isCurrentQueryResult(testResult, trimmedValue);
-  const showNameField = queryReady || Boolean(editingRuleId);
-  const previewCount = 5;
-  const visibleRules = useMemo(
-    () => (showAllRules ? rules : rules.slice(0, previewCount)),
-    [rules, showAllRules]
+  // 编辑时域名没改动就不必重新查询；改了域名或是新建，都要先查询确认匹配结果。
+  const valueChanged = editing ? trimmedValue.toLowerCase() !== editing.value.trim().toLowerCase() : true;
+  const verified = queryReady || (editing !== null && !valueChanged);
+  const canSave = trimmedValue !== "" && verified && action !== null;
+  const saveHint = !trimmedValue
+    ? "输入域名或名称后，先查询匹配结果。"
+    : !verified
+      ? editing ? "域名已修改，请先查询再保存。" : "先查询匹配结果，再选择处理方式并保存。"
+      : null;
+
+  const dirty = view === "edit" && (editing
+    ? name.trim() !== (editing.name ?? "") || trimmedValue !== editing.value.trim() || action !== editing.action
+    : name.trim() !== "" || trimmedValue !== "" || actionChosen);
+
+  function requestLeave(target: "list" | "close") {
+    // 查询或保存进行中也要确认：保存可能失败，关掉后重新打开会重置表单，草稿就丢了。
+    if (dirty) {
+      setPendingLeave(target);
+      return;
+    }
+    if (target === "list") backToList();
+    else props.onClose();
+  }
+
+  function confirmLeave() {
+    const target = pendingLeave;
+    setPendingLeave(null);
+    if (target === "list") backToList();
+    else if (target === "close") props.onClose();
+  }
+
+  const editorTitle = editing ? "编辑规则" : "添加规则";
+  const editorActions = confirmingDelete && editing ? (
+    <>
+      <Button variant="default" onClick={() => setConfirmingDelete(false)} disabled={busy !== null}>取消</Button>
+      <Button color="red" loading={busy === `delete:${editing.id}`} disabled={busy !== null && busy !== `delete:${editing.id}`} onClick={() => void handleDelete(editing.id)}>
+        确认删除
+      </Button>
+    </>
+  ) : (
+    <>
+      <Button variant="default" onClick={() => requestLeave("list")} disabled={busy !== null}>取消</Button>
+      <Button loading={busy === "save"} disabled={!canSave || (busy !== null && busy !== "save")} onClick={() => void handleSave()}>保存</Button>
+    </>
   );
-  const hiddenCount = Math.max(rules.length - previewCount, 0);
+  const editorFooterStart = confirmingDelete && editing ? (
+    <Text size="xs" c="dimmed">确定删除这条规则？删除后无法恢复。</Text>
+  ) : editing ? (
+    <Button variant="subtle" color="red" size="compact-sm" leftSection={<IconTrash size={14} />} onClick={() => setConfirmingDelete(true)} disabled={busy !== null}>
+      删除规则
+    </Button>
+  ) : null;
 
   return (
-    <AppDialog opened={props.opened} onClose={props.onClose} size={520} title="自定义分流" closeLabel="关闭自定义分流">
+    <>
+    <AppDialog
+      opened={props.opened}
+      onClose={() => requestLeave("close")}
+      size={520}
+      title={view === "edit" ? editorTitle : "自定义分流"}
+      closeLabel="关闭自定义分流"
+      footerStart={view === "edit" ? editorFooterStart : null}
+      actions={view === "edit" ? editorActions : null}
+    >
       <div className={styles.stack}>
         {error ? <NoticeRow tone="danger" role="alert" action={error.code ? <ErrorCodeHint code={error.code} /> : null}>{error.message}</NoticeRow> : null}
         {props.connected ? (
@@ -237,170 +338,162 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
           </NoticeRow>
         ) : null}
 
-        <section className={styles.query} aria-label="查询与保存规则">
-          <Group align="flex-end" wrap="nowrap" gap="sm">
-            <TextInput
-              style={{ flex: 1, minWidth: 0 }}
-              label="域名或名称"
-              placeholder="example.com 或 youtube"
-              value={value}
-              onChange={(event) => {
-                setValue(event.currentTarget.value);
-                setTestResult(null);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  void handleTest();
-                }
-              }}
-            />
-            <Button
-              variant="default"
-              leftSection={<IconSearch size={15} />}
-              onClick={() => void handleTest()}
-              loading={busy === "test"}
-              disabled={busy !== null && busy !== "test"}
-            >
-              查询
-            </Button>
-          </Group>
-
-          {testResult ? <RoutingTestResult result={testResult} /> : (
-            <Text size="xs" c="dimmed">先查询匹配结果，再选择强制直连或强制代理。</Text>
-          )}
-
-          {queryReady ? (
-            <>
-              {showNameField ? (
-                <TextInput
-                  label="显示名称"
-                  placeholder="可选，保存后便于识别"
-                  value={name}
-                  onChange={(event) => setName(event.currentTarget.value)}
-                />
-              ) : null}
-              <div className={styles.saveRow}>
-                {editingRuleId ? (
-                  <Text size="xs" c="dimmed" className={styles.saveHint}>正在编辑已有规则，保存前需要重新查询。</Text>
-                ) : <span className={styles.saveHint} />}
-                <Group gap="xs" wrap="nowrap">
-                  {editingRuleId ? (
-                    <Button variant="subtle" color="gray" onClick={resetForm} disabled={busy !== null}>
-                      取消编辑
-                    </Button>
-                  ) : null}
-                  <Button
-                    variant="default"
-                    loading={busy === "save:direct"}
-                    disabled={busy !== null && busy !== "save:direct"}
-                    onClick={() => void handleSave("direct")}
-                  >
-                    强制直连
-                  </Button>
-                  <Button
-                    loading={busy === "save:proxy"}
-                    disabled={busy !== null && busy !== "save:proxy"}
-                    onClick={() => void handleSave("proxy")}
-                  >
-                    强制代理
-                  </Button>
-                </Group>
-              </div>
-            </>
-          ) : editingRuleId ? (
-            <div className={styles.saveRow}>
-              <Text size="xs" c="dimmed" className={styles.saveHint}>正在编辑已有规则，请重新查询后再保存。</Text>
-              <Button variant="subtle" color="gray" leftSection={<IconX size={14} />} onClick={resetForm} disabled={busy !== null}>
-                取消编辑
-              </Button>
+        {view === "list" ? (
+          <section className={styles.rules} aria-labelledby="routing-rules-heading">
+            <div className={styles.rulesHead}>
+              <span className={styles.rulesTitle}>
+                <span id="routing-rules-heading" className={styles.sectionTitle}>我的规则</span>
+                <span className={styles.count}>{rules.length}</span>
+              </span>
+              <Group gap={4} wrap="nowrap">
+                <Button size="compact-sm" variant="subtle" color="gray" leftSection={<IconRefresh size={14} />} loading={loading} onClick={() => void loadRules()}>
+                  刷新
+                </Button>
+                <Button size="compact-sm" leftSection={<IconPlus size={14} />} onClick={openAdd}>
+                  添加规则
+                </Button>
+              </Group>
             </div>
-          ) : null}
-        </section>
 
-        <section className={styles.rules} aria-labelledby="routing-rules-heading">
-          <div className={styles.rulesHead}>
-            <UnstyledButton
-              className={styles.rulesToggle}
-              onClick={() => setRulesExpanded((current) => !current)}
-              aria-expanded={rulesExpanded}
-              aria-label={rulesExpanded ? "折叠我的规则" : "展开我的规则"}
-            >
-              {rulesExpanded ? <IconChevronDown size={15} /> : <IconChevronRight size={15} />}
-              <span id="routing-rules-heading" className={styles.sectionTitle}>我的规则</span>
-              <span className={styles.count}>{rules.length}</span>
-            </UnstyledButton>
-            <Button
-              size="compact-sm"
-              variant="subtle"
-              color="gray"
-              leftSection={<IconRefresh size={14} />}
-              loading={loading}
-              onClick={() => void loadRules()}
-            >
-              刷新
-            </Button>
-          </div>
-
-          <Collapse in={rulesExpanded}>
             {rules.length === 0 && !loading ? (
-              <Text size="sm" c="dimmed" className={styles.empty}>暂无自定义分流规则。</Text>
+              <div className={styles.empty}>
+                <Text size="sm" c="dimmed">暂无自定义分流规则。</Text>
+                <Text size="xs" c="dimmed">为某个域名指定强制直连或强制代理，优先于内置分流。</Text>
+                <Button variant="default" size="xs" leftSection={<IconPlus size={14} />} onClick={openAdd}>添加第一条规则</Button>
+              </div>
             ) : (
               <div className={styles.list}>
-                {visibleRules.map((rule) => (
+                {rules.map((rule) => (
                   <div key={rule.id} className={styles.row} data-disabled={!rule.enabled || undefined}>
-                    <div className={styles.rowMain}>
-                      <div className={styles.rowTitle}>
-                        <Text size="sm" fw={600} lineClamp={1} className={styles.rowName}>
-                          {rule.name || rule.value}
-                        </Text>
-                        <Badge size="xs" color={rule.action === "proxy" ? "cyan" : "green"} variant="light">
-                          {rule.action === "proxy" ? "强制代理" : "强制直连"}
-                        </Badge>
-                        <Badge size="xs" color="gray" variant="light">
-                          {rule.matchType === "domain" ? "域名" : "关键词"}
-                        </Badge>
+                    <Switch
+                      size="sm"
+                      checked={rule.enabled}
+                      aria-label={rule.enabled ? "停用规则" : "启用规则"}
+                      disabled={busy === `toggle:${rule.id}`}
+                      onChange={(event) => void handleToggle(rule, event.currentTarget.checked)}
+                    />
+                    <UnstyledButton className={styles.rowButton} onClick={() => openEdit(rule)} aria-label={`编辑规则：${rule.name || rule.value}`}>
+                      <div className={styles.rowMain}>
+                        <div className={styles.rowTitle}>
+                          <Text size="sm" fw={600} lineClamp={1} className={styles.rowName}>
+                            {rule.name || rule.value}
+                          </Text>
+                          <Badge size="xs" color={rule.action === "proxy" ? "cyan" : "green"} variant="light">
+                            {rule.action === "proxy" ? "强制代理" : "强制直连"}
+                          </Badge>
+                          <Badge size="xs" color="gray" variant="light">
+                            {rule.matchType === "domain" ? "域名" : "关键词"}
+                          </Badge>
+                        </div>
+                        {rule.name ? (
+                          <Text size="xs" c="dimmed" lineClamp={1}>
+                            {rule.matchType === "domain" ? `domain:${rule.value}` : `keyword:${rule.value}`}
+                          </Text>
+                        ) : null}
                       </div>
-                      {rule.name ? (
-                        <Text size="xs" c="dimmed" lineClamp={1}>
-                          {rule.matchType === "domain" ? `domain:${rule.value}` : `keyword:${rule.value}`}
-                        </Text>
-                      ) : null}
-                    </div>
-                    <Group gap={4} wrap="nowrap">
-                      <Switch
-                        size="sm"
-                        checked={rule.enabled}
-                        aria-label={rule.enabled ? "停用规则" : "启用规则"}
-                        disabled={busy === `toggle:${rule.id}`}
-                        onChange={(event) => void handleToggle(rule, event.currentTarget.checked)}
-                      />
-                      <ActionIcon variant="subtle" color="gray" aria-label="编辑规则" onClick={() => startEdit(rule)}>
-                        <IconEdit size={16} />
-                      </ActionIcon>
-                      <ActionIcon
-                        variant="subtle"
-                        color="red"
-                        aria-label="删除规则"
-                        loading={busy === `delete:${rule.id}`}
-                        onClick={() => void handleDelete(rule.id)}
-                      >
-                        <IconTrash size={16} />
-                      </ActionIcon>
-                    </Group>
+                      <IconChevronRight size={16} className={styles.rowChevron} aria-hidden="true" />
+                    </UnstyledButton>
                   </div>
                 ))}
               </div>
             )}
-            {hiddenCount > 0 ? (
-              <Button variant="subtle" size="compact-sm" mt={6} onClick={() => setShowAllRules((current) => !current)}>
-                {showAllRules ? "收起规则" : `展开全部 ${rules.length} 条`}
+          </section>
+        ) : (
+          <section className={styles.editor} aria-label={editorTitle}>
+            <Button
+              className={styles.back}
+              variant="subtle"
+              color="gray"
+              size="compact-sm"
+              leftSection={<IconArrowLeft size={14} />}
+              onClick={() => requestLeave("list")}
+              disabled={busy !== null}
+            >
+              返回规则列表
+            </Button>
+
+            <Group align="flex-end" wrap="nowrap" gap="sm">
+              <TextInput
+                style={{ flex: 1, minWidth: 0 }}
+                label="域名或名称"
+                placeholder="example.com 或 youtube"
+                value={value}
+                onChange={(event) => {
+                  setValue(event.currentTarget.value);
+                  setTestResult(null);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void handleTest();
+                  }
+                }}
+              />
+              <Button
+                variant="default"
+                leftSection={<IconSearch size={15} />}
+                onClick={() => void handleTest()}
+                loading={busy === "test"}
+                disabled={busy !== null && busy !== "test"}
+              >
+                查询
               </Button>
+            </Group>
+
+            {testResult ? <RoutingTestResult result={testResult} /> : saveHint ? (
+              <Text size="xs" c="dimmed">{saveHint}</Text>
             ) : null}
-          </Collapse>
-        </section>
+
+            <TextInput
+              label="显示名称"
+              placeholder="可选，保存后便于识别"
+              value={name}
+              onChange={(event) => setName(event.currentTarget.value)}
+            />
+
+            <div className={styles.field}>
+              <span className={styles.fieldLabel}>处理方式</span>
+              <Button.Group>
+                <Button
+                  fullWidth
+                  variant={action === "direct" ? "filled" : "default"}
+                  aria-pressed={action === "direct"}
+                  onClick={() => { setAction("direct"); setActionChosen(true); }}
+                  disabled={busy !== null}
+                >
+                  强制直连
+                </Button>
+                <Button
+                  fullWidth
+                  variant={action === "proxy" ? "filled" : "default"}
+                  aria-pressed={action === "proxy"}
+                  onClick={() => { setAction("proxy"); setActionChosen(true); }}
+                  disabled={busy !== null}
+                >
+                  强制代理
+                </Button>
+              </Button.Group>
+            </div>
+          </section>
+        )}
       </div>
     </AppDialog>
+    <AppDialog
+      opened={pendingLeave !== null}
+      onClose={() => setPendingLeave(null)}
+      title="放弃未保存的修改？"
+      tone="warning"
+      closeLabel="继续编辑"
+      actions={
+        <>
+          <Button variant="default" color="red" onClick={confirmLeave}>放弃修改</Button>
+          <Button data-autofocus onClick={() => setPendingLeave(null)}>继续编辑</Button>
+        </>
+      }
+    >
+      <DialogText>这条规则还没有保存，现在离开会丢掉刚才填写的内容。</DialogText>
+    </AppDialog>
+    </>
   );
 }
 
