@@ -6034,6 +6034,12 @@ fn force_clear_system_proxy_within_budget() -> Result<(), io::Error> {
 
     #[cfg(windows)]
     {
+        // 先关 PAC / 自动发现，再清手动代理；清手动代理的最后一步会刷新系统代理设置。
+        for (args, required) in WINDOWS_FORCE_AUTO_PROXY_RESET {
+            let result = run_windows_reg(args);
+            // 本来就没配置 PAC 时，删除会报“找不到值”，不算失败。
+            if *required { result?; }
+        }
         clear_windows_proxy()
     }
 
@@ -6042,6 +6048,20 @@ fn force_clear_system_proxy_within_budget() -> Result<(), io::Error> {
         Ok(())
     }
 }
+
+/// 强制连接时，除手动代理外还要关闭的 Windows 自动代理：删除 PAC 地址、关闭自动发现。
+/// 第二项为 true 表示必须成功。与平台无关，方便在任意系统上做回归；只有 Windows 构建会执行。
+#[cfg_attr(not(windows), allow(dead_code))]
+const WINDOWS_FORCE_AUTO_PROXY_RESET: &[(&[&str], bool)] = &[
+    (
+        &["delete", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings", "/v", "AutoConfigURL", "/f"],
+        false,
+    ),
+    (
+        &["add", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings", "/v", "AutoDetect", "/t", "REG_DWORD", "/d", "0", "/f"],
+        true,
+    ),
+];
 
 fn detect_external_network_conflict(http_port: u16, socks_port: u16) -> Result<(), String> {
     with_command_budget(Duration::from_millis(2500), || detect_external_network_conflict_within_budget(http_port, socks_port))
@@ -7786,6 +7806,15 @@ mod update_trust_tests {
 #[cfg(test)]
 mod runtime_failure_tests {
     use super::*;
+    #[test]
+    fn windows_force_takeover_disables_pac_and_auto_detect() {
+        let has = |value: &str, name: &str, required: bool| WINDOWS_FORCE_AUTO_PROXY_RESET.iter()
+            .any(|(args, req)| *req == required && args.first() == Some(&value) && args.contains(&name));
+        assert!(has("delete", "AutoConfigURL", false), "PAC address must be removed, tolerating an absent value");
+        assert!(has("add", "AutoDetect", true), "automatic discovery must be switched off and must succeed");
+        let detect = WINDOWS_FORCE_AUTO_PROXY_RESET.iter().find(|(args, _)| args.contains(&"AutoDetect")).unwrap().0;
+        assert_eq!(detect[detect.iter().position(|a| *a == "/d").unwrap() + 1], "0");
+    }
     #[test]
     fn rejected_duplicate_does_not_own_the_original_start(){
         let mut state=RuntimeState::default();state.status="starting".into();state.active_session_id=Some("same-session".into());state.active_attempt=Some(1);
