@@ -7245,16 +7245,22 @@ fn build_shell_menu(
         let logs_help = MenuItemBuilder::with_id("shell.logs", "打开连接诊断")
             .build(app)
             .map_err(|error| error.to_string())?;
+        // macOS 标准快捷键：菜单项必须声明 accelerator，系统才会响应键盘（⌘H 隐藏、⌘W 关闭窗口、⌘Q 退出）。
         let hide_app = MenuItemBuilder::with_id("shell.hide", "隐藏窗口")
+            .accelerator("CmdOrCtrl+H")
             .build(app)
             .map_err(|error| error.to_string())?;
         let show_window = MenuItemBuilder::with_id("shell.show", "显示主界面")
             .build(app)
             .map_err(|error| error.to_string())?;
-        let hide_window = MenuItemBuilder::with_id("shell.hide", "隐藏窗口")
+        // 关闭窗口与点窗口左上角的关闭按钮一致：收到托盘继续运行，不退出。
+        let hide_window = MenuItemBuilder::with_id("shell.hide", "关闭窗口")
+            .accelerator("CmdOrCtrl+W")
             .build(app)
             .map_err(|error| error.to_string())?;
+        let minimize = PredefinedMenuItem::minimize(app, Some("最小化")).map_err(|error| error.to_string())?;
         let quit = MenuItemBuilder::with_id("shell.quit", "退出 ChordV")
+            .accelerator("CmdOrCtrl+Q")
             .build(app)
             .map_err(|error| error.to_string())?;
         let undo =
@@ -7303,6 +7309,7 @@ fn build_shell_menu(
         let window_menu = SubmenuBuilder::new(app, "窗口")
             .item(&show_window)
             .item(&hide_window)
+            .item(&minimize)
             .build()
             .map_err(|error| error.to_string())?;
 
@@ -7669,6 +7676,30 @@ pub fn run() {
 
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod shell_menu_shortcut_tests {
+    /// Mac 端菜单是手写的：没有 accelerator 的菜单项不会响应键盘，⌘W / ⌘Q 曾经因此完全无效。
+    #[test]
+    fn mac_menu_binds_the_standard_window_shortcuts() {
+        let lib = include_str!("lib.rs");
+        let start = lib.find("fn build_shell_menu").expect("mac shell menu");
+        let end = start + lib[start..].find("fn refresh_shell_ui").expect("end of shell menu");
+        let menu: String = lib[start..end].split_whitespace().collect();
+        for (item, shortcut) in [
+            (r#"MenuItemBuilder::with_id("shell.quit","退出ChordV")"#, "CmdOrCtrl+Q"),
+            (r#"MenuItemBuilder::with_id("shell.hide","关闭窗口")"#, "CmdOrCtrl+W"),
+            (r#"MenuItemBuilder::with_id("shell.hide","隐藏窗口")"#, "CmdOrCtrl+H"),
+        ] {
+            assert!(menu.contains(&format!(r#"{item}.accelerator("{shortcut}")"#)), "{item} must bind {shortcut}");
+        }
+        assert!(menu.contains("PredefinedMenuItem::minimize"), "⌘M minimizes through the standard window item");
+        // 同一个快捷键只能绑一个菜单项，否则系统不知道响应哪个。
+        for shortcut in ["CmdOrCtrl+Q", "CmdOrCtrl+W", "CmdOrCtrl+H"] {
+            assert_eq!(menu.matches(&format!(r#".accelerator("{shortcut}")"#)).count(), 1, "{shortcut} is bound once");
+        }
+    }
 }
 
 #[cfg(test)]
