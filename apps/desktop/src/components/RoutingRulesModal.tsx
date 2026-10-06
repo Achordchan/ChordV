@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Badge, Button, Group, Switch, Text, TextInput, UnstyledButton } from "@mantine/core";
 import { showToast } from "./Toast";
 import { logUserErrorDiagnostic } from "../lib/appState";
@@ -56,6 +56,8 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
   const [actionChosen, setActionChosen] = useState(false);
   const [testResult, setTestResult] = useState<ClientRoutingRuleTestResultDto | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  // 每次重置表单（切换、放弃、重新打开）都换一个编辑会话；迟到的查询/保存结果不能作用到新的编辑器上。
+  const editorSession = useRef(0);
   // 有未保存修改时，关闭弹窗或返回列表前先让用户确认；记录用户想去哪里。
   const [pendingLeave, setPendingLeave] = useState<"list" | "close" | null>(null);
 
@@ -127,6 +129,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
       setError("请输入要检测的域名或名称。");
       return;
     }
+    const session = editorSession.current;
     setBusy("test");
     setError(null);
     try {
@@ -136,14 +139,17 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
         features: props.policies.features,
         customRoutingRules: rules.length > 0 ? rules : props.policies.customRoutingRules
       });
+      if (session !== editorSession.current) return;
       setTestResult(result);
       // 强制规则的意义是改变现状，新建时默认选与当前结果相反的处理方式；每次新的查询都重新计算，手动选过的除外。
       if (!actionChosen) setAction(result.action === "proxy" ? "direct" : "proxy");
     } catch (reason) {
+      if (session !== editorSession.current) return;
       setTestResult(null);
       showFailure(reason);
     } finally {
-      setBusy(null);
+      // 编辑会话已换掉时，busy 由 resetForm 处理，不能清掉新编辑器的状态。
+      if (session === editorSession.current) setBusy(null);
     }
   }
 
@@ -161,6 +167,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
       return;
     }
 
+    const session = editorSession.current;
     setBusy("save");
     setError(null);
     try {
@@ -171,11 +178,11 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
       } else {
         await createRoutingRule(props.accessToken, { ...input, enabled: true });
       }
-      backToList();
+      if (session === editorSession.current) backToList();
       await loadRules();
       await applyIfConnected("规则已保存");
     } catch (reason) {
-      showFailure(reason);
+      if (session === editorSession.current) showFailure(reason);
     } finally {
       setBusy(null);
     }
@@ -196,11 +203,12 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
   }
 
   async function handleDelete(ruleId: string) {
+    const session = editorSession.current;
     setBusy(`delete:${ruleId}`);
     setError(null);
     try {
       await deleteRoutingRule(props.accessToken, ruleId);
-      backToList();
+      if (session === editorSession.current) backToList();
       await loadRules();
       await applyIfConnected("规则已删除");
     } catch (reason) {
@@ -231,6 +239,9 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
   }
 
   function resetForm() {
+    editorSession.current += 1;
+    // 放弃一次还在进行的查询：它的结果会被忽略，busy 也不能一直卡着。
+    setBusy((current) => (current === "test" ? null : current));
     setEditing(null);
     setName("");
     setValue("");
