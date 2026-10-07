@@ -1,0 +1,15 @@
+{
+  "version": "0.0.30",
+  "channel": "stable",
+  "tag": "backend-v0.0.30",
+  "publishedAt": "2026-10-07T02:53:33Z",
+  "htmlUrl": "https://github.com/Achordchan/ChordV/releases/tag/backend-v0.0.30",
+  "changelog": [
+    "修复订阅续期时，填写续后总额度后打开“重置已用流量”导致页面白屏；并修复后台其他表单的同类隐患"
+  ],
+  "artifact": {
+    "url": "https://github.com/Achordchan/ChordV/releases/download/backend-v0.0.30/chordv-backend-0.0.30.tar.gz",
+    "sha256": "f34f5232df7ed74add14d642944cf4ef072e0fee7992d0bd1eaac86c788fad28",
+    "sizeBytes": 108698035
+  }
+}
