@@ -18,7 +18,7 @@ export function NodeEditorSection(props: NodeEditorSectionProps) {
       <TextInput
         label="节点名称"
         value={props.nodeForm.name}
-        onChange={(event) => props.setNodeForm((current) => ({ ...current, name: event.currentTarget.value }))}
+        onChange={(event) => { const name = event.currentTarget.value; props.setNodeForm((current) => ({ ...current, name })); }}
       />
       <Group grow>
         <Select
@@ -44,29 +44,29 @@ export function NodeEditorSection(props: NodeEditorSectionProps) {
         <TextInput
           label="供应商"
           value={props.nodeForm.provider}
-          onChange={(event) => props.setNodeForm((current) => ({ ...current, provider: event.currentTarget.value }))}
+          onChange={(event) => { const provider = event.currentTarget.value; props.setNodeForm((current) => ({ ...current, provider })); }}
         />
       </Group>
       <TextInput
         label="地区/城市"
         placeholder="如：东京"
         value={props.nodeForm.region}
-        onChange={(event) => props.setNodeForm((current) => ({ ...current, region: event.currentTarget.value }))}
+        onChange={(event) => { const region = event.currentTarget.value; props.setNodeForm((current) => ({ ...current, region })); }}
       />
       <TextInput
         label="标签"
         description="使用英文逗号分隔"
         value={props.nodeForm.tags}
-        onChange={(event) => props.setNodeForm((current) => ({ ...current, tags: event.currentTarget.value }))}
+        onChange={(event) => { const tags = event.currentTarget.value; props.setNodeForm((current) => ({ ...current, tags })); }}
       />
       <div className={styles.switchRow}><div><strong>启用节点</strong><p>控制节点是否可供客户端使用</p></div><Switch color="teal.9"
         checked={props.nodeForm.isActive}
-        onChange={(event) => props.setNodeForm((current) => ({ ...current, isActive: event.currentTarget.checked }))}
+        onChange={(event) => { const isActive = event.currentTarget.checked; props.setNodeForm((current) => ({ ...current, isActive })); }}
         aria-label="启用节点"
       /></div>
       <div className={styles.switchRow}><div><strong>推荐节点</strong><p>在客户端标记为推荐</p></div><Switch color="teal.9"
         checked={props.nodeForm.recommended}
-        onChange={(event) => props.setNodeForm((current) => ({ ...current, recommended: event.currentTarget.checked }))}
+        onChange={(event) => { const recommended = event.currentTarget.checked; props.setNodeForm((current) => ({ ...current, recommended })); }}
         aria-label="推荐节点"
       /></div>
     </>

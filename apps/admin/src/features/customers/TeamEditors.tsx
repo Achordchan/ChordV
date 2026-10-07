@@ -12,7 +12,7 @@ export function TeamProfileEditorPanel(props: UsersPageProps & { team: AdminTeam
         <TextInput
           label="团队名称"
           value={props.teamForm.name}
-          onChange={(event) => props.setTeamForm((current) => ({ ...current, name: event.currentTarget.value }))}
+          onChange={(event) => { const name = event.currentTarget.value; props.setTeamForm((current) => ({ ...current, name })); }}
         />
         <Select
           label="负责人"

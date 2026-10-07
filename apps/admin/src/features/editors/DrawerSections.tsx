@@ -39,7 +39,7 @@ export function UserEditorSection(props: {
       <TextInput
         label="邮箱"
         value={props.userForm.email}
-        onChange={(event) => props.setUserForm((current) => ({ ...current, email: event.currentTarget.value }))}
+        onChange={(event) => { const email = event.currentTarget.value; props.setUserForm((current) => ({ ...current, email })); }}
         disabled={props.drawerRecordId !== null}
       />
       <TextInput
@@ -47,12 +47,12 @@ export function UserEditorSection(props: {
         type="password"
         value={props.userForm.password}
         placeholder={props.drawerRecordId ? "留空则不修改" : ""}
-        onChange={(event) => props.setUserForm((current) => ({ ...current, password: event.currentTarget.value }))}
+        onChange={(event) => { const password = event.currentTarget.value; props.setUserForm((current) => ({ ...current, password })); }}
       />
       <TextInput
         label="名称"
         value={props.userForm.displayName}
-        onChange={(event) => props.setUserForm((current) => ({ ...current, displayName: event.currentTarget.value }))}
+        onChange={(event) => { const displayName = event.currentTarget.value; props.setUserForm((current) => ({ ...current, displayName })); }}
       />
       <NumberInput
         label="最大并发覆盖"
@@ -131,7 +131,7 @@ export function SubscriptionCreateEditorSection(props: {
         label="到期时间"
         type="datetime-local"
         value={props.subscriptionCreateForm.expireAt}
-        onChange={(event) => props.setSubscriptionCreateForm((current) => ({ ...current, expireAt: event.currentTarget.value }))}
+        onChange={(event) => { const expireAt = event.currentTarget.value; props.setSubscriptionCreateForm((current) => ({ ...current, expireAt })); }}
       />
       <Select
         label="状态"
@@ -219,7 +219,7 @@ export function TeamEditorSection(props: {
       <TextInput
         label="团队名称"
         value={props.teamForm.name}
-        onChange={(event) => props.setTeamForm((current) => ({ ...current, name: event.currentTarget.value }))}
+        onChange={(event) => { const name = event.currentTarget.value; props.setTeamForm((current) => ({ ...current, name })); }}
       />
       <Select
         label="负责人"
@@ -305,7 +305,7 @@ export function TeamSubscriptionEditorSection(props: {
         label="到期时间"
         type="datetime-local"
         value={props.teamSubscriptionForm.expireAt}
-        onChange={(event) => props.setTeamSubscriptionForm((current) => ({ ...current, expireAt: event.currentTarget.value }))}
+        onChange={(event) => { const expireAt = event.currentTarget.value; props.setTeamSubscriptionForm((current) => ({ ...current, expireAt })); }}
       />
     </>
   );
@@ -320,13 +320,13 @@ export function AnnouncementEditorSection(props: {
       <TextInput
         label="标题"
         value={props.announcementForm.title}
-        onChange={(event) => props.setAnnouncementForm((current) => ({ ...current, title: event.currentTarget.value }))}
+        onChange={(event) => { const title = event.currentTarget.value; props.setAnnouncementForm((current) => ({ ...current, title })); }}
       />
       <Textarea
         label="内容"
         minRows={6}
         value={props.announcementForm.body}
-        onChange={(event) => props.setAnnouncementForm((current) => ({ ...current, body: event.currentTarget.value }))}
+        onChange={(event) => { const body = event.currentTarget.value; props.setAnnouncementForm((current) => ({ ...current, body })); }}
       />
       <Group grow>
         <Select
@@ -339,7 +339,7 @@ export function AnnouncementEditorSection(props: {
           label="发布时间"
           type="datetime-local"
           value={props.announcementForm.publishedAt}
-          onChange={(event) => props.setAnnouncementForm((current) => ({ ...current, publishedAt: event.currentTarget.value }))}
+          onChange={(event) => { const publishedAt = event.currentTarget.value; props.setAnnouncementForm((current) => ({ ...current, publishedAt })); }}
         />
       </Group>
       <Select
@@ -366,7 +366,7 @@ export function AnnouncementEditorSection(props: {
       ) : null}
       <Switch
         checked={props.announcementForm.isActive}
-        onChange={(event) => props.setAnnouncementForm((current) => ({ ...current, isActive: event.currentTarget.checked }))}
+        onChange={(event) => { const isActive = event.currentTarget.checked; props.setAnnouncementForm((current) => ({ ...current, isActive })); }}
         label="启用公告（按发布时间展示）"
       />
     </>
