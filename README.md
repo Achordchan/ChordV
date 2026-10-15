@@ -1,344 +1,85 @@
-| `CHORDV_USAGE_PAYLOAD_RETENTION_DAYS` | 已入账批次原始载荷的保留天数，默认 `30`；只清空 `payload`，行本身保留 |# ChordV
+# ChordV
 
-ChordV 是一套面向团队订阅、节点接入、客户端分发与流量计量的专有网络服务平台。当前代码采用 Agent 托管节点：ChordV 负责账户、套餐、授权、发布与审计，node-agent 管理 Xray 用户并采集流量，Xray 承载真实连接。
+A private workspace for a small collection of connected applications. It brings together a native client, a management interface, application services, and shared tooling.
 
-节点改版 R1/R2/R3 已合并，生产迁移与真实链路验收仍需单独完成。当前进度及发布前清单见 `docs/prd/node-revision-agent-native.md` 第 3 节。
+The project is maintained for personal use. Interfaces and workflows may change as the system evolves.
 
-本仓库为 ChordV 单仓工程，覆盖运营后台、业务 API、桌面客户端、共享类型与发布中心，适用于自有订阅业务的生产部署、版本发布和持续运维。
+## Workspace
 
-## 产品能力
+| Path | Purpose |
+| --- | --- |
+| `apps/desktop` | Native client and platform integrations |
+| `apps/admin` | Management interface |
+| `apps/api` | Application services and persistence |
+| `apps/agent` | Lightweight background service |
+| `apps/node-agent` | Earlier service implementation, retained for compatibility |
+| `packages/shared` | Shared types and utilities |
 
-- 订阅与团队管理：支持个人订阅、团队成员、套餐额度、到期状态、并发会话与节点授权。
-- 节点与连接控制：通过一次性令牌注册 Agent、部署 Xray 入站和下发用户命令，客户端连接配置由服务端按订阅权限实时下发。
-- 流量计量：Agent 采集 Xray 用户流量，通过 direct 批次上报，ChordV 负责幂等入账、套餐额度与异常追踪。
-- 运营后台：提供用户、团队、套餐、订阅、节点、策略、公告、工单和发布中心管理。
-- 多端客户端：当前覆盖 macOS、Windows，并保留 Android 工程链路；客户端支持登录、节点选择、连接、断开、服务端强制事件和应用内更新。
-- 发布中心：支持按平台维护版本、上传安装包、计算文件大小与 SHA-256、校验产物可用性，并向客户端提供更新检查。
+The workspace uses TypeScript, React, Tauri, Rust, and Go. Application data is stored in PostgreSQL. JavaScript packages are managed with pnpm and Turborepo.
 
-## 系统架构
+## Local development
 
-| 模块 | 技术栈 | 职责 |
-| --- | --- | --- |
-| `apps/api` | NestJS、Prisma、PostgreSQL | 认证、订阅、节点、计量、发布中心与客户端 API |
-| `apps/admin` | React、Mantine、Vite | 运营后台与业务管理界面 |
-| `apps/desktop` | Tauri、React、Rust | macOS / Windows 客户端、运行时控制、安装包构建 |
-| `packages/shared` | TypeScript | 前后端共享 DTO、枚举、版本与运行时类型 |
+Use Node.js with pnpm 9.15.3. The release baseline is recorded in [`.nvmrc`](.nvmrc). Native client development also requires Rust and the relevant platform SDKs: Xcode Command Line Tools on macOS, or MSVC C++ Build Tools and WebView2 on Windows.
 
-接入模式为 Agent 托管的 `direct_primary`。中心服务负责业务控制、授权下发与计量同步，不承担流量中转职责。
-
-## 本地开发
-
-### 环境要求
-
-- Node.js（本地使用 PATH 中的当前版本，不再锁定 20.19.x；发布基线见 `.nvmrc`）
-- pnpm 9.15.3
-- PostgreSQL（可使用现有数据库；Windows Git Bash 支持项目内自动准备）
-- 仅在单独开发桌面客户端时才需要 Rust、Tauri；macOS 桌面打包另需 Xcode Command Line Tools
-
-### 初始化
+Install workspace dependencies from the repository root:
 
 ```bash
-pnpm setup:mac
+pnpm install --frozen-lockfile
 ```
 
-该命令会安装依赖、启动本地 PostgreSQL、生成 Prisma Client、同步数据库结构并写入基础数据。初始化完成后即可启动 API 和桌面客户端。
-
-如果你当前使用的是远端数据库和现成后台，不要执行这个命令。只需要把根目录 `.env` 里的 `DATABASE_URL` 指向远端 PostgreSQL，然后直接启动桌面端即可。
-
-### 启动本地后台开发环境
+Start the local management interface and API:
 
 ```bash
 bash ./start.sh
 ```
 
-默认只启动运营后台页面和本机 API，浏览器统一访问 **http://127.0.0.1:5174**。页面请求通过同地址的 `/api` 转发到内部 API（默认 3000），不再依赖跨端口请求或默认线上地址。页面和 API 均就绪后，脚本才打印“后台服务已就绪”。启动不包含 Tauri、Rust 构建、Xray 下载或节点 Agent。
-
-脚本使用当前 PATH 中的 Node.js；缺少 Corepack 时通过 npm 在 `.data/local-runtime/tooling/` 准备固定版本，不全局安装。已有依赖直接复用，Prisma Client 仅在缺失、模型或版本变化时生成，共享模块在启动前准备一次。本地托管数据库仍执行必要的迁移检查，开发数据仅在首次初始化或凭据重新生成时写入。
-
-自定义后台页面端口：
+Open `http://127.0.0.1:5174`. The interface forwards API requests to the local service, which uses port `3000` by default. An optional argument changes the interface port:
 
 ```bash
 bash ./start.sh 5180
 ```
 
-位置参数优先于 `CHORDV_ADMIN_PORT`，表示浏览器访问端口；内部 API 端口可通过 `CHORDV_API_PORT` 单独设置，不能与页面端口相同。旧版位置参数表示 API 端口的行为已调整。
+The launcher uses the active Node.js installation and prepares local dependencies as needed. Without an explicit database connection, it expects a local development database; Windows Git Bash can prepare a project-local PostgreSQL instance. Other systems require an available PostgreSQL installation. The managed local database may be initialized or migrated during startup.
 
-未配置 `DATABASE_URL` 时默认使用本机 `127.0.0.1:54329` 的开发数据库；Windows Git Bash 可自动下载并启动项目内 PostgreSQL，其他系统需已有可用 PostgreSQL。显式配置外部数据库时，不执行迁移、Seed 或替换数据库。按 Ctrl+C 会停止本次后台进程，以及本次启动的项目内 PostgreSQL；不关闭其他项目的进程。
-
-`pnpm dev:local` 使用同一个启动入口。需要联调节点 Agent 时使用 `pnpm dev:local:agent`（等价于 `bash ./start.sh --with-agent`），在根目录 `.env` 配置身份与 Xray 路径；脚本先加载配置、准备依赖及数据库，再让后台与 Agent 继承同一个 API 地址。默认后台启动不会读取旧 Agent 开关来增加额外进程。
-
-单独启动后台页面对接远程 API 时，可显式设置 `CHORDV_DEV_API_TARGET`，兼容原来的 `VITE_API_BASE_URL` 环境变量；前端仍通过 Vite 的同源 `/api` 代理。`start.sh` 会明确指定本机 API，不受远程地址影响。
-
-### 启动桌面客户端
-
-本地原生预览（macOS 自动识别 Intel/Apple Silicon；Windows 在 Git Bash 中执行）：
-
-```bash
-bash ./start-app.sh
-```
-
-脚本只构建当前工作目录所在仓库的客户端：复用桌面前端构建，再编译本机 Tauri 调试程序并启动窗口，不生成安装包、不启动 Vite 服务、不调用后台 `start.sh`。可与后台同时运行；前台日志显示在终端，使用托盘菜单退出或按 `Ctrl+C` 结束。关闭窗口可能仅隐藏到托盘。
-
-首次使用需准备项目依赖、pnpm、Rust/Cargo；macOS 还需 Xcode Command Line Tools，Windows 还需 MSVC C++ Build Tools 和 WebView2。脚本不会自动安装这些依赖。`bash ./start-app.sh --check` 检查基础依赖，`--build-only` 只构建。
-
-本地预览使用独立应用标识和 `.data/local-app/target/` 缓存，不清理正式发布产物。每个工作目录同时只允许一个脚本会话，避免 Windows 正在运行的程序被重新构建。强制结束终端后若残留 `.data/local-app/session.lock`，确认没有预览进程再删除该空目录。
-
-脚本会将 `VITE_API_BASE_URL` 同步到原生请求使用的 `CHORDV_API_BASE_URL`；显式设置的 `CHORDV_API_BASE_URL` 优先保留。
-
-客户端默认使用代码中的站点地址；联调 `start.sh` 启动的本机 API 时显式执行：
+To preview the native client against the local API, run this in a separate terminal:
 
 ```bash
 VITE_API_BASE_URL=http://127.0.0.1:3000 bash ./start-app.sh
 ```
 
-原有热重载开发方式：
+This builds and opens a native debug application. Run it in a macOS terminal or Windows Git Bash with native Windows tools. Use `bash ./start-app.sh --check` to check prerequisites, or `--build-only` to build without opening a window.
+
+For client development with hot reload:
 
 ```bash
-PATH=/opt/homebrew/bin:/usr/local/bin:$PATH VITE_API_BASE_URL=https://v.achord.cn pnpm dev:mac
+VITE_API_BASE_URL=http://127.0.0.1:3000 pnpm dev:mac
 ```
 
-仅启动桌面前端：
+For a browser-only view:
 
 ```bash
-PATH=/opt/homebrew/bin:/usr/local/bin:$PATH VITE_API_BASE_URL=https://v.achord.cn pnpm dev:desktop
+VITE_API_BASE_URL=http://127.0.0.1:3000 pnpm dev:desktop
 ```
 
-如果 `tauri dev` 报 native binding / code signature 错误，先确认当前终端优先使用的是 Homebrew 的 Node，而不是 Codex.app 自带的 Node。
+## Configuration
 
-## 环境变量
+Keep environment-specific settings in local configuration or the deployment environment. Service addresses, credentials, signing material, and operational data should remain outside tracked documentation.
 
-| 变量 | 说明 |
-| --- | --- |
-| `CHORDV_API_PORT` | 内部 API 服务端口，默认 `3000` |
-| `CHORDV_ADMIN_PORT` | 后台页面访问端口，默认 `5174` |
-| `CHORDV_API_BASE_URL` | 前端和客户端访问 API 的基础地址 |
-| `CHORDV_RUNTIME_COMPONENT_API_BASE_URL` | 本地 API 未配置 Xray 组件时使用的组件服务，默认 `https://v.achord.cn` |
-| `CHORDV_PUBLIC_BASE_URL` | 对外公开域名，用于生成下载地址 |
-| `DATABASE_URL` | PostgreSQL 连接串 |
-| `CHORDV_JWT_SECRET` | JWT 签名密钥，生产环境必须单独配置 |
-| `CHORDV_DEV_BOOTSTRAP` | 开发数据自动初始化开关，生产环境应关闭 |
-| `CHORDV_ALLOW_REMOTE_DEV_SEED` | 允许对非本机数据库执行开发 seed，仅用于一次性测试环境 |
-| `CHORDV_ALLOW_REMOTE_DEV_BOOTSTRAP` | 允许对非本机数据库执行开发数据自举，仅用于一次性测试环境 |
-| `CHORDV_RELEASE_STORAGE_ROOT` | 发布中心安装包存储目录 |
-| `CHORDV_RELEASE_MAX_UPLOAD_BYTES` | 发布中心单文件上传上限 |
-| `CHORDV_SESSION_HEARTBEAT_INTERVAL_SECONDS` | 客户端会话心跳周期 |
-| `CHORDV_SESSION_GRACE_SECONDS` | 会话失联宽限时间 |
-| `CHORDV_USAGE_PAYLOAD_RETENTION_DAYS` | 原始用量批次保留天数，默认 `30`；只清理已无法被任何读取路径触及的行 |
-| `CHORDV_METERING_INCIDENT_RETENTION_DAYS` | 已解决计量异常的保留天数，默认 `90`；`open` 状态永不清理 |
+`DATABASE_URL` selects the database. `CHORDV_API_PORT` and `CHORDV_ADMIN_PORT` select the local service and interface ports. `VITE_API_BASE_URL` selects the client's API endpoint; the native preview also respects an explicit `CHORDV_API_BASE_URL` override. Set the intended endpoint explicitly when switching environments.
 
-安全默认值：未配置 `CHORDV_JWT_SECRET` 时，API 只会在 `NODE_ENV=development`、`NODE_ENV=test` 或显式设置 `CHORDV_ALLOW_INSECURE_DEV_SECRET=true` 时使用开发密钥。`CHORDV_DEV_BOOTSTRAP` 默认不会自动执行，确需写入开发数据时必须显式设为 `true`。
+## Checks and builds
 
-生产环境不得使用仓库示例密钥，数据库、JWT、Agent 凭据相关配置与发布目录必须由部署环境单独提供。
-
-## 版本与发布
-
-桌面端版本按平台独立维护，配置文件为：
-
-[`apps/desktop/config/platform-versions.json`](apps/desktop/config/platform-versions.json)
-
-查看平台版本：
+Run the workspace checks or build from the repository root:
 
 ```bash
-pnpm --filter @chordv/desktop version:platform macos
-pnpm --filter @chordv/desktop version:platform windows
-pnpm --filter @chordv/desktop version:platform android
+pnpm check
+pnpm build
 ```
 
-构建 macOS 安装包：
+The workspace build compiles application code. Native packaging uses separate platform tooling. macOS and Windows are the primary desktop targets; Android has a separate build path. Platform coverage varies by component.
 
-```bash
-pnpm --filter @chordv/desktop tauri:build:platform macos
-```
+Client versions are recorded in [`apps/desktop/config/platform-versions.json`](apps/desktop/config/platform-versions.json). The service release version is recorded separately in [`SYSTEM_VERSION`](SYSTEM_VERSION).
 
-构建 Windows 安装包：
+## Access
 
-```bash
-pnpm --filter @chordv/desktop tauri:build:platform windows
-```
-
-构建产物默认整理到：
-
-- macOS：`output/release/macos`
-- Windows：`output/release/windows`
-- Android：`output/release/android`
-
-发布流程：
-
-1. 更新目标平台版本号。
-2. 执行对应平台构建。
-3. 在发布中心创建草稿版本。
-4. 上传主安装包并完成文件校验。
-5. 确认客户端下载地址、更新日志、最低版本与强制升级策略。
-6. 由运营人员在后台执行发布。
-
-## Android 调试
-
-```bash
-pnpm --filter @chordv/desktop android:doctor
-pnpm --filter @chordv/desktop android:build
-pnpm --filter @chordv/desktop android:install -- --launch
-pnpm --filter @chordv/desktop android:logcat -- --clear
-pnpm --filter @chordv/desktop android:smoke
-```
-
-命令说明：
-
-- `android:doctor`：检查 JDK、SDK、NDK、adb 与真机连接状态。
-- `android:build`：构建 arm64 调试包。
-- `android:install`：安装到已连接设备并可直接启动。
-- `android:logcat`：过滤客户端运行日志。
-- `android:smoke`：输出真机联调检查步骤。
-
-## 文件与存储
-
-系统设置中的“文件与存储”可扫描安装包、运行组件、已配置的后台版本目录及数据库快照目录，查看文件引用、逻辑大小、分配空间估算、磁盘可用空间及清理失败任务。扫描通过 SSE 推送进度，关闭窗口会停止扫描；图床附件保留在独立的“附件与图床”入口中。
-
-发布中心“管理安装包”先展示已有文件。草稿可新增、替换或从已有同平台文件中复用；已发布版本只读，撤回后才能修改文件。相同内容会在同一文件系统内尝试硬链接去重，每个记录保留独立路径；重复提交同一版本的相同安装包会复用记录，已损坏或缺失的同内容文件会修复。原始获取地址仅供管理员查看。
-
-记录删除与清理任务在同一数据库事务中保存。后台每分钟处理任务，删除前重新检查引用；失败会保留原因并退避重试，路径异常会阻止自动删除。每日扫描只清理超过 24 小时且确认未引用的托管文件及有明确前缀的临时文件；历史裸 UUID 临时文件仅展示，不猜测归属。
-
-运行组件可在“已保存的历史文件”中启用或删除旧版本。自动保留当前版本、全局最新 20 条记录和兼容保留窗口；已分发版本在切换后保留至少 30 天，防止旧客户端缓存地址失效。升级时无法确定历史退役时间的已分发文件，也会获得 30 天迁移宽限期。
-
-新增迁移 `20260915140000_file_management` 必须随后台先执行。集成测试可用 `npm --prefix apps/api run test:file-management`，需要本机 PostgreSQL 工具和 Python 3；测试会创建并清理独立集群，不使用业务数据库。
-
-## 发布中心
-
-发布中心的“远程获取”会直接下载来源文件，不依赖全局镜像。后台按实际字节计算大小和 SHA-256，再复用上传文件的存储流程；编辑现有安装包时，获取失败不会替换原文件。进度由 SSE 推送，连接中断会取消尚未完成的下载；若保存响应丢失，请刷新确认结果再重试。
-
-远程获取仅允许公开 HTTPS 地址，重定向也必须满足相同约束；大小沿用 `CHORDV_RELEASE_MAX_UPLOAD_BYTES`（不超过 1 GiB），单次获取最长 8 分钟，每个进程最多同时处理两个导入、同一版本只允许一个。历史外链保留兼容，其镜像设置收在系统设置的兼容选项中。
-
-发布中心用于管理客户端版本和安装包交付，核心能力包括：
-
-- 按平台和稳定渠道维护版本。
-- 通过 HTTPS 来源地址由后台获取安装包，或从本地上传；成功后统一由本站托管分发。
-- 自动生成下载地址。
-- 自动记录文件大小与 SHA-256。
-- 发布前校验主安装包是否可读取、大小是否一致、Hash 是否匹配。
-- 为客户端提供应用内更新检查。
-
-客户端更新策略：
-
-- macOS / Windows：应用内检查更新，展示更新日志，下载完整安装包，由用户手动安装。
-- Android：应用内检查更新，下载或跳转 APK，由用户手动安装。
-- iOS：保留版本提示与下载说明入口。
-
-推荐生产变量：
-
-```bash
-CHORDV_PUBLIC_BASE_URL=https://v.achord.cn
-CHORDV_RELEASE_STORAGE_ROOT=/data/releases
-CHORDV_RELEASE_MAX_UPLOAD_BYTES=1073741824
-```
-
-准备发布目录：
-
-```bash
-pnpm prepare:release-storage /data/releases
-```
-
-安装包目录应与代码部署目录分离，避免应用更新或回滚时影响历史发布产物。
-
-## 质量检查
-
-提交前建议执行：
-
-```bash
-pnpm --filter @chordv/shared check
-pnpm --filter @chordv/api check
-pnpm --filter @chordv/admin check
-pnpm --filter @chordv/desktop check
-```
-
-客户端发布前至少验证：
-
-- 登录、节点列表、连接、心跳续租、断开。
-- 到期、流量耗尽、取消节点授权、后台强制断开。
-- macOS 关闭窗口后隐藏到后台。
-- Windows 安装后无控制台黑窗，断开后系统代理恢复。
-- 应用内更新能够返回正确版本、下载地址、文件大小与更新日志。
-
-## 部署说明
-
-后台系统（`apps/api` + `apps/admin`）作为一个整体发布单元，通过 Docker Compose 运行，由容器内监督脚本负责版本提升、健康门控和失败回退；日常升级在运营后台完成，不依赖服务器管理面板。详见 [`docs/prd/backend-self-update.md`](docs/prd/backend-self-update.md)。
-
-### 容器部署（`deploy/backend/`）
-
-```bash
-# 在仓库根目录执行（compose 的 build.context 指向仓库根）
-docker compose -f deploy/backend/docker-compose.yml up -d --build
-```
-
-独立部署包由 `corepack pnpm prepare:backend-bundle` 生成，输出到 `.deploy/chordv-backend-bundle`，包含后台和 Go agent 的构建输入。
-
-**已有部署不要迁移数据目录。** `deploy/backend` 是源码中的通用部署入口；服务器原来的 `.env`、数据库、发布目录和备份仍留在原处。使用新模板维护已有部署时，显式绑定原项目目录，并使用原来的 Compose 项目名（默认 `chordv`）：
-
-```bash
-# RUNTIME_DIR 指向已有部署目录，先设置为实际路径；以下仅检查配置，不启动服务。
-: "${RUNTIME_DIR:?请先指定已有部署目录}"
-CHORDV_BUILD_CONTEXT="$PWD" docker compose -p chordv \
-  --project-directory "$RUNTIME_DIR" --env-file "$RUNTIME_DIR/.env" \
-  -f deploy/backend/docker-compose.yml config --quiet
-```
-
-维护窗口中的 stop/up 命令也必须使用相同的 project-directory、env-file 和构建上下文，避免把相对挂载解析到新源码目录而连接空数据库。原项目名若不是 `chordv`，保留其原值。
-
-- `chordv-api`：入口是监督者脚本 `entrypoint.sh`，代码运行在可写的 `api-releases` 卷中，按版本目录存放并用 `current` 软链接指向当前版本；自更新时应用只“下载→校验→暂存→停止接单并排空工作→Nest 关闭→写 pending 标记→退出”，由监督者提升新版本、按需执行迁移前快照与迁移、健康门控、失败自动回滚。`restart: unless-stopped` 是监督者自身异常时的兜底。
-- `chordv-admin`：nginx 只读挂载 `api-releases` / `api-public-state`，**不挂载 `api-state` 或 `api-backups`**；网页根指向通过健康门控的版本的 `apps/admin/dist`，随 api 自更新自动跟随，同时把 `/api` 反代到 `chordv-api`。公开标记目录只由监督者在健康门控和私有 last-good 写入成功后原子发布 `last-good-version`，不复制私有状态或从 desired-version 初始化；首次启动等待该标记。
-- 前置 openresty（TLS 终止）将域名反代到 `chordv-admin`；生产强制 HTTPS，内部健康探活带 `X-Forwarded-Proto: https`。
-- 数据库快照（迁移前 `pg_dump`）落在 **API 独占**的 `./api-backups:/app/backups`；私有状态 `./api-state:/app/state`、公开健康版本标记 `./api-public-state:/app/public-state`、代码 `api-releases` 和安装包 `./releases:/data/releases` 分开持久化。admin 只读挂载公开标记到 `/usr/share/nginx/public-state`。各目录需分别纳入磁盘监控与备份策略；数据库快照仍含敏感数据，不应上传、打包到发布产物或放进 nginx 可读目录。
-
-#### 旧部署升级与快照迁移（必须重建容器）
-
-这是 **compose 挂载及镜像入口脚本**的安全修复，仅在后台“一键更新”应用代码不会生效。维护窗口内停止旧 api/admin，保留 PostgreSQL 及所有持久数据；部署新的 compose、Dockerfile 与入口脚本后，在仓库根执行：
-
-```bash
-: "${RUNTIME_DIR:?请先指定已有部署目录}"
-CHORDV_BUILD_CONTEXT="$PWD" docker compose -p chordv --project-directory "$RUNTIME_DIR" --env-file "$RUNTIME_DIR/.env" -f deploy/backend/docker-compose.yml stop admin api
-# 不输出含数据库口令的展开配置
-CHORDV_BUILD_CONTEXT="$PWD" docker compose -p chordv --project-directory "$RUNTIME_DIR" --env-file "$RUNTIME_DIR/.env" -f deploy/backend/docker-compose.yml config --quiet
-CHORDV_BUILD_CONTEXT="$PWD" docker compose -p chordv --project-directory "$RUNTIME_DIR" --env-file "$RUNTIME_DIR/.env" -f deploy/backend/docker-compose.yml up -d --build --force-recreate api admin
-```
-
-- **保留现有 `.env` 和密钥，不覆盖或重新生成。** 新 compose 的 `environment` 明确固定 `CHORDV_SYSTEM_STATE_DIR=/app/state`、`CHORDV_SYSTEM_PUBLIC_STATE_DIR=/app/public-state`、`CHORDV_SYSTEM_UPDATE_BACKUP_DIR=/app/backups`，优先于旧 `.env`（包括旧 `/app/state/backups` 值）；以后可人工清理过时项，不是安全修复生效的前提。自定义 compose 覆盖文件、`docker run -e` 不受该固定配置保护，必须同步调整环境变量和挂载，确保三个宿主目录真实独立、不是彼此的子目录或指向同一位置的符号链接。
-- **旧 `api-state/backups` 不自动移动、不自动删除。** 重建 admin 后整个私有 state 都不再挂入 nginx，因此遗留快照即使留在原处也不可被 admin 读取。不要为了兼容再挂载旧 state，更不要把它复制进 `api-public-state`。旧 admin 容器仍在运行时这一边界尚未修复，必须重建而非只重启。
-- 需要迁移旧快照时，先在停机状态将原目录做一份管理员专用离线归档（保留权限及时间戳），对每份压缩包执行 `gzip -t` 并比较源/目标 SHA-256；恢复验证应在隔离数据库进行。若希望新保留策略接管，可再将确认后的文件**复制**至独占 `api-backups`，遇到同名文件先比较、不得覆盖未知内容；保留原件直到恢复演练和保留周期确认完成。新目录的 `pre-migrate-*.sql.gz` 会参与 `CHORDV_SYSTEM_UPDATE_SNAPSHOT_KEEP` 清理，长期归档应放在另一个仅管理员可读的目录。
-- 不手工生成公开 `last-good-version`，尤其不要复制 `desired-version`。API 通过实际 readiness/稳定期后才发布公开标记；公开目录不可写会阻止操作终态确认并重试，admin 保持上次已批准版本或等待。上线后检查 admin 只有 `api-releases` 与 `api-public-state` 两个只读 bind；不得包含 `api-state`、`api-backups` 或其他备份目录。该边界隔离的是 admin 文件系统读取权限，不防护 API、宿主机或 Docker 管理员被攻破。
-
-### 后台系统版本发布
-
-后台系统版本号维护在仓库根 [`SYSTEM_VERSION`](SYSTEM_VERSION)（独立于各 `package.json`，从 `0.0.1` 起）。发布由 GitHub Actions [`release-backend.yml`](.github/workflows/release-backend.yml) 完成：先跑回归测试，再构建可迁移的发布压缩包 + `checksums.txt` + `manifest.json`，发布到 `backend-v*` 的 GitHub Release，并把清单推送到 `backend-manifest` 分支（稳定 raw 地址，供实例检查更新）。发布包默认仍打包运行时依赖（打包前经 `scripts/prune-release-node-modules.mjs` 剪枝：只保留 apps/api 运行时依赖、`prisma` CLI 与 `@chordv/shared` 的依赖闭包，并裁剪非 PostgreSQL 方言的 Prisma wasm 引擎）。工作流另有 `slim_artifact` 开关，开启后只发构建产物、不发 `node_modules`：安装端解压后比对包内与当前运行版本的 `pnpm-lock.yaml` 摘要，一致才把现有依赖树硬链接进新版本目录，并按本版本的 schema 重新生成 Prisma 客户端；锁文件有变则更新**失败关闭**。**该开关默认关闭**——早于此改动的安装端拿到瘦身包会运行一个没有依赖的目录，健康门控失败后回滚，从此无法远程更新；必须等所有部署都跑上含 `hydrateRuntimeDependencies` 的版本后才可开启。逻辑见 `system-update.service.ts`，由 `apps/api/test/release-dependency-hydration.regression.ts` 回归覆盖。运营后台在“全局加速镜像”里配置好 `https://ghfast.top/` 之类前缀后，实例即可通过左上角版本入口检查并一键更新。
-
-容器部署默认使用稳定清单地址：
-
-```dotenv
-CHORDV_SYSTEM_UPDATE_MANIFEST_URL=https://raw.githubusercontent.com/Achordchan/ChordV/backend-manifest/latest.json
-```
-
-Compose 已设置上述默认值，因此保留旧 `.env` 且缺少此变量时仍有明确更新源；新环境模板也包含该项。使用 fork 或独立发布源时，在部署目录 `.env`（或 Compose 的 `--env-file`）中设置自定义完整 HTTPS 地址，重新创建 API 容器后生效；空值会回到默认地址。该地址需先由 `release-backend.yml` 成功发布稳定版本，尚无清单时会显示读取失败，配置地址不等于已完成首次发布。仅运行本地 API 时，仍按本地环境变量决定是否配置更新源。
-
-**更新包的信任边界（重要）**：清单里的 SHA-256 是整个更新的信任锚，因此**清单本身不能只经加速镜像获取**（被拼接的镜像是第三方服务，若被污染可返回“自己的压缩包 + 匹配哈希”导致容器内执行任意代码）。两种模式：
-
-- **配置了签名公钥**（`CHORDV_SYSTEM_UPDATE_MANIFEST_PUBLIC_KEY`，base64 的 DER/SPKI ed25519 公钥）：清单可走加速镜像（保证可用性），但会用该公钥校验随清单发布的分离签名 `manifest.json.sig`，校验不过直接拒绝。**国内 + 镜像部署请用这种模式。**
-- **未配置公钥**：清单只走**直连**拉取（不经镜像），镜像仅用于体积较大的产物下载，其完整性由可信 SHA-256 保证。
-
-签名清单必须包含 `"channel": "stable"`；工作流会为预发布写入 `"channel": "prerelease"`，两者一起参与签名，生产更新入口拒绝预发布或缺少渠道的签名清单。自定义发布源需同步此字段；旧不可变资产不得补写/重签，应发布新版本。
-
-启用签名：本地生成一次密钥对，私钥填到仓库 secret `CHORDV_MANIFEST_SIGNING_KEY`（CI 用它签名），公钥填到实例环境变量 `CHORDV_SYSTEM_UPDATE_MANIFEST_PUBLIC_KEY`：
-
-```bash
-openssl genpkey -algorithm ed25519 -out manifest_ed25519.pem            # 私钥 -> GitHub secret
-openssl pkey -in manifest_ed25519.pem -pubout -outform DER | base64 -w0 # 公钥(base64 DER) -> 实例 env
-```
-
-### 首次从宝塔切到容器部署的一次性基线
-
-线上库若原先由 `prisma db push` 维护（无迁移历史），首次用容器部署时它既不匹配最终 schema 也不匹配 init 快照，严格基线助手会拒绝自动执行。需先做一次**受控基线**（见 `.env.example` 中 `CHORDV_PRISMA_FORCE_BASELINE` / `CHORDV_SKIP_MIGRATION_BASELINE_CHECK` 与 `scripts/prisma-migrate-with-baseline.mjs` 说明），确认基线正确后再切流量；此后 `release-backend.yml` 产出的迁移即可正常增量应用。
-
-> 桌面客户端发布（`release-desktop.yml`）不受影响，维持原流程。宝塔 pm2 流水线（`deploy-baota.yml` / `scripts/deploy-baota.sh`）已停用自动触发，仅保留手动 `workflow_dispatch` 作为迁移期兜底，确认容器部署稳定后可整体删除。
-### 站点地址与旧组件迁移
-
-“系统设置 → 站点地址与下载镜像”可保存客户端主地址和迁移期间保留的旧地址。配置存储在数据库；未保存时沿用 `CHORDV_PUBLIC_BASE_URL`，保存后覆盖该环境默认值。本站安装包、运行组件下载链接及新 Agent 安装脚本在后续请求中使用保存的主地址，外部下载链接不改写。
-
-新版客户端可通过 `GET /api/client/site-address` 发现地址配置。旧安装包不会自动更改连接地址，迁移期间仍需保留旧域名的 DNS、证书和代理；保存站点配置不会操作这些部署设施。
-
-全局下载镜像移至系统设置。运行组件页可直接启停组件；仍有启用中的旧来源组件时，发布中心显示“旧组件迁移”。全部启用组件都有就绪的固定版本后，旧入口自动退出。状态读取失败时保留兼容入口，不误判迁移已完成；旧下载 API 和存储文件继续保留。
+This repository and its associated materials are intended for private use. Access to the source does not grant permission to redistribute it.
