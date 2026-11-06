@@ -43,6 +43,22 @@ export function fetchAdminNodeCommandJobs(filter?: NodeCommandQueueFilter) {
   });
 }
 
+// Both return the refreshed global queue, or null when the action was saved
+// but the server could not re-read the queue (the caller reloads it).
+export function retryAdminNodeCommandJob(jobId: string) {
+  return request<AdminNodeCommandQueueDto | null>(`/admin/nodes/node-command-jobs/${encodeURIComponent(jobId)}/retry`, {
+    method: "POST",
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
+  });
+}
+
+export function dismissAdminNodeCommandJob(jobId: string) {
+  return request<AdminNodeCommandQueueDto | null>(`/admin/nodes/node-command-jobs/${encodeURIComponent(jobId)}/dismiss`, {
+    method: "POST",
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
+  });
+}
+
 export function retryAdminLeaseRevocationJob(jobId: string) {
   return request<AdminLeaseRevocationJobDto[]>(`/admin/nodes/lease-revocation-jobs/${jobId}/retry`, {
     method: "POST",

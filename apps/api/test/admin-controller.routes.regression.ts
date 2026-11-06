@@ -61,6 +61,8 @@ Reflect.defineMetadata("design:paramtypes", [PrismaService], LegacyClientTicketW
 Reflect.defineMetadata("design:paramtypes", [PrismaService], LegacyAdminTicketWriteGuard);
 
 const devDataServiceStub = {
+  retryAdminNodeCommandJob: async (jobId: string) => ({ id: jobId, action: "retry" }),
+  dismissAdminNodeCommandJob: async (jobId: string) => ({ id: jobId, action: "dismiss" }),
   retryAdminLeaseRevocationJob: async (jobId: string) => {
     calls.push({ route: "lease-job", value: jobId });
     return [{ id: jobId, scope: "job" }];
@@ -482,6 +484,14 @@ async function main() {
 
   try {
     const baseUrl = await app.getUrl();
+    assert.deepEqual(await requestJson(baseUrl, "/api/admin/nodes/node-command-jobs/cmd_1/retry"), {
+      status: 201,
+      body: { id: "cmd_1", action: "retry" }
+    });
+    assert.deepEqual(await requestJson(baseUrl, "/api/admin/nodes/node-command-jobs/cmd_1/dismiss"), {
+      status: 201,
+      body: { id: "cmd_1", action: "dismiss" }
+    });
     assert.deepEqual(await requestJson(baseUrl, "/api/admin/nodes/lease-revocation-jobs/lease_job_1/retry"), {
       status: 201,
       body: [{ id: "lease_job_1", scope: "job" }]

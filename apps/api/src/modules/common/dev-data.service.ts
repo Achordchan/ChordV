@@ -2504,6 +2504,28 @@ export class DevDataService implements OnModuleInit {
     return { jobs, summaries };
   }
 
+  async retryAdminNodeCommandJob(jobId: string) {
+    await this.runtimeSessionService.retryNodeCommandJob(jobId);
+    return this.readAdminNodeCommandQueueAfterMutation("retry");
+  }
+
+  async dismissAdminNodeCommandJob(jobId: string) {
+    await this.adminNodeService.dismissNodeCommandJob(jobId);
+    return this.readAdminNodeCommandQueueAfterMutation("dismiss");
+  }
+
+  // The mutation is already committed: a failed refresh must not turn it into
+  // an error the operator would "fix" by retrying again. null tells the admin
+  // client to reload the queue itself.
+  private async readAdminNodeCommandQueueAfterMutation(action: string) {
+    try {
+      return await this.getAdminNodeCommandQueue();
+    } catch (error) {
+      this.logger.warn(`Node command ${action} saved, but queue refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }
+
   async retryAdminLeaseRevocationJob(jobId: string) {
     return this.adminNodeService.retryLeaseRevocationJob(jobId);
   }

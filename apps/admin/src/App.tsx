@@ -114,7 +114,9 @@ import {
   probeNode,
   resetSubscriptionTraffic,
   renewSubscription,
+  dismissAdminNodeCommandJob,
   retryAdminLeaseRevocationJob,
+  retryAdminNodeCommandJob,
   retryAdminLeaseRevocationJobsForNode,
   subscribeAdminRuntimeEvents,
   updateAnnouncement,
@@ -1368,6 +1370,44 @@ export function App() {
     await loadSectionData(currentSection === "users" ? "subscriptions" : currentSection, { force: true });
     if (leaseRevocationQueueRef.current.opened) {
       refreshNodeCommandQueueDetail(leaseRevocationQueueRef.current.filter);
+    }
+  }
+
+  async function handleNodeCommandAction(jobId: string, action: "retry" | "dismiss") {
+    const busyKey = `command-${action}:${jobId}`;
+    if (leaseRevocationRetryBusyRef.current) {
+      return;
+    }
+    const failureTitle = action === "retry" ? "重试失败" : "标记失败";
+    try {
+      leaseRevocationRetryBusyRef.current = true;
+      setLeaseRevocationRetryBusyKey(busyKey);
+      const queue = action === "retry" ? await retryAdminNodeCommandJob(jobId) : await dismissAdminNodeCommandJob(jobId);
+      // null = saved, but the server could not re-read the queue.
+      const nodeCommandQueue = queue ?? await fetchAdminNodeCommandJobs().catch(() => null);
+      if (nodeCommandQueue) mergeSnapshot({ nodeCommandQueue });
+      if (leaseRevocationQueueRef.current.opened) {
+        refreshNodeCommandQueueDetail(leaseRevocationQueueRef.current.filter);
+      }
+      notifications.show({
+        color: "green",
+        title: action === "retry" ? "已重新下发" : "已标记处理",
+        message: action === "retry" ? "已按用户当前状态重新下发到节点" : "这条失败记录不再计入待处理任务"
+      });
+    } catch (reason) {
+      const message = readError(reason, action === "retry" ? "节点命令重试失败" : "节点命令标记失败");
+      const uncertain = isPotentiallyCompletedMutationFailure(message);
+      if (uncertain) {
+        void fetchAdminNodeCommandJobs().then((nodeCommandQueue) => mergeSnapshot({ nodeCommandQueue })).catch(() => undefined);
+      }
+      notifications.show({
+        color: uncertain ? "yellow" : "red",
+        title: uncertain ? "操作状态不确定" : failureTitle,
+        message: uncertain ? `${message} 请求可能已提交，请刷新同步任务确认。` : message
+      });
+    } finally {
+      setLeaseRevocationRetryBusyKey(null);
+      leaseRevocationRetryBusyRef.current = false;
     }
   }
 
@@ -3355,6 +3395,8 @@ export function App() {
         onShowAll={() => openLeaseRevocationQueue()}
         onRetryLeaseJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}
         onRetryLeaseNode={(nodeId) => void handleRetryNodeLeaseRevocationJobs(nodeId)}
+        onRetryNodeCommand={(jobId) => void handleNodeCommandAction(jobId, "retry")}
+        onDismissNodeCommand={(jobId) => void handleNodeCommandAction(jobId, "dismiss")}
       />
 
       <NodeAccessEditorModal

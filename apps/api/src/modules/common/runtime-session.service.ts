@@ -2022,7 +2022,8 @@ export class RuntimeSessionService {
         flow: string;
       };
       expireAt: Date;
-    }
+    },
+    options: { publish?: boolean } = {}
   ) {
     // Every binding serves through its node's agent: ensure = ENSURE_USER.
     const subscription = await writer.subscription.findUnique({
@@ -2032,7 +2033,7 @@ export class RuntimeSessionService {
     if (!subscription) {
       throw new NotFoundException("Direct 用户绑定对应的订阅不存在");
     }
-    await this.queueDirectBindingCommand(writer, binding, "ENSURE_USER", {
+    return this.queueDirectBindingCommand(writer, binding, "ENSURE_USER", {
       bindingId: binding.id,
       userKey: binding.panelClientEmail,
       email: binding.panelClientEmail,
@@ -2040,7 +2041,78 @@ export class RuntimeSessionService {
       flow: input.node.flow,
       expiresAt: input.expireAt.toISOString(),
       ...buildDirectUserQuotaPayload(subscription)
+    }, options);
+  }
+
+  /**
+   * Administrator retry of a retry-exhausted user-install command. The stale
+   * row is never revived (its revision, agent and payload may all be out of
+   * date — e.g. the agent re-registered): a FRESH ENSURE_USER is ordered from
+   * the binding's current state through the normal enqueue path, which also
+   * resolves the exhausted row. Everything is re-checked under the
+   * subscription provisioning lock and the node row lock, so a retry cannot
+   * resurrect a binding that was disabled meanwhile.
+   */
+  async retryNodeCommandJob(jobId: string) {
+    const candidate = await this.prisma.nodeCommandJob.findUnique({
+      where: { id: jobId },
+      select: { status: true, resolvedAt: true, commandType: true, bindingId: true, subscriptionId: true }
     });
+    if (!candidate || candidate.status !== "cancelled" || candidate.resolvedAt) {
+      throw new NotFoundException("节点命令不存在或已处理");
+    }
+    if (!candidate.bindingId || !candidate.subscriptionId ||
+      (candidate.commandType !== "ENSURE_USER" && candidate.commandType !== "ENABLE_USER")) {
+      throw new ConflictException("该类命令不支持重试，请标记已处理");
+    }
+    const subscriptionId = candidate.subscriptionId;
+    const queued = await runWithSubscriptionProvisioningLock(subscriptionId, () =>
+      this.prisma.$transaction(async (tx) => {
+        const job = await tx.nodeCommandJob.findUnique({ where: { id: jobId } });
+        if (!job) throw new NotFoundException("节点命令不存在或已处理");
+        // Enqueue and completion take Node first (see agent-events).
+        await tx.$queryRaw`SELECT id FROM "Node" WHERE id = ${job.nodeId} FOR UPDATE`;
+        const current = await tx.nodeCommandJob.findUnique({ where: { id: jobId } });
+        if (!current || current.status !== "cancelled" || current.resolvedAt) {
+          throw new NotFoundException("节点命令不存在或已处理");
+        }
+        const binding = await tx.panelClientBinding.findUnique({ where: { id: current.bindingId! } });
+        if (!binding || binding.status !== "active" || binding.nodeId !== current.nodeId) {
+          throw new ConflictException("该用户在此节点上已停用或已移除，无需重试，请标记已处理");
+        }
+        const node = await tx.node.findUnique({ where: { id: binding.nodeId } });
+        if (!node || !node.isActive || !usesAgentControl(node.controlMode as NodeControlModeValue) || !isNodeOnboardingReady(node)) {
+          throw new ConflictException("节点未启用或尚未就绪，暂时无法重试");
+        }
+        const subscription = await tx.subscription.findUnique({
+          where: { id: binding.subscriptionId },
+          select: { state: true, remainingTrafficGb: true, expireAt: true }
+        });
+        if (!subscription) throw new ConflictException("订阅不存在，请标记已处理");
+        try {
+          assertSubscriptionConnectable(subscription);
+        } catch (error) {
+          throw new ConflictException(`${error instanceof Error ? error.message : "订阅不可用"}，无需重试，请标记已处理`);
+        }
+        const queued = await this.queuePanelEnsureJobForBinding(tx, binding, {
+          node: { flow: node.flow },
+          expireAt: subscription.expireAt
+        }, { publish: false });
+        // The enqueue path resolves exhausted rows of the type it ORDERS
+        // (ENSURE_USER); a retried ENABLE_USER is replaced by that ENSURE_USER
+        // too, so close the retried row explicitly in the same transaction —
+        // otherwise it would stay retryable and repeated clicks would keep
+        // ordering replacements.
+        await tx.nodeCommandJob.updateMany({
+          where: { id: current.id, status: "cancelled", resolvedAt: null },
+          data: { resolvedAt: new Date() }
+        });
+        return queued;
+      })
+    );
+    // Publish only after commit: an agent must never act on a command whose
+    // row could still roll back.
+    if (queued) this.agentEventsService.publish(queued.agentId, queued.command);
   }
 
   private async queueDirectBindingCommand(

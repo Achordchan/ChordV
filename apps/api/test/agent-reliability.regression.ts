@@ -141,7 +141,7 @@ async function testHeartbeatReturnsDesiredNodeRevision() {
 void main();
 
 async function testExhaustionInterleavings() {
-  for (const scenario of ["replacement", "completed", "uncovered", "remove", "raw-user", "node-wide", "other-binding", "older"] as const) {
+  for (const scenario of ["replacement", "completed", "uncovered", "remove", "disable", "raw-user", "node-wide", "other-binding", "older"] as const) {
     const job: Record<string, any> = {
       id: "old", nodeId: "node-1", bindingId: "binding-1", commandType: "ENSURE_USER",
       targetRevision: 1n, status: "failed", attempts: 8, resolvedAt: null,
@@ -161,7 +161,7 @@ async function testExhaustionInterleavings() {
           nodeId: job.nodeId,
           bindingId: scenario === "other-binding" ? "binding-2" :
             ["raw-user", "node-wide"].includes(scenario) ? null : job.bindingId,
-          commandType: scenario === "remove" ? "REMOVE_USER" : job.commandType,
+          commandType: scenario === "remove" ? "REMOVE_USER" : scenario === "disable" ? "DISABLE_USER" : job.commandType,
           targetRevision: scenario === "older" ? 0n : 2n,
           payload: scenario === "raw-user" ? { email: "other@example.test" } : {},
           status: "completed"
@@ -192,7 +192,9 @@ async function testExhaustionInterleavings() {
       assert.equal(job.status, "completed", "扫描后完成的命令不得被取消覆盖");
       assert.equal(degraded, false);
     } else {
-      const covered = ["replacement", "remove", "node-wide"].includes(scenario);
+      // A newer DISABLE_USER makes the failed install moot, exactly as the
+      // enqueue-side resolveExhaustedCommands rule (one shared table).
+      const covered = ["replacement", "remove", "disable", "node-wide"].includes(scenario);
       assert.equal(job.status, "cancelled");
       assert.equal(job.resolvedAt instanceof Date, covered, scenario);
       assert.equal(degraded, !covered, scenario);

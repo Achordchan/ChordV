@@ -20,13 +20,40 @@ export async function createOrRefreshNodeCommandJob(
   });
 }
 
+// Binding commands that make an earlier exhausted failure of another type
+// moot. Taking the user OUT of service (disable, remove) means a failed
+// install/enable/quota update no longer has anything to deliver; the next
+// re-enable orders a fresh ENSURE_USER anyway. The reverse does not hold, and
+// a REFRESH_QUOTA never installs a user, so it resolves only its own type.
+// The agent-events exhaust sweep uses the SAME table, so enqueue-time and
+// sweep-time resolution never disagree on what "superseded" means.
+const MOOTED_BY: Record<string, readonly string[]> = {
+  DISABLE_USER: ["ENSURE_USER", "ENABLE_USER", "REFRESH_QUOTA"]
+};
+
+/** Command types whose exhausted failures `commandType` resolves on the same binding (null = all). */
+export function bindingCommandTypesResolvedBy(commandType: string): string[] | null {
+  if (commandType === "REMOVE_USER") return null;
+  return [commandType, ...(MOOTED_BY[commandType] ?? [])];
+}
+
+/** Newer binding command types that supersede an exhausted `commandType` row. */
+export function bindingCommandTypesSuperseding(commandType: string): string[] {
+  return [
+    commandType,
+    "REMOVE_USER",
+    ...Object.entries(MOOTED_BY).filter(([, mooted]) => mooted.includes(commandType)).map(([type]) => type)
+  ];
+}
+
 /**
  * A newer command supersedes a retry-exhausted (cancelled) failure ONLY when
  * it actually replaces that operation:
  * - binding-scoped commands resolve exhausted rows of the SAME commandType on
  *   that binding — a REFRESH_QUOTA updates quota but never installs the user,
- *   so it must not clear a failed ENSURE_USER. REMOVE_USER is the exception:
- *   teardown of the binding makes every earlier provisioning failure moot.
+ *   so it must not clear a failed ENSURE_USER. REMOVE_USER resolves every
+ *   earlier failure (teardown makes provisioning moot) and DISABLE_USER
+ *   resolves failed ENSURE/ENABLE/REFRESH_QUOTA (see MOOTED_BY).
  * - target-less commands (ENSURE_INBOUND, RECONCILE_USERS, ...) resolve per
  *   node+commandType.
  * Callers must only invoke this when a genuinely NEW command is being created
@@ -41,9 +68,11 @@ export async function resolveExhaustedCommands(
     where = {
       status: "cancelled" as const,
       resolvedAt: null,
-      ...(scope.commandType === "REMOVE_USER"
-        ? { bindingId: scope.bindingId }
-        : { bindingId: scope.bindingId, commandType: scope.commandType })
+      ...(() => {
+        const types = bindingCommandTypesResolvedBy(scope.commandType);
+        if (types === null) return { bindingId: scope.bindingId };
+        return { bindingId: scope.bindingId, commandType: types.length === 1 ? types[0] : { in: types } };
+      })()
     };
   } else if (scope.nodeId && scope.commandType) {
     where = { nodeId: scope.nodeId, commandType: scope.commandType, status: "cancelled" as const, resolvedAt: null };

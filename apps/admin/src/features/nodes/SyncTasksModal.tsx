@@ -23,6 +23,8 @@ export function SyncTasksModal(props: {
   onShowAll?: () => void;
   onRetryLeaseJob: (jobId: string) => void;
   onRetryLeaseNode: (nodeId: string) => void;
+  onRetryNodeCommand: (jobId: string) => void;
+  onDismissNodeCommand: (jobId: string) => void;
 }) {
   const leases = filterLeaseRevocationJobs(props.leaseRevocationJobs, props.filter);
   const scoped = hasNodeCommandQueueFilter(props.filter);
@@ -50,12 +52,25 @@ export function SyncTasksModal(props: {
           {failed ? <Text size="sm" c="red" role="alert">节点命令加载失败。{commands.length ? "以下保留上次结果，可能已过期。" : "请关闭后重新打开任务列表。"}</Text> : null}
           {loading ? <DataSkeleton rows={3}/> : null}
           {commandTotal > commands.length ? <Text size="xs" c="dimmed">仅展示最近 {commands.length} 条命令，仍有其他待处理命令。</Text> : null}
-          <ul className={styles.list}>{commands.map(job => <li key={job.id} className={styles.row}><Group justify="space-between" align="flex-start" wrap="nowrap"><div className={styles.identity}><Text fw={550}>{translateNodeCommandType(job.commandType)}</Text><Text size="sm" c="dimmed">{job.nodeName ?? job.nodeId}</Text></div><Text size="sm" c={nodeCommandStatusColor(job.status)}>{translateNodeCommandStatus(job.status)}</Text></Group><details className={styles.details}><summary>{job.lastError ? "查看错误与执行详情" : "执行详情"}</summary><dl><div><dt>尝试次数</dt><dd>{job.attempts}</dd></div><div><dt>下次执行</dt><dd>{formatDateTime(job.nextRunAt)}</dd></div></dl>{job.lastError ? <p className={styles.error}>{job.lastError}</p> : null}</details></li>)}</ul>
+          <ul className={styles.list}>{commands.map(job => {
+            const retryKey = `command-retry:${job.id}`;
+            const dismissKey = `command-dismiss:${job.id}`;
+            const busy = props.leaseRetryBusyKey !== null;
+            return <li key={job.id} className={styles.row}><Group justify="space-between" align="flex-start" wrap="nowrap"><div className={styles.identity}><Text fw={550}>{translateNodeCommandType(job.commandType)}</Text><Text size="sm" c="dimmed">{job.nodeName ?? job.nodeId}</Text></div><Text size="sm" c={nodeCommandStatusColor(job.status)}>{translateNodeCommandStatus(job.status)}</Text></Group>
+              <Group justify="space-between" mt="sm" align="flex-start"><details className={styles.details}><summary>{job.lastError ? "查看错误与执行详情" : "执行详情"}</summary><dl><div><dt>尝试次数</dt><dd>{job.attempts}</dd></div><div><dt>下次执行</dt><dd>{formatDateTime(job.nextRunAt)}</dd></div></dl>{job.lastError ? <p className={styles.error}>{job.lastError}</p> : null}{job.dismissible && !job.retryable ? <Text size="xs" c="dimmed">{RETRY_UNAVAILABLE_HINT}</Text> : null}</details>
+              {job.retryable || job.dismissible ? <Group gap="xs" wrap="nowrap">
+                {job.retryable ? <Button size="xs" variant="light" color="teal.9" loading={props.leaseRetryBusyKey === retryKey} disabled={busy && props.leaseRetryBusyKey !== retryKey} onClick={() => props.onRetryNodeCommand(job.id)}>重试</Button> : null}
+                {job.dismissible ? <Button size="xs" variant="subtle" color="gray" loading={props.leaseRetryBusyKey === dismissKey} disabled={busy && props.leaseRetryBusyKey !== dismissKey} onClick={() => props.onDismissNodeCommand(job.id)}>标记已处理</Button> : null}
+              </Group> : null}</Group>
+            </li>;
+          })}</ul>
         </section> : null}
       </>}
     </Stack>
   </Modal>;
 }
+const RETRY_UNAVAILABLE_HINT = "该命令不能直接重试：账号已停用/移除，或命令类型需由后续操作自然覆盖。确认无需处理后可标记已处理。";
+
 function leaseRevocationJobTargetLabel(job: AdminLeaseRevocationJobDto) {
   return job.nodeName ?? job.nodeId ?? job.subscriptionId ?? job.userId ?? "全局连接";
 }
