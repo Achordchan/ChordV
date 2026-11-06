@@ -168,7 +168,9 @@ function testNodeCommandQueueShowsDirectProvisioning() {
       lastError: null,
       nextRunAt: "2026-01-01T00:00:05.000Z",
       completedAt: null,
-      createdAt: "2026-01-01T00:00:00.000Z"
+      createdAt: "2026-01-01T00:00:00.000Z",
+      retryable: false,
+      dismissible: false
     },
     {
       id: "cmd_other",
@@ -183,7 +185,9 @@ function testNodeCommandQueueShowsDirectProvisioning() {
       lastError: "agent offline",
       nextRunAt: "2026-01-01T00:00:10.000Z",
       completedAt: null,
-      createdAt: "2026-01-01T00:00:01.000Z"
+      createdAt: "2026-01-01T00:00:01.000Z",
+      retryable: false,
+      dismissible: false
     }
   ];
 

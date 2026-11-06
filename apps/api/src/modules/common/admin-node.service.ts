@@ -168,6 +168,20 @@ export class AdminNodeService {
       "节点命令队列读取失败，请刷新后重试。"
     );
 
+    // Retry is only offered where the server can re-order a fresh command from
+    // the binding's CURRENT state, so it needs the binding's status. The
+    // enqueue path re-checks everything under lock; this is display only.
+    const retryCandidateBindingIds = Array.from(new Set(rows
+      .filter((row) => isRetryableNodeCommandRow(row))
+      .map((row) => row.bindingId as string)));
+    const activeBindingIds = new Set(retryCandidateBindingIds.length === 0 ? [] : (await runAdminNodeLocalOperation(
+      () => this.prisma.panelClientBinding.findMany({
+        where: { id: { in: retryCandidateBindingIds }, status: "active" },
+        select: { id: true }
+      }),
+      "节点命令队列读取失败，请刷新后重试。"
+    )).map((binding) => binding.id));
+
     return rows.map((row) => ({
       id: row.id,
       nodeId: row.nodeId,
@@ -181,8 +195,29 @@ export class AdminNodeService {
       lastError: row.lastError,
       nextRunAt: row.nextRunAt.toISOString(),
       completedAt: row.completedAt?.toISOString() ?? null,
-      createdAt: row.createdAt.toISOString()
+      createdAt: row.createdAt.toISOString(),
+      retryable: isRetryableNodeCommandRow(row) && activeBindingIds.has(row.bindingId as string),
+      dismissible: row.status === "cancelled" && row.resolvedAt === null
     }));
+  }
+
+  /**
+   * Marks a retry-exhausted command as handled. Only the failure record is
+   * closed: nothing is sent to the agent, and a command that is still pending
+   * or running cannot be dismissed (it may yet succeed).
+   */
+  async dismissNodeCommandJob(jobId: string) {
+    const updated = await runAdminNodeLocalOperation(
+      () => this.prisma.nodeCommandJob.updateMany({
+        where: { id: jobId, status: "cancelled", resolvedAt: null },
+        data: { resolvedAt: new Date() }
+      }),
+      "节点命令标记保存失败，请稍后重试。"
+    );
+    if (updated.count === 0) {
+      throw new NotFoundException("节点命令不存在或已处理");
+    }
+    this.publishSyncQueueUpdatedBestEffort({});
   }
 
   /**
@@ -813,3 +848,13 @@ function readNodeProbeBudgetMs() {
   return readPositiveIntegerEnv("CHORDV_NODE_PROBE_TIMEOUT_MS", readBulkNodeProbeBudgetMs());
 }
 
+// Commands whose retry means "install this binding's user again": the server
+// re-orders ENSURE_USER from the binding's current state. Other types are
+// dismiss-only — replaying a stale DISABLE/REMOVE/QUOTA payload could undo a
+// newer decision, and target-less commands have no binding to rebuild from.
+export const RETRYABLE_NODE_COMMAND_TYPES = new Set(["ENSURE_USER", "ENABLE_USER"]);
+
+function isRetryableNodeCommandRow(row: { status: string; resolvedAt: Date | null; commandType: string; bindingId: string | null }) {
+  return row.status === "cancelled" && row.resolvedAt === null && Boolean(row.bindingId) &&
+    RETRYABLE_NODE_COMMAND_TYPES.has(row.commandType);
+}

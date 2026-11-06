@@ -200,6 +200,8 @@ const devDataServiceStub = {
     jobs: [record("node-command-jobs-list", "all")],
     summaries: { nodes: [], subscriptions: [], users: [], teams: [] }
   }),
+  retryAdminNodeCommandJob: async (jobId: string) => record("node-command-retry", jobId),
+  dismissAdminNodeCommandJob: async (jobId: string) => record("node-command-dismiss", jobId),
   retryAdminLeaseRevocationJob: async (jobId: string) => [record("lease-job-retry", jobId)],
   retryAdminLeaseRevocationJobsForNode: async (nodeId: string) => [record("lease-jobs-node-retry", nodeId)],
   updateNode: async (nodeId: string, body: unknown) => record("node-update", nodeId, body),
@@ -651,6 +653,8 @@ async function main() {
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/lease-revocation-jobs", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/node-command-jobs", { method: "GET" })).status, 200);
+    assert.equal((await requestJson(baseUrl, "/api/admin/nodes/node-command-jobs/cmd_1/retry")).status, 201);
+    assert.equal((await requestJson(baseUrl, "/api/admin/nodes/node-command-jobs/cmd_1/dismiss")).status, 201);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/lease-revocation-jobs/lease_job_1/retry")).status, 201);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/node_1/lease-revocation-jobs/retry")).status, 201);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/node_1", { method: "PATCH", body: { isActive: false } })).status, 200);
@@ -949,6 +953,8 @@ async function main() {
         { route: "nodes-list", value: "all" },
         { route: "lease-jobs-list", value: "all" },
         { route: "node-command-jobs-list", value: "all" },
+        { route: "node-command-retry", value: "cmd_1" },
+        { route: "node-command-dismiss", value: "cmd_1" },
         { route: "lease-job-retry", value: "lease_job_1" },
         { route: "lease-jobs-node-retry", value: "node_1" },
         { route: "node-update", value: "node_1", body: { isActive: false } },

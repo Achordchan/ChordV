@@ -5826,7 +5826,9 @@ async function testListNodeCommandJobsReadsBindingTargets() {
     lastError: null,
     nextRunAt: "2026-01-01T00:00:05.000Z",
     completedAt: null,
-    createdAt: "2026-01-01T00:00:00.000Z"
+    createdAt: "2026-01-01T00:00:00.000Z",
+    retryable: false,
+    dismissible: false
   });
   assert.equal(jobs[1]?.subscriptionId, null, "非绑定命令（部署入站）不得伪造订阅归属");
   assert.equal(jobs[1]?.userId, null);
@@ -6064,6 +6066,132 @@ async function testRetryExhaustedCommandsStayVisibleAsFailures() {
 // REPLACES — same commandType on the binding (REMOVE_USER teardown excepted),
 // or node+commandType for target-less commands — and leaves everything else
 // alone.
+// Retry-exhausted rows carry what the operator may do with them. Retry is only
+// offered for install commands whose binding is still ACTIVE (the server then
+// re-orders a fresh command); every unresolved exhausted row is dismissible.
+async function testNodeCommandJobsExposeRetryAndDismissFlags() {
+  const bindingQueries: unknown[] = [];
+  const row = (id: string, commandType: string, bindingId: string | null, status = "cancelled", resolvedAt: Date | null = null) => ({
+    id, nodeId: "node_1", commandType, status, attempts: 8, targetRevision: 3n, payload: {},
+    bindingId, subscriptionId: bindingId ? "sub_1" : null, userId: bindingId ? "user_1" : null,
+    lastError: "Agent 命令重试次数已达到上限", resolvedAt,
+    nextRunAt: new Date("2026-01-01T00:00:05.000Z"), completedAt: null,
+    createdAt: new Date("2026-01-01T00:00:00.000Z"), node: { name: "东京" }
+  });
+  const service = createAdminNodeService({
+    logger: { warn: () => undefined },
+    prisma: {
+      nodeCommandJob: {
+        findMany: async () => [
+          row("active_ensure", "ENSURE_USER", "binding_active"),
+          row("disabled_ensure", "ENSURE_USER", "binding_disabled"),
+          row("active_remove", "REMOVE_USER", "binding_active"),
+          row("inbound", "ENSURE_INBOUND", null),
+          row("still_failing", "ENSURE_USER", "binding_active", "failed")
+        ]
+      },
+      panelClientBinding: {
+        findMany: async (query: { where: { id: { in: string[] }; status: string } }) => {
+          bindingQueries.push(query.where);
+          return query.where.id.in.filter((id) => id === "binding_active").map((id) => ({ id }));
+        }
+      }
+    }
+  });
+  const flags = Object.fromEntries((await service.listNodeCommandJobs()).map((job: any) => [job.id, [job.retryable, job.dismissible]]));
+  assert.deepEqual(flags, {
+    active_ensure: [true, true],
+    disabled_ensure: [false, true],
+    active_remove: [false, true],
+    inbound: [false, true],
+    still_failing: [false, false]
+  }, "仅活跃绑定的安装类耗尽命令可重试；未解决的耗尽命令都可标记；仍在重试中的不可操作");
+  assert.deepEqual(bindingQueries, [{ id: { in: ["binding_active", "binding_disabled"] }, status: "active" }], "只为可重试候选查一次绑定状态");
+}
+
+// Dismissal only closes an UNRESOLVED exhausted record: never a command that
+// may still succeed, never one already resolved.
+async function testDismissNodeCommandJobOnlyClosesExhaustedRows() {
+  const writes: Array<Record<string, any>> = [];
+  let count = 1;
+  const service = createAdminNodeService({
+    logger: { warn: () => undefined },
+    prisma: {
+      nodeCommandJob: {
+        updateMany: async (payload: Record<string, any>) => {
+          writes.push(payload);
+          return { count };
+        }
+      }
+    }
+  });
+  await service.dismissNodeCommandJob("job_1");
+  assert.deepEqual(writes[0]?.where, { id: "job_1", status: "cancelled", resolvedAt: null });
+  assert.ok(writes[0]?.data?.resolvedAt instanceof Date);
+  count = 0;
+  await assert.rejects(() => service.dismissNodeCommandJob("job_2"), (error: Error) => error instanceof NotFoundException);
+}
+
+// Administrator retry never revives the stale row: it re-checks the binding,
+// node and subscription under the node lock and orders a FRESH ENSURE_USER
+// from current state, publishing to the agent only after commit.
+async function testRetryNodeCommandJobReordersFromCurrentState() {
+  const readyNode = {
+    id: "node_1", isActive: true, controlMode: "direct_primary", flow: "xtls-rprx-vision",
+    registrationStatus: null, serverHost: "node.example.test", serverPort: 443
+  };
+  const make = (overrides: { job?: any; binding?: any; node?: any; subscription?: any } = {}) => {
+    const events: string[] = [];
+    const job = { id: "job_1", nodeId: "node_1", status: "cancelled", resolvedAt: null, commandType: "ENSURE_USER",
+      bindingId: "binding_1", subscriptionId: "sub_1", ...overrides.job };
+    const binding = { id: "binding_1", nodeId: "node_1", subscriptionId: "sub_1", userId: "user_1", teamId: null,
+      panelClientEmail: "u@example.test", panelClientId: "uuid-1", panelInboundId: 1, status: "active", ...overrides.binding };
+    const node = { ...readyNode, ...overrides.node };
+    const subscription = { state: "active", remainingTrafficGb: 10, expireAt: new Date(Date.now() + 86_400_000), ...overrides.subscription };
+    const tx = {
+      $queryRaw: async () => { events.push("lock-node"); return []; },
+      nodeCommandJob: { findUnique: async () => job },
+      panelClientBinding: { findUnique: async () => { events.push("read-binding"); return binding; } },
+      node: { findUnique: async () => node },
+      subscription: { findUnique: async () => subscription }
+    };
+    const service = createRuntimeSessionService({
+      prisma: {
+        nodeCommandJob: { findUnique: async () => job },
+        $transaction: async (run: (value: typeof tx) => Promise<unknown>) => {
+          const result = await run(tx);
+          events.push("commit");
+          return result;
+        }
+      },
+      agentEventsService: { publish: (agentId: string) => events.push(`publish:${agentId}`) },
+      queuePanelEnsureJobForBinding: async (_writer: unknown, target: any, input: any, options: any) => {
+        events.push(`enqueue:${target.id}:${input.node.flow}:${options.publish}`);
+        return { agentId: "agent_1", command: { commandId: "job_new" } };
+      }
+    });
+    return { service, events };
+  };
+
+  const ok = make();
+  await ok.service.retryNodeCommandJob("job_1");
+  assert.deepEqual(ok.events, ["lock-node", "read-binding", "enqueue:binding_1:xtls-rprx-vision:false", "commit", "publish:agent_1"],
+    "先锁节点再读绑定；按当前状态重新下发；提交后才推送给 Agent");
+
+  for (const [label, overrides, kind] of [
+    ["绑定已停用", { binding: { status: "disabled" } }, ConflictException],
+    ["节点已停用", { node: { isActive: false } }, ConflictException],
+    ["订阅已到期", { subscription: { expireAt: new Date(Date.now() - 1000) } }, ConflictException],
+    ["非安装类命令", { job: { commandType: "REMOVE_USER" } }, ConflictException],
+    ["已处理", { job: { resolvedAt: new Date() } }, NotFoundException],
+    ["仍在重试中", { job: { status: "failed" } }, NotFoundException]
+  ] as const) {
+    const refused = make(overrides as any);
+    await assert.rejects(() => refused.service.retryNodeCommandJob("job_1"), (error: Error) => error instanceof kind, label);
+    assert.ok(!refused.events.some((event) => event.startsWith("enqueue") || event.startsWith("publish")), `${label}：不得下发或推送`);
+  }
+}
+
 async function testOrderingNewCommandResolvesExhaustedFailures() {
   const updates: Array<Record<string, unknown>> = [];
   const writer = {
@@ -6114,16 +6242,31 @@ async function testOrderingNewCommandResolvesExhaustedFailures() {
     "REMOVE_USER 解决该绑定全部类型的耗尽行（拆除后一切旧失败都无意义）"
   );
 
-  await resolveExhaustedCommands(writer, { nodeId: "node_1", commandType: "ENSURE_INBOUND" });
+  // Taking the user out of service makes a failed install/enable/quota update
+  // moot (re-enabling orders a fresh ENSURE_USER), so DISABLE_USER resolves
+  // those too — but never a failed REMOVE_USER, which still owes teardown.
+  await resolveExhaustedCommands(writer, { bindingId: "binding_1", nodeId: "node_1", commandType: "DISABLE_USER" });
   assert.deepEqual(
     updates[3]?.where,
+    {
+      bindingId: "binding_1",
+      commandType: { in: ["DISABLE_USER", "ENSURE_USER", "ENABLE_USER", "REFRESH_QUOTA"] },
+      status: "cancelled",
+      resolvedAt: null
+    },
+    "DISABLE_USER 解决同绑定的停用/安装/启用/额度耗尽行，但不解决 REMOVE_USER"
+  );
+
+  await resolveExhaustedCommands(writer, { nodeId: "node_1", commandType: "ENSURE_INBOUND" });
+  assert.deepEqual(
+    updates[4]?.where,
     { nodeId: "node_1", commandType: "ENSURE_INBOUND", status: "cancelled", resolvedAt: null },
     "无绑定命令按节点+命令类型解决——重新下发入站必须解决旧的重试耗尽部署"
   );
 
   await resolveExhaustedCommands(writer, {});
   await resolveExhaustedCommands(writer, { bindingId: "binding_1" });
-  assert.equal(updates.length, 4, "缺少定位信息时不得盲写");
+  assert.equal(updates.length, 5, "缺少定位信息时不得盲写");
 }
 
 async function testUpdateNodeMapsLocalReadFailure() {
@@ -17533,6 +17676,9 @@ async function main() {
   await testListNodeCommandJobsAppliesTargetFilter();
   await testRetryExhaustedCommandsStayVisibleAsFailures();
   await testOrderingNewCommandResolvesExhaustedFailures();
+  await testNodeCommandJobsExposeRetryAndDismissFlags();
+  await testDismissNodeCommandJobOnlyClosesExhaustedRows();
+  await testRetryNodeCommandJobReordersFromCurrentState();
   await testUpdateNodeMapsLocalReadFailure();
   await testRetryLeaseRevocationJobRequeuesWithoutKeepingBackoff();
   await testLeaseRevocationQueueFallsBackWhenNodeNameLookupFails();

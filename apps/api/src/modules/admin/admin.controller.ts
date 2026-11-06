@@ -340,6 +340,16 @@ export class AdminController {
     );
   }
 
+  @Post("nodes/node-command-jobs/:jobId/retry")
+  retryNodeCommandJob(@Param("jobId") jobId: string) {
+    return this.devDataService.retryAdminNodeCommandJob(jobId);
+  }
+
+  @Post("nodes/node-command-jobs/:jobId/dismiss")
+  dismissNodeCommandJob(@Param("jobId") jobId: string) {
+    return this.devDataService.dismissAdminNodeCommandJob(jobId);
+  }
+
   @Post("nodes/lease-revocation-jobs/:jobId/retry")
   retryLeaseRevocationJob(@Param("jobId") jobId: string) {
     return this.devDataService.retryAdminLeaseRevocationJob(jobId);

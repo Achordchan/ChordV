@@ -2,7 +2,9 @@ import { Injectable, Logger, MessageEvent } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import type { AgentCommandDto } from "@chordv/shared";
 import { Observable } from "rxjs";
+import type { NodeAgentCommandType } from "@prisma/client";
 import { PrismaService } from "../common/prisma.service";
+import { bindingCommandTypesSuperseding } from "../common/node-command-job.utils";
 import { DrainableJob, workLifecycle } from "../../work-lifecycle";
 
 type EventSink = (event: MessageEvent) => void;
@@ -93,7 +95,7 @@ export class AgentEventsService {
                 nodeId: job.nodeId,
                 targetRevision: { gt: job.targetRevision },
                 OR: [
-                  ...(job.bindingId ? [{ bindingId: job.bindingId, commandType: { in: [job.commandType, "REMOVE_USER" as const] } }] : []),
+                  ...(job.bindingId ? [{ bindingId: job.bindingId, commandType: { in: bindingCommandTypesSuperseding(job.commandType) as NodeAgentCommandType[] } }] : []),
                   { bindingId: null, commandType: job.commandType }
                 ]
               },

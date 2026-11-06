@@ -700,6 +700,11 @@ export interface AdminNodeCommandJobDto {
   nextRunAt: string;
   completedAt: string | null;
   createdAt: string;
+  // Retry-exhausted (cancelled) commands only. retryable: the server can
+  // re-order a FRESH command from the binding's current state (never the stale
+  // row); dismissible: the operator may mark the failure as handled.
+  retryable: boolean;
+  dismissible: boolean;
 }
 
 // Per-target aggregates of outstanding agent commands, computed server-side
