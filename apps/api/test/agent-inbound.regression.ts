@@ -14,7 +14,7 @@ import {
 } from "../src/modules/agent/agent-inbound";
 import { DEFAULT_TRUSTED_PROXIES, resolveTrustProxy } from "../src/trust-proxy";
 import { isNodeOnboardingReady } from "../src/modules/common/node-onboarding-policy";
-import { toAdminNodeRecord } from "../src/modules/common/node-import.utils";
+import { AGENT_HEARTBEAT_STALE_MS, readEffectiveControlStatus, toAdminNodeRecord } from "../src/modules/common/node-import.utils";
 
 const read = (relative: string) => readFileSync(path.resolve(__dirname, relative), "utf8");
 
@@ -657,6 +657,23 @@ function testAdminNodeRecordInboundFields() {
   assert.equal(legacy.inboundAppliedRevision, "0");
 }
 
+// An agent that silently disappears (host down, traffic cut) never sends the
+// heartbeat that would change controlStatus, so the stored "online" would stay
+// forever. Staleness is derived at read time; transitional cutover/rollback
+// states and never-seen agents keep their stored value.
+function testStaleHeartbeatReadsAsOffline() {
+  const now = new Date("2026-11-06T06:30:00.000Z");
+  const ago = (ms: number) => new Date(now.getTime() - ms);
+  for (const status of ["online", "degraded", "awaiting_inbound", "unknown"]) {
+    assert.equal(readEffectiveControlStatus(status, ago(AGENT_HEARTBEAT_STALE_MS + 1), now), "offline", status);
+    assert.equal(readEffectiveControlStatus(status, ago(AGENT_HEARTBEAT_STALE_MS), now), status, `${status} 刚好 3 分钟不判离线`);
+  }
+  for (const status of ["rollback_pending", "direct_cutover_pending", "pending_register", "offline"]) {
+    assert.equal(readEffectiveControlStatus(status, ago(60 * 60 * 1000), now), status, `${status} 不被心跳超时覆盖`);
+  }
+  assert.equal(readEffectiveControlStatus("online", null, now), "online", "从未上报心跳的节点保持原状态");
+}
+
 async function testGetInboundSpec() {
   // The reissue form preserves fields it does not edit from the COMPLETE
   // deployed spec — the last APPLIED job's payload. The node record is a
@@ -747,6 +764,7 @@ function main() {
   testPublicAddressPolicy();
   testReportValidation();
   testAdminNodeRecordInboundFields();
+  testStaleHeartbeatReadsAsOffline();
   return testGetInboundSpec().then(() => {
   return testWhoamiAcrossProxyHops()
     .then(testWriteBackAndActivation)

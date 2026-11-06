@@ -78,6 +78,23 @@ export function toNodeSummary(row: {
   };
 }
 
+/**
+ * controlStatus is written only by heartbeats, so an agent that silently went
+ * away (host down, traffic cut, network) would keep showing its last reported
+ * "online" forever. Derive staleness at READ time instead of writing it back:
+ * no sweeper to keep consistent, and the next heartbeat restores the stored
+ * value naturally. 3 minutes is 12 default heartbeats (15s) — long enough that
+ * a backend drain/update restart does not flap every node to offline.
+ * Transitional states owned by cutover/rollback flows are never overridden.
+ */
+export const AGENT_HEARTBEAT_STALE_MS = 3 * 60 * 1000;
+const HEARTBEAT_DERIVED_CONTROL_STATUSES = new Set(["online", "degraded", "awaiting_inbound", "unknown"]);
+
+export function readEffectiveControlStatus(controlStatus: string, agentLastSeenAt: Date | null, now = new Date()) {
+  if (!agentLastSeenAt || !HEARTBEAT_DERIVED_CONTROL_STATUSES.has(controlStatus)) return controlStatus;
+  return now.getTime() - agentLastSeenAt.getTime() > AGENT_HEARTBEAT_STALE_MS ? "offline" : controlStatus;
+}
+
 export function toAdminNodeRecord(row: {
   id: string;
   name: string;
@@ -133,7 +150,7 @@ export function toAdminNodeRecord(row: {
     ...toNodeSummary(row),
     statsLastSyncedAt: row.statsLastSyncedAt?.toISOString() ?? null,
     controlMode: row.controlMode ?? "direct_primary",
-    controlStatus: row.controlStatus ?? "unknown",
+    controlStatus: readEffectiveControlStatus(row.controlStatus ?? "unknown", row.agentLastSeenAt ?? null),
     registrationStatus: row.registrationStatus ?? null,
     agentLastSeenAt: row.agentLastSeenAt?.toISOString() ?? null,
     agentConfigRevision: row.agentConfigRevision?.toString() ?? "0",
