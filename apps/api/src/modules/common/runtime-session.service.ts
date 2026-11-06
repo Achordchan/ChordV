@@ -2094,10 +2094,20 @@ export class RuntimeSessionService {
         } catch (error) {
           throw new ConflictException(`${error instanceof Error ? error.message : "订阅不可用"}，无需重试，请标记已处理`);
         }
-        return this.queuePanelEnsureJobForBinding(tx, binding, {
+        const queued = await this.queuePanelEnsureJobForBinding(tx, binding, {
           node: { flow: node.flow },
           expireAt: subscription.expireAt
         }, { publish: false });
+        // The enqueue path resolves exhausted rows of the type it ORDERS
+        // (ENSURE_USER); a retried ENABLE_USER is replaced by that ENSURE_USER
+        // too, so close the retried row explicitly in the same transaction —
+        // otherwise it would stay retryable and repeated clicks would keep
+        // ordering replacements.
+        await tx.nodeCommandJob.updateMany({
+          where: { id: current.id, status: "cancelled", resolvedAt: null },
+          data: { resolvedAt: new Date() }
+        });
+        return queued;
       })
     );
     // Publish only after commit: an agent must never act on a command whose

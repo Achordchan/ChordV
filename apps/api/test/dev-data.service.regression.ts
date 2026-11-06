@@ -6150,7 +6150,10 @@ async function testRetryNodeCommandJobReordersFromCurrentState() {
     const subscription = { state: "active", remainingTrafficGb: 10, expireAt: new Date(Date.now() + 86_400_000), ...overrides.subscription };
     const tx = {
       $queryRaw: async () => { events.push("lock-node"); return []; },
-      nodeCommandJob: { findUnique: async () => job },
+      nodeCommandJob: {
+        findUnique: async () => job,
+        updateMany: async (payload: any) => { events.push(`resolve:${payload.where.id}:${payload.where.status}:${payload.data.resolvedAt instanceof Date}`); return { count: 1 }; }
+      },
       panelClientBinding: { findUnique: async () => { events.push("read-binding"); return binding; } },
       node: { findUnique: async () => node },
       subscription: { findUnique: async () => subscription }
@@ -6173,10 +6176,13 @@ async function testRetryNodeCommandJobReordersFromCurrentState() {
     return { service, events };
   };
 
-  const ok = make();
-  await ok.service.retryNodeCommandJob("job_1");
-  assert.deepEqual(ok.events, ["lock-node", "read-binding", "enqueue:binding_1:xtls-rprx-vision:false", "commit", "publish:agent_1"],
-    "先锁节点再读绑定；按当前状态重新下发；提交后才推送给 Agent");
+  for (const commandType of ["ENSURE_USER", "ENABLE_USER"]) {
+    const ok = make({ job: { commandType } });
+    await ok.service.retryNodeCommandJob("job_1");
+    assert.deepEqual(ok.events, [
+      "lock-node", "read-binding", "enqueue:binding_1:xtls-rprx-vision:false", "resolve:job_1:cancelled:true", "commit", "publish:agent_1"
+    ], `${commandType}：先锁节点再读绑定；按当前状态重新下发并在同一事务关掉被重试的行；提交后才推送给 Agent`);
+  }
 
   for (const [label, overrides, kind] of [
     ["绑定已停用", { binding: { status: "disabled" } }, ConflictException],
