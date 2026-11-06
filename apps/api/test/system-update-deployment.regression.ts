@@ -16,7 +16,8 @@ assert.ok(api && admin, "compose API/admin service scopes must be discoverable")
 const stableFeed = "https://raw.githubusercontent.com/Achordchan/ChordV/backend-manifest/latest.json";
 assert.ok(api.includes(`CHORDV_SYSTEM_UPDATE_MANIFEST_URL: ${"${CHORDV_SYSTEM_UPDATE_MANIFEST_URL:-"}${stableFeed}}`));
 assert.ok(read(".env.example").includes(`CHORDV_SYSTEM_UPDATE_MANIFEST_URL="${stableFeed}"`));
-assert.ok(read("README.md").includes(`CHORDV_SYSTEM_UPDATE_MANIFEST_URL=${stableFeed}`));
+// README is intentionally free of deployment endpoints (#111); .env.example is the
+// tracked source for the stable feed.
 assert.match(api, /^    stop_grace_period: 32m$/m, "container grace must exceed 30m drain plus 30s hooks");
 const binds = (service: string) => [...service.matchAll(/^      - (\.\/[^\s:]+):([^\s:]+)(:ro)?$/gm)]
   .map(([, source, target, readOnly]) => ({ source, target, readOnly: Boolean(readOnly) }));
