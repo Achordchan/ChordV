@@ -1,0 +1,16 @@
+{
+  "version": "0.0.32",
+  "channel": "stable",
+  "tag": "backend-v0.0.32",
+  "publishedAt": "2026-11-06T07:12:30Z",
+  "htmlUrl": "https://github.com/Achordchan/ChordV/releases/tag/backend-v0.0.32",
+  "changelog": [
+    "同步任务：重试耗尽的节点命令可直接重试或标记已处理；账号停用时自动消除其旧的安装失败",
+    "节点：Agent 超过 3 分钟没有心跳时，控制链路显示为离线"
+  ],
+  "artifact": {
+    "url": "https://github.com/Achordchan/ChordV/releases/download/backend-v0.0.32/chordv-backend-0.0.32.tar.gz",
+    "sha256": "70ad93edb0f91b3c3b74e580ead8085f7554f85a410324838616b2a6d2371c27",
+    "sizeBytes": 104144421
+  }
+}
