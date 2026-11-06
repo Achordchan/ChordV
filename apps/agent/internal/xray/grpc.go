@@ -16,6 +16,8 @@ import (
 	xprotocol "github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/common/uuid"
+	xhttp "github.com/xtls/xray-core/proxy/http"
+	"github.com/xtls/xray-core/proxy/socks"
 	"github.com/xtls/xray-core/proxy/vless"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -320,15 +322,57 @@ func (g *GRPC) uniqueCounterEmails(ctx context.Context, users []LiveUser) error 
 		if inbound.GetProxySettings().GetType() == "xray.proxy.dokodemo.Config" {
 			continue
 		}
-		other, err := g.handler.GetInboundUsers(ctx, &handler.GetInboundUserRequest{Tag: inbound.GetTag()})
+		emails, known, err := accountEmails(inbound.GetProxySettings())
 		if err != nil {
-			return fmt.Errorf("无法检查入站 %q 的计量身份，拒绝歧义计量: %w", inbound.GetTag(), err)
+			return fmt.Errorf("无法解析入站 %q 的账号配置，拒绝歧义计量: %w", inbound.GetTag(), err)
 		}
-		for _, user := range other.GetUsers() {
-			if wanted[user.GetEmail()] {
-				return fmt.Errorf("email %q 在入站 %q 与 %q 重复，Xray 计数无法分离", user.GetEmail(), g.tag, inbound.GetTag())
+		if !known {
+			other, err := g.handler.GetInboundUsers(ctx, &handler.GetInboundUserRequest{Tag: inbound.GetTag()})
+			if err != nil {
+				return fmt.Errorf("无法检查入站 %q 的计量身份，拒绝歧义计量: %w", inbound.GetTag(), err)
+			}
+			for _, user := range other.GetUsers() {
+				emails = append(emails, user.GetEmail())
+			}
+		}
+		for _, email := range emails {
+			if wanted[email] {
+				return fmt.Errorf("email %q 在入站 %q 与 %q 重复，Xray 计数无法分离", email, g.tag, inbound.GetTag())
 			}
 		}
 	}
 	return nil
+}
+
+// accountEmails reads the counter identities of inbounds that have no user
+// manager (so GetInboundUsers fails with "proxy is not a UserManager") but
+// whose users are fixed in the config the API already returned. SOCKS (and
+// 3x-ui's "mixed", which is the same server) and HTTP authenticate with a
+// username/password map, and Xray records the username as the session email,
+// so it lands in the same process-wide user>>>email counters. known=false
+// means the caller must ask the user manager; any other type that cannot list
+// users still fails closed there.
+func accountEmails(settings *serial.TypedMessage) (emails []string, known bool, err error) {
+	var accounts map[string]string
+	switch settings.GetType() {
+	case serial.GetMessageType(&socks.ServerConfig{}):
+		config := &socks.ServerConfig{}
+		if err := proto.Unmarshal(settings.GetValue(), config); err != nil {
+			return nil, true, err
+		}
+		accounts = config.GetAccounts()
+	case serial.GetMessageType(&xhttp.ServerConfig{}):
+		config := &xhttp.ServerConfig{}
+		if err := proto.Unmarshal(settings.GetValue(), config); err != nil {
+			return nil, true, err
+		}
+		accounts = config.GetAccounts()
+	default:
+		return nil, false, nil
+	}
+	for username := range accounts {
+		emails = append(emails, username)
+	}
+	sort.Strings(emails)
+	return emails, true, nil
 }
