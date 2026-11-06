@@ -29,6 +29,8 @@ import (
 	"github.com/xtls/xray-core/core"
 	fstats "github.com/xtls/xray-core/features/stats"
 	"github.com/xtls/xray-core/proxy/freedom"
+	xhttp "github.com/xtls/xray-core/proxy/http"
+	"github.com/xtls/xray-core/proxy/socks"
 	"github.com/xtls/xray-core/proxy/vless"
 	vin "github.com/xtls/xray-core/proxy/vless/inbound"
 	"github.com/xtls/xray-core/transport/internet"
@@ -366,5 +368,68 @@ func TestRealXrayRejectsCrossInboundEmailCounters(t *testing.T) {
 	}
 	if counter.Value() != 50 {
 		t.Fatal("collision check reset shared counter")
+	}
+}
+
+// 3x-ui "mixed"/SOCKS and HTTP inbounds have no user manager, so
+// GetInboundUsers fails for them. Their identities come from the account map
+// the API already returns: an unrelated username must not block metering, and
+// a username equal to one of ours must still be refused (Xray records the
+// username as the session email in the shared user>>> counters).
+func TestRealXrayAccountInboundsWithoutUserManager(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		proxy func(username string) proto.Message
+	}{
+		{"socks", func(username string) proto.Message {
+			return &socks.ServerConfig{AuthType: socks.AuthType_PASSWORD, Accounts: map[string]string{username: "secret"}, UdpEnabled: true}
+		}},
+		{"http", func(username string) proto.Message {
+			return &xhttp.ServerConfig{Accounts: map[string]string{username: "secret"}}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, instance := realServer(t, false)
+			ctx := context.Background()
+			user := protocol.DesiredUser{Email: "metered@example.test", UUID: "d52ca32b-784a-4f4b-ab51-b8341884f213"}
+			addInbound := func(tag, username string) {
+				t.Helper()
+				listener, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				port := uint32(listener.Addr().(*net.TCPAddr).Port)
+				listener.Close()
+				if err := core.AddInboundHandler(instance, &core.InboundHandlerConfig{Tag: tag, ReceiverSettings: serial.ToTypedMessage(&proxyman.ReceiverConfig{
+					Listen: xnet.NewIPOrDomain(xnet.LocalHostIP), PortList: &xnet.PortList{Range: []*xnet.PortRange{{From: port, To: port}}},
+				}), ProxySettings: serial.ToTypedMessage(tc.proxy(username))}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			addInbound("panel-proxy", "unrelated_socks_user")
+			if _, err := g.handler.GetInboundUsers(ctx, &handler.GetInboundUserRequest{Tag: "panel-proxy"}); err == nil {
+				t.Fatal("precondition: this inbound type was expected to have no user manager")
+			}
+			if err := g.EnsureUser(ctx, user, Expectation{Absent: true}); err != nil {
+				t.Fatalf("unrelated %s account blocked installation: %v", tc.name, err)
+			}
+			manager := instance.GetFeature(fstats.ManagerType()).(fstats.Manager)
+			counter, err := manager.RegisterCounter("user>>>" + user.Email + ">>>traffic>>>uplink")
+			if err != nil {
+				t.Fatal(err)
+			}
+			counter.Add(7)
+			if _, err := g.ReadAbsoluteCounters(ctx); err != nil {
+				t.Fatalf("unrelated %s account blocked metering: %v", tc.name, err)
+			}
+
+			addInbound("panel-proxy-clash", user.Email)
+			if values, err := g.ReadAbsoluteCounters(ctx); err == nil {
+				t.Fatalf("%s account sharing our email was metered as ours: %+v", tc.name, values)
+			}
+			if err := g.EnsureUser(ctx, user, Expectation{UUID: user.UUID}); err == nil {
+				t.Fatalf("installation ignored %s account sharing our email", tc.name)
+			}
+		})
 	}
 }
