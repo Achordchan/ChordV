@@ -44,6 +44,29 @@ async function main() {
     })));
     assert.equal(publicSiteOrigin(),"https://old.example","请求结束后恢复环境默认值");
   } finally {if(originalEnv===undefined)delete process.env.CHORDV_PUBLIC_BASE_URL;else process.env.CHORDV_PUBLIC_BASE_URL=originalEnv;}
+  {
+    const prevDl=process.env.CHORDV_PUBLIC_DOWNLOAD_BASE_URL;
+    try {
+      const hash="b".repeat(64);
+      siteAddressContext.run({primaryOrigin:"https://v.example.com"} as never,()=>{
+        delete process.env.CHORDV_PUBLIC_DOWNLOAD_BASE_URL;
+        assert.equal(buildReleaseArtifactDownloadUrl("artifact_1",hash),"https://v.example.com/api/downloads/releases/artifact_1?v="+"b".repeat(16));
+        assert.equal(buildReleaseArtifactDownloadUrl("artifact_1"),"https://v.example.com/api/downloads/releases/artifact_1");
+        process.env.CHORDV_PUBLIC_DOWNLOAD_BASE_URL="https://dl.example.com/";
+        assert.equal(buildReleaseArtifactDownloadUrl("artifact_1",hash),"https://dl.example.com/api/downloads/releases/artifact_1?v="+"b".repeat(16));
+        assert.equal(runtimeVersionUrl("00000000-0000-0000-0000-000000000000"),"https://dl.example.com/api/downloads/runtime-versions/00000000-0000-0000-0000-000000000000");
+        assert.equal(publicSiteOrigin(),"https://v.example.com");
+        for(const bad of ["https://dl.example.com:443x","https://u:p@dl.example.com","https://dl.example.com/sub","https://dl.example.com?x=1","ftp://dl.example.com","http://dl.example.com"]){
+          process.env.CHORDV_PUBLIC_DOWNLOAD_BASE_URL=bad;
+          assert.equal(buildReleaseArtifactDownloadUrl("artifact_1"),"https://v.example.com/api/downloads/releases/artifact_1",bad);
+        }
+        process.env.CHORDV_PUBLIC_DOWNLOAD_BASE_URL="http://127.0.0.1:3001";
+        assert.equal(buildReleaseArtifactDownloadUrl("artifact_1"),"http://127.0.0.1:3001/api/downloads/releases/artifact_1");
+        process.env.CHORDV_PUBLIC_DOWNLOAD_BASE_URL="dl.example.com/path";
+        assert.equal(buildReleaseArtifactDownloadUrl("artifact_1","not-a-hash"),"https://v.example.com/api/downloads/releases/artifact_1");
+      });
+    } finally {if(prevDl===undefined)delete process.env.CHORDV_PUBLIC_DOWNLOAD_BASE_URL;else process.env.CHORDV_PUBLIC_DOWNLOAD_BASE_URL=prevDl;}
+  }
   assert.equal(needsLegacyComponentManagement([{enabled:true,active:null}]),true);
   assert.equal(needsLegacyComponentManagement([{enabled:true,managed:true,active:{id:"version",status:"ready"}},{enabled:false,active:null}]),false);
   assert.equal(needsLegacyComponentManagement([{enabled:true,managed:true,active:{status:"failed"}}]),true);

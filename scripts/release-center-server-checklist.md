@@ -34,6 +34,7 @@ CHORDV_RELEASE_MAX_UPLOAD_BYTES=1073741824
 
 说明：
 - `CHORDV_PUBLIC_BASE_URL` 用来生成安装包下载地址
+- 可选 `CHORDV_PUBLIC_DOWNLOAD_BASE_URL`：安装包和运行组件改用这个域名下载（如走 CF 缓存的 `https://dl.achord.cn`），地址会带 `?v=<文件哈希前 16 位>`，替换文件后自动换缓存键
 - `CHORDV_RELEASE_STORAGE_ROOT` 是安装包真实落盘目录
 - `CHORDV_RELEASE_MAX_UPLOAD_BYTES` 是后台单文件上传上限
 

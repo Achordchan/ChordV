@@ -1,5 +1,5 @@
 import { FileMaintenanceService } from "./file-maintenance.service";
-import { publicSiteOrigin } from "./site-address.context";
+import { publicDownloadOrigin, withContentVersion } from "./site-address.context";
 import { Optional } from "@nestjs/common";
 import { RuntimeVersionService } from "./runtime-version.service";
 import { workLifecycle } from "../../work-lifecycle";
@@ -500,7 +500,7 @@ export class RuntimeComponentsService {
         } catch (error) {
           this.logger.warn("GitHub latest component resolution failed for " + row.id + ": " + readErrorMessage(error));
         }
-        const originUrl = row.source === "uploaded" && !("runtimeVersionLabel" in row) ? buildRuntimeComponentDownloadUrl(row.id) : latestAsset?.originUrl ?? row.originUrl.trim();
+        const originUrl = row.source === "uploaded" && !("runtimeVersionLabel" in row) ? buildRuntimeComponentDownloadUrl(row.id, row.fileHash) : latestAsset?.originUrl ?? row.originUrl.trim();
         const fileName = latestAsset?.fileName ?? row.fileName;
         const isRemoteHttp = row.source !== "uploaded" && isHttpUrl(originUrl);
         const defaultMirrorPrefix = isRemoteHttp ? globalMirror.defaultMirrorPrefix : null;
@@ -1025,7 +1025,7 @@ async function toAdminRuntimeComponentRecord(row: {
     architecture: row.architecture,
     kind: row.kind,
     source: row.source,
-    originUrl: row.source === "uploaded" ? buildRuntimeComponentDownloadUrl(row.id) : row.originUrl,
+    originUrl: row.source === "uploaded" ? buildRuntimeComponentDownloadUrl(row.id, row.fileHash) : row.originUrl,
     defaultMirrorPrefix: normalizeMirrorPrefixList(row.defaultMirrorPrefix),
     allowClientMirror: Boolean(row.allowClientMirror),
     fileName: row.fileName,
@@ -1402,10 +1402,10 @@ function resolveRuntimeComponentAbsolutePath(storedFilePath: string) {
   return resolvedPath;
 }
 
-function buildRuntimeComponentDownloadUrl(componentId: string) {
-  const publicBaseUrl = publicSiteOrigin();
+function buildRuntimeComponentDownloadUrl(componentId: string, fileHash?: string | null) {
+  const publicBaseUrl = publicDownloadOrigin();
   const relativeUrl = `${RUNTIME_COMPONENT_DOWNLOAD_PREFIX}/${componentId}`;
-  return publicBaseUrl ? `${publicBaseUrl}${relativeUrl}` : relativeUrl;
+  return withContentVersion(publicBaseUrl ? `${publicBaseUrl}${relativeUrl}` : relativeUrl, fileHash);
 }
 
 function sanitizeStoredFileName(fileName: string) {

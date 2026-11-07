@@ -1,4 +1,4 @@
-import { publicSiteOrigin } from "./site-address.context";
+import { publicDownloadOrigin, withContentVersion } from "./site-address.context";
 import { BadRequestException, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -633,10 +633,10 @@ export function resolveReleaseArtifactAbsolutePath(storedFilePath: string) {
   return resolvedPath;
 }
 
-export function buildReleaseArtifactDownloadUrl(artifactId: string) {
-  const publicBaseUrl = publicSiteOrigin();
+export function buildReleaseArtifactDownloadUrl(artifactId: string, fileHash?: string | null) {
+  const publicBaseUrl = publicDownloadOrigin();
   const relativeUrl = `${RELEASE_ARTIFACT_DOWNLOAD_PREFIX}/${artifactId}`;
-  return publicBaseUrl ? `${publicBaseUrl}${relativeUrl}` : relativeUrl;
+  return withContentVersion(publicBaseUrl ? `${publicBaseUrl}${relativeUrl}` : relativeUrl, fileHash);
 }
 
 export function sanitizeReleaseArtifactFileName(fileName: string) {
@@ -696,7 +696,7 @@ export function resolveReleaseArtifactForClient(
     allowClientMirror?: boolean;
   }
 ) {
-  const originUrl = artifact.source === "uploaded" ? buildReleaseArtifactDownloadUrl(artifact.id) : artifact.downloadUrl;
+  const originUrl = artifact.source === "uploaded" ? buildReleaseArtifactDownloadUrl(artifact.id, artifact.fileHash) : artifact.downloadUrl;
   // 上传产物走本站相对路径，不套加速镜像。
   if (artifact.source === "uploaded" || !isHttpReleaseUrl(originUrl)) {
     return {
@@ -1119,7 +1119,7 @@ export function parseArtifactBuildNumber(artifact: { fileName?: string | null; s
 }
 
 export function toAdminReleaseArtifactRecord(row: ReleaseArtifactRowLike, includeSource = true): AdminReleaseArtifactDto {
-  const downloadUrl = row.source === "uploaded" ? buildReleaseArtifactDownloadUrl(row.id) : row.downloadUrl;
+  const downloadUrl = row.source === "uploaded" ? buildReleaseArtifactDownloadUrl(row.id, row.fileHash) : row.downloadUrl;
   return {
     id: row.id,
     releaseId: row.releaseId,
