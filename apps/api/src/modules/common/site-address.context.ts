@@ -18,11 +18,22 @@ export function publicSiteOrigin(): string {
  * fall back to the primary site origin, so existing deployments are unchanged.
  */
 export function publicDownloadOrigin(): string {
-  const raw = (process.env.CHORDV_PUBLIC_DOWNLOAD_BASE_URL ?? "").trim().replace(/\/+$/, "");
-  if (raw && /^https?:\/\/[^/?#\s]+$/i.test(raw)) {
-    return raw;
+  const raw = (process.env.CHORDV_PUBLIC_DOWNLOAD_BASE_URL ?? "").trim();
+  return parseBareHttpOrigin(raw) ?? publicSiteOrigin();
+}
+
+function parseBareHttpOrigin(raw: string): string | null {
+  if (!raw) return null;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
   }
-  return publicSiteOrigin();
+  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+  if (url.username || url.password || url.search || url.hash) return null;
+  if (url.pathname !== "/" && url.pathname !== "") return null;
+  return url.origin;
 }
 
 /**
