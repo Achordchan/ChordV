@@ -8,3 +8,31 @@ export function publicSiteOrigin(): string {
   return siteAddressContext.getStore()?.primaryOrigin
     ?? (process.env.CHORDV_PUBLIC_BASE_URL ?? "").trim().replace(/\/+$/, "");
 }
+
+/**
+ * Origin used for public file downloads (installers, runtime components).
+ *
+ * CHORDV_PUBLIC_DOWNLOAD_BASE_URL lets downloads go through a separate, CDN-cached
+ * host (e.g. a Cloudflare-proxied dl.<domain>) while the admin panel, client API
+ * and agents keep talking to the primary origin directly. Unset or invalid values
+ * fall back to the primary site origin, so existing deployments are unchanged.
+ */
+export function publicDownloadOrigin(): string {
+  const raw = (process.env.CHORDV_PUBLIC_DOWNLOAD_BASE_URL ?? "").trim().replace(/\/+$/, "");
+  if (raw && /^https?:\/\/[^/?#\s]+$/i.test(raw)) {
+    return raw;
+  }
+  return publicSiteOrigin();
+}
+
+/**
+ * Appends a content-version query so a CDN never serves stale bytes after a file
+ * is replaced under the same id (the cache key includes the query string).
+ */
+export function withContentVersion(url: string, fileHash: string | null | undefined): string {
+  const hash = (fileHash ?? "").trim().toLowerCase();
+  if (!/^[a-f0-9]{16,}$/.test(hash)) {
+    return url;
+  }
+  return `${url}${url.includes("?") ? "&" : "?"}v=${hash.slice(0, 16)}`;
+}

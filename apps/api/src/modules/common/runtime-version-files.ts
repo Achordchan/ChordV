@@ -1,4 +1,4 @@
-import { publicSiteOrigin } from "./site-address.context";
+import { publicDownloadOrigin } from "./site-address.context";
 import { BadRequestException } from "@nestjs/common";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -16,7 +16,7 @@ export function runtimeVersionPath(id: string) {
   return path.resolve(base, "runtime-components", "versions", id);
 }
 export function runtimeVersionUrl(id: string) {
-  return `${publicSiteOrigin()}/api/downloads/runtime-versions/${id}`;
+  return `${publicDownloadOrigin()}/api/downloads/runtime-versions/${id}`;
 }
 export async function prepareRuntimeVersion(sourceUrl: string, requestedVersion: string | null, id: string,
   progress: (bytes: bigint, status: "downloading" | "verifying") => Promise<void>,

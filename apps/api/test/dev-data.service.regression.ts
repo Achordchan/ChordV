@@ -12056,7 +12056,7 @@ async function testUpdateCheckAllowsUploadedArtifactWithStaleMetadata() {
 
     assert.equal(result.hasUpdate, true, "client update check should announce uploaded packages when the file still exists");
     assert.equal(result.recommendedArtifact?.id, "artifact_stale");
-    assert.equal(result.downloadUrl, "/api/downloads/releases/artifact_stale");
+    assert.equal(result.downloadUrl, "/api/downloads/releases/artifact_stale?v=" + "a".repeat(16));
   } finally {
     if (previousReleaseStorageRoot === undefined) {
       delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
