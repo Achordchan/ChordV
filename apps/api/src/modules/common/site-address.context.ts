@@ -30,7 +30,11 @@ function parseBareHttpOrigin(raw: string): string | null {
   } catch {
     return null;
   }
-  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+  // Desktop clients only download installers over https (plain http is allowed
+  // for loopback hosts in local development), so a remote http origin would make
+  // every generated download URL unusable.
+  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) return null;
   if (url.username || url.password || url.search || url.hash) return null;
   if (url.pathname !== "/" && url.pathname !== "") return null;
   return url.origin;

@@ -56,10 +56,12 @@ async function main() {
         assert.equal(buildReleaseArtifactDownloadUrl("artifact_1",hash),"https://dl.example.com/api/downloads/releases/artifact_1?v="+"b".repeat(16));
         assert.equal(runtimeVersionUrl("00000000-0000-0000-0000-000000000000"),"https://dl.example.com/api/downloads/runtime-versions/00000000-0000-0000-0000-000000000000");
         assert.equal(publicSiteOrigin(),"https://v.example.com");
-        for(const bad of ["https://dl.example.com:443x","https://u:p@dl.example.com","https://dl.example.com/sub","https://dl.example.com?x=1","ftp://dl.example.com"]){
+        for(const bad of ["https://dl.example.com:443x","https://u:p@dl.example.com","https://dl.example.com/sub","https://dl.example.com?x=1","ftp://dl.example.com","http://dl.example.com"]){
           process.env.CHORDV_PUBLIC_DOWNLOAD_BASE_URL=bad;
           assert.equal(buildReleaseArtifactDownloadUrl("artifact_1"),"https://v.example.com/api/downloads/releases/artifact_1",bad);
         }
+        process.env.CHORDV_PUBLIC_DOWNLOAD_BASE_URL="http://127.0.0.1:3001";
+        assert.equal(buildReleaseArtifactDownloadUrl("artifact_1"),"http://127.0.0.1:3001/api/downloads/releases/artifact_1");
         process.env.CHORDV_PUBLIC_DOWNLOAD_BASE_URL="dl.example.com/path";
         assert.equal(buildReleaseArtifactDownloadUrl("artifact_1","not-a-hash"),"https://v.example.com/api/downloads/releases/artifact_1");
       });
