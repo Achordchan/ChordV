@@ -2934,10 +2934,10 @@ async fn download_runtime_component_inner(
                 },
             );
 
-            // Components go straight to the mirror the user's own network picked; a
-            // system proxy left by the client must not carry them.
+            // No `.no_proxy()`: reqwest is built without its system-proxy feature, so
+            // the client's own system proxy is never read, while a proxy the user set
+            // through HTTPS_PROXY (often the only way out of a corporate network) still is.
             let client = Client::builder()
-                .no_proxy()
                 .connect_timeout(Duration::from_secs(DOWNLOAD_CONNECT_TIMEOUT_SECS))
                 .timeout(Duration::from_secs(DOWNLOAD_TOTAL_TIMEOUT_SECS))
                 .build()

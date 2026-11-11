@@ -29,10 +29,10 @@ pub struct DownloadProbeResult {
 }
 
 fn probe_client() -> Result<Client, String> {
-    // Mirrors are picked for the user's direct route; the local proxy must not
-    // skew the measurement or carry the download.
+    // Same proxy behaviour as the component downloader (environment proxies only,
+    // never the client's own system proxy), so the probe measures the route the
+    // download will actually take.
     Client::builder()
-        .no_proxy()
         .connect_timeout(PROBE_CONNECT_TIMEOUT)
         .timeout(PROBE_BUDGET + Duration::from_secs(1))
         .build()
