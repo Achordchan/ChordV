@@ -32,6 +32,7 @@ mod bounded_command;
 use bounded_command::{ChildGuard, CommandDeadlineExt, with_command_budget};
 mod connection_generation;
 mod node_probe;
+mod download_probe;
 mod android_mobile_plugin;
 mod android_runtime;
 #[cfg(target_os = "android")]
@@ -625,6 +626,19 @@ struct RuntimeComponentDownloadItemInput {
 struct RuntimeComponentDownloadInput {
     component: RuntimeComponentDownloadItemInput,
     url: String,
+    /// Set when another mirror is still available: a download that stays below
+    /// this average after the grace period is abandoned so the caller can switch.
+    #[serde(default)]
+    min_bytes_per_second: Option<u64>,
+}
+
+/// Seconds a download may run before the minimum-speed check applies, so a slow
+/// TCP start is not mistaken for a bad mirror.
+const RUNTIME_DOWNLOAD_SLOW_GRACE_SECS: u64 = 12;
+
+#[tauri::command]
+async fn probe_download_candidates(urls: Vec<String>) -> Result<Vec<download_probe::DownloadProbeResult>, String> {
+    download_probe::probe_download_candidates(urls).await
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -2920,11 +2934,15 @@ async fn download_runtime_component_inner(
                 },
             );
 
+            // Components go straight to the mirror the user's own network picked; a
+            // system proxy left by the client must not carry them.
             let client = Client::builder()
+                .no_proxy()
                 .connect_timeout(Duration::from_secs(DOWNLOAD_CONNECT_TIMEOUT_SECS))
                 .timeout(Duration::from_secs(DOWNLOAD_TOTAL_TIMEOUT_SECS))
                 .build()
                 .map_err(|error| runtime_component_error("download_failed", format!("初始化组件下载器失败：{error}")))?;
+            let transfer_started = Instant::now();
             let mut response = client
                 .get(download_url.clone())
                 .send()
@@ -3038,6 +3056,21 @@ async fn download_runtime_component_inner(
                     }
                     last_downloaded_bytes = downloaded_bytes;
                     ensure_runtime_component_download_not_cancelled(&app)?;
+                    if let Some(minimum) = input.min_bytes_per_second.filter(|value| *value > 0) {
+                        let elapsed = transfer_started.elapsed();
+                        if elapsed >= Duration::from_secs(RUNTIME_DOWNLOAD_SLOW_GRACE_SECS)
+                            && download_probe::bytes_per_second(downloaded_bytes, elapsed) < minimum
+                        {
+                            return Err(runtime_component_error(
+                                "download_timeout",
+                                format!(
+                                    "{} download too slow on this mirror ({} KB/s), switching.",
+                                    runtime_component_display_name(component),
+                                    download_probe::bytes_per_second(downloaded_bytes, elapsed) / 1024
+                                ),
+                            ));
+                        }
+                    }
                     emit_runtime_component_progress(
                         &app,
                         RuntimeComponentDownloadProgress {
@@ -7569,6 +7602,7 @@ pub fn run() {
             fetch_remote_text,
             check_runtime_component_file,
             download_runtime_component,
+            probe_download_candidates,
             cancel_runtime_component_download,
             update_shell_summary,
             runtime_status,

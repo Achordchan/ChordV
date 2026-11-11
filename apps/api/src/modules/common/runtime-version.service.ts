@@ -13,7 +13,25 @@ import { parseGithubLatestDownloadUrl } from "./github-latest-release";
 import { prepareRuntimeVersion, runtimeVersionPath, runtimeVersionUrl } from "./runtime-version-files";
 
 export type RuntimeSourceInput = { componentId: string; sourceUrl: string; version?: string; autoLatest: boolean };
-const EVERY_SIX_HOURS = 6 * 60 * 60_000;
+const DEFAULT_CHECK_INTERVAL_HOURS = 6;
+/**
+ * 自动跟随最新的 GEO 多久检查一次 GitHub。GEO 每天都会出新版，客户端每次换版都要重下，
+ * 所以发版频率由后台决定：CHORDV_GEO_CHECK_INTERVAL_HOURS（1 到 720 小时，默认 6）。
+ */
+export function geoCheckIntervalMs(raw = process.env.CHORDV_GEO_CHECK_INTERVAL_HOURS) {
+  const hours = Number(String(raw ?? "").trim());
+  const valid = Number.isFinite(hours) && hours >= 1 && hours <= 720 ? hours : DEFAULT_CHECK_INTERVAL_HOURS;
+  return valid * 60 * 60_000;
+}
+/** 只有固定到某个 Release 标签的 GitHub 文件地址才能交给公共加速镜像，latest 会被镜像缓存成旧版。 */
+export function pinnedGithubReleaseAssetUrl(value: string | null | undefined) {
+  if (!value) return null;
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "https:" || url.hostname !== "github.com" || url.username || url.password || url.search || url.hash) return null;
+    return /^\/[^/]+\/[^/]+\/releases\/download\/[^/]+\/[^/]+$/.test(url.pathname) ? url.href : null;
+  } catch { return null; }
+}
 const DAY_MS = 24 * 60 * 60_000;
 /** 手动选择的版本（含 Xray）：切换后保留 30 天，并始终保留最近 20 条。 */
 export const MANUAL_RETENTION_MS = 30 * DAY_MS;
@@ -114,8 +132,8 @@ export class RuntimeVersionService {
       const pending = await tx.runtimeComponentVersion.findFirst({ where: { componentId: component.id, status: { in: ["queued", "downloading", "verifying"] } } });
       if (pending) throw new BadRequestException("已有获取任务，请等待完成");
       await tx.runtimeComponentDelivery.upsert({ where: { componentId: component.id },
-        create: { componentId: component.id, sourceUrl: url.href, selectedVersion: version, autoLatest: input.autoLatest, nextCheckAt: new Date(Date.now() + EVERY_SIX_HOURS) },
-        update: { sourceUrl: url.href, selectedVersion: version, autoLatest: input.autoLatest, nextCheckAt: new Date(Date.now() + EVERY_SIX_HOURS) } });
+        create: { componentId: component.id, sourceUrl: url.href, selectedVersion: version, autoLatest: input.autoLatest, nextCheckAt: new Date(Date.now() + geoCheckIntervalMs()) },
+        update: { sourceUrl: url.href, selectedVersion: version, autoLatest: input.autoLatest, nextCheckAt: new Date(Date.now() + geoCheckIntervalMs()) } });
       if (verified && saved) {
         const existing = await tx.runtimeComponentVersion.findUnique({ where: { id: saved.id } });
         if (existing?.status === "ready" && existing.fileHash === saved.fileHash && existing.fileSizeBytes === saved.fileSizeBytes && existing.storedFilePath === saved.storedFilePath) return existing;
@@ -235,16 +253,16 @@ export class RuntimeVersionService {
           if (!parseGithubLatestDownloadUrl(current.sourceUrl)) return;
           const pending = await tx.runtimeComponentVersion.findFirst({ where: { componentId: component.id, status: { in: ["queued", "downloading", "verifying"] } } });
           if (pending) return;
-          await tx.runtimeComponentDelivery.update({ where: { componentId: component.id }, data: { nextCheckAt: new Date(Date.now() + EVERY_SIX_HOURS) } });
+          await tx.runtimeComponentDelivery.update({ where: { componentId: component.id }, data: { nextCheckAt: new Date(Date.now() + geoCheckIntervalMs()) } });
           await tx.runtimeComponentVersion.create({ data: { id: randomUUID(), componentId: component.id, sourceUrl: current.sourceUrl, autoActivate: true } });
         });
       }
       catch (error) { this.logger.warn(error instanceof Error ? error.message : "规则获取排队失败"); }
     }
   }
-  async clientRows<T extends RuntimeComponent>(rows: T[]): Promise<Array<T & { runtimeVersionLabel?: string }>> {
+  async clientRows<T extends RuntimeComponent>(rows: T[]): Promise<Array<T & { runtimeVersionLabel?: string; githubAssetUrl?: string }>> {
     const policies = await this.prisma.runtimeComponentDelivery.findMany({ where: { componentId: { in: rows.map(r => r.id) } } });
-    const result: Array<T & { runtimeVersionLabel?: string }> = [];
+    const result: Array<T & { runtimeVersionLabel?: string; githubAssetUrl?: string }> = [];
     for (const row of rows) {
       const policy = policies.find(p => p.componentId === row.id);
       if (!policy?.activeVersionId) { result.push(row); continue; }
@@ -254,7 +272,9 @@ export class RuntimeVersionService {
         // Existing storage validator resolves absolute paths under the releases root/runtime-components.
         storedFilePath: version.storedFilePath, fileSizeBytes: version.fileSizeBytes, fileHash: version.fileHash, expectedHash: version.fileHash,
         archiveEntryName: row.kind === "xray" ? (row.platform === "windows" ? "xray.exe" : "xray") : null,
-        runtimeVersionLabel: version.versionLabel ?? undefined, defaultMirrorPrefix: null, allowClientMirror: false, updatedAt: version.publishedAt ?? version.updatedAt });
+        runtimeVersionLabel: version.versionLabel ?? undefined, defaultMirrorPrefix: null, allowClientMirror: false, updatedAt: version.publishedAt ?? version.updatedAt,
+        // GEO 由客户端经公共镜像直接从 GitHub 下载，服务器上这份只做哈希比对和最后兜底。
+        ...(row.kind !== "xray" && pinnedGithubReleaseAssetUrl(version.resolvedUrl) ? { githubAssetUrl: pinnedGithubReleaseAssetUrl(version.resolvedUrl)! } : {}) });
     }
     return result;
   }

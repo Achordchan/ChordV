@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { RuntimeVersionService } from "../src/modules/common/runtime-version.service";
+import { RuntimeVersionService, geoCheckIntervalMs, pinnedGithubReleaseAssetUrl } from "../src/modules/common/runtime-version.service";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -36,6 +36,22 @@ async function main() {
   const result = await rows.clientRows([{id:"one",kind:"xray",platform:"windows",expectedHash:"old-hash",archiveEntryName:"custom.exe"}] as never);
   assert.equal(result[0].expectedHash,"new-hash","旧组件 expectedHash 不得污染启用版本");
   assert.equal(result[0].archiveEntryName,"xray.exe");
+  assert.equal(result[0].githubAssetUrl,undefined,"Xray 仍由服务器分发");
+  const pinned="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/202611102204/geosite.dat";
+  const geoRows = new RuntimeVersionService({
+    runtimeComponentDelivery:{findMany:async()=>[{componentId:"geo",activeVersionId:"geo-version"}]},
+    runtimeComponentVersion:{findUnique:async()=>({id:"geo-version",status:"ready",storedFilePath:"versions/geo",fileHash:"h",fileSizeBytes:1n,resolvedUrl:pinned,updatedAt:new Date()})}
+  } as never, {publish(){}} as never);
+  const geo = await geoRows.clientRows([{id:"geo",kind:"geosite",platform:"macos"}] as never);
+  assert.equal(geo[0].githubAssetUrl,pinned,"GEO 下发固定标签的 GitHub 地址供客户端走镜像");
+  assert.equal(pinnedGithubReleaseAssetUrl("https://github.com/a/b/releases/latest/download/geosite.dat"),null,"latest 不能交给镜像");
+  assert.equal(pinnedGithubReleaseAssetUrl("https://example.com/a/b/releases/download/v1/geosite.dat"),null);
+  assert.equal(pinnedGithubReleaseAssetUrl("http://github.com/a/b/releases/download/v1/geosite.dat"),null);
+  assert.equal(pinnedGithubReleaseAssetUrl(pinned),pinned);
+  assert.equal(geoCheckIntervalMs(undefined),6*3600_000);
+  assert.equal(geoCheckIntervalMs("168"),168*3600_000);
+  assert.equal(geoCheckIntervalMs("0"),6*3600_000);
+  assert.equal(geoCheckIntervalMs("abc"),6*3600_000);
   const guarded = new RuntimeVersionService({$transaction:async (fn:any)=>fn({
     $queryRaw:async()=>[],runtimeComponentDelivery:{findUnique:async()=>({activeVersionId:null})}
   })} as never,{publish(){}} as never);

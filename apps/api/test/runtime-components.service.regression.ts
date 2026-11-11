@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { RuntimeComponentsService } from "../src/modules/common/runtime-components.service";
+import { RuntimeComponentsService, buildGithubMirroredCandidates, DEFAULT_GITHUB_MIRROR_PREFIXES } from "../src/modules/common/runtime-components.service";
 import {
   clearGithubLatestReleaseCacheForTest,
   resolveGithubLatestReleaseAsset
@@ -609,7 +609,28 @@ async function testClientPlanReturnsPartialComponentsWithoutHash() {
   assert.equal(plan.components[0].expectedHash, null, "无哈希组件仍应下发");
   assert.equal(plan.components[0].updatedAt, "2026-07-22T10:00:00.000Z");
 }
+function testGithubMirroredCandidatesKeepServerCopyAsLastOrigin() {
+  const github = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/202611102204/geosite.dat";
+  const server = "https://v.achord.cn/api/downloads/runtime-versions/f73b6e5f-3aa8-4769-ab03-a1df1a78b2de";
+  const candidates = buildGithubMirroredCandidates({
+    githubAssetUrl: github,
+    serverCopyUrl: server,
+    mirrorPrefixes: "https://ghfast.top/\nhttps://mirror.example/{url}\njavascript:alert(1)/"
+  });
+  assert.deepEqual(candidates, [
+    { label: "default_mirror", url: `https://ghfast.top/${github}` },
+    { label: "default_mirror", url: `https://mirror.example/${github}` },
+    { label: "default_mirror", url: github },
+    { label: "origin", url: server }
+  ], "镜像在前、GitHub 直连其次、服务器副本作为唯一 origin 放最后");
+  const defaults = buildGithubMirroredCandidates({ githubAssetUrl: github, serverCopyUrl: server, mirrorPrefixes: DEFAULT_GITHUB_MIRROR_PREFIXES });
+  assert.ok(defaults.length >= 4, "后台未配置镜像时使用内置公共镜像");
+  assert.equal(defaults.filter((candidate) => candidate.label === "origin").length, 1);
+  assert.equal(defaults.at(-1)?.url, server);
+}
+
 async function main() {
+  testGithubMirroredCandidatesKeepServerCopyAsLastOrigin();
   await testUploadedRuntimeComponentPatchIgnoresExpectedHash();
   await testUploadedRuntimeComponentUploadIgnoresExpectedHash();
   await testUploadedRuntimeComponentDeliverableIgnoresStaleExpectedHashMismatch();

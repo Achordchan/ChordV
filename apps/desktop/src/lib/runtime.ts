@@ -1,3 +1,4 @@
+import type { DownloadProbeResult } from "./downloadMirrorRanking";
 import type {
   AuthSessionDto,
   ClientNodeProbeResultDto,
@@ -830,12 +831,22 @@ export async function ensureBundledRuntimeComponents() {
 export async function downloadRuntimeComponent(input: {
   component: RuntimeComponentDownloadItem;
   url: string;
+  minBytesPerSecond?: number | null;
 }) {
   const invoke = await loadInvoke();
   if (!invoke || isAndroidPlatform()) {
     return null;
   }
   return invoke<RuntimeComponentDownloadResult>("download_runtime_component", { input });
+}
+
+/** Measures each mirror with a short ranged request; returns fastest first. Empty when unsupported. */
+export async function probeDownloadCandidates(urls: string[]) {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform() || urls.length === 0) {
+    return [] as DownloadProbeResult[];
+  }
+  return invoke<DownloadProbeResult[]>("probe_download_candidates", { urls });
 }
 
 export async function cancelRuntimeComponentDownload() {

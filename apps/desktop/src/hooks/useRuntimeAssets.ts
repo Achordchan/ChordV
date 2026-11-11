@@ -33,6 +33,7 @@ import {
   checkRuntimeComponentFile,
   downloadRuntimeComponent,
   ensureBundledRuntimeComponents,
+  probeDownloadCandidates,
   getRuntimeComponentLocalInfo,
   loadDesktopRuntimeEnvironment,
   subscribeRuntimeComponentDownloadProgress,
@@ -48,10 +49,17 @@ import {
 import {
   createIdleRuntimeAssetsState,
   type RuntimeAssetsUiState,
+  type RuntimeComponentDownloadCandidate,
   type RuntimeComponentDownloadItem,
   type RuntimeDownloadFailureReason
 } from "../lib/runtimeComponents";
 import { describeRuntimeAssetsFailure } from "../lib/userFacingErrors";
+import {
+  minimumSpeedForAttempt,
+  rankDownloadUrls,
+  rememberProbeResults,
+  urlsNeedingProbe
+} from "../lib/downloadMirrorRanking";
 import type { ToastInput } from "../lib/toast";
 
 export type RuntimeAssetsCheckSummary = {
@@ -149,23 +157,41 @@ function isRuntimeDownloadCancelled(reason: unknown) {
   return /download_cancelled|cancelled|canceled|取消/i.test(message);
 }
 
+async function orderCandidateUrls(urls: string[]) {
+  if (urls.length < 2) {
+    return urls;
+  }
+  const unmeasured = urlsNeedingProbe(urls);
+  if (unmeasured.length > 0) {
+    try {
+      rememberProbeResults(await probeDownloadCandidates(unmeasured));
+    } catch {
+      // Older shells without the probe command keep the server's order.
+    }
+  }
+  return rankDownloadUrls(urls);
+}
+
 async function downloadComponentWithFallback(
   component: RuntimeComponentDownloadItem,
-  preferredUrl?: string | null,
+  preferred: { url: string; source: RuntimeComponentDownloadCandidate["source"] } | null,
   shouldCancel?: () => boolean
 ) {
-  const urls = [
-    preferredUrl,
-    ...component.candidates.map((candidate) => candidate.url)
-  ].filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index);
+  const candidateUrls = component.candidates
+    .map((candidate) => candidate.url)
+    .filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index);
+  // A mirror the user typed in is an explicit choice: try it first, measure the rest.
+  const userMirror = preferred?.source === "client_override" ? preferred.url : null;
+  const ranked = await orderCandidateUrls(candidateUrls.filter((url) => url !== userMirror));
+  const urls = userMirror ? [userMirror, ...ranked] : ranked;
 
   let lastError: unknown = new Error(`${component.displayName} 没有可用下载地址`);
-  for (const url of urls) {
+  for (const [index, url] of urls.entries()) {
     if (shouldCancel?.()) {
       throw new Error("runtime_component_error:download_cancelled:下载已取消");
     }
     try {
-      await downloadRuntimeComponent({ component, url });
+      await downloadRuntimeComponent({ component, url, minBytesPerSecond: minimumSpeedForAttempt(index, urls.length) });
       return url;
     } catch (reason) {
       if (shouldCancel?.() || isRuntimeDownloadCancelled(reason)) {
@@ -602,7 +628,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                 blocking: ensureOptions.blockConnection
               });
               try {
-                await downloadComponentWithFallback(component, candidate?.url ?? null, () => cancelRequestedRef.current);
+                await downloadComponentWithFallback(component, candidate, () => cancelRequestedRef.current);
                 if (component.component === "xray") {
                   localInfos = await refreshLocalRuntimeInfos();
                   writeStoredXrayInstalledIdentity(
@@ -739,7 +765,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                       blocking: ensureOptions.blockConnection
                     });
                     try {
-                      await downloadComponentWithFallback(component, candidate?.url ?? null, () => cancelRequestedRef.current);
+                      await downloadComponentWithFallback(component, candidate, () => cancelRequestedRef.current);
                       summary.updated.push(component.displayName);
                     } catch (reason) {
                       if (cancelRequestedRef.current || isRuntimeDownloadCancelled(reason)) {
@@ -865,7 +891,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                       blocking: ensureOptions.blockConnection
                     });
                     try {
-                      await downloadComponentWithFallback(xrayItem, candidate?.url ?? null, () => cancelRequestedRef.current);
+                      await downloadComponentWithFallback(xrayItem, candidate, () => cancelRequestedRef.current);
                       localInfos = await refreshLocalRuntimeInfos();
                       summary.updated.push(xrayItem.displayName);
                       summary.current = false;

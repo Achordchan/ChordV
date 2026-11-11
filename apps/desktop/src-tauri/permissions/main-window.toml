@@ -42,6 +42,7 @@ commands.allow = [
   "fetch_remote_text",
   "check_runtime_component_file",
   "download_runtime_component",
+  "probe_download_candidates",
   "cancel_runtime_component_download",
   "update_shell_summary",
   "runtime_status",
