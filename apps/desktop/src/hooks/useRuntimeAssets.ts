@@ -55,7 +55,7 @@ import {
 } from "../lib/runtimeComponents";
 import { describeRuntimeAssetsFailure } from "../lib/userFacingErrors";
 import {
-  minimumSpeedForAttempt,
+  downloadWithMirrorFallback,
   rankDownloadUrls,
   rememberProbeResults,
   urlsNeedingProbe
@@ -185,22 +185,19 @@ async function downloadComponentWithFallback(
   const ranked = await orderCandidateUrls(candidateUrls.filter((url) => url !== userMirror));
   const urls = userMirror ? [userMirror, ...ranked] : ranked;
 
-  let lastError: unknown = new Error(`${component.displayName} 没有可用下载地址`);
-  for (const [index, url] of urls.entries()) {
-    if (shouldCancel?.()) {
-      throw new Error("runtime_component_error:download_cancelled:下载已取消");
-    }
-    try {
-      await downloadRuntimeComponent({ component, url, minBytesPerSecond: minimumSpeedForAttempt(index, urls.length) });
-      return url;
-    } catch (reason) {
-      if (shouldCancel?.() || isRuntimeDownloadCancelled(reason)) {
-        throw reason;
-      }
-      lastError = reason;
-    }
+  if (urls.length === 0) {
+    throw new Error(`${component.displayName} 没有可用下载地址`);
   }
-  throw lastError;
+  return downloadWithMirrorFallback(
+    urls,
+    async (url, minBytesPerSecond) => {
+      if (shouldCancel?.()) {
+        throw new Error("runtime_component_error:download_cancelled:下载已取消");
+      }
+      await downloadRuntimeComponent({ component, url, minBytesPerSecond });
+    },
+    (reason) => Boolean(shouldCancel?.()) || isRuntimeDownloadCancelled(reason)
+  );
 }
 
 export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {

@@ -73,3 +73,45 @@ export function rankDownloadUrls(urls: string[], nowMs = Date.now()) {
 export function minimumSpeedForAttempt(index: number, total: number) {
   return index < total - 1 ? MIN_MIRROR_BYTES_PER_SECOND : null;
 }
+
+/** The native downloader's message when a mirror stays under the minimum speed. */
+export const SLOW_MIRROR_MARKER = "download too slow on this mirror";
+
+export function isSlowMirrorRejection(reason: unknown) {
+  const message = reason instanceof Error ? reason.message : String(reason ?? "");
+  return message.includes(SLOW_MIRROR_MARKER);
+}
+
+/**
+ * Tries each URL with the minimum-speed guard, so a slow source gives way while
+ * others remain. If every URL fails, the sources rejected only for being slow
+ * are retried without the guard: a slow download beats no download.
+ */
+export async function downloadWithMirrorFallback(
+  urls: string[],
+  attempt: (url: string, minBytesPerSecond: number | null) => Promise<unknown>,
+  shouldStop: (reason: unknown) => boolean = () => false
+) {
+  let lastError: unknown = new Error("没有可用下载地址");
+  const slow: string[] = [];
+  for (const [index, url] of urls.entries()) {
+    try {
+      await attempt(url, minimumSpeedForAttempt(index, urls.length));
+      return url;
+    } catch (reason) {
+      if (shouldStop(reason)) throw reason;
+      if (isSlowMirrorRejection(reason)) slow.push(url);
+      lastError = reason;
+    }
+  }
+  for (const url of slow) {
+    try {
+      await attempt(url, null);
+      return url;
+    } catch (reason) {
+      if (shouldStop(reason)) throw reason;
+      lastError = reason;
+    }
+  }
+  throw lastError;
+}

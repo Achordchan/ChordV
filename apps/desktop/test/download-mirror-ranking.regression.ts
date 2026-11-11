@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import {
+  SLOW_MIRROR_MARKER,
+  downloadWithMirrorFallback,
   MIN_MIRROR_BYTES_PER_SECOND,
   MIRROR_RANKING_TTL_MS,
   minimumSpeedForAttempt,
@@ -36,4 +38,28 @@ assert.deepEqual(rankDownloadUrls(urls, 1000 + MIRROR_RANKING_TTL_MS), urls);
 assert.equal(minimumSpeedForAttempt(0, 3), MIN_MIRROR_BYTES_PER_SECOND);
 assert.equal(minimumSpeedForAttempt(2, 3), null, "最后一个地址再慢也要下完");
 assert.equal(minimumSpeedForAttempt(0, 1), null);
+async function fallbackChecks() {
+  const slowError = () => new Error(`runtime_component_error:download_timeout:geosite ${SLOW_MIRROR_MARKER} (50 KB/s), switching.`);
+  // 服务器副本可用但慢、其余全挂：先因慢被放弃，全部失败后不带门槛重试它。
+  const calls: Array<[string, number | null]> = [];
+  const used = await downloadWithMirrorFallback(["server", "mirror-down", "github-down"], async (url, min) => {
+    calls.push([url, min]);
+    if (url === "server" && min !== null) throw slowError();
+    if (url !== "server") throw new Error("connect failed");
+  });
+  assert.equal(used, "server");
+  assert.deepEqual(calls, [["server", MIN_MIRROR_BYTES_PER_SECOND], ["mirror-down", MIN_MIRROR_BYTES_PER_SECOND], ["github-down", null], ["server", null]]);
+
+  // 非慢速失败不重试；全部失败时抛出最后的错误。
+  const attempts: string[] = [];
+  await assert.rejects(downloadWithMirrorFallback(["a", "b"], async (url) => { attempts.push(url); throw new Error(`fail ${url}`); }), /fail b/);
+  assert.deepEqual(attempts, ["a", "b"]);
+
+  // 取消立即停止。
+  const cancelled: string[] = [];
+  await assert.rejects(downloadWithMirrorFallback(["a", "b"], async (url) => { cancelled.push(url); throw new Error("cancelled"); }, () => true), /cancelled/);
+  assert.deepEqual(cancelled, ["a"]);
+}
+
+await fallbackChecks();
 console.log("download mirror ranking regression passed");
