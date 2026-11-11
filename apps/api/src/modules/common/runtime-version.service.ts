@@ -11,6 +11,8 @@ import { PrismaService } from "./prisma.service";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { parseGithubLatestDownloadUrl } from "./github-latest-release";
 import { prepareRuntimeVersion, runtimeVersionPath, runtimeVersionUrl } from "./runtime-version-files";
+import { pinnedGithubReleaseAssetUrl } from "./github-mirror";
+export { pinnedGithubReleaseAssetUrl } from "./github-mirror";
 
 export type RuntimeSourceInput = { componentId: string; sourceUrl: string; version?: string; autoLatest: boolean };
 const DEFAULT_CHECK_INTERVAL_HOURS = 6;
@@ -22,15 +24,6 @@ export function geoCheckIntervalMs(raw = process.env.CHORDV_GEO_CHECK_INTERVAL_H
   const hours = Number(String(raw ?? "").trim());
   const valid = Number.isFinite(hours) && hours >= 1 && hours <= 720 ? hours : DEFAULT_CHECK_INTERVAL_HOURS;
   return valid * 60 * 60_000;
-}
-/** 只有固定到某个 Release 标签的 GitHub 文件地址才能交给公共加速镜像，latest 会被镜像缓存成旧版。 */
-export function pinnedGithubReleaseAssetUrl(value: string | null | undefined) {
-  if (!value) return null;
-  try {
-    const url = new URL(value.trim());
-    if (url.protocol !== "https:" || url.hostname !== "github.com" || url.username || url.password || url.search || url.hash) return null;
-    return /^\/[^/]+\/[^/]+\/releases\/download\/[^/]+\/[^/]+$/.test(url.pathname) ? url.href : null;
-  } catch { return null; }
 }
 const DAY_MS = 24 * 60 * 60_000;
 /** 手动选择的版本（含 Xray）：切换后保留 30 天，并始终保留最近 20 条。 */

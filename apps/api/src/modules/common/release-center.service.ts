@@ -24,6 +24,7 @@ import type {
 import { ClientEventsPublisher } from "./client-events.publisher";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { PrismaService } from "./prisma.service";
+import { githubMirrorDownloadUrls, pinnedGithubReleaseAssetUrl } from "./github-mirror";
 import { DownloadMirrorService } from "./download-mirror.service";
 import { throwLocalReadAsServiceUnavailable, throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 import {
@@ -169,6 +170,21 @@ export class ReleaseCenterService {
     private readonly adminRuntimeEventsService: AdminRuntimeEventsService,
     private readonly downloadMirrorService: DownloadMirrorService,
     private readonly files: FileMaintenanceService) {}
+
+  /**
+   * 从 GitHub Release 获取的安装包，同时下发加速镜像地址。客户端仍会校验大小与 SHA256，
+   * Windows 还要过更新签名，所以镜像只影响速度，不影响装到什么。
+   */
+  private async installerMirrorDownloadUrls(artifact: { source: string; sourceUrl?: string | null; fileHash?: string | null }) {
+    const githubAssetUrl = artifact.source === "uploaded" && artifact.fileHash ? pinnedGithubReleaseAssetUrl(artifact.sourceUrl) : null;
+    if (!githubAssetUrl) return {};
+    try {
+      const mirror = await this.downloadMirrorService.getEffectiveConfig();
+      return { mirrorDownloadUrls: githubMirrorDownloadUrls(githubAssetUrl, mirror.defaultMirrorPrefix) };
+    } catch {
+      return { mirrorDownloadUrls: githubMirrorDownloadUrls(githubAssetUrl, null) };
+    }
+  }
 
   async listAdminReleases(input?: { platform?: PlatformTarget; status?: ReleaseStatus }): Promise<AdminReleaseRecordDto[]> {
     try {
@@ -1145,7 +1161,9 @@ export class ReleaseCenterService {
         changelog: release.changelog,
         deliveryMode: (resolvedArtifact?.deliveryMode as ClientUpdateCheckResultDto["deliveryMode"] | undefined)
           ?? fallbackDeliveryMode,
-        recommendedArtifact: resolvedArtifact ? toAdminReleaseArtifactRecord(resolvedArtifact, false) : null,
+        recommendedArtifact: resolvedArtifact
+          ? { ...toAdminReleaseArtifactRecord(resolvedArtifact, false), ...(await this.installerMirrorDownloadUrls(resolvedArtifact)) }
+          : null,
         downloadUrl: resolvedArtifact?.downloadUrl ?? null,
         fileName: resolvedArtifact?.fileName ?? null,
         fileSizeBytes: resolvedArtifact?.fileSizeBytes?.toString() ?? null,

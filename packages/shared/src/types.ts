@@ -234,6 +234,8 @@ export interface AdminReleaseArtifactDto {
   deliveryMode: UpdateDeliveryMode;
   downloadUrl: string;
   originDownloadUrl?: string | null;
+  /** 安装包的 GitHub 加速镜像与直连地址（仅在更新检查里下发），客户端测速后选用，服务器地址兜底。 */
+  mirrorDownloadUrls?: string[];
   finalUrlPreview?: string | null;
   defaultMirrorPrefix: string | null;
   allowClientMirror: boolean;

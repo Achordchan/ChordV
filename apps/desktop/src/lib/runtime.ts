@@ -483,7 +483,7 @@ export async function downloadDesktopInstaller(input: {
   packageKind?: "installer";
   currentVersion?: string | null;
   channel?: string | null;
-  preferredCandidate?: "mirror" | "origin";
+  preferredCandidate?: "fastest" | "mirror" | "origin";
   onProgress?: (progress: DesktopUpdateDownloadProgress) => void;
 }) {
   const invoke = await loadInvoke();

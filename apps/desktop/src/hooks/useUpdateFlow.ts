@@ -386,39 +386,32 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     try {
       let usedFallback = false;
       let result;
-      try {
-        const downloadPackage = downloadDesktopInstaller;
-        result = await downloadPackage({
-          preferredCandidate: "mirror",
-          fileName: preferredFileName,
-          expectedVersion: effectiveUpdate.latestVersion,
-          currentVersion: options.appVersion,
-          channel: options.updateChannel ?? "stable",
-          onProgress: (progress) => {
-            setUpdateDownload((current) => normalizeUpdateDownloadProgress(current, progress));
-          }
-        });
-      } catch (reason) {
-        if (!originDownloadUrl || originDownloadUrl === resolvedDownloadUrl) {
-          throw reason;
+      const runDownload = (preferredCandidate: "fastest" | "mirror" | "origin") => downloadDesktopInstaller({
+        preferredCandidate,
+        fileName: preferredFileName,
+        expectedVersion: effectiveUpdate.latestVersion,
+        currentVersion: options.appVersion,
+        channel: options.updateChannel ?? "stable",
+        onProgress: (progress) => {
+          setUpdateDownload((current) => normalizeUpdateDownloadProgress(current, progress));
         }
-        usedFallback = true;
-        setUpdateDownload((current) => ({
-          ...current,
-          phase: "preparing",
-          message: "加速下载失败，正在回退到原始下载地址…"
-        }));
-        const downloadPackage = downloadDesktopInstaller;
-        result = await downloadPackage({
-          preferredCandidate: "origin",
-          fileName: preferredFileName,
-          expectedVersion: effectiveUpdate.latestVersion,
-          currentVersion: options.appVersion,
-          channel: options.updateChannel ?? "stable",
-          onProgress: (progress) => {
-            setUpdateDownload((current) => normalizeUpdateDownloadProgress(current, progress));
+      });
+      const announceFallback = (message: string) => setUpdateDownload((current) => ({ ...current, phase: "preparing", message }));
+      // 先测速走最快的 GitHub 加速镜像；失败回到服务器地址，最后才是原始地址。
+      try {
+        result = await runDownload("fastest");
+      } catch {
+        announceFallback("加速镜像下载失败，正在改用服务器下载…");
+        try {
+          result = await runDownload("mirror");
+        } catch (reason) {
+          if (!originDownloadUrl || originDownloadUrl === resolvedDownloadUrl) {
+            throw reason;
           }
-        });
+          usedFallback = true;
+          announceFallback("加速下载失败，正在回退到原始下载地址…");
+          result = await runDownload("origin");
+        }
       }
 
       if (!result?.localPath) {

@@ -49,7 +49,7 @@ export function NetworkSettingsModal({ opened, onClose }: { opened: boolean; onC
         <Textarea label="迁移期间保留的旧地址" description="每行一个完整 HTTPS 地址；用于地址发现和跨域兼容。" value={aliases} disabled={saving} onChange={e=>setAliases(e.currentTarget.value)} autosize minRows={2}/>
         <Group justify="flex-end"><Button loading={saving} onClick={()=>void save("site")}>保存站点地址</Button></Group>
         <details><summary>兼容设置：旧外链与后台更新镜像</summary><Stack gap="md" mt="md">
-        <Textarea label="全局下载镜像" description="GEO 数据由客户端经这些镜像从 GitHub 下载（客户端会测速选最快的，留空则用内置公共镜像）；也用于旧外链及后台自更新。每行一个镜像前缀。" autosize minRows={2} value={mirror.defaultMirrorPrefix??""} disabled={saving} onChange={e=>setMirror({...mirror,defaultMirrorPrefix:e.currentTarget.value||null})}/>
+        <Textarea label="全局下载镜像" description="GEO 数据和从 GitHub 获取的安装包，由客户端经这些镜像下载（客户端会测速选最快的，留空则用内置公共镜像）；也用于旧外链及后台自更新。每行一个镜像前缀。" autosize minRows={2} value={mirror.defaultMirrorPrefix??""} disabled={saving} onChange={e=>setMirror({...mirror,defaultMirrorPrefix:e.currentTarget.value||null})}/>
         <Switch label="允许客户端自定义镜像" checked={mirror.allowClientMirror} disabled={saving} onChange={e=>setMirror({...mirror,allowClientMirror:e.currentTarget.checked})}/>
         <Switch label="后台自更新也使用镜像" checked={mirror.useMirrorForSystemUpdate} disabled={saving} onChange={e=>setMirror({...mirror,useMirrorForSystemUpdate:e.currentTarget.checked})}/>
         <Group justify="flex-end"><Button loading={saving} onClick={()=>void save("mirror")}>保存镜像</Button></Group></Stack></details>

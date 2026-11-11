@@ -147,6 +147,44 @@ pub async fn probe_download_candidates(urls: Vec<String>) -> Result<Vec<Download
     Ok(rank_probe_results(results))
 }
 
+/// Reads the mirror list the update check attached to an installer artifact.
+pub fn mirror_urls_from_json(value: &serde_json::Value) -> Vec<String> {
+    value
+        .get("mirrorDownloadUrls")
+        .and_then(|item| item.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(|item| item.trim().to_string())
+                .filter(|item| !item.is_empty())
+                .take(MAX_PROBE_CANDIDATES)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The fastest working URL among `mirrors` and the server copy, or the server
+/// copy when nothing answered. Mirrors are only offered for payloads whose
+/// integrity is checked afterwards (size + SHA256, plus the updater signature
+/// on Windows), so the choice affects speed, never what gets installed.
+pub async fn pick_fastest_url(mirrors: Vec<String>, server: Url) -> Url {
+    if mirrors.is_empty() {
+        return server;
+    }
+    let mut urls = mirrors;
+    urls.push(server.to_string());
+    let Ok(results) = probe_download_candidates(urls).await else {
+        return server;
+    };
+    results
+        .into_iter()
+        .filter(|result| result.ok)
+        .filter_map(|result| Url::parse(&result.url).ok())
+        .find(|url| matches!(url.scheme(), "http" | "https"))
+        .unwrap_or(server)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,6 +210,13 @@ mod tests {
         ]);
         let order: Vec<_> = ranked.iter().map(|item| item.url.as_str()).collect();
         assert_eq!(order, vec!["fast", "slow", "broken-a", "broken-b"]);
+    }
+
+    #[test]
+    fn reads_mirror_urls_and_ignores_garbage() {
+        let value = serde_json::json!({"mirrorDownloadUrls": [" https://a/x ", "", 3, "https://b/x"]});
+        assert_eq!(mirror_urls_from_json(&value), vec!["https://a/x".to_string(), "https://b/x".to_string()]);
+        assert!(mirror_urls_from_json(&serde_json::json!({})).is_empty());
     }
 
     #[test]
