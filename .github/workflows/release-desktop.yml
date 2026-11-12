@@ -60,7 +60,7 @@ jobs:
       matrix:
         include:
           - platform: macos
-            runner: macos-14
+            runner: macos-15
             rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
             artifact_path: output/release/macos/*.dmg
           - platform: windows
