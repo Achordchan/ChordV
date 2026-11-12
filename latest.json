@@ -1,0 +1,17 @@
+{
+  "version": "0.0.34",
+  "channel": "stable",
+  "tag": "backend-v0.0.34",
+  "publishedAt": "2026-11-12T05:15:23Z",
+  "htmlUrl": "https://github.com/Achordchan/ChordV/releases/tag/backend-v0.0.34",
+  "changelog": [
+    "GEO 数据改从 GitHub 固定版本地址经加速镜像下载，带 SHA256 校验，绿云副本兜底",
+    "安装包更新检查下发 GitHub 加速镜像地址，客户端测速选最快，失败回退服务器",
+    "系统设置新增全局下载镜像（留空用内置公共镜像）"
+  ],
+  "artifact": {
+    "url": "https://github.com/Achordchan/ChordV/releases/download/backend-v0.0.34/chordv-backend-0.0.34.tar.gz",
+    "sha256": "46ea2d99e4bd8237624b11539aefd9062e282bf40852ee8b8cbf072acb0afd52",
+    "sizeBytes": 104144720
+  }
+}
