@@ -30,7 +30,8 @@ function isHttpUrl(value: string) {
 
 function splitMirrorPrefixes(value: string | null | undefined) {
   return String(value ?? "")
-    .split(/[\n,;]+/)
+    // 与 DownloadMirrorService 保存时的分隔符一致：只按换行和逗号分，分号可能是模板地址的一部分。
+    .split(/\r?\n|,/)
     .map((item) => item.trim())
     .filter(Boolean);
 }

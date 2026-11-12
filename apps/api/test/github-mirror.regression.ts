@@ -9,6 +9,11 @@ async function main() {
   assert.equal(defaults.at(-1), dmg, "GitHub 直连排在镜像之后");
   assert.deepEqual(githubMirrorDownloadUrls(dmg, "https://m.example/{url}\nftp://bad/"), [`https://m.example/${dmg}`, dmg]);
   assert.equal(pinnedGithubReleaseAssetUrl(`${dmg}?x=1`), null);
+  assert.deepEqual(
+    githubMirrorDownloadUrls(dmg, "https://mirror.example/proxy?mode=download;url={url}\r\nhttps://a.example/,https://b.example/"),
+    [`https://mirror.example/proxy?mode=download;url=${dmg}`, `https://a.example/${dmg}`, `https://b.example/${dmg}`, dmg],
+    "分号属于模板地址本身，不能当分隔符"
+  );
 
   const service = Object.assign(Object.create(ReleaseCenterService.prototype), {
     downloadMirrorService: { getEffectiveConfig: async () => ({ defaultMirrorPrefix: "https://m.example/", allowClientMirror: false, useMirrorForSystemUpdate: true, updatedAt: null }) }
