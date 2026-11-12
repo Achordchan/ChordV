@@ -48,7 +48,14 @@ async fn download_inner(app: &AppHandle, channel: &Channel<DesktopInstallerDownl
     if expected_version.is_some_and(|version| version != target_version) {
         return Err("发布版本已变化，请重新检查更新后再下载".into());
     }
-    apply_download_candidate(&mut update, &api_base_url_parsed()?, candidate.unwrap_or("mirror"))?;
+    let candidate = candidate.unwrap_or("mirror");
+    if candidate == "fastest" {
+        // Mirrors cannot change the payload: Update::download checks the pinned signature.
+        let server = update.download_url.clone();
+        update.download_url = crate::download_probe::pick_fastest_url(crate::download_probe::mirror_urls_from_json(&update.raw_json), server).await;
+    } else {
+        apply_download_candidate(&mut update, &api_base_url_parsed()?, candidate)?;
+    }
     update.timeout = Some(Duration::from_secs(DOWNLOAD_TOTAL_TIMEOUT_SECS));
     let expected_size = require_desktop_update_download_size(json_u64_field(&update.raw_json, &["fileSizeBytes"]))?;
     let file_name = match crate::build_info::build_from_version(&update.version) {

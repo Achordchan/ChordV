@@ -396,6 +396,7 @@ export class ClientController {
     const version = query.currentBuild && result.latestBuild ? `${result.latestVersion}+${result.latestBuild}` : result.latestVersion;
     return response.json({ version, notes: result.changelog.join("\n"),
       url: downloadUrl, originDownloadUrl,
+      ...(artifact.mirrorDownloadUrls?.length ? { mirrorDownloadUrls: artifact.mirrorDownloadUrls } : {}),
       signature: artifact.updaterSignature,
       fileSizeBytes: result.fileSizeBytes, fileHash: result.fileHash });
   }

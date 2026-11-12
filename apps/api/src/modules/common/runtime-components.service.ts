@@ -31,6 +31,8 @@ import { moveUploadedFile } from "./upload-file.utils";
 import { fetchPublicHttpUrl } from "./remote-url.utils";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { DownloadMirrorService } from "./download-mirror.service";
+import { DEFAULT_GITHUB_MIRROR_PREFIXES, buildGithubMirroredCandidates } from "./github-mirror";
+export { DEFAULT_GITHUB_MIRROR_PREFIXES, buildGithubMirroredCandidates } from "./github-mirror";
 import { resolveGithubLatestReleaseAsset } from "./github-latest-release";
 
 const RUNTIME_COMPONENT_DOWNLOAD_PREFIX = "/api/downloads/runtime-components";
@@ -929,39 +931,6 @@ function applyRuntimeMirrorPrefix(originUrl: string, mirrorPrefix: string) {
     return `${prefix}${originUrl}`;
   }
   return `${prefix}/${originUrl}`;
-}
-
-/**
- * 后台“下载镜像”没填时，GEO 用这组公共 GitHub 加速镜像。客户端会先并发测速再选最快的，
- * 下载完必须和后台比对过的 SHA256 一致，所以镜像返回旧文件或错误内容只会换下一个。
- */
-export const DEFAULT_GITHUB_MIRROR_PREFIXES = [
-  "https://ghfast.top/",
-  "https://gh-proxy.com/",
-  "https://hk.gh-proxy.com/",
-  "https://edgeone.gh-proxy.com/",
-  "https://ghproxy.net/"
-].join("\n");
-
-/**
- * 顺序：各加速镜像 → GitHub 直连 → 服务器副本。服务器副本必须保持唯一的 origin 且放在最后：
- * 旧客户端按 origin 地址判断 GEO 是否换版，改掉它会让所有人重下一遍；它也是镜像全挂时的兜底。
- */
-export function buildGithubMirroredCandidates(input: { githubAssetUrl: string; serverCopyUrl: string; mirrorPrefixes: string | null }) {
-  const candidates: Array<{ label: "client_mirror" | "default_mirror" | "origin"; url: string }> = [];
-  const seen = new Set<string>();
-  const push = (label: "default_mirror" | "origin", url: string) => {
-    const normalized = url.trim();
-    if (!normalized || seen.has(normalized) || !isHttpUrl(normalized)) return;
-    seen.add(normalized);
-    candidates.push({ label, url: normalized });
-  };
-  for (const prefix of splitMirrorPrefixes(input.mirrorPrefixes)) {
-    push("default_mirror", applyRuntimeMirrorPrefix(input.githubAssetUrl, prefix));
-  }
-  push("default_mirror", input.githubAssetUrl);
-  push("origin", input.serverCopyUrl);
-  return candidates;
 }
 
 function buildRuntimeComponentDownloadCandidates(input: {

@@ -1614,12 +1614,24 @@ async fn fetch_trusted_desktop_update_package(
     let origin_download_url =
         json_string_field(&artifact, &["originDownloadUrl", "origin_download_url"]);
 
-    let url = resolve_trusted_desktop_update_url(
-        &api_base,
-        &download_url,
-        origin_download_url.as_deref(),
-        preferred_candidate,
-    )?;
+    // "fastest" measures the GitHub mirrors the server attached against the
+    // server copy. Only payloads with a known hash may come from a mirror.
+    let url = if preferred_candidate == "fastest" {
+        let server = resolve_trusted_desktop_update_url(&api_base, &download_url, origin_download_url.as_deref(), "mirror")?;
+        let mirrors = if expected_hash.is_some() {
+            download_probe::mirror_urls_from_json(&artifact)
+        } else {
+            Vec::new()
+        };
+        download_probe::pick_fastest_url(mirrors, server).await
+    } else {
+        resolve_trusted_desktop_update_url(
+            &api_base,
+            &download_url,
+            origin_download_url.as_deref(),
+            preferred_candidate,
+        )?
+    };
     let _ = is_url_under_api_base(&url, &api_base);
 
     Ok(TrustedDesktopUpdatePackage {
@@ -1682,9 +1694,10 @@ async fn download_desktop_installer_inner(
                 .filter(|value| !value.is_empty())
                 .unwrap_or("mirror")
             {
+                "fastest" => "fastest",
                 "mirror" => "mirror",
                 "origin" => "origin",
-                _ => return Err("更新下载候选仅支持 mirror 或 origin".into()),
+                _ => return Err("更新下载候选仅支持 fastest、mirror 或 origin".into()),
             };
             let (url, file_name_hint, expected_total_bytes, expected_hash, package_kind) =
                 {
