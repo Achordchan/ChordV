@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {readFileSync,writeFileSync,mkdtempSync,rmSync} from 'node:fs';
+import {readFileSync,writeFileSync,mkdtempSync,rmSync,existsSync} from 'node:fs';
 import {tmpdir,homedir} from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
@@ -58,7 +58,9 @@ fn main(){
 const root=mkdtempSync(path.join(tmpdir(),'chordv-shell-threading-'));
 try {
  const rust=path.join(root,'check.rs'),binary=path.join(root,process.platform==='win32'?'check.exe':'check');writeFileSync(rust,harness);
- const rustc=process.env.RUSTC||path.join(homedir(),'.cargo','bin',process.platform==='win32'?'rustc.exe':'rustc');
+ // 优先 RUSTC，其次 rustup 默认位置；都没有时用 PATH 上的 rustc（部分 CI 镜像的 rustup 不装在 ~/.cargo/bin）。
+ const rustupRustc=path.join(homedir(),'.cargo','bin',process.platform==='win32'?'rustc.exe':'rustc');
+ const rustc=process.env.RUSTC||(existsSync(rustupRustc)?rustupRustc:'rustc');
  const build=spawnSync(rustc,['--edition=2021',rust,'-o',binary],{encoding:'utf8',timeout:30000});
  assert.equal(build.status,0,build.stderr||String(build.error));
  const result=spawnSync(binary,[],{encoding:'utf8',timeout:15000});
