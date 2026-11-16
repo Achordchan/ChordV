@@ -7880,21 +7880,6 @@ mod update_trust_tests {
     }
 
     #[test]
-    fn connect_verify_allows_stale_geo_but_not_broken_files() {
-        let mismatch = || Err::<(), String>("geosite checksum mismatch".into());
-        assert!(resolve_connect_verify_result(RuntimeComponentKindInput::Geosite, mismatch(), || Ok(())).is_ok());
-        assert!(resolve_connect_verify_result(RuntimeComponentKindInput::Geoip, mismatch(), || Ok(())).is_ok());
-        assert!(resolve_connect_verify_result(
-            RuntimeComponentKindInput::Geosite,
-            mismatch(),
-            || Err("geosite is too small".into())
-        )
-        .is_err());
-        assert!(resolve_connect_verify_result(RuntimeComponentKindInput::Xray, mismatch(), || Ok(())).is_err());
-        assert!(resolve_connect_verify_result(RuntimeComponentKindInput::Xray, Ok(()), || Err("unused".into())).is_ok());
-    }
-
-    #[test]
     fn installer_download_url_allowed_https_and_local_http_only() {
         let https = Url::parse("https://cdn.example.com/ChordV.zip").unwrap();
         assert!(installer_download_url_allowed(&https));
@@ -7963,6 +7948,21 @@ mod update_trust_tests {
 #[cfg(test)]
 mod runtime_failure_tests {
     use super::*;
+
+    #[test]
+    fn connect_verify_allows_stale_geo_but_not_broken_files() {
+        let mismatch = || Err::<(), String>("geosite checksum mismatch".into());
+        assert!(resolve_connect_verify_result(RuntimeComponentKindInput::Geosite, mismatch(), || Ok(())).is_ok());
+        assert!(resolve_connect_verify_result(RuntimeComponentKindInput::Geoip, mismatch(), || Ok(())).is_ok());
+        assert!(resolve_connect_verify_result(
+            RuntimeComponentKindInput::Geosite,
+            mismatch(),
+            || Err("geosite is too small".into())
+        )
+        .is_err());
+        assert!(resolve_connect_verify_result(RuntimeComponentKindInput::Xray, mismatch(), || Ok(())).is_err());
+        assert!(resolve_connect_verify_result(RuntimeComponentKindInput::Xray, Ok(()), || Err("unused".into())).is_ok());
+    }
     #[test]
     fn windows_force_takeover_disables_pac_and_auto_detect() {
         let has = |value: &str, name: &str, required: bool| WINDOWS_FORCE_AUTO_PROXY_RESET.iter()
