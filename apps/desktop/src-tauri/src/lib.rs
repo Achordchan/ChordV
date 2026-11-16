@@ -1822,9 +1822,9 @@ async fn download_desktop_installer_inner(
                 .connect_timeout(Duration::from_secs(
                     DOWNLOAD_CONNECT_TIMEOUT_SECS,
                 ))
-                .timeout(Duration::from_secs(
-                    DOWNLOAD_TOTAL_TIMEOUT_SECS,
-                ))
+                // 不设整体超时：慢网下载 20MB 安装包可能要好几分钟，旧的 180 秒整体超时会在
+                // 半途掐断。只要持续有数据就继续下，停顿超过空闲超时才算失败。
+                .read_timeout(Duration::from_secs(DOWNLOAD_IDLE_TIMEOUT_SECS))
                 .build()
                 .map_err(|error| format!("初始化下载器失败：{error}"))?;
             append_download_diagnostic_log(
@@ -2952,7 +2952,8 @@ async fn download_runtime_component_inner(
             // through HTTPS_PROXY (often the only way out of a corporate network) still is.
             let client = Client::builder()
                 .connect_timeout(Duration::from_secs(DOWNLOAD_CONNECT_TIMEOUT_SECS))
-                .timeout(Duration::from_secs(DOWNLOAD_TOTAL_TIMEOUT_SECS))
+                // 与安装包下载相同：不设整体超时，停顿超过空闲超时才失败（慢镜像另由最低速度切换）。
+                .read_timeout(Duration::from_secs(DOWNLOAD_IDLE_TIMEOUT_SECS))
                 .build()
                 .map_err(|error| runtime_component_error("download_failed", format!("初始化组件下载器失败：{error}")))?;
             let transfer_started = Instant::now();
