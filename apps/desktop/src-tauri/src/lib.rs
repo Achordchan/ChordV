@@ -4065,23 +4065,52 @@ fn verify_runtime_component_for_connect(
         ));
     }
 
-    validate_runtime_component_file_content_with_checksum(
+    let checksum_result = validate_runtime_component_file_content_with_checksum(
         &target_path,
         component.component,
         component.checksum_sha256.as_deref(),
-    )
+    );
+    let checksum_error = checksum_result.as_ref().err().cloned();
+    resolve_connect_verify_result(component.component, checksum_result, || {
+        validate_runtime_component_file_content(&target_path, component.component)
+    })
     .map_err(|error| {
         format!(
             "{} failed local validation: {error}",
             runtime_component_key(component.component)
         )
     })?;
+    if let Some(error) = checksum_error {
+        append_download_diagnostic_log(
+            app,
+            "runtime-verify",
+            format!(
+                "connect-verify-stale component={} detail={error}",
+                runtime_component_key(component.component)
+            ),
+        );
+    }
 
     if component.component == RuntimeComponentKindInput::Xray {
         ensure_executable(&target_path)?;
     }
 
     Ok(())
+}
+
+/// 后台每次给 GEO 换版，旧的 geoip/geosite 哈希就和组件计划对不上，但规则文件本身仍然完整可用。
+/// 客户端只按周期检查 GEO 更新，换版到下次检查之间如果按哈希拦截，用户就会被挡在连接之外。
+/// 因此 GEO 哈希不一致时只要文件本身通过基础校验就放行（更新交给更新检查）；Xray 仍按原结果。
+fn resolve_connect_verify_result(
+    component: RuntimeComponentKindInput,
+    checksum_result: Result<(), String>,
+    basic_validation: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    match checksum_result {
+        Ok(()) => Ok(()),
+        Err(error) if component == RuntimeComponentKindInput::Xray => Err(error),
+        Err(error) => basic_validation().map_err(|basic_error| format!("{error}; {basic_error}")),
+    }
 }
 
 async fn verify_runtime_components_for_connect(app: &AppHandle) -> Result<(), String> {
@@ -7919,6 +7948,21 @@ mod update_trust_tests {
 #[cfg(test)]
 mod runtime_failure_tests {
     use super::*;
+
+    #[test]
+    fn connect_verify_allows_stale_geo_but_not_broken_files() {
+        let mismatch = || Err::<(), String>("geosite checksum mismatch".into());
+        assert!(resolve_connect_verify_result(RuntimeComponentKindInput::Geosite, mismatch(), || Ok(())).is_ok());
+        assert!(resolve_connect_verify_result(RuntimeComponentKindInput::Geoip, mismatch(), || Ok(())).is_ok());
+        assert!(resolve_connect_verify_result(
+            RuntimeComponentKindInput::Geosite,
+            mismatch(),
+            || Err("geosite is too small".into())
+        )
+        .is_err());
+        assert!(resolve_connect_verify_result(RuntimeComponentKindInput::Xray, mismatch(), || Ok(())).is_err());
+        assert!(resolve_connect_verify_result(RuntimeComponentKindInput::Xray, Ok(()), || Err("unused".into())).is_ok());
+    }
     #[test]
     fn windows_force_takeover_disables_pac_and_auto_detect() {
         let has = |value: &str, name: &str, required: bool| WINDOWS_FORCE_AUTO_PROXY_RESET.iter()
