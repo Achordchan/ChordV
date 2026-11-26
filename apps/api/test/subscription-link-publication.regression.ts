@@ -17,6 +17,7 @@ import {
   SUBSCRIPTION_LINK_REFRESH_AFTER_MS,
   SubscriptionLinkPublicationService
 } from "../src/modules/common/subscription-link-publication.service";
+import { workLifecycle } from "../src/work-lifecycle";
 import {
   CloudflareKvStore,
   readCloudflareKvConfig,
@@ -55,26 +56,48 @@ function nodesDocument(uuid: string, usedBytes = 1n * GIB, nodeIds = ["node_a"])
 }
 
 type Operation = { op: "put" | "delete"; key: string; value?: string };
+type PublicationRow = { destination: string; tokenHash: string; userId: string; contentHash: string | null; publishedAt: Date | null };
+type Database = {
+  links: Array<{ userId: string; tokenHash: string }>;
+  publications: PublicationRow[];
+};
 
-function createHarness(options: { configured?: boolean } = {}) {
+const DESTINATION = "test-kv:one";
+
+/**
+ * `database` lets two services share one database while writing to different
+ * stores, which is what changing the configured namespace looks like.
+ */
+function createHarness(options: { configured?: boolean; destination?: string; database?: Database } = {}) {
+  const destination = options.destination ?? DESTINATION;
+  const database: Database = options.database ?? { links: [], publications: [] };
   const state = {
-    links: [] as Array<{ userId: string; tokenHash: string }>,
-    publications: [] as Array<{ tokenHash: string; contentHash: string; publishedAt: Date }>,
+    get links() { return database.links; },
+    set links(value) { database.links = value; },
+    get publications() { return database.publications; },
+    set publications(value) { database.publications = value; },
     documents: new Map<string, SubscriptionLinkDocument | Error>(),
     kv: new Map<string, string>(),
     operations: [] as Operation[],
     /** Decides whether a store call fails; return an error to throw it. */
     failStore: null as null | ((operation: Operation) => Error | null),
+    /** The store takes the write, and then the answer is lost. */
+    loseStoreAnswer: false,
+    /** Recording that a write is about to happen fails. */
     failPublicationWrite: false,
+    /** Recording that a write happened fails. */
+    failPublicationConfirm: false,
     renders: [] as string[]
   };
   const store: SubscriptionLinkStore = {
+    destination,
     put: async (key, value) => {
       const operation: Operation = { op: "put", key, value };
       state.operations.push(operation);
       const error = state.failStore?.(operation);
       if (error) throw error;
       state.kv.set(key, value);
+      if (state.loseStoreAnswer) throw new SubscriptionLinkStoreError("连不上分发层", null);
     },
     delete: async (key) => {
       const operation: Operation = { op: "delete", key };
@@ -84,22 +107,33 @@ function createHarness(options: { configured?: boolean } = {}) {
       state.kv.delete(key);
     }
   };
+  const matches = (row: PublicationRow, where: any) =>
+    (where.destination === undefined ||
+      (typeof where.destination === "string" ? row.destination === where.destination : row.destination !== where.destination.not)) &&
+    (where.tokenHash === undefined || row.tokenHash === where.tokenHash) &&
+    (where.userId === undefined || row.userId === where.userId);
   const prisma = {
     subscriptionLink: {
-      findMany: async () => [...state.links].sort((left, right) => (left.userId < right.userId ? -1 : 1)),
-      findUnique: async ({ where }: any) => state.links.find((link) => link.userId === where.userId) ?? null
+      findMany: async () => [...database.links].sort((left, right) => (left.userId < right.userId ? -1 : 1)).map((link) => ({ ...link })),
+      findUnique: async ({ where }: any) => database.links.find((link) => link.userId === where.userId) ?? null
     },
     subscriptionLinkPublication: {
-      findMany: async () => state.publications.map((row) => ({ ...row })),
-      findUnique: async ({ where }: any) => state.publications.find((row) => row.tokenHash === where.tokenHash) ?? null,
+      findMany: async ({ where }: any) => database.publications.filter((row) => matches(row, where)).map((row) => ({ ...row })),
+      count: async ({ where }: any) => database.publications.filter((row) => matches(row, where)).length,
       deleteMany: async ({ where }: any) => {
-        state.publications = state.publications.filter((row) => row.tokenHash !== where.tokenHash);
+        database.publications = database.publications.filter((row) => !matches(row, where));
       },
       upsert: async ({ where, create, update }: any) => {
         if (state.failPublicationWrite) throw new Error("database unavailable");
-        const existing = state.publications.find((row) => row.tokenHash === where.tokenHash);
+        const existing = database.publications.find((row) => matches(row, where.destination_tokenHash));
         if (existing) Object.assign(existing, update);
-        else state.publications.push({ ...create });
+        else database.publications.push({ ...create });
+      },
+      update: async ({ where, data }: any) => {
+        if (state.failPublicationConfirm) throw new Error("database unavailable");
+        const existing = database.publications.find((row) => matches(row, where.destination_tokenHash));
+        if (!existing) throw new Error("record to update not found");
+        Object.assign(existing, data);
       }
     }
   };
@@ -118,11 +152,23 @@ function createHarness(options: { configured?: boolean } = {}) {
     options.configured === false ? null : store
   );
   const addUser = (userId: string, tokenHash: string, document: SubscriptionLinkDocument | Error) => {
-    state.links.push({ userId, tokenHash });
+    if (!database.links.some((link) => link.userId === userId)) database.links.push({ userId, tokenHash });
     state.documents.set(userId, document);
   };
-  return { state, service, addUser };
+  /** Holds every render until released, to stand inside a pass. */
+  const holdRenders = () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const render = links.render;
+    links.render = async (userId: string) => { await gate; return render(userId); };
+    return () => { links.render = render; release(); };
+  };
+  return { state, database, service, addUser, holdRenders };
 }
+
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+const activeWork = () => (workLifecycle as unknown as { active: Set<symbol> }).active.size;
+const setDraining = (value: boolean) => { (workLifecycle as unknown as { draining: boolean }).draining = value; };
 
 async function main() {
   // The failure cases below log warnings by design; keep the run's output to the verdict.
@@ -171,7 +217,7 @@ async function main() {
     assert.deepEqual(state.renders, [], "没启用分发时不应白白生成内容");
     assert.equal(service.configured, false);
     assert.equal(service.getStatus().configured, false);
-    assert.deepEqual(await service.describeForUser("user_1"), { state: "not_configured", publishedAt: null });
+    assert.deepEqual(await service.describeForUser("user_1"), { state: "not_configured", publishedAt: null, revoking: 0 });
     service.kick();
     assert.deepEqual(state.operations, []);
   }
@@ -183,8 +229,8 @@ async function main() {
     const first = nodesDocument("uuid-1");
     addUser("user_1", "hash_1", first);
     addUser("user_2", "hash_2", buildNoticeDocument(SUBSCRIPTION_LINK_NOTICES.subscription_expired));
-    assert.deepEqual(await service.describeForUser("user_1"), { state: "pending", publishedAt: null });
-    assert.deepEqual(await service.describeForUser("nobody"), { state: "pending", publishedAt: null });
+    assert.deepEqual(await service.describeForUser("user_1"), { state: "pending", publishedAt: null, revoking: 0 });
+    assert.deepEqual(await service.describeForUser("nobody"), { state: "pending", publishedAt: null, revoking: 0 });
 
     assert.deepEqual(await service.reconcile(T0), { outcome: "ran", written: 2, deleted: 0, failed: 0, pending: 0 });
     assert.equal(state.kv.get("hash_1"), serializeSubscriptionLinkDocument(first), "键是 token 的哈希，值是完整文档");
@@ -193,7 +239,7 @@ async function main() {
       serializeSubscriptionLinkDocument(buildNoticeDocument(SUBSCRIPTION_LINK_NOTICES.subscription_expired)),
       "到期用户的链接照样发布，内容是提示节点"
     );
-    assert.deepEqual(await service.describeForUser("user_1"), { state: "live", publishedAt: T0.toISOString() });
+    assert.deepEqual(await service.describeForUser("user_1"), { state: "live", publishedAt: T0.toISOString(), revoking: 0 });
     assert.equal(service.getStatus().lastSuccessAt, T0.toISOString());
 
     // Nothing changed: nothing is written, however often the pass runs.
@@ -227,11 +273,15 @@ async function main() {
     // A reset: the old key goes, the new one appears, and the old one goes FIRST.
     state.operations.length = 0;
     state.links[0].tokenHash = "hash_1_new";
+    // Until a pass has run, the old link is still being served — and says so.
+    assert.deepEqual(await service.describeForUser("user_1"), { state: "pending", publishedAt: null, revoking: 1 });
     const afterReset = at(SUBSCRIPTION_LINK_REFRESH_AFTER_MS + 60_000);
     assert.deepEqual(await service.reconcile(afterReset), { outcome: "ran", written: 1, deleted: 1, failed: 0, pending: 0 });
     assert.deepEqual(state.operations.map((operation) => `${operation.op}:${operation.key}`), ["delete:hash_1", "put:hash_1_new"]);
     assert.equal(state.kv.has("hash_1"), false, "重置后旧链接必须从分发层消失");
     assert.deepEqual(state.publications.map((row) => row.tokenHash).sort(), ["hash_1_new", "hash_2"]);
+    assert.deepEqual(await service.describeForUser("user_1"), { state: "live", publishedAt: afterReset.toISOString(), revoking: 0 });
+    assert.equal(service.getStatus().revoking, 0);
 
     // An account removed: its link row is gone, and so must its key be.
     state.operations.length = 0;
@@ -250,8 +300,12 @@ async function main() {
     addUser("user_2", "hash_2", nodesDocument("uuid-2"));
     state.failStore = (operation) => (operation.key === "hash_1" ? new SubscriptionLinkStoreError("写入分发层失败（HTTP 500）", 500) : null);
     assert.deepEqual(await service.reconcile(T0), { outcome: "ran", written: 1, deleted: 0, failed: 1, pending: 1 });
-    assert.deepEqual(state.publications.map((row) => row.tokenHash), ["hash_2"], "一条失败不耽误其他人");
-    assert.deepEqual(await service.describeForUser("user_1"), { state: "pending", publishedAt: null });
+    assert.deepEqual(
+      state.publications.map((row) => [row.tokenHash, row.contentHash !== null]),
+      [["hash_1", false], ["hash_2", true]],
+      "一条失败不耽误其他人；失败的那条留着未确认的记录"
+    );
+    assert.deepEqual(await service.describeForUser("user_1"), { state: "pending", publishedAt: null, revoking: 0 });
     const status = service.getStatus();
     assert.equal(status.pending, 1);
     assert.equal(status.lastError, "写入分发层失败（HTTP 500）");
@@ -263,22 +317,93 @@ async function main() {
     assert.equal(service.getStatus().lastSuccessAt, at(30_000).toISOString());
   }
   {
-    // The store accepted the write but recording it failed: the next pass
-    // writes again (harmless) rather than believing nothing was published.
+    // Nothing is sent to the store before there is a record to revoke it by.
     const { state, service, addUser } = createHarness();
     addUser("user_1", "hash_1", nodesDocument("uuid-1"));
     state.failPublicationWrite = true;
     assert.deepEqual(await service.reconcile(T0), { outcome: "ran", written: 0, deleted: 0, failed: 1, pending: 1 });
+    assert.deepEqual(state.operations, [], "登记不上就不写分发层");
     assert.equal(service.getStatus().lastError, "发布时出错", "数据库错误的原文不进状态");
     state.failPublicationWrite = false;
     assert.equal((await service.reconcile(at(30_000))).written, 1);
+  }
+  for (const failure of ["failPublicationConfirm", "loseStoreAnswer"] as const) {
+    // The store took the credentials, and then either the database could not
+    // record it or the answer never arrived. Then the link is reset — or the
+    // account deleted — before any retry succeeds. The key must still be
+    // found and removed: the old link would otherwise keep returning node
+    // credentials for good, with nothing left that knows it exists.
+    for (const revocation of ["reset", "account-deleted"] as const) {
+      const { state, service, addUser } = createHarness();
+      addUser("user_1", "hash_old", nodesDocument("uuid-1"));
+      state[failure] = true;
+      assert.deepEqual(await service.reconcile(T0), { outcome: "ran", written: 0, deleted: 0, failed: 1, pending: 1 });
+      assert.equal(state.kv.has("hash_old"), true, "分发层已经收下了这次写入");
+      assert.deepEqual(
+        state.publications,
+        [{ destination: DESTINATION, tokenHash: "hash_old", userId: "user_1", contentHash: null, publishedAt: null }],
+        "写入之前登记的那一行必须还在"
+      );
+      assert.deepEqual(await service.describeForUser("user_1"), { state: "pending", publishedAt: null, revoking: 0 }, "没确认的写入不算已发布");
+
+      if (revocation === "reset") state.links[0].tokenHash = "hash_new";
+      else state.links = [];
+      state[failure] = false;
+      state.operations.length = 0;
+      const result = await service.reconcile(at(30_000));
+      assert.equal(result.deleted, 1, `${failure} 之后${revocation === "reset" ? "重置" : "删号"}：旧键必须被撤销`);
+      assert.equal(state.operations[0].op, "delete");
+      assert.equal(state.operations[0].key, "hash_old");
+      assert.equal(state.kv.has("hash_old"), false);
+      assert.ok(!state.publications.some((row) => row.tokenHash === "hash_old"));
+    }
+  }
+  {
+    // An unconfirmed write is written again rather than trusted.
+    const { state, service, addUser } = createHarness();
+    addUser("user_1", "hash_1", nodesDocument("uuid-1"));
+    state.failPublicationConfirm = true;
+    await service.reconcile(T0);
+    state.failPublicationConfirm = false;
+    assert.equal((await service.reconcile(at(30_000))).written, 1);
     assert.equal(state.operations.filter((operation) => operation.op === "put").length, 2);
+    assert.deepEqual(await service.describeForUser("user_1"), { state: "live", publishedAt: at(30_000).toISOString(), revoking: 0 });
+  }
+  {
+    // The daily rewrite of unchanged content failing does not turn a link
+    // that is being served into one reported as not served.
+    const { state, service, addUser } = createHarness();
+    addUser("user_1", "hash_1", nodesDocument("uuid-1"));
+    await service.reconcile(T0);
+    state.failStore = () => new SubscriptionLinkStoreError("写入分发层失败（HTTP 500）", 500);
+    assert.equal((await service.reconcile(at(SUBSCRIPTION_LINK_REFRESH_AFTER_MS))).failed, 1);
+    assert.deepEqual(await service.describeForUser("user_1"), { state: "live", publishedAt: T0.toISOString(), revoking: 0 });
+    // A change of content failing does: what is in the store is no longer known.
+    state.documents.set("user_1", nodesDocument("uuid-2"));
+    await service.reconcile(at(SUBSCRIPTION_LINK_REFRESH_AFTER_MS + 30_000));
+    assert.deepEqual(await service.describeForUser("user_1"), { state: "pending", publishedAt: null, revoking: 0 });
+  }
+  {
+    // A link reset while a pass is under way: the pass read the old token at
+    // its start, and must not publish it now.
+    const { state, service, addUser, holdRenders } = createHarness();
+    addUser("user_1", "hash_old", nodesDocument("uuid-1"));
+    const release = holdRenders();
+    const running = service.reconcile(T0);
+    await tick();
+    state.links[0].tokenHash = "hash_new";
+    release();
+    assert.deepEqual(await running, { outcome: "ran", written: 0, deleted: 0, failed: 0, pending: 0 });
+    assert.deepEqual(state.operations, [], "已经作废的 token 不能再发布出去");
+    assert.deepEqual(state.publications, []);
+    assert.equal((await service.reconcile(at(30_000))).written, 1);
+    assert.deepEqual([...state.kv.keys()], ["hash_new"]);
   }
   {
     // A reset whose delete fails keeps its record, so the key is not forgotten.
     const { state, service, addUser } = createHarness();
     addUser("user_1", "hash_new", nodesDocument("uuid-1"));
-    state.publications.push({ tokenHash: "hash_old", contentHash: "x", publishedAt: T0 });
+    state.publications.push({ destination: DESTINATION, tokenHash: "hash_old", userId: "user_1", contentHash: "x", publishedAt: T0 });
     state.kv.set("hash_old", "stale");
     state.failStore = (operation) => (operation.op === "delete" ? new SubscriptionLinkStoreError("从分发层删除失败（HTTP 503）", 503) : null);
     const result = await service.reconcile(T0);
@@ -286,9 +411,14 @@ async function main() {
     assert.equal(result.failed, 1);
     assert.equal(result.written, 1, "删除失败不耽误发布新链接");
     assert.ok(state.publications.some((row) => row.tokenHash === "hash_old"), "没删掉就必须留着记录");
+    assert.equal((await service.describeForUser("user_1")).revoking, 1, "旧链接还没撤销就要如实显示");
+    assert.equal(service.getStatus().revoking, 1);
+    assert.equal(service.getStatus().lastSuccessAt, null, "还有没撤销的就不算成功");
     state.failStore = null;
     assert.equal((await service.reconcile(at(30_000))).deleted, 1);
     assert.equal(state.kv.has("hash_old"), false);
+    assert.equal((await service.describeForUser("user_1")).revoking, 0);
+    assert.equal(service.getStatus().revoking, 0);
   }
   {
     // A store that is down is not hammered: the pass stops after a few failures.
@@ -313,8 +443,15 @@ async function main() {
     state.failStore = null;
     assert.equal((await service.reconcile(at(SUBSCRIPTION_LINK_RATE_LIMIT_PAUSE_MS - 1))).outcome, "paused");
     assert.equal(state.operations.length, 2);
+    // A link reset during the pause is still taken down: revoking does not
+    // wait for the pause to end, only publishing does.
+    state.links[0].tokenHash = "hash_0_new";
+    assert.deepEqual(await service.reconcile(at(60_000)), { outcome: "paused", written: 0, deleted: 1, failed: 0, pending: 0 });
+    assert.equal(state.kv.has("hash_0"), false);
+    assert.deepEqual(state.operations.slice(2), [{ op: "delete", key: "hash_0" }], "暂停期间只撤销，不发布");
+    assert.equal(service.getStatus().pending, 4, "暂停的一轮不改写待发布数");
     const resumed = await service.reconcile(at(SUBSCRIPTION_LINK_RATE_LIMIT_PAUSE_MS));
-    assert.deepEqual([resumed.outcome, resumed.written, resumed.pending], ["ran", 4, 0]);
+    assert.deepEqual([resumed.outcome, resumed.written, resumed.pending], ["ran", 5, 0]);
   }
   {
     // One user whose document cannot be generated does not hold the others back.
@@ -338,18 +475,125 @@ async function main() {
   }
   {
     // Two passes never run on top of each other in one process.
-    const { state, service, addUser } = createHarness();
+    const { service, addUser, holdRenders } = createHarness();
     addUser("user_1", "hash_1", nodesDocument("uuid-1"));
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
-    const render = (service as any).links.render;
-    (service as any).links.render = async (userId: string) => { await gate; return render(userId); };
+    const release = holdRenders();
     const running = service.reconcile(T0);
-    await new Promise((resolve) => setImmediate(resolve));
+    await tick();
     assert.equal((await service.reconcile(T0)).outcome, "busy");
     release();
     assert.equal((await running).written, 1);
     assert.equal((await service.reconcile(at(30_000))).outcome, "ran", "上一轮结束后可以再跑");
+  }
+
+  // --- asked for outside the timer, and shutting down ------------------------------------------
+
+  {
+    // kick() is work a shutdown has to wait for: it writes to the store and
+    // the database after the request that asked for it has been answered.
+    const { state, service, addUser, holdRenders } = createHarness();
+    addUser("user_1", "hash_1", nodesDocument("uuid-1"));
+    const release = holdRenders();
+    const before = activeWork();
+    service.kick();
+    await tick();
+    assert.equal(activeWork(), before + 1, "kick 触发的对账必须登记为进行中的工作");
+    release();
+    while (activeWork() > before) await tick();
+    assert.equal(state.kv.has("hash_1"), true);
+  }
+  {
+    // A reset that lands while a pass is running is not left for the next
+    // tick: the running pass is followed at once by another.
+    const { state, service, addUser, holdRenders } = createHarness();
+    addUser("user_1", "hash_old", nodesDocument("uuid-1"));
+    await service.reconcile(T0);
+    state.operations.length = 0;
+    const release = holdRenders();
+    const before = activeWork();
+    state.documents.set("user_1", nodesDocument("uuid-2"));
+    service.kick();
+    await tick();
+    state.links[0].tokenHash = "hash_new";
+    service.kick();
+    service.kick();
+    release();
+    while (activeWork() > before) await tick();
+    assert.deepEqual(state.operations.map((operation) => `${operation.op}:${operation.key}`), ["delete:hash_old", "put:hash_new"]);
+    assert.deepEqual([...state.kv.keys()], ["hash_new"]);
+  }
+  {
+    // While draining nothing new starts, by the timer or by kick()…
+    const { state, service, addUser } = createHarness();
+    addUser("user_1", "hash_1", nodesDocument("uuid-1"));
+    setDraining(true);
+    try {
+      const before = activeWork();
+      service.kick();
+      await service.reconcileOnSchedule();
+      await tick();
+      assert.equal(activeWork(), before);
+      assert.deepEqual(state.renders, [], "排空期间不开始新的对账");
+    } finally {
+      setDraining(false);
+    }
+    // …and a pass already running stops taking on work, leaving the rest for
+    // the next process.
+    const { service: running, addUser: add, holdRenders } = createHarness();
+    for (let index = 0; index < 4; index += 1) add(`user_${index}`, `hash_${index}`, nodesDocument(`uuid-${index}`));
+    const release = holdRenders();
+    const pass = running.reconcile(T0);
+    await tick();
+    setDraining(true);
+    try {
+      release();
+      const result = await pass;
+      assert.deepEqual([result.written, result.pending], [1, 3], "正在写的那一条写完，其余留给下一个进程");
+    } finally {
+      setDraining(false);
+    }
+    assert.equal((await running.reconcile(at(30_000))).written, 3);
+  }
+
+  // --- the destination changes ---------------------------------------------------------------
+
+  {
+    // The operator points distribution at a new namespace and keeps the
+    // database. What was written to the old one says nothing about the new
+    // one: every link has to be published there, at once, not when its daily
+    // rewrite comes round.
+    const first = createHarness({ destination: "test-kv:one" });
+    first.addUser("user_1", "hash_1", nodesDocument("uuid-1"));
+    first.addUser("user_2", "hash_2", nodesDocument("uuid-2"));
+    await first.service.reconcile(T0);
+
+    const second = createHarness({ destination: "test-kv:two", database: first.database });
+    second.addUser("user_1", "hash_1", nodesDocument("uuid-1"));
+    second.addUser("user_2", "hash_2", nodesDocument("uuid-2"));
+    assert.deepEqual(
+      await second.service.describeForUser("user_1"),
+      { state: "pending", publishedAt: null, revoking: 0 },
+      "旧命名空间的发布记录不能让新命名空间显示为已发布"
+    );
+    assert.deepEqual(await second.service.reconcile(at(30_000)), { outcome: "ran", written: 2, deleted: 0, failed: 0, pending: 0 });
+    assert.deepEqual([...second.state.kv.keys()].sort(), ["hash_1", "hash_2"]);
+    assert.deepEqual(await second.service.describeForUser("user_1"), { state: "live", publishedAt: at(30_000).toISOString(), revoking: 0 });
+    // The old namespace's records are kept, and reported: its keys are still
+    // there, and this process cannot take them down.
+    assert.equal(first.database.publications.filter((row) => row.destination === "test-kv:one").length, 2);
+    assert.equal(second.service.getStatus().elsewhere, 2);
+    assert.deepEqual(second.state.operations.filter((operation) => operation.op === "delete"), [], "不去动别的命名空间的键");
+
+    // A reset under the new namespace revokes there; the old namespace's
+    // record of the old token stays until something pointed at it runs.
+    first.database.links[0].tokenHash = "hash_1_new";
+    await second.service.reconcile(at(60_000));
+    assert.deepEqual([...second.state.kv.keys()].sort(), ["hash_1_new", "hash_2"]);
+    // Pointed back at the first namespace, the process finds the reset link
+    // still published there and takes it down.
+    const back = await first.service.reconcile(at(90_000));
+    assert.deepEqual([back.deleted, back.written], [1, 1]);
+    assert.deepEqual([...first.state.kv.keys()].sort(), ["hash_1_new", "hash_2"]);
   }
 
   // --- the store client --------------------------------------------------------------------------
@@ -385,6 +629,13 @@ async function main() {
       requests.push({ url, init });
       return respond();
     });
+    assert.equal(store.destination, `cloudflare-kv:${accountId}/${namespaceId}`);
+    assert.notEqual(
+      new CloudflareKvStore({ accountId, namespaceId: "c".repeat(32), apiToken }).destination,
+      store.destination,
+      "换了命名空间就是另一个目的地"
+    );
+    assert.ok(!store.destination.includes(apiToken), "目的地标识里不能有密钥");
     const key = "f".repeat(64);
     await store.put(key, '{"v":1}');
     await store.delete(key);

@@ -7,6 +7,12 @@
  * and the credential it holds needs no more than write access to one namespace.
  */
 export interface SubscriptionLinkStore {
+  /**
+   * Names the place this store writes to, so a record of "this key was
+   * written" can say where. Two stores with the same destination share keys;
+   * two with different destinations share nothing. Not a secret.
+   */
+  readonly destination: string;
   put(key: string, value: string): Promise<void>;
   /** Deleting a key that is not there is a success. */
   delete(key: string): Promise<void>;
@@ -62,10 +68,14 @@ const REQUEST_TIMEOUT_MS = 10_000;
 type FetchLike = (input: string, init: RequestInit) => Promise<{ ok: boolean; status: number }>;
 
 export class CloudflareKvStore implements SubscriptionLinkStore {
+  readonly destination: string;
+
   constructor(
     private readonly config: CloudflareKvConfig,
     private readonly fetchImpl: FetchLike = (input, init) => fetch(input, init)
-  ) {}
+  ) {
+    this.destination = `cloudflare-kv:${config.accountId}/${config.namespaceId}`;
+  }
 
   async put(key: string, value: string): Promise<void> {
     const response = await this.request("PUT", key, value);

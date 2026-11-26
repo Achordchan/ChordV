@@ -41,7 +41,8 @@ export class UserSubscriptionLinkController {
   async reset(@Param("userId") userId: string) {
     const state = await this.links.resetForUser(userId);
     // The old link has to stop being served; do not leave that to the next
-    // scheduled pass.
+    // scheduled pass. This only starts it: the response below reports the old
+    // link as still being revoked, and it is the caller's to say so.
     this.publication.kick();
     return this.withDistribution(userId, state);
   }

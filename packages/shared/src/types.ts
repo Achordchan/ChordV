@@ -1768,6 +1768,13 @@ export interface SubscriptionLinkDistributionDto {
   /** "not_configured": distribution is off, links are issued but served nowhere. */
   state: "not_configured" | "pending" | "live";
   publishedAt: string | null;
+  /**
+   * Earlier links of this user that the distribution layer has not yet been
+   * confirmed to have dropped. While this is above zero an old link may still
+   * be answered; zero means the store accepted every delete (its edge caches
+   * can lag a little behind that).
+   */
+  revoking: number;
 }
 
 export interface SubscriptionLinkPublicationStatusDto {
@@ -1778,4 +1785,11 @@ export interface SubscriptionLinkPublicationStatusDto {
   lastError: string | null;
   /** Links not yet published as of the last pass. */
   pending: number;
+  /** Reset or removed links not yet confirmed gone from the distribution layer. */
+  revoking: number;
+  /**
+   * Records written to a distribution destination other than the configured
+   * one. Whatever was published there is neither updated nor revoked.
+   */
+  elsewhere: number;
 }

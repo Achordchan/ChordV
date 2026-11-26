@@ -5,7 +5,7 @@ import type { SubscriptionLinkPublicationStatusDto, SubscriptionLinkSettingsDto 
 import { fetchSubscriptionLinkDistribution, fetchSubscriptionLinkSettings, saveSubscriptionLinkSettings } from "../../api/subscription-links";
 import { readError } from "../../utils/admin-filters";
 import { formatDateTimeWithYear } from "../../utils/admin-format";
-import { describeDistributionStatus, normalizeOriginInput } from "../customers/subscription-link-model";
+import { describeDistributionStatus, describeElsewhere, normalizeOriginInput } from "../customers/subscription-link-model";
 
 const toneColor = { ok: "teal.9", wait: "yellow.9", off: "dimmed" } as const;
 
@@ -40,6 +40,7 @@ export function SubscriptionLinkSettingsModal({ opened, onClose }: { opened: boo
   };
   const swap = () => { setOrigin(backupOrigin); setBackupOrigin(origin); };
   const summary = status ? describeDistributionStatus(status) : null;
+  const elsewhere = status ? describeElsewhere(status) : null;
   return <Modal opened={opened} onClose={() => { if (!busy.current) onClose(); }} title="订阅链接" centered size="lg" closeOnClickOutside={false} closeOnEscape={!saving} withCloseButton={!saving}>
     <Stack gap="lg">
       {error && <Alert color="red">{error}<Button variant="subtle" disabled={saving} onClick={() => void load()}>重新读取</Button></Alert>}
@@ -53,7 +54,8 @@ export function SubscriptionLinkSettingsModal({ opened, onClose }: { opened: boo
         </Group>
         <div><Text size="sm" fw={550}>分发状态</Text>
           <Text size="sm" c={toneColor[summary.tone]} mt={4}>{summary.label}</Text>
-          {status.lastSuccessAt ? <Text size="xs" c="dimmed" mt={4}>上次全部发布完成：{formatDateTimeWithYear(status.lastSuccessAt)}</Text> : null}</div>
+          {status.lastSuccessAt ? <Text size="xs" c="dimmed" mt={4}>上次全部发布完成：{formatDateTimeWithYear(status.lastSuccessAt)}</Text> : null}
+          {elsewhere ? <Text size="xs" c="yellow.9" mt={4}>{elsewhere}</Text> : null}</div>
       </> : null}
     </Stack>
   </Modal>;

@@ -8,7 +8,7 @@ import { readError } from "../../utils/admin-filters";
 import { formatDateTimeWithYear } from "../../utils/admin-format";
 import { useActionConfirmation } from "../modals/useActionConfirmation";
 import { DataSkeleton } from "../shared/DataSkeleton";
-import { describeLinkDistribution, describeLinkPreview } from "./subscription-link-model";
+import { describeLinkDistribution, describeLinkPreview, describeLinkRevocation } from "./subscription-link-model";
 import styles from "./CustomerSubscriptionLink.module.css";
 
 /** A team has one link per member; pick the member, then show theirs. */
@@ -60,12 +60,13 @@ export function CustomerSubscriptionLink({ userId }: { userId: string }) {
 
   const reset = async () => {
     const accepted = await confirmation.confirm({ title: "重置订阅链接", confirmLabel: "重置", danger: true,
-      message: "重置后旧链接立即失效，客户端下次更新订阅时会看到“链接无效”的提示。\n需要把新链接重新发给客户。节点和账号不受影响。" });
-    if (accepted) await run(() => resetSubscriptionLink(userId), "重置失败，请重新读取确认当前链接", "订阅链接已重置，请把新链接发给客户");
+      message: "重置会立刻生成新链接，并开始从分发层撤销旧链接。撤销通常在一分钟内完成，分发层故障或被限流时会更久；完成之前旧链接仍可使用，本页会显示是否已经撤销。\n重置只影响今后的订阅更新：已经导入客户端的节点不受影响，仍可继续使用。\n需要把新链接重新发给客户。" });
+    if (accepted) await run(() => resetSubscriptionLink(userId), "重置失败，请重新读取确认当前链接", "新链接已生成，请发给客户。旧链接的撤销结果见“旧链接”一栏");
   };
 
   const link = state?.link ?? null;
   const distribution = state ? describeLinkDistribution(state.distribution) : null;
+  const revocation = state ? describeLinkRevocation(state.distribution) : null;
   return <section className={styles.root}>
     {confirmation.dialog}
     <Group justify="space-between" mb="sm"><h3>订阅链接</h3>
@@ -86,9 +87,10 @@ export function CustomerSubscriptionLink({ userId }: { userId: string }) {
         <div><Text size="sm" fw={550}>{describeLinkPreview(link.preview)}</Text>
           {link.preview.kind === "nodes" ? <ul className={styles.nodes}>{link.preview.nodes.map(node => <li key={node.nodeId}>{node.name}</li>)}</ul> : null}</div>
         <dl className={styles.facts}><div><dt>签发时间</dt><dd>{formatDateTimeWithYear(link.createdAt)}</dd></div>
-          {link.rotatedAt ? <div><dt>上次重置</dt><dd>{formatDateTimeWithYear(link.rotatedAt)}</dd></div> : null}</dl>
+          {link.rotatedAt ? <div><dt>上次重置</dt><dd>{formatDateTimeWithYear(link.rotatedAt)}</dd></div> : null}
+          {link.rotatedAt && revocation ? <div><dt>旧链接</dt><dd><span className={`${styles.state} ${styles[revocation.tone]}`}>{revocation.label}</span></dd></div> : null}</dl>
         <Group><Button variant="default" color="red" disabled={busy} onClick={() => void reset()}>重置链接</Button>
-          <Text size="xs" c="dimmed">怀疑链接被转发或泄露时使用。</Text></Group>
+          <Text size="xs" c="dimmed">怀疑链接被转发或泄露时使用。已经导入客户端的节点不受影响。</Text></Group>
       </Stack>
       {link.url && qr ? <div className={styles.qr}><img src={qr} alt="订阅链接二维码"/><small>用客户端扫码导入</small></div> : null}
     </div> : null}
