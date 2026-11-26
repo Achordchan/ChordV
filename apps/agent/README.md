@@ -104,7 +104,7 @@ SSE 结束或失败后等待 2 秒重连。所有数据库操作和 Xray 修改�
 - **计量：** 删除和 reconcile 前采样；未确认批次持久化重传，负 ack 不删除。
   离线 allowance 截断后，队列清空且后台确认可用额度才恢复；额度为零需较新的充值配置。
   allowance 由后台随用户下发（后台环境变量 `CHORDV_AGENT_OFFLINE_ALLOWANCE_BYTES`，
-  默认 10 GiB）；同一 revision 的快照也会刷新它，改配置后无需重装用户。
+  默认 5 GiB）；同一 revision 的快照也会刷新它，改配置后无需重装用户。
 - **到期：** 后台随 `ENSURE_USER` 和配置快照下发 `expiresAt`。后台可达时到期仍由
   后台判定并下发 `DISABLE_USER`，Agent 不看本机时钟；只有后台不可达时，采样循环才
   按 `expiresAt` 在本机停用已到期的用户（先记完这一次采样的流量再停）。这类停用
