@@ -438,3 +438,56 @@ func TestAWriteThatLeavesTheRevisionAloneLeavesTheExpiryInForce(t *testing.T) {
 		t.Fatalf("expired = %v", result.ExpiredEmails)
 	}
 }
+
+// TestEveryWayOfReEnablingACutOffUserSettlesTheCutoff: the cutoff is recorded as
+// a spent allowance, so whatever turns the user back on has to clear it. One
+// that did not would leave a customer who renewed and stayed idle with an
+// allowance that already reads as spent — the first byte moved in the next
+// outage would disconnect them. apps/node-agent/test/go-agent-rollback.test.ts
+// holds the Node agent to the same thing on the same rows.
+func TestEveryWayOfReEnablingACutOffUserSettlesTheCutoff(t *testing.T) {
+	enables := map[string]func(*testing.T, *Store){
+		"ENSURE_USER at a newer revision": func(t *testing.T, store *Store) {
+			seed(t, store, expiring("b1", "u1@chordv", "2", futureExpiry))
+		},
+		"enable at a newer revision": func(t *testing.T, store *Store) {
+			if err := store.SetUserEnabled("b1", true, "2"); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"same-revision restore": func(t *testing.T, store *Store) {
+			if err := store.RestoreBackendConfirmedUsers([]protocol.DesiredUser{
+				expiring("b1", "u1@chordv", "1", pastExpiry),
+			}); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, enable := range enables {
+		t.Run(name, func(t *testing.T) {
+			store := newStore(t, "node-1", "boot-1")
+			lapsed := expiring("b1", "u1@chordv", "1", pastExpiry)
+			lapsed.OfflineAllowanceBytes = "5000"
+			seed(t, store, lapsed)
+			sampleAt(t, store, false)
+			if row := storedUser(t, store, "b1"); row.Enabled || row.OfflineUsed != "5000" {
+				t.Fatalf("setup: %+v", row)
+			}
+
+			enable(t, store)
+			if row := storedUser(t, store, "b1"); !row.Enabled || row.OfflineUsed != "0" {
+				t.Fatalf("re-enabled row = %+v", row)
+			}
+			// Idle until the next outage, which starts before any date on the
+			// row: the first traffic metered offline must not be the last.
+			early := "2026-09-09T09:00:00.000Z"
+			sampleAtInstant(t, store, early, false, counter("u1@chordv", "0", "0"))
+			if result := sampleAtInstant(t, store, early, false, counter("u1@chordv", "40", "60")); len(result.DisableEmails) != 0 {
+				t.Fatalf("cut off on the first offline traffic after being re-enabled: %v", result.DisableEmails)
+			}
+			if row := storedUser(t, store, "b1"); !row.Enabled || row.OfflineUsed != "100" {
+				t.Fatalf("the allowance is not counting from zero: %+v", row)
+			}
+		})
+	}
+}

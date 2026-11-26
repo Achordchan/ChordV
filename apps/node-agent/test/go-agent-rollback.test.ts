@@ -6,10 +6,11 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import type { AgentApiClient } from '../src/api-client.js';
+import { CommandProcessor } from '../src/command-processor.js';
 import type { AgentConfig } from '../src/config.js';
 import { AgentRunner } from '../src/runner.js';
 import { AgentStore } from '../src/store.js';
-import type { AgentConfigSnapshot, DesiredUser } from '../src/types.js';
+import type { AgentCommand, AgentConfigSnapshot, DesiredUser } from '../src/types.js';
 import type { XrayAdapter } from '../src/xray-adapter.js';
 
 /**
@@ -199,6 +200,88 @@ for (const [name, write] of Object.entries({
       // Which is what tells the Go agent the date is from before this write.
       assert.notEqual(after.expires_revision, after.revision);
     } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+  });
+}
+
+/**
+ * A renewal that reaches this agent while the Go agent's cutoff is still on the
+ * row. The cutoff is recorded as a spent offline allowance, so re-enabling the
+ * user has to clear it: otherwise a customer who renewed and then stayed idle
+ * has an allowance that already reads as spent, and the first byte they move in
+ * the NEXT outage disconnects them.
+ */
+function idleXray(): XrayAdapter {
+  let live: Array<{ email: string; uuid?: string }> = [];
+  return {
+    health: async () => undefined,
+    uptimeSeconds: async () => 1,
+    inboundLive: async () => true,
+    readAbsoluteCounters: async () => [],
+    listUsers: async () => live,
+    ensureUser: async (input) => {
+      live = [...live.filter((item) => item.email !== input.email), { email: input.email, uuid: input.uuid }];
+    },
+    removeUser: async (email) => { live = live.filter((item) => item.email !== email); },
+  };
+}
+
+for (const [name, renew] of Object.entries({
+  'ENSURE_USER 命令': async (store: AgentStore, user: DesiredUser) => {
+    const command: AgentCommand = {
+      commandId: `renew-${user.bindingId}`, type: 'ENSURE_USER', targetRevision: '2', createdAt: '2026-09-11T00:00:00.000Z',
+      payload: {
+        bindingId: user.bindingId, email: user.email, uuid: user.uuid, flow: user.flow,
+        quotaRemainingBytes: '2147483648', offlineAllowanceBytes: user.offlineAllowanceBytes,
+      },
+    };
+    const result = await new CommandProcessor(store, idleXray()).execute(command, true);
+    assert.equal(result.status, 'completed');
+  },
+  '新 revision 的配置快照': async (store: AgentStore, user: DesiredUser) => {
+    const others = backendStatement(false).filter((item) => item.bindingId !== user.bindingId);
+    store.applyConfigSnapshot({
+      nodeId: 'node-1', revision: '2', controlMode: 'direct_primary', users: [{ ...user, revision: '2' }, ...others],
+    });
+  },
+  '启用命令直接改启用状态': async (store: AgentStore, user: DesiredUser) => {
+    store.setUserEnabled(user.bindingId, true, '2');
+  },
+})) {
+  test(`回退后续费（${name}）重新启用用户：下一次断线的第一笔流量不把他停掉`, async () => {
+    for (const user of backendStatement(true)) {
+      const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-rollback-'));
+      const store = new AgentStore(rolledBackDatabase(directory), storeOptions);
+      try {
+        // Precondition: the row carries the Go agent's cutoff, allowance spent.
+        const cut = store.getUserByBindingId(user.bindingId)!;
+        assert.equal(cut.enabled, 0);
+        assert.equal(BigInt(cut.offline_used) >= BigInt(cut.offline_allowance), true);
+
+        await renew(store, user);
+        const renewed = store.getUserByBindingId(user.bindingId)!;
+        assert.equal(renewed.enabled, 1);
+        assert.equal(renewed.revision, '2');
+        assert.equal(renewed.offline_used, '0');
+
+        // The customer stays idle — no online sample ever sees a counter for
+        // them — and then the control plane goes away. Xray's counter for a
+        // re-added account starts again from wherever it is; what matters is
+        // the first traffic metered offline.
+        const base = { uplink: BigInt(renewed.uplink), downlink: BigInt(renewed.downlink) };
+        const first = store.recordSample([{
+          email: user.email, uplinkBytes: String(base.uplink), downlinkBytes: String(base.downlink),
+        }], new Date('2026-09-12T00:00:00Z'), false);
+        const second = store.recordSample([{
+          email: user.email, uplinkBytes: String(base.uplink + 1000n), downlinkBytes: String(base.downlink + 4000n),
+        }], new Date('2026-09-12T00:00:05Z'), false);
+        assert.deepEqual(first.disableEmails, []);
+        assert.deepEqual(second.disableEmails, []);
+        const after = store.getUserByBindingId(user.bindingId)!;
+        assert.equal(after.enabled, 1);
+        // The allowance is counting from zero again: exactly what was moved.
+        assert.equal(after.offline_used, '5000');
+      } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+    }
   });
 }
 

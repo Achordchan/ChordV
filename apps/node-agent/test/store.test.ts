@@ -295,3 +295,34 @@ test('较旧 revision 的声明不刷新离线额度', () => withStore((store) =
   store.upsertDesiredUser(user({ revision: '4', offlineAllowanceBytes: String(10n * GIB) }));
   assert.equal(store.getUserByBindingId(user().bindingId)?.offline_allowance, String(64n * MIB));
 }));
+
+test('离线额度截断后以更新的 revision 重新启用：离线已用清零，下一次断线从头计', () => withStore((store) => {
+  store.replaceDesiredUsers([user()], '1');
+  store.recordSample([{ email: user().email, uplinkBytes: '0', downlinkBytes: '0' }], new Date('2026-07-26T00:00:00Z'), false);
+  store.recordSample(
+    [{ email: user().email, uplinkBytes: '0', downlinkBytes: String(64n * MIB) }], new Date('2026-07-26T00:00:05Z'), false,
+  );
+  assert.equal(store.getUserByBindingId(user().bindingId)?.enabled, 0);
+
+  store.upsertDesiredUser(user({ revision: '2' }));
+  const enabled = store.getUserByBindingId(user().bindingId)!;
+  assert.equal(enabled.enabled, 1);
+  assert.equal(enabled.offline_used, '0');
+  // The counters are metering state and stay; only the debt is settled.
+  assert.equal(enabled.downlink, String(64n * MIB));
+
+  const next = store.recordSample(
+    [{ email: user().email, uplinkBytes: '10', downlinkBytes: String(64n * MIB + 10n) }], new Date('2026-07-27T00:00:00Z'), false,
+  );
+  assert.deepEqual(next.disableEmails, []);
+  assert.equal(store.getUserByBindingId(user().bindingId)?.offline_used, '20');
+}));
+
+test('一条不改变启用状态的声明不清零离线已用', () => withStore((store) => {
+  store.replaceDesiredUsers([user()], '1');
+  store.recordSample([{ email: user().email, uplinkBytes: '0', downlinkBytes: '0' }], new Date('2026-07-26T00:00:00Z'), false);
+  store.recordSample([{ email: user().email, uplinkBytes: '300', downlinkBytes: '700' }], new Date('2026-07-26T00:00:05Z'), false);
+  // Still enabled, newer revision: the running count is a running count.
+  store.upsertDesiredUser(user({ revision: '2' }));
+  assert.equal(store.getUserByBindingId(user().bindingId)?.offline_used, '1000');
+}));

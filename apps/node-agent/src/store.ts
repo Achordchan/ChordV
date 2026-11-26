@@ -347,6 +347,23 @@ export class AgentStore {
       decimal(user.offlineAllowanceBytes || this.options.defaultOfflineAllowanceBytes.toString()),
       new Date().toISOString(),
     );
+    // The one thing about the metering state an enable DOES settle: the offline
+    // debt of a row that was disabled.
+    //
+    // A disabled row's offline_used is not a running count any more. It is the
+    // record of why the user stopped being served — the allowance spent, or, on
+    // a database the Go agent has written, the subscription run out (the Go
+    // agent records that cutoff as a spent allowance so that this agent can undo
+    // it). A statement that turns the row back on, typically a renewal, has
+    // answered that. Left in place the figure is read as a running count again
+    // by the next offline sample, which adds to a number already at the
+    // allowance and cuts the user off on the spot.
+    //
+    // An online sample resets the count anyway, but only for a user Xray has a
+    // counter for, and one who renewed and has not connected yet has none.
+    if (current && current.enabled === 0 && user.enabled) {
+      this.db.prepare(`UPDATE desired_users_v2 SET offline_used = '0' WHERE binding_id = ?`).run(user.bindingId);
+    }
   }
 
   /**
@@ -388,6 +405,10 @@ export class AgentStore {
     if (!current || BigInt(current.revision) > BigInt(decimal(revision))) return;
     this.db.prepare(`UPDATE desired_users_v2 SET enabled = ?, revision = ?, updated_at = ? WHERE binding_id = ?`)
       .run(enabled ? 1 : 0, decimal(revision), new Date().toISOString(), bindingId);
+    // Re-enabling settles the offline debt, as in upsertDesiredUser.
+    if (current.enabled === 0 && enabled) {
+      this.db.prepare(`UPDATE desired_users_v2 SET offline_used = '0' WHERE binding_id = ?`).run(bindingId);
+    }
   }
 
   deleteUser(bindingId: string): void { this.db.prepare('DELETE FROM desired_users_v2 WHERE binding_id = ?').run(bindingId); }

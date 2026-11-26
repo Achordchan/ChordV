@@ -1039,8 +1039,14 @@ func (s *Store) SetUserEnabled(bindingID string, enabled bool, revision string) 
 	if enabled {
 		flag = 1
 	}
+	// Re-enabling a disabled row settles its offline debt, exactly as an upsert
+	// that does the same; see upsertDesiredUserTx.
+	settle := ""
+	if enabled && !current.Enabled {
+		settle = ", offline_used = '0'"
+	}
 	_, err = s.db.Exec(
-		`UPDATE desired_users_v2 SET enabled = ?, revision = ?, updated_at = ? WHERE binding_id = ?`,
+		`UPDATE desired_users_v2 SET enabled = ?, revision = ?, updated_at = ?`+settle+` WHERE binding_id = ?`,
 		flag, next, isoMillis(time.Now()), bindingID)
 	return err
 }
