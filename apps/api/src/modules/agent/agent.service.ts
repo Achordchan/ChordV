@@ -12,6 +12,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { AgentCommandResultDto, AgentHeartbeatDto, AgentUsageBatchDto, QueueAgentCommandDto } from "./agent.dto";
 import { AgentEventsService } from "./agent-events.service";
 import { inboundSpecKey, normalizeInboundSpec, parseInboundReport, type NormalizedInboundSpec } from "./agent-inbound";
+import { AGENT_OFFLINE_ALLOWANCE_BYTES } from "../common/agent-offline-policy";
 import { ClientEventsPublisher } from "../common/client-events.publisher";
 import { PrismaService } from "../common/prisma.service";
 import { resolveExhaustedCommands } from "../common/node-command-job.utils";
@@ -22,7 +23,6 @@ import { applyDirectBatch, type SubscriptionTransition } from "./agent-direct-me
 import { normalizePanelInbound, parsePanelReport } from "./panel-inbound";
 import { AdminRuntimeEventsService } from "../common/admin-runtime-events.service";
 
-const OFFLINE_ALLOWANCE_BYTES = 64n * 1024n * 1024n;
 const MAX_SERIALIZABLE_RETRIES = 3;
 const MAX_CONTIGUOUS_BATCHES_PER_TRANSACTION = 4;
 
@@ -156,7 +156,14 @@ export class AgentService {
         quotaRemainingBytes: (binding.subscription.totalTrafficBytes > 0n
           ? (binding.subscription.totalTrafficBytes > binding.subscription.usedTrafficBytes ? binding.subscription.totalTrafficBytes - binding.subscription.usedTrafficBytes : 0n)
           : trafficGbNumberToBytes(binding.subscription.remainingTrafficGb)).toString(),
-        offlineAllowanceBytes: OFFLINE_ALLOWANCE_BYTES.toString()
+        offlineAllowanceBytes: AGENT_OFFLINE_ALLOWANCE_BYTES.toString(),
+        // The control plane ends a subscription when it sees traffic past the
+        // expiry, which it cannot do while a node cannot reach it. The date
+        // lets the agent stop serving on time on its own for exactly that
+        // period. `enabled` deliberately stays what it was: expiry while the
+        // control plane IS reachable is still decided here, through
+        // DISABLE_USER and a revision, never by a snapshot's clock.
+        expiresAt: binding.subscription.expireAt.toISOString()
         }))
     };
   }

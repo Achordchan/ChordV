@@ -345,6 +345,14 @@ func (r *Runner) applyRefreshedLocked(ctx context.Context, snapshot protocol.Con
 		if err := r.restoreOfflineUsersLocked(snapshot.Users, local); err != nil {
 			return protocol.ConfigSnapshot{}, err
 		}
+		// The other half of the same settlement: a user this node cut off for
+		// expiring offline, whom the control plane now confirms disabled, stops
+		// being a local decision. The raw snapshot, not the merged one — the
+		// merge may have substituted this node's own row for the control
+		// plane's statement.
+		if err := r.deps.Store.SettleOfflineExpiry(snapshot.Users, r.deps.Now()); err != nil {
+			return protocol.ConfigSnapshot{}, err
+		}
 		// Re-merge after recovery: equal-revision local disables otherwise win.
 		prepared, err = r.deps.Commands.PrepareSnapshot(snapshot)
 		if err != nil {
@@ -559,6 +567,9 @@ func (r *Runner) sampleLocked(ctx context.Context) error {
 	result, err := r.deps.Store.RecordSample(counters, r.deps.Now(), r.backendOnline)
 	if err != nil {
 		return err
+	}
+	if len(result.ExpiredEmails) > 0 {
+		r.logf("后台不可达期间有 %d 个用户的订阅已到期，已在本机停用；后台恢复后以后台为准", len(result.ExpiredEmails))
 	}
 	if r.current.ControlMode == protocol.ModeDirectPrimary {
 		if err := r.deps.Commands.UninstallExhausted(ctx, result.DisableEmails); err != nil {

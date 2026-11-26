@@ -1068,3 +1068,67 @@ test('两次重启间隔小于容差时，靠活跃用户表补救而不是只�
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('启动时同一 revision 的配置快照把已有用户的离线额度刷新为后台当前值', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-allowance-'));
+  const store = new AgentStore(join(directory, 'agent.db'), {
+    nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
+  });
+  // Installed while the control plane still sent 64 MiB.
+  const installed = user();
+  store.applyConfigSnapshot({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [installed] });
+  store.recordSample([{ email: installed.email, uplinkBytes: '10', downlinkBytes: '20' }], new Date(), true);
+  store.recordSample([{ email: installed.email, uplinkBytes: '110', downlinkBytes: '220' }], new Date(), true);
+  store.ackThrough('boot-1', '2');
+  const before = store.getUserByBindingId(installed.bindingId)!;
+
+  // The control plane is upgraded; the binding's revision has not moved.
+  const raised = { ...installed, offlineAllowanceBytes: '10737418240' };
+  let live: Array<{ email: string; uuid?: string }> = [{ email: installed.email, uuid: installed.uuid }];
+  let consumeCalls = 0;
+  const api = {
+    getConfig: async () => ({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [raised] }),
+    heartbeat: async () => ({ accepted: true, ackThrough: '2', configRevision: '1' }),
+    uploadBatch: async () => ({ accepted: true, duplicate: false, ackThrough: '2' }),
+    reportCommandResult: async () => undefined,
+    consumeEvents: async (_handler: unknown, signal: AbortSignal) => {
+      consumeCalls += 1;
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    },
+  } as unknown as AgentApiClient;
+  const xray: XrayAdapter = {
+    health: async () => undefined,
+    uptimeSeconds: async () => 900,
+    inboundLive: async () => true,
+    readAbsoluteCounters: async () => [],
+    listUsers: async () => live,
+    ensureUser: async (input) => { live = [{ email: input.email, uuid: input.uuid }]; },
+    removeUser: async (email) => { live = live.filter((item) => item.email !== email); },
+  };
+  const runner = new AgentRunner({
+    agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
+    databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'), restartToleranceMs: 2_000,
+    sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
+  }, store, api, xray);
+
+  try {
+    await runner.start();
+    await waitFor(() => consumeCalls === 1);
+    const after = store.getUserByBindingId(installed.bindingId)!;
+    assert.equal(after.offline_allowance, '10737418240');
+    // Policy only: the metering state this node holds is as it was.
+    assert.equal(after.enabled, 1);
+    assert.equal(after.revision, before.revision);
+    assert.equal(after.quota_remaining, before.quota_remaining);
+    assert.equal(after.uplink, before.uplink);
+    assert.equal(after.downlink, before.downlink);
+    assert.equal(after.generation, before.generation);
+    assert.equal(after.counter_initialized, before.counter_initialized);
+  } finally {
+    await runner.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

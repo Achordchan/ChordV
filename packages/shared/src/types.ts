@@ -1589,6 +1589,12 @@ export interface AgentDesiredUserDto {
   enabled: boolean;
   quotaRemainingBytes: string;
   offlineAllowanceBytes: string;
+  /**
+   * When the subscription behind the binding runs out (ISO 8601). An agent
+   * enforces it only while it cannot reach the control plane; agents that
+   * predate the field ignore it.
+   */
+  expiresAt?: string;
 }
 
 export interface AgentConfigDto {

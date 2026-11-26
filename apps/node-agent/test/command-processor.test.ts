@@ -549,3 +549,23 @@ test('IPv6 对外地址会把所需监听族随请求下发给助手', async () 
     assert.deepEqual(v4Applier.requiredListens, ['']);
   } finally { v4.store.close(); rmSync(v4.directory, { recursive: true, force: true }); }
 });
+
+test('已有用户的 ENSURE_USER 带来新的离线额度时采用它，不带时保留原值', async () => {
+  const fixture = setup();
+  fixture.store.replaceDesiredUsers([desired()], '1');
+  try {
+    const raised = await fixture.processor.execute(command('ENSURE_USER', {
+      bindingId: desired().bindingId, email: desired().email, uuid: desired().uuid, flow: desired().flow,
+      offlineAllowanceBytes: '10737418240',
+    }, 'allowance-raised', '2'), true);
+    assert.equal(raised.status, 'completed');
+    assert.equal(fixture.store.listDesiredUsers()[0]?.offlineAllowanceBytes, '10737418240');
+
+    const silent = await fixture.processor.execute(command('ENSURE_USER', {
+      bindingId: desired().bindingId, email: desired().email, uuid: desired().uuid, flow: desired().flow,
+    }, 'allowance-unstated', '3'), true);
+    assert.equal(silent.status, 'completed');
+    assert.equal(fixture.store.listDesiredUsers()[0]?.offlineAllowanceBytes, '10737418240');
+    assert.equal(fixture.store.listDesiredUsers()[0]?.revision, '3');
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+});

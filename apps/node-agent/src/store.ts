@@ -322,7 +322,10 @@ export class AgentStore {
   upsertDesiredUser(user: DesiredUser): void {
     const revision = decimal(user.revision);
     const current = this.getUserByBindingId(user.bindingId);
-    if (current && BigInt(current.revision) >= BigInt(revision)) return;
+    if (current && BigInt(current.revision) >= BigInt(revision)) {
+      if (BigInt(current.revision) === BigInt(revision)) this.refreshOfflineAllowance(current, user);
+      return;
+    }
     this.db.prepare(`
       INSERT INTO desired_users_v2(
         binding_id, email, uuid, flow, enabled, revision, quota_remaining,
@@ -344,6 +347,50 @@ export class AgentStore {
       decimal(user.offlineAllowanceBytes || this.options.defaultOfflineAllowanceBytes.toString()),
       new Date().toISOString(),
     );
+    // The one thing about the metering state an enable DOES settle: the offline
+    // debt of a row that was disabled.
+    //
+    // A disabled row's offline_used is not a running count any more. It is the
+    // record of why the user stopped being served — the allowance spent, or, on
+    // a database the Go agent has written, the subscription run out (the Go
+    // agent records that cutoff as a spent allowance so that this agent can undo
+    // it). A statement that turns the row back on, typically a renewal, has
+    // answered that. Left in place the figure is read as a running count again
+    // by the next offline sample, which adds to a number already at the
+    // allowance and cuts the user off on the spot.
+    //
+    // An online sample resets the count anyway, but only for a user Xray has a
+    // counter for, and one who renewed and has not connected yet has none.
+    if (current && current.enabled === 0 && user.enabled) {
+      this.db.prepare(`UPDATE desired_users_v2 SET offline_used = '0' WHERE binding_id = ?`).run(user.bindingId);
+    }
+  }
+
+  /**
+   * The one thing an equal-revision statement may change: how far this node may
+   * serve the binding on its own word.
+   *
+   * The offline allowance is a control-plane setting, not a property of the
+   * binding, so it changes without the binding's revision moving. Before this,
+   * a user kept whatever allowance they were first installed with for as long
+   * as the binding lived — raise the setting and existing users were still cut
+   * off at the old figure during an outage; lower it and the old, higher one
+   * stayed in force.
+   *
+   * Only that column. The counters, the quota, the offline debt and the enabled
+   * flag are this node's metering state and are not the statement's to touch.
+   *
+   * Enabled rows only, and only from an enabled statement. A row this agent is
+   * holding disabled is classified by this very column (hasOfflineDisabledUsers:
+   * offline_used >= offline_allowance); raising it underneath a local cutoff
+   * would turn that into a disable no snapshot is allowed to release.
+   */
+  private refreshOfflineAllowance(current: UserRow, user: DesiredUser): void {
+    if (current.enabled !== 1 || !user.enabled || !user.offlineAllowanceBytes) return;
+    const allowance = decimal(user.offlineAllowanceBytes);
+    if (allowance === current.offline_allowance) return;
+    this.db.prepare('UPDATE desired_users_v2 SET offline_allowance = ?, updated_at = ? WHERE binding_id = ?')
+      .run(allowance, new Date().toISOString(), current.binding_id);
   }
 
   updateQuota(bindingId: string, quotaRemainingBytes: string, revision: string): void {
@@ -358,6 +405,10 @@ export class AgentStore {
     if (!current || BigInt(current.revision) > BigInt(decimal(revision))) return;
     this.db.prepare(`UPDATE desired_users_v2 SET enabled = ?, revision = ?, updated_at = ? WHERE binding_id = ?`)
       .run(enabled ? 1 : 0, decimal(revision), new Date().toISOString(), bindingId);
+    // Re-enabling settles the offline debt, as in upsertDesiredUser.
+    if (current.enabled === 0 && enabled) {
+      this.db.prepare(`UPDATE desired_users_v2 SET offline_used = '0' WHERE binding_id = ?`).run(bindingId);
+    }
   }
 
   deleteUser(bindingId: string): void { this.db.prepare('DELETE FROM desired_users_v2 WHERE binding_id = ?').run(bindingId); }
