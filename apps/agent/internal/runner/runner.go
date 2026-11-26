@@ -350,7 +350,7 @@ func (r *Runner) applyRefreshedLocked(ctx context.Context, snapshot protocol.Con
 		// being a local decision. The raw snapshot, not the merged one — the
 		// merge may have substituted this node's own row for the control
 		// plane's statement.
-		if err := r.deps.Store.SettleOfflineExpiry(snapshot.Users); err != nil {
+		if err := r.deps.Store.SettleOfflineExpiry(snapshot.Users, r.deps.Now()); err != nil {
 			return protocol.ConfigSnapshot{}, err
 		}
 		// Re-merge after recovery: equal-revision local disables otherwise win.

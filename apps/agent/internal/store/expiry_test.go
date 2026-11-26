@@ -4,6 +4,7 @@ import (
 	"math/big"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Achordchan/ChordV/apps/agent/internal/protocol"
 )
@@ -19,6 +20,25 @@ func expiring(bindingID, email, revision, expiresAt string) protocol.DesiredUser
 	u := user(bindingID, email, revision, "100000000")
 	u.ExpiresAt = expiresAt
 	return u
+}
+
+func mustInstant(t *testing.T, instant string) time.Time {
+	t.Helper()
+	at, err := time.Parse(time.RFC3339, instant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return at
+}
+
+// sampleAtInstant is sampleAt with the clock somewhere else.
+func sampleAtInstant(t *testing.T, store *Store, instant string, online bool, counters ...protocol.AbsoluteCounter) SampleResult {
+	t.Helper()
+	result, err := store.RecordSample(counters, mustInstant(t, instant), online)
+	if err != nil {
+		t.Fatalf("record sample: %v", err)
+	}
+	return result
 }
 
 func offlineDisabled(t *testing.T, store *Store, bindingID string) bool {
@@ -57,9 +77,8 @@ func TestAnExpiredUserIsCutOffOnlyWhileTheBackendIsUnreachable(t *testing.T) {
 	if len(offline.ExpiredEmails) != 1 {
 		t.Fatalf("ExpiredEmails = %v, want the expired user", offline.ExpiredEmails)
 	}
-	row := storedUser(t, store, "b1")
-	if row.Enabled || !row.OfflineExpired {
-		t.Fatalf("enabled = %v offline_expired = %v after expiring offline", row.Enabled, row.OfflineExpired)
+	if row := storedUser(t, store, "b1"); row.Enabled {
+		t.Fatal("the user is still enabled after expiring offline")
 	}
 	// It is a LOCAL cutoff, so a snapshot that still wants the user may take it
 	// back, and the runner must go and ask.
@@ -209,14 +228,25 @@ func TestANewerEnableSupersedesAnOfflineExpiry(t *testing.T) {
 	// The renewal: a newer revision carrying the new date.
 	seed(t, store, expiring("b1", "u1@chordv", "2", futureExpiry))
 	row := storedUser(t, store, "b1")
-	if !row.Enabled || row.OfflineExpired || row.ExpiresAt != futureExpiry {
+	if !row.Enabled || row.ExpiresAt != futureExpiry {
 		t.Fatalf("a renewal did not take the user back: %+v", row)
 	}
 	if locallyDisabled(t, store) {
 		t.Fatal("the node still reports a local cutoff after the renewal")
 	}
-	if result := sampleAt(t, store, false); len(result.DisableEmails) != 0 {
+	// The renewed user has not moved a byte, so Xray has no counter for them and
+	// no reachable tick has run to reset the offline count. The control plane
+	// then goes away again. The cutoff's record — an allowance marked spent —
+	// must not be read as a running count now: one more byte on top of it would
+	// cut off a customer who has just paid, for the whole of the outage.
+	if row.OfflineUsed != "0" {
+		t.Fatalf("offline_used = %s after the renewal, want the cutoff's record cleared", row.OfflineUsed)
+	}
+	if result := sampleAt(t, store, false, counter("u1@chordv", "0", "0")); len(result.DisableEmails) != 0 {
 		t.Fatalf("a renewed user was cut off again: %v", result.DisableEmails)
+	}
+	if result := sampleAt(t, store, false, counter("u1@chordv", "10", "0")); len(result.DisableEmails) != 0 {
+		t.Fatalf("a renewed user was cut off by their first bytes: %v", result.DisableEmails)
 	}
 }
 
@@ -233,61 +263,85 @@ func TestABackendThatStillWantsTheUserTakesItBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	row := storedUser(t, store, "b1")
-	if !row.Enabled || row.OfflineExpired {
+	if !row.Enabled || row.OfflineUsed != "0" {
 		t.Fatalf("restore left the user cut off: %+v", row)
 	}
+	if locallyDisabled(t, store) {
+		t.Fatal("the node still reports a local cutoff after the restore")
+	}
 }
 
-func TestAConfirmedDisableSettlesAnOfflineExpiry(t *testing.T) {
+// TestAnExpiryCutoffIsOneEveryBuildCanUndo pins the on-disk shape of the
+// cutoff, because other programs read it.
+//
+// A node can be rolled back onto this data directory — to an earlier build of
+// this agent, or to the Node one. Neither knows anything this build adds. What
+// both DO know is the cutoff they make themselves when the offline allowance
+// runs out, and they recognise it with exactly the predicates below (the Node
+// agent's are quoted from apps/node-agent/src/store.ts). If the row an expiry
+// leaves does not satisfy them, the user stays disabled on a rolled-back node,
+// with quota left, until some newer revision happens to arrive.
+func TestAnExpiryCutoffIsOneEveryBuildCanUndo(t *testing.T) {
 	store := newStore(t, "node-1", "boot-1")
-	seed(t, store,
-		expiring("b1", "u1@chordv", "5", pastExpiry),
-		expiring("b2", "u2@chordv", "5", pastExpiry),
-		expiring("b3", "u3@chordv", "5", pastExpiry),
-	)
+	untouched := expiring("b1", "idle@chordv", "1", pastExpiry)
+	untouched.OfflineAllowanceBytes = "5000"
+	partway := expiring("b2", "active@chordv", "1", pastExpiry)
+	partway.OfflineAllowanceBytes = "5000"
+	// An allowance of zero is storable, and "0 >= 0" alone is not a cutoff to
+	// anybody.
+	zero := expiring("b3", "zero@chordv", "1", pastExpiry)
+	zero.OfflineAllowanceBytes = "0"
+	seed(t, store, untouched, partway, zero)
+	// b2 has used part of its allowance offline before the date passes.
+	sampleAtInstant(t, store, "2026-09-09T10:00:00.000Z", false, counter("active@chordv", "0", "0"))
+	sampleAtInstant(t, store, "2026-09-09T10:30:00.000Z", false, counter("active@chordv", "1200", "0"))
+	if row := storedUser(t, store, "b2"); !row.Enabled || row.OfflineUsed != "1200" {
+		t.Fatalf("setup: %+v", row)
+	}
+
 	sampleAt(t, store, false)
 
-	disabled := func(bindingID, email, revision string) protocol.DesiredUser {
-		u := expiring(bindingID, email, revision, pastExpiry)
-		u.Enabled = false
-		return u
+	for _, bindingID := range []string{"b1", "b2", "b3"} {
+		// Node agent, hasUsageDisabledUsers — and the Go agent's, before this
+		// build:  enabled = 0 AND (quota = 0 OR (used > 0 AND used >= allowance)).
+		// Node agent, hasOfflineDisabledUsers:
+		//   enabled = 0 AND offline_used != '0' AND used >= allowance.
+		var enabled int
+		var quota, used, allowance string
+		if err := store.db.QueryRow(
+			`SELECT enabled, quota_remaining, offline_used, offline_allowance FROM desired_users_v2 WHERE binding_id = ?`,
+			bindingID).Scan(&enabled, &quota, &used, &allowance); err != nil {
+			t.Fatal(err)
+		}
+		usedValue, _ := new(big.Int).SetString(used, 10)
+		allowanceValue, _ := new(big.Int).SetString(allowance, 10)
+		if enabled != 0 || used == "0" || usedValue.Sign() <= 0 || usedValue.Cmp(allowanceValue) < 0 {
+			t.Fatalf("%s: enabled=%d used=%s allowance=%s is not an allowance cutoff to an earlier build",
+				bindingID, enabled, used, allowance)
+		}
+		// Quota is not what records the cutoff: the same-revision restore is
+		// only offered to a user who still has some.
+		if quota == "0" {
+			t.Fatalf("%s: the cutoff spent the user's quota", bindingID)
+		}
+		if !offlineDisabled(t, store, bindingID) {
+			t.Fatalf("%s is not a local cutoff to this build either", bindingID)
+		}
 	}
-	if err := store.SettleOfflineExpiry([]protocol.DesiredUser{
-		disabled("b1", "u1@chordv", "5"),
-		// Older than the row: not this binding's latest word.
-		disabled("b2", "u2@chordv", "4"),
-		// Still wanted: restoring it is RestoreBackendConfirmedUsers' job.
-		expiring("b3", "u3@chordv", "5", pastExpiry),
-		// Unknown to this node.
-		disabled("b9", "u9@chordv", "5"),
-	}); err != nil {
-		t.Fatal(err)
+	// What b2 had really used is not rounded DOWN to the allowance, and nothing
+	// is invented beyond it.
+	if row := storedUser(t, store, "b1"); row.OfflineUsed != "5000" {
+		t.Fatalf("b1 offline_used = %s, want the allowance", row.OfflineUsed)
 	}
-	if row := storedUser(t, store, "b1"); row.Enabled || row.OfflineExpired {
-		t.Fatalf("b1 should be an ordinary control-plane disable now: %+v", row)
+	if row := storedUser(t, store, "b2"); row.OfflineUsed != "5000" || row.QuotaRemainingBytes != "99998800" {
+		t.Fatalf("b2 = %+v", row)
 	}
-	if offlineDisabled(t, store, "b1") {
-		t.Fatal("b1 is still a local cutoff after the control plane confirmed it")
-	}
-	if !storedUser(t, store, "b2").OfflineExpired {
-		t.Fatal("an older statement settled b2")
-	}
-	if !storedUser(t, store, "b3").OfflineExpired {
-		t.Fatal("an ENABLED statement settled b3 as disabled")
-	}
-
-	// Once nothing is held locally the runner stops asking for snapshots.
-	if err := store.SettleOfflineExpiry([]protocol.DesiredUser{
-		disabled("b2", "u2@chordv", "5"), disabled("b3", "u3@chordv", "6"),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if locallyDisabled(t, store) {
-		t.Fatal("the node still reports a local cutoff after every one was confirmed")
+	if row := storedUser(t, store, "b3"); row.OfflineUsed != "1" {
+		t.Fatalf("b3 offline_used = %s, want a non-zero mark", row.OfflineUsed)
 	}
 }
 
-func TestATerminalCommandSettlesAnOfflineExpiry(t *testing.T) {
+func TestATerminalCommandAfterAnOfflineExpiryKeepsTheUserOff(t *testing.T) {
 	store := newStore(t, "node-1", "boot-1")
 	seed(t, store, expiring("b1", "u1@chordv", "1", pastExpiry))
 	sampleAt(t, store, false)
@@ -295,26 +349,28 @@ func TestATerminalCommandSettlesAnOfflineExpiry(t *testing.T) {
 	if err := store.ApplyTerminal("b1", "2", "u1@chordv", false); err != nil {
 		t.Fatal(err)
 	}
-	if row := storedUser(t, store, "b1"); row.Enabled || row.OfflineExpired {
-		t.Fatalf("DISABLE_USER left the row marked as a local cutoff: %+v", row)
+	row := storedUser(t, store, "b1")
+	if row.Enabled || row.Revision != "2" {
+		t.Fatalf("DISABLE_USER did not land on the cut-off row: %+v", row)
 	}
-	if locallyDisabled(t, store) {
-		t.Fatal("the node still reports a local cutoff after DISABLE_USER")
+	// A same-revision statement that enables it is refused like any other: the
+	// control plane's disable is newer than the cutoff it replaced.
+	seed(t, store, expiring("b1", "u1@chordv", "2", futureExpiry))
+	if storedUser(t, store, "b1").Enabled {
+		t.Fatal("an equal-revision enable undid a DISABLE_USER")
 	}
 }
 
-// legacySchema strips the columns an earlier build never created, leaving the
+// legacySchema strips the column an earlier build never created, leaving the
 // table as that build wrote it.
 func legacySchema(t *testing.T, store *Store) {
 	t.Helper()
-	for _, column := range []string{"expires_at", "offline_expired"} {
-		if _, err := store.db.Exec(`ALTER TABLE desired_users_v2 DROP COLUMN ` + column); err != nil {
-			t.Fatalf("drop %s: %v", column, err)
-		}
+	if _, err := store.db.Exec(`ALTER TABLE desired_users_v2 DROP COLUMN expires_at`); err != nil {
+		t.Fatalf("drop expires_at: %v", err)
 	}
 }
 
-func TestAnOlderDatabaseGainsTheExpiryColumns(t *testing.T) {
+func TestAnOlderDatabaseGainsTheExpiryColumn(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "node-agent.db")
 	first := openAt(t, path, "node-1", "boot-1")
 	seed(t, first, user("b1", "u1@chordv", "3", "5000"))
@@ -324,7 +380,7 @@ func TestAnOlderDatabaseGainsTheExpiryColumns(t *testing.T) {
 
 	second := openAt(t, path, "node-1", "boot-2")
 	row := storedUser(t, second, "b1")
-	if row.ExpiresAt != "" || row.OfflineExpired {
+	if row.ExpiresAt != "" {
 		t.Fatalf("a migrated row claims an expiry it was never given: %+v", row)
 	}
 	// Everything the earlier build recorded is still there.

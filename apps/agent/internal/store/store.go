@@ -181,11 +181,7 @@ func (s *Store) migrate() error {
 			updated_at TEXT NOT NULL,
 			-- When the subscription behind the binding runs out, '' when the
 			-- control plane did not say. See protocol.DesiredUser.ExpiresAt.
-			expires_at TEXT NOT NULL DEFAULT '',
-			-- 1 while this AGENT holds the user disabled for passing expires_at
-			-- with the control plane unreachable. A local cutoff, like a spent
-			-- offline allowance: see offlineExpiredTx.
-			offline_expired INTEGER NOT NULL DEFAULT 0
+			expires_at TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS usage_batches_v2 (
 			boot_id TEXT NOT NULL,
@@ -242,21 +238,17 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return err
 	}
-	// Columns added after desired_users_v2 first shipped. CREATE TABLE IF NOT
+	// A column added after desired_users_v2 first shipped. CREATE TABLE IF NOT
 	// EXISTS leaves an existing table alone, so a database written by an earlier
-	// build gets them here. Both carry defaults that mean "nothing known", and
-	// every statement in the Node agent and in earlier builds of this one names
-	// its columns, so a rollback onto this data directory still reads and writes
-	// the table it expects.
-	for _, column := range []struct{ name, definition string }{
-		{"expires_at", "TEXT NOT NULL DEFAULT ''"},
-		{"offline_expired", "INTEGER NOT NULL DEFAULT 0"},
-	} {
-		if err := s.ensureColumn("desired_users_v2", column.name, column.definition); err != nil {
-			return err
-		}
-	}
-	return nil
+	// build gets it here.
+	//
+	// It is the ONLY thing this build adds to the table, and that is deliberate:
+	// a node may be rolled back onto this data directory, to an earlier build of
+	// this agent or to the Node one. Their statements name their columns, so one
+	// more column with a default is invisible to them. Anything they must be
+	// able to ACT on — a user this build cut off — is therefore written in the
+	// columns they already read. See offlineExpiredTx.
+	return s.ensureColumn("desired_users_v2", "expires_at", "TEXT NOT NULL DEFAULT ''")
 }
 
 // ensureColumn adds a column to a table that predates it. The names are
@@ -487,10 +479,8 @@ func (s *Store) ApplyTerminal(bindingID, revision, email string, remove bool) er
 		if err != nil || stale {
 			return err
 		}
-		// offline_expired goes with it: from here on the row is disabled by the
-		// control plane's instruction, not by this agent's reading of a clock.
 		_, err = tx.Exec(
-			`UPDATE desired_users_v2 SET enabled = 0, revision = ?, offline_expired = 0, updated_at = ? WHERE binding_id = ?`,
+			`UPDATE desired_users_v2 SET enabled = 0, revision = ?, updated_at = ? WHERE binding_id = ?`,
 			normalized, isoMillis(time.Now()), bindingID)
 		return err
 	})
@@ -894,25 +884,41 @@ func upsertDesiredUserTx(tx *sql.Tx, user protocol.DesiredUser, fallback *big.In
 	// NOT touch them. A user re-sent by the control plane keeps its metering
 	// baseline, or every config refresh would re-emit the whole counter as fresh
 	// traffic.
-	//
-	// offline_expired is cleared on both branches: a statement from the control
-	// plane that this guard let through supersedes a cutoff the agent made on
-	// its own while it could not ask.
 	_, err = tx.Exec(`
 		INSERT INTO desired_users_v2(
 			binding_id, email, uuid, flow, enabled, revision, quota_remaining,
 			offline_allowance, offline_used, generation, counter_initialized, uplink, downlink, updated_at,
-			expires_at, offline_expired
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, '0', '0', 0, '0', '0', ?, ?, 0)
+			expires_at
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, '0', '0', 0, '0', '0', ?, ?)
 		ON CONFLICT(binding_id) DO UPDATE SET
 			email = excluded.email, uuid = excluded.uuid, flow = excluded.flow,
 			enabled = excluded.enabled, revision = excluded.revision,
 			quota_remaining = excluded.quota_remaining,
 			offline_allowance = excluded.offline_allowance, updated_at = excluded.updated_at,
-			expires_at = excluded.expires_at, offline_expired = 0
+			expires_at = excluded.expires_at
 	`, user.BindingID, user.Email, user.UUID, user.Flow, enabled, revision, quota, allowance, isoMillis(time.Now()), expiresAt)
 	if err != nil {
 		return err
+	}
+	// The one thing about the metering state an enable DOES settle: the offline
+	// debt of a row that was disabled.
+	//
+	// A disabled row's offline_used is not a running count any more. It is the
+	// record of why this agent stopped serving the user — the allowance spent, or
+	// (offlineExpiredTx) the subscription run out — and a statement that turns the
+	// row back on has answered that. Left in place it would be read as a running
+	// count again by the next offline tick, which would add to a figure already
+	// at the allowance and cut the user off on the spot: a customer who renewed,
+	// stayed idle, and then met the next outage would be offline for all of it.
+	//
+	// The next tick with the control plane reachable resets the count anyway
+	// (foldCounter), but only for a user Xray has a counter for, and an idle one
+	// has none. So this is that same settlement, made where it cannot be missed.
+	if current != nil && !current.Enabled && user.Enabled {
+		if _, err := tx.Exec(
+			`UPDATE desired_users_v2 SET offline_used = '0' WHERE binding_id = ?`, user.BindingID); err != nil {
+			return err
+		}
 	}
 	// A CHANGED EMAIL is the exception to that rule, and it must be handled here
 	// rather than by the caller.
@@ -1022,7 +1028,7 @@ func (s *Store) SetUserEnabled(bindingID string, enabled bool, revision string) 
 		flag = 1
 	}
 	_, err = s.db.Exec(
-		`UPDATE desired_users_v2 SET enabled = ?, revision = ?, offline_expired = 0, updated_at = ? WHERE binding_id = ?`,
+		`UPDATE desired_users_v2 SET enabled = ?, revision = ?, updated_at = ? WHERE binding_id = ?`,
 		flag, next, isoMillis(time.Now()), bindingID)
 	return err
 }
@@ -1042,28 +1048,24 @@ type userRow struct {
 	CounterInitialized bool
 	Uplink             string
 	Downlink           string
-	// OfflineExpired marks a row this agent disabled for passing its expiry
-	// while the control plane was unreachable. See offlineExpiredTx.
-	OfflineExpired bool
 }
 
 const userColumns = `binding_id, email, uuid, flow, enabled, revision, quota_remaining,
 	offline_allowance, offline_used, generation, counter_initialized, uplink, downlink,
-	expires_at, offline_expired`
+	expires_at`
 
 func scanUser(scan func(...any) error) (*userRow, error) {
 	var row userRow
-	var enabled, initialized, expired int
+	var enabled, initialized int
 	err := scan(&row.BindingID, &row.Email, &row.UUID, &row.Flow, &enabled, &row.Revision,
 		&row.QuotaRemainingBytes, &row.OfflineAllowanceBytes, &row.OfflineUsed,
 		&row.Generation, &initialized, &row.Uplink, &row.Downlink,
-		&row.ExpiresAt, &expired)
+		&row.ExpiresAt)
 	if err != nil {
 		return nil, err
 	}
 	row.Enabled = enabled == 1
 	row.CounterInitialized = initialized == 1
-	row.OfflineExpired = expired == 1
 	return &row, nil
 }
 
@@ -1136,19 +1138,15 @@ func (s *Store) ListDesiredUsers() ([]protocol.DesiredUser, error) {
 // distinction decides whether a backend snapshot may re-enable them.
 func (s *Store) HasUsageDisabledUsers() (bool, error) {
 	rows, err := s.db.Query(
-		`SELECT quota_remaining, offline_used, offline_allowance, offline_expired FROM desired_users_v2 WHERE enabled = 0`)
+		`SELECT quota_remaining, offline_used, offline_allowance FROM desired_users_v2 WHERE enabled = 0`)
 	if err != nil {
 		return false, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var quota, used, allowance string
-		var expired int
-		if err := rows.Scan(&quota, &used, &allowance, &expired); err != nil {
+		if err := rows.Scan(&quota, &used, &allowance); err != nil {
 			return false, err
-		}
-		if expired == 1 {
-			return true, nil
 		}
 		quotaValue, err := decimal.Parse(quota)
 		if err != nil {
@@ -1203,7 +1201,7 @@ func (s *Store) RestoreBackendConfirmedUsers(users []protocol.DesiredUser) error
 				enabled = 1
 			}
 			if _, err := tx.Exec(
-				`UPDATE desired_users_v2 SET enabled = ?, quota_remaining = ?, offline_used = '0', offline_expired = 0, updated_at = ? WHERE binding_id = ?`,
+				`UPDATE desired_users_v2 SET enabled = ?, quota_remaining = ?, offline_used = '0', updated_at = ? WHERE binding_id = ?`,
 				enabled, confirmed.String(), isoMillis(time.Now()), user.BindingID); err != nil {
 				return err
 			}
@@ -1215,16 +1213,26 @@ func (s *Store) RestoreBackendConfirmedUsers(users []protocol.DesiredUser) error
 // SettleOfflineExpiry hands an offline expiry cutoff over to the control plane
 // once it has confirmed the user disabled.
 //
-// The agent disabled these rows on its own reading of a clock, and marked them
-// so a snapshot that still wants the user can take them back (see
-// RestoreBackendConfirmedUsers). A snapshot that carries the binding DISABLED,
-// at a revision no older than the row's, is the other answer: the control plane
-// agrees. From then on the row is an ordinary control-plane disable, and leaving
-// the mark would keep HasUsageDisabledUsers true — and the runner asking for a
-// fresh snapshot after every upload — for as long as the binding exists.
+// The agent disabled these rows on its own reading of a clock, and recorded the
+// cutoff as a spent offline allowance so a snapshot that still wants the user
+// can take them back (RestoreBackendConfirmedUsers). A snapshot that carries
+// the binding DISABLED, at a revision no older than the row's, is the other
+// answer: the control plane agrees. From then on only a newer revision can
+// bring the user back, exactly as for any binding the control plane disabled,
+// and the record has nothing left to say. Leaving it would keep
+// HasUsageDisabledUsers true — and the runner asking for a fresh snapshot after
+// every upload — for as long as the binding exists, which for an expired
+// subscription is indefinitely.
+//
+// Settling means clearing offline_used, which leaves the row an ordinary
+// control-plane disable to every build that may later read it; nothing here is
+// a state an earlier build or the Node agent cannot have written itself.
+//
+// Only rows whose stored expiry has passed. A cutoff for the allowance alone is
+// left exactly as it was before this agent knew about expiry at all.
 //
 // Bindings the snapshot omits need nothing here: their rows are deleted.
-func (s *Store) SettleOfflineExpiry(users []protocol.DesiredUser) error {
+func (s *Store) SettleOfflineExpiry(users []protocol.DesiredUser, now time.Time) error {
 	return s.transact(func(tx *sql.Tx) error {
 		for _, user := range users {
 			if user.Enabled {
@@ -1234,7 +1242,18 @@ func (s *Store) SettleOfflineExpiry(users []protocol.DesiredUser) error {
 			if err != nil {
 				return err
 			}
-			if row == nil || row.Enabled || !row.OfflineExpired {
+			if row == nil || row.Enabled || row.ExpiresAt == "" {
+				continue
+			}
+			at, err := protocol.ParseExpiresAt(row.ExpiresAt)
+			if err != nil || at.After(now) {
+				continue
+			}
+			used, err := decimal.Parse(row.OfflineUsed)
+			if err != nil {
+				return err
+			}
+			if used.Sign() == 0 {
 				continue
 			}
 			older, err := decimal.Less(user.Revision, row.Revision)
@@ -1245,8 +1264,8 @@ func (s *Store) SettleOfflineExpiry(users []protocol.DesiredUser) error {
 				continue
 			}
 			if _, err := tx.Exec(
-				`UPDATE desired_users_v2 SET offline_expired = 0, updated_at = ? WHERE binding_id = ?`,
-				isoMillis(time.Now()), user.BindingID); err != nil {
+				`UPDATE desired_users_v2 SET offline_used = '0', updated_at = ? WHERE binding_id = ?`,
+				isoMillis(now), user.BindingID); err != nil {
 				return err
 			}
 		}
@@ -1376,11 +1395,21 @@ func (s *Store) RecordSample(counters []protocol.AbsoluteCounter, sampledAt time
 // offline allowance happened to be spent, and an idle user's never was.
 //
 // So expiry is the offline allowance's second dimension — the allowance bounds
-// how MUCH a node serves on its own word, this bounds how LONG — and the cutoff
-// is released the same way: offline_expired makes the row a local disable
-// (OfflineDisabled), which a snapshot that still wants the user takes back once
-// every batch is acknowledged. That is also what makes a wrong local clock
-// survivable: the control plane's answer wins as soon as it can be heard.
+// how MUCH a node serves on its own word, this bounds how LONG — and it is
+// RECORDED as the first: the cutoff spends whatever is left of the allowance
+// (offline_used is raised to it) and adds nothing else to the row.
+//
+// That is what makes the cutoff one every build can undo. A row disabled with
+// its allowance spent is the local cutoff the Node agent and every earlier build
+// of this one already know: they find it (HasUsageDisabledUsers), keep it
+// through snapshots while batches are unacknowledged, and give the user back
+// when a snapshot that still wants them arrives with the queue drained
+// (RestoreBackendConfirmedUsers) — at the SAME revision, which nothing else
+// allows. A marker only this build understood would strand the user on a node
+// rolled back to one of them: disabled, with quota left, unrecognised as a
+// local decision, waiting for a newer revision that may never come. It is also
+// what makes a wrong local clock survivable: the control plane's answer wins as
+// soon as it can be heard.
 //
 // "<=" matches the control plane, where a subscription is expired once
 // expireAt <= now. A stored value that does not parse is skipped rather than
@@ -1388,18 +1417,18 @@ func (s *Store) RecordSample(counters []protocol.AbsoluteCounter, sampledAt time
 // metering tick over a date would stop billing for the whole node.
 func offlineExpiredTx(tx *sql.Tx, now time.Time) ([]string, error) {
 	rows, err := tx.Query(
-		`SELECT binding_id, email, expires_at FROM desired_users_v2
+		`SELECT binding_id, email, expires_at, offline_used, offline_allowance FROM desired_users_v2
 		 WHERE enabled = 1 AND expires_at != '' AND email NOT LIKE ? || '%' ORDER BY email`,
 		reassignPlaceholder)
 	if err != nil {
 		return nil, err
 	}
-	type candidate struct{ bindingID, email string }
+	type candidate struct{ bindingID, email, used, allowance string }
 	var due []candidate
 	for rows.Next() {
 		var current candidate
 		var expiresAt string
-		if err := rows.Scan(&current.bindingID, &current.email, &expiresAt); err != nil {
+		if err := rows.Scan(&current.bindingID, &current.email, &expiresAt, &current.used, &current.allowance); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -1416,14 +1445,40 @@ func offlineExpiredTx(tx *sql.Tx, now time.Time) ([]string, error) {
 	rows.Close()
 	emails := make([]string, 0, len(due))
 	for _, current := range due {
+		spent, err := spentAllowance(current.used, current.allowance)
+		if err != nil {
+			return nil, err
+		}
 		if _, err := tx.Exec(
-			`UPDATE desired_users_v2 SET enabled = 0, offline_expired = 1, updated_at = ? WHERE binding_id = ?`,
-			isoMillis(now), current.bindingID); err != nil {
+			`UPDATE desired_users_v2 SET enabled = 0, offline_used = ?, updated_at = ? WHERE binding_id = ?`,
+			spent, isoMillis(now), current.bindingID); err != nil {
 			return nil, err
 		}
 		emails = append(emails, current.email)
 	}
 	return emails, nil
+}
+
+// spentAllowance is the offline_used that reads as "allowance spent" to every
+// build's local-cutoff test, which is offline_used > 0 AND offline_used >=
+// offline_allowance: the larger of the two figures, and never zero — an
+// allowance of 0 is storable, and 0 >= 0 alone does not pass that test.
+func spentAllowance(used, allowance string) (string, error) {
+	usedValue, err := decimal.Parse(used)
+	if err != nil {
+		return "", err
+	}
+	spent, err := decimal.Parse(allowance)
+	if err != nil {
+		return "", err
+	}
+	if usedValue.Cmp(spent) > 0 {
+		spent = usedValue
+	}
+	if spent.Sign() == 0 {
+		spent = big.NewInt(1)
+	}
+	return spent.String(), nil
 }
 
 // folded carries the protocol sample, the columns to persist, and whether the
@@ -2285,9 +2340,6 @@ func (s *Store) OfflineDisabled(bindingID string) (bool, error) {
 	row, err := userByBindingID(s.db, bindingID)
 	if err != nil || row == nil || row.Enabled {
 		return false, err
-	}
-	if row.OfflineExpired {
-		return true, nil
 	}
 	used, err := decimal.Parse(row.OfflineUsed)
 	if err != nil {
