@@ -298,6 +298,46 @@ model User {
   clientPresenceStreams UserClientPresenceStream[]
   supportUnreadState   SupportUnreadState?
   supportRequestUnreads SupportRequestUnread[]
+  subscriptionLink     SubscriptionLink?
+}
+
+// 第三方客户端（小火箭、v2rayN 等）用的订阅链接，每位用户一条。
+// 链接里只有 token；节点凭据在生成订阅内容时从 PanelClientBinding 读取，
+// 所以到期、停用、换节点都不需要换链接。重置链接就是换一个 token。
+model SubscriptionLink {
+  userId    String   @id
+  /// 明文保存：后台要能再次显示链接和二维码。它保护的节点凭据本来就在这个库里。
+  token     String   @unique
+  /// sha256(token) 的十六进制。分发层只按它查找，不保存明文 token。
+  tokenHash String   @unique
+  createdAt DateTime @default(now())
+  /// 最近一次重置 token 的时间；从未重置时为空。
+  rotatedAt DateTime?
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// 订阅链接的分发记录：分发层（CF KV）里每个“可能存在”的键一行。
+// 它和 SubscriptionLink 没有外键，是故意的：链接被重置或用户被删除后，这里剩下的
+// 那一行正是“分发层还有一个该删的键”的唯一记录，对账时据此删除。
+// 所以这一行必须先于写入存在：先登记（contentHash 为空），再写分发层，写成功后再
+// 补上摘要。反过来做的话，分发层收下了写入而登记失败（或请求超时），那个键就再也
+// 没有人知道要删。只有分发层确认删除之后才删这一行。
+model SubscriptionLinkPublication {
+  /// 写到了哪里（哪个账号的哪个 KV 命名空间）。换了命名空间以后，旧地方的记录
+  /// 不能算作新地方已经发布，也不由当前进程撤销。
+  destination String
+  /// 分发层的键，即 SubscriptionLink.tokenHash。
+  tokenHash   String
+  /// 这个键是谁的链接。不设外键：用户被删以后还要靠这一行去撤销。
+  userId      String
+  /// 已确认写入内容的摘要（不含已用流量），用来判断内容是否变了。
+  /// 为空表示已经开始写、但还没有确认：分发层里可能有这个键，内容未知。
+  contentHash String?
+  /// 最近一次确认写入的时间；为空同上。
+  publishedAt DateTime?
+
+  @@id([destination, tokenHash])
+  @@index([userId])
 }
 
 // 每位用户在各平台最近一次上报的客户端版本（来自已登录客户端的检查更新请求）。

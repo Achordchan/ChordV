@@ -1726,3 +1726,70 @@ export interface SystemUpdateStartResultDto {
   accepted: boolean;
   message: string;
 }
+
+/** What a user's subscription link currently hands to a third-party client. */
+export interface AdminSubscriptionLinkPreviewDto {
+  /** "nodes": real nodes. "notice": a single placeholder entry whose name explains why there are none. */
+  kind: "nodes" | "notice";
+  notice: string | null;
+  nodes: Array<{ nodeId: string; name: string }>;
+}
+
+export interface AdminSubscriptionLinkDto {
+  userId: string;
+  /** Null until a subscription domain is configured. */
+  url: string | null;
+  backupUrl: string | null;
+  createdAt: string;
+  rotatedAt: string | null;
+  preview: AdminSubscriptionLinkPreviewDto;
+}
+
+export interface AdminSubscriptionLinkStateDto {
+  link: AdminSubscriptionLinkDto | null;
+  distribution: SubscriptionLinkDistributionDto;
+}
+
+export interface SubscriptionLinkSettingsDto {
+  /** Origin the links are issued under, e.g. https://my.example.com. Null: not configured yet. */
+  origin: string | null;
+  /** A second origin serving the same links, shown alongside for when the first is unreachable. */
+  backupOrigin: string | null;
+  updatedAt: string | null;
+}
+
+export interface UpdateSubscriptionLinkSettingsDto {
+  origin: string | null;
+  backupOrigin: string | null;
+}
+
+/** Whether a user's current link is being served by the distribution layer yet. */
+export interface SubscriptionLinkDistributionDto {
+  /** "not_configured": distribution is off, links are issued but served nowhere. */
+  state: "not_configured" | "pending" | "live";
+  publishedAt: string | null;
+  /**
+   * Earlier links of this user that the distribution layer has not yet been
+   * confirmed to have dropped. While this is above zero an old link may still
+   * be answered; zero means the store accepted every delete (its edge caches
+   * can lag a little behind that).
+   */
+  revoking: number;
+}
+
+export interface SubscriptionLinkPublicationStatusDto {
+  configured: boolean;
+  lastRunAt: string | null;
+  /** Last pass that left nothing to do. */
+  lastSuccessAt: string | null;
+  lastError: string | null;
+  /** Links not yet published as of the last pass. */
+  pending: number;
+  /** Reset or removed links not yet confirmed gone from the distribution layer. */
+  revoking: number;
+  /**
+   * Records written to a distribution destination other than the configured
+   * one. Whatever was published there is neither updated nor revoked.
+   */
+  elsewhere: number;
+}

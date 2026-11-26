@@ -16,6 +16,7 @@
     "@mantine/notifications": "^7.15.3",
     "@tabler/icons-react": "^3.28.1",
     "flag-icons": "^7.5.0",
+    "qrcode": "^1.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
