@@ -13,6 +13,7 @@ import {
 import {
   SUBSCRIPTION_LINK_MAX_FAILURES_PER_PASS,
   SUBSCRIPTION_LINK_MAX_WRITES_PER_PASS,
+  SUBSCRIPTION_LINK_PASS_FAILED,
   SUBSCRIPTION_LINK_RATE_LIMIT_PAUSE_MS,
   SUBSCRIPTION_LINK_REFRESH_AFTER_MS,
   SubscriptionLinkPublicationService
@@ -83,6 +84,8 @@ function createHarness(options: { configured?: boolean; destination?: string; da
     failStore: null as null | ((operation: Operation) => Error | null),
     /** The store takes the write, and then the answer is lost. */
     loseStoreAnswer: false,
+    /** The database cannot be read at all. */
+    failRead: false,
     /** Recording that a write is about to happen fails. */
     failPublicationWrite: false,
     /** Recording that a write happened fails. */
@@ -114,7 +117,10 @@ function createHarness(options: { configured?: boolean; destination?: string; da
     (where.userId === undefined || row.userId === where.userId);
   const prisma = {
     subscriptionLink: {
-      findMany: async () => [...database.links].sort((left, right) => (left.userId < right.userId ? -1 : 1)).map((link) => ({ ...link })),
+      findMany: async () => {
+        if (state.failRead) throw new Error("connection refused: postgres://chordv:SECRET@db/chordv");
+        return [...database.links].sort((left, right) => (left.userId < right.userId ? -1 : 1)).map((link) => ({ ...link }));
+      },
       findUnique: async ({ where }: any) => database.links.find((link) => link.userId === where.userId) ?? null
     },
     subscriptionLinkPublication: {
@@ -472,6 +478,51 @@ async function main() {
     assert.deepEqual([firstPass.written, firstPass.pending], [SUBSCRIPTION_LINK_MAX_WRITES_PER_PASS, 7]);
     const secondPass = await service.reconcile(at(30_000));
     assert.deepEqual([secondPass.written, secondPass.pending], [7, 0]);
+  }
+  {
+    // The database goes away after everything had been published. The last
+    // good figures must not keep saying that distribution is healthy while
+    // nothing is being published or revoked any more.
+    const { state, service, addUser } = createHarness();
+    addUser("user_1", "hash_1", nodesDocument("uuid-1"));
+    await service.reconcile(T0);
+    assert.equal(service.getStatus().lastError, null);
+    state.failRead = true;
+    await assert.rejects(service.reconcile(at(30_000)));
+    let status = service.getStatus();
+    assert.equal(status.lastError, SUBSCRIPTION_LINK_PASS_FAILED);
+    assert.ok(!status.lastError!.includes("SECRET"), "数据库错误的原文不进状态");
+    assert.equal(status.lastRunAt, at(30_000).toISOString(), "记下尝试过的时间");
+    assert.equal(status.lastSuccessAt, T0.toISOString(), "上次成功的时间不动");
+    // The timer's entry point reports the same thing and does not reject.
+    await service.reconcileOnSchedule();
+    assert.equal(service.getStatus().lastError, SUBSCRIPTION_LINK_PASS_FAILED);
+    assert.equal((await service.reconcile(at(45_000)).catch(() => null)), null, "失败的一轮之后不会卡在“正在运行”");
+    // Only a pass that completes takes the error back.
+    state.failRead = false;
+    assert.equal((await service.reconcile(at(60_000))).outcome, "ran");
+    status = service.getStatus();
+    assert.equal(status.lastError, null);
+    assert.equal(status.lastSuccessAt, at(60_000).toISOString());
+  }
+  {
+    // The same during a rate-limit pause: a paused pass that could read the
+    // database withdraws "no pass could run", and nothing else.
+    const { state, service, addUser } = createHarness();
+    addUser("user_1", "hash_1", nodesDocument("uuid-1"));
+    state.failStore = () => new SubscriptionLinkStoreError("写入分发层失败（HTTP 429）", 429);
+    await service.reconcile(T0);
+    assert.equal(service.getStatus().lastError, "写入分发层失败（HTTP 429）");
+    state.failStore = null;
+    assert.equal((await service.reconcile(at(30_000))).outcome, "paused");
+    assert.equal(service.getStatus().lastError, "写入分发层失败（HTTP 429）", "暂停的一轮不替限流的那次错误翻案");
+    state.failRead = true;
+    await assert.rejects(service.reconcile(at(60_000)));
+    assert.equal(service.getStatus().lastError, SUBSCRIPTION_LINK_PASS_FAILED);
+    state.failRead = false;
+    assert.equal((await service.reconcile(at(90_000))).outcome, "paused");
+    assert.equal(service.getStatus().lastError, null);
+    assert.equal(service.getStatus().pending, 1, "还没发布的那条仍然算待发布");
   }
   {
     // Two passes never run on top of each other in one process.

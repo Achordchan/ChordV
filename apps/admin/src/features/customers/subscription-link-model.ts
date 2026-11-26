@@ -41,7 +41,8 @@ export function describeDistributionStatus(status: SubscriptionLinkPublicationSt
   if (!status.configured) return { tone: "off", label: "未启用：服务器上还没有配置分发层" };
   if (status.lastError) {
     const affected = [status.pending > 0 ? `${status.pending} 条链接未发布` : "", status.revoking > 0 ? `${status.revoking} 条旧链接未撤销` : ""].filter(Boolean);
-    return { tone: "wait", label: `${affected.length ? `有 ${affected.join("、")}` : "上一轮对账出错"}：${status.lastError}` };
+    // An error with nothing counted behind it is a pass that could not run at all: it speaks for itself.
+    return { tone: "wait", label: affected.length ? `有 ${affected.join("、")}：${status.lastError}` : status.lastError };
   }
   if (status.pending > 0) return { tone: "wait", label: `有 ${status.pending} 条链接正在发布` };
   if (status.revoking > 0) return { tone: "wait", label: `有 ${status.revoking} 条已重置或已删除的链接正在撤销` };

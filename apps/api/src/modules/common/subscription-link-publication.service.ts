@@ -20,6 +20,9 @@ export const SUBSCRIPTION_LINK_MAX_FAILURES_PER_PASS = 3;
 /** How long to stay away after the store says the write limit is reached. */
 export const SUBSCRIPTION_LINK_RATE_LIMIT_PAUSE_MS = 10 * 60 * 1000;
 
+/** Shown as the status when a pass could not be carried out at all. */
+export const SUBSCRIPTION_LINK_PASS_FAILED = "对账未能执行（读取数据库出错），发布和撤销都已停下，稍后自动重试";
+
 export type SubscriptionLinkReconcileResult = {
   /**
    * "paused": the store's write limit was reached a short while ago. Such a
@@ -166,6 +169,15 @@ export class SubscriptionLinkPublicationService {
     this.running = true;
     try {
       return await this.runPass(store, now, now.getTime() < this.pausedUntil);
+    } catch (error) {
+      // The pass never got as far as counting anything — in practice the
+      // database could not be read. The figures from the last pass that did
+      // run are no longer evidence that distribution is keeping up, so say
+      // that it is not; only a pass that completes cleanly takes this back.
+      // The error's own text stays out of a status an operator's browser reads.
+      this.lastRunAt = now;
+      this.lastError = SUBSCRIPTION_LINK_PASS_FAILED;
+      throw error;
     } finally {
       this.running = false;
     }
@@ -224,7 +236,9 @@ export class SubscriptionLinkPublicationService {
 
     if (paused) {
       // Nothing was rendered, so there is no new figure for what is left to
-      // publish; the last one stands.
+      // publish; the last one stands. So does the last error, except the one
+      // that said no pass could run: this one just did.
+      if (this.lastError === SUBSCRIPTION_LINK_PASS_FAILED && result.failed === 0) this.lastError = null;
       if (result.deleted > 0) this.logger.log(`订阅链接分发（限流暂停中）：撤销 ${result.deleted} 条，待撤销 ${revoking} 条`);
       return result;
     }

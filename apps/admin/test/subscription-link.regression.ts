@@ -78,6 +78,12 @@ assert.deepEqual(
   describeDistributionStatus({ ...status, pending: 1, revoking: 2, lastError: "连不上分发层" }),
   { tone: "wait", label: "有 1 条链接未发布、2 条旧链接未撤销：连不上分发层" }
 );
+// A pass that could not run leaves the last counts at zero; the error alone
+// must be enough to stop the summary reading as healthy.
+assert.deepEqual(
+  describeDistributionStatus({ ...status, lastError: "对账未能执行（读取数据库出错），发布和撤销都已停下，稍后自动重试" }),
+  { tone: "wait", label: "对账未能执行（读取数据库出错），发布和撤销都已停下，稍后自动重试" }
+);
 // Records left behind in a namespace that is no longer the configured one.
 assert.equal(describeElsewhere(status), null);
 assert.match(describeElsewhere({ ...status, elsewhere: 4 }) ?? "", /有 4 条发布记录属于之前配置的分发层.*不会被撤销/);
