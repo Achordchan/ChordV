@@ -270,3 +270,171 @@ func TestAnAllowanceCutoffIsNotSettledAsAnExpiry(t *testing.T) {
 		}
 	}
 }
+
+// TestAnExpiryConfirmedByADisableCommandIsSettled: the usual way the control
+// plane confirms an expiry is a DISABLE_USER, which moves the row's revision on
+// before any snapshot arrives. The cutoff must still be recognised as one an
+// expiry could have made.
+func TestAnExpiryConfirmedByADisableCommandIsSettled(t *testing.T) {
+	store := newStore(t, "node-1", "boot-1")
+	lapsed := expiring("b1", "u1@chordv", "4", pastExpiry)
+	seed(t, store, lapsed)
+	sampleAt(t, store, false)
+	if err := store.ApplyTerminal("b1", "5", "u1@chordv", false); err != nil {
+		t.Fatal(err)
+	}
+	if !locallyDisabled(t, store) {
+		t.Fatal("setup: until a snapshot confirms it, the cutoff is still on this node's books")
+	}
+
+	confirmed := lapsed
+	confirmed.Enabled, confirmed.Revision = false, "5"
+	if err := store.SettleOfflineExpiry([]protocol.DesiredUser{confirmed}, mustInstant(t, tickInstant)); err != nil {
+		t.Fatal(err)
+	}
+	if locallyDisabled(t, store) {
+		t.Fatal("a cutoff the control plane confirmed by command still counts as a local one")
+	}
+}
+
+// --- a date that outlived its revision ---------------------------------------
+
+// The Node agent's statements, as written in apps/node-agent/src/store.ts. None
+// of them names expires_at, which is the point: after any of them the date on
+// the row is whatever this agent last wrote. apps/node-agent/test/
+// go-agent-rollback.test.ts holds the real Node store to the same property.
+const (
+	nodeUpsertUser = `
+		INSERT INTO desired_users_v2(
+			binding_id, email, uuid, flow, enabled, revision, quota_remaining,
+			offline_allowance, offline_used, generation, counter_initialized, uplink, downlink, updated_at
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, '0', '0', 0, '0', '0', ?)
+		ON CONFLICT(binding_id) DO UPDATE SET
+			email = excluded.email, uuid = excluded.uuid, flow = excluded.flow,
+			enabled = excluded.enabled, revision = excluded.revision,
+			quota_remaining = excluded.quota_remaining,
+			offline_allowance = excluded.offline_allowance, updated_at = excluded.updated_at`
+	nodeUpdateQuota = `UPDATE desired_users_v2 SET quota_remaining = ?, revision = ?, offline_used = '0', updated_at = ?
+		WHERE binding_id = ?`
+	nodeSetEnabled = `UPDATE desired_users_v2 SET enabled = ?, revision = ?, updated_at = ? WHERE binding_id = ?`
+)
+
+// TestARenewalTheNodeAgentAppliedDoesNotLeaveItsOldExpiryInForce is the round
+// trip: this agent stores a date, the node is rolled back to the Node agent,
+// the customer renews — a new revision, which the Node agent applies without
+// touching the date — and the node comes forward again with the control plane
+// unreachable. The date on the row is from before the renewal. Acting on it
+// would cut off a customer who has just paid, for as long as the outage lasts.
+func TestARenewalTheNodeAgentAppliedDoesNotLeaveItsOldExpiryInForce(t *testing.T) {
+	for _, renewed := range []bool{false, true} {
+		path := filepath.Join(t.TempDir(), "node-agent.db")
+		first := openAt(t, path, "node-1", "boot-1")
+		seed(t, first, expiring("b1", "u1@chordv", "1", pastExpiry))
+		if renewed {
+			// The Node agent's ENSURE_USER for the renewal: revision 2, fresh quota.
+			if _, err := first.db.Exec(nodeUpsertUser,
+				"b1", "u1@chordv", "uuid-b1", "xtls-rprx-vision", 1, "2", "200000000", allowance,
+				"2026-09-09T10:00:00.000Z"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		first.Close()
+
+		second := openAt(t, path, "node-1", "boot-2")
+		result := sampleAt(t, second, false)
+		row := storedUser(t, second, "b1")
+		if !renewed {
+			// The control: nothing moved the revision, so the date stands.
+			if row.Enabled || len(result.ExpiredEmails) != 1 {
+				t.Fatalf("an expiry at its own revision was not enforced after a restart: %+v", row)
+			}
+			continue
+		}
+		if !row.Enabled || len(result.DisableEmails) != 0 {
+			t.Fatalf("a renewed user was cut off on the expiry from before the renewal: %+v %v", row, result.DisableEmails)
+		}
+		if row.ExpiresAt != "" || row.StoredExpiresAt != pastExpiry || row.Revision != "2" {
+			t.Fatalf("the stale date should be on the row and not in force: %+v", row)
+		}
+
+		// The control plane's next statement at the row's revision supplies the
+		// real date, and from then on that one is enforced.
+		seed(t, second, expiring("b1", "u1@chordv", "2", futureExpiry))
+		if row := storedUser(t, second, "b1"); row.ExpiresAt != futureExpiry {
+			t.Fatalf("the restated date did not take: %+v", row)
+		}
+		if result := sampleAt(t, second, false); len(result.DisableEmails) != 0 {
+			t.Fatalf("cut off before the renewed date: %v", result.DisableEmails)
+		}
+		if result := sampleAtInstant(t, second, "2026-09-10T11:00:00.000Z", false); len(result.ExpiredEmails) != 1 {
+			t.Fatalf("the renewed date was not enforced when it came: %v", result.ExpiredEmails)
+		}
+	}
+}
+
+// TestAnyWriteThatMovesTheRevisionWithoutADateVoidsIt covers the other ways a
+// revision moves — in the Node agent and in this one. A REFRESH_QUOTA or an
+// enable carries no date, and what it says about the subscription is newer
+// than the date on the row.
+func TestAnyWriteThatMovesTheRevisionWithoutADateVoidsIt(t *testing.T) {
+	writes := map[string]func(*testing.T, *Store){
+		"node agent REFRESH_QUOTA": func(t *testing.T, store *Store) {
+			if _, err := store.db.Exec(nodeUpdateQuota, "200000000", "2", "2026-09-09T10:00:00.000Z", "b1"); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"node agent enable": func(t *testing.T, store *Store) {
+			if _, err := store.db.Exec(nodeSetEnabled, 1, "2", "2026-09-09T10:00:00.000Z", "b1"); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"this agent REFRESH_QUOTA": func(t *testing.T, store *Store) {
+			if err := store.UpdateQuota("b1", "200000000", "2"); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"this agent enable": func(t *testing.T, store *Store) {
+			if err := store.SetUserEnabled("b1", true, "2"); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"this agent ENSURE_USER naming no date": func(t *testing.T, store *Store) {
+			seed(t, store, user("b1", "u1@chordv", "2", "200000000"))
+		},
+	}
+	for name, write := range writes {
+		t.Run(name, func(t *testing.T) {
+			store := newStore(t, "node-1", "boot-1")
+			seed(t, store, expiring("b1", "u1@chordv", "1", pastExpiry))
+			write(t, store)
+			if result := sampleAt(t, store, false); len(result.DisableEmails) != 0 {
+				t.Fatalf("cut off on a date older than the row's revision: %v", result.DisableEmails)
+			}
+			if row := storedUser(t, store, "b1"); !row.Enabled || row.ExpiresAt != "" {
+				t.Fatalf("row = %+v", row)
+			}
+		})
+	}
+}
+
+// TestAWriteThatLeavesTheRevisionAloneLeavesTheExpiryInForce: metering and the
+// same-revision restore say nothing new about the subscription, in either
+// agent, and must not switch expiry off.
+func TestAWriteThatLeavesTheRevisionAloneLeavesTheExpiryInForce(t *testing.T) {
+	store := newStore(t, "node-1", "boot-1")
+	seed(t, store, expiring("b1", "u1@chordv", "1", pastExpiry))
+	sampleAt(t, store, true, counter("u1@chordv", "10", "20"))
+	sampleAt(t, store, true, counter("u1@chordv", "30", "40"))
+	// The Node agent's restoreBackendConfirmedUsers.
+	if _, err := store.db.Exec(
+		`UPDATE desired_users_v2 SET enabled = ?, quota_remaining = ?, offline_used = '0', updated_at = ? WHERE binding_id = ?`,
+		1, "99999960", "2026-09-09T10:00:00.000Z", "b1"); err != nil {
+		t.Fatal(err)
+	}
+	if row := storedUser(t, store, "b1"); row.ExpiresAt != pastExpiry {
+		t.Fatalf("the date went out of force without the revision moving: %+v", row)
+	}
+	if result := sampleAt(t, store, false); len(result.ExpiredEmails) != 1 {
+		t.Fatalf("expired = %v", result.ExpiredEmails)
+	}
+}

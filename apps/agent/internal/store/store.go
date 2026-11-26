@@ -181,7 +181,10 @@ func (s *Store) migrate() error {
 			updated_at TEXT NOT NULL,
 			-- When the subscription behind the binding runs out, '' when the
 			-- control plane did not say. See protocol.DesiredUser.ExpiresAt.
-			expires_at TEXT NOT NULL DEFAULT ''
+			expires_at TEXT NOT NULL DEFAULT '',
+			-- The revision that date was stated at. The date counts only while
+			-- this still equals revision; see userColumns.
+			expires_revision TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS usage_batches_v2 (
 			boot_id TEXT NOT NULL,
@@ -238,17 +241,25 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return err
 	}
-	// A column added after desired_users_v2 first shipped. CREATE TABLE IF NOT
+	// Columns added after desired_users_v2 first shipped. CREATE TABLE IF NOT
 	// EXISTS leaves an existing table alone, so a database written by an earlier
-	// build gets it here.
+	// build gets them here.
 	//
-	// It is the ONLY thing this build adds to the table, and that is deliberate:
-	// a node may be rolled back onto this data directory, to an earlier build of
-	// this agent or to the Node one. Their statements name their columns, so one
-	// more column with a default is invisible to them. Anything they must be
-	// able to ACT on — a user this build cut off — is therefore written in the
-	// columns they already read. See offlineExpiredTx.
-	return s.ensureColumn("desired_users_v2", "expires_at", "TEXT NOT NULL DEFAULT ''")
+	// A date and the revision it was stated at are ALL this build adds to the
+	// table, and that is deliberate: a node may be rolled back onto this data
+	// directory, to an earlier build of this agent or to the Node one, and
+	// brought forward again. Their statements name their columns, so extra
+	// columns with defaults are invisible to them. That cuts both ways:
+	//
+	//   - anything they must be able to ACT on — a user this build cut off — is
+	//     written in the columns they already read (offlineExpiredTx);
+	//   - anything they will leave STALE by not writing it — the date, across a
+	//     renewal they applied — must be recognisable as stale when this build
+	//     reads it back (userColumns).
+	if err := s.ensureColumn("desired_users_v2", "expires_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	return s.ensureColumn("desired_users_v2", "expires_revision", "TEXT NOT NULL DEFAULT ''")
 }
 
 // ensureColumn adds a column to a table that predates it. The names are
@@ -888,15 +899,16 @@ func upsertDesiredUserTx(tx *sql.Tx, user protocol.DesiredUser, fallback *big.In
 		INSERT INTO desired_users_v2(
 			binding_id, email, uuid, flow, enabled, revision, quota_remaining,
 			offline_allowance, offline_used, generation, counter_initialized, uplink, downlink, updated_at,
-			expires_at
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, '0', '0', 0, '0', '0', ?, ?)
+			expires_at, expires_revision
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, '0', '0', 0, '0', '0', ?, ?, ?)
 		ON CONFLICT(binding_id) DO UPDATE SET
 			email = excluded.email, uuid = excluded.uuid, flow = excluded.flow,
 			enabled = excluded.enabled, revision = excluded.revision,
 			quota_remaining = excluded.quota_remaining,
 			offline_allowance = excluded.offline_allowance, updated_at = excluded.updated_at,
-			expires_at = excluded.expires_at
-	`, user.BindingID, user.Email, user.UUID, user.Flow, enabled, revision, quota, allowance, isoMillis(time.Now()), expiresAt)
+			expires_at = excluded.expires_at, expires_revision = excluded.expires_revision
+	`, user.BindingID, user.Email, user.UUID, user.Flow, enabled, revision, quota, allowance, isoMillis(time.Now()),
+		expiresAt, statedAt(expiresAt, revision))
 	if err != nil {
 		return err
 	}
@@ -979,8 +991,8 @@ func refreshPolicyTx(tx *sql.Tx, current *userRow, user protocol.DesiredUser) er
 		return nil
 	}
 	_, err = tx.Exec(
-		`UPDATE desired_users_v2 SET expires_at = ?, offline_allowance = ?, updated_at = ? WHERE binding_id = ?`,
-		expiresAt, allowance, isoMillis(time.Now()), current.BindingID)
+		`UPDATE desired_users_v2 SET expires_at = ?, expires_revision = ?, offline_allowance = ?, updated_at = ? WHERE binding_id = ?`,
+		expiresAt, statedAt(expiresAt, current.Revision), allowance, isoMillis(time.Now()), current.BindingID)
 	return err
 }
 
@@ -1048,11 +1060,42 @@ type userRow struct {
 	CounterInitialized bool
 	Uplink             string
 	Downlink           string
+	// StoredExpiresAt is the expires_at column as written, whatever revision it
+	// was stated at. ExpiresAt (in DesiredUser) is the one to act on.
+	StoredExpiresAt string
 }
 
+// userColumns reads a row with its expiry already judged: ExpiresAt is the
+// stored date only while it was stated at the revision the row is at now, and
+// "not stated" otherwise.
+//
+// A binding's revision moves whenever the control plane says something new
+// about it, and a renewal is exactly that. This agent restates the date on
+// every such write, but it is not the only program that writes this table: a
+// node rolled back to the Node agent, or to a build from before expiry was
+// stored, keeps applying commands — a renewal included — and knows nothing of
+// the column, so the date it leaves behind is the one from BEFORE the renewal.
+// Read back by this agent with the control plane unreachable, that date would
+// cut a paid-up user off for the length of the outage.
+//
+// Tying the date to its revision means nobody has to remember to clear it: any
+// write that moves the revision without restating the date — a legacy
+// program's, or this agent's own REFRESH_QUOTA and DISABLE_USER, which carry no
+// date either — leaves a date that no longer counts. No date known is the state
+// every node was in before the column existed; the next statement from the
+// control plane (a snapshot will do, see refreshPolicyTx) supplies the real one.
 const userColumns = `binding_id, email, uuid, flow, enabled, revision, quota_remaining,
 	offline_allowance, offline_used, generation, counter_initialized, uplink, downlink,
-	expires_at`
+	CASE WHEN expires_revision = revision THEN expires_at ELSE '' END, expires_at`
+
+// statedAt is the expires_revision to store beside a date: the revision it is
+// being stated at, or nothing when there is no date to vouch for.
+func statedAt(expiresAt, revision string) string {
+	if expiresAt == "" {
+		return ""
+	}
+	return revision
+}
 
 func scanUser(scan func(...any) error) (*userRow, error) {
 	var row userRow
@@ -1060,7 +1103,7 @@ func scanUser(scan func(...any) error) (*userRow, error) {
 	err := scan(&row.BindingID, &row.Email, &row.UUID, &row.Flow, &enabled, &row.Revision,
 		&row.QuotaRemainingBytes, &row.OfflineAllowanceBytes, &row.OfflineUsed,
 		&row.Generation, &initialized, &row.Uplink, &row.Downlink,
-		&row.ExpiresAt)
+		&row.ExpiresAt, &row.StoredExpiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1242,10 +1285,14 @@ func (s *Store) SettleOfflineExpiry(users []protocol.DesiredUser, now time.Time)
 			if err != nil {
 				return err
 			}
-			if row == nil || row.Enabled || row.ExpiresAt == "" {
+			// The date as stored, not as judged: the control plane's DISABLE_USER
+			// has usually moved the revision on by the time its snapshot confirms
+			// the cutoff, and all the date decides here is whether the cutoff
+			// could have been an expiry at all.
+			if row == nil || row.Enabled || row.StoredExpiresAt == "" {
 				continue
 			}
-			at, err := protocol.ParseExpiresAt(row.ExpiresAt)
+			at, err := protocol.ParseExpiresAt(row.StoredExpiresAt)
 			if err != nil || at.After(now) {
 				continue
 			}
@@ -1418,7 +1465,8 @@ func (s *Store) RecordSample(counters []protocol.AbsoluteCounter, sampledAt time
 func offlineExpiredTx(tx *sql.Tx, now time.Time) ([]string, error) {
 	rows, err := tx.Query(
 		`SELECT binding_id, email, expires_at, offline_used, offline_allowance FROM desired_users_v2
-		 WHERE enabled = 1 AND expires_at != '' AND email NOT LIKE ? || '%' ORDER BY email`,
+		 WHERE enabled = 1 AND expires_at != '' AND expires_revision = revision
+		   AND email NOT LIKE ? || '%' ORDER BY email`,
 		reassignPlaceholder)
 	if err != nil {
 		return nil, err

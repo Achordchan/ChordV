@@ -234,3 +234,64 @@ test('换身份仅在显式重置时归档运行状态，凭据保持不动', ()
     openStore(config, options).close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+const GIB = 1024n * MIB;
+
+test('同一 revision 的声明刷新已启用用户的离线额度，且只改这一列', () => withStore((store) => {
+  store.replaceDesiredUsers([user()], '1');
+  store.recordSample([{ email: user().email, uplinkBytes: '0', downlinkBytes: '0' }], new Date('2026-07-26T00:00:00Z'), false);
+  store.recordSample([{ email: user().email, uplinkBytes: '300', downlinkBytes: '700' }], new Date('2026-07-26T00:00:05Z'), false);
+  const before = store.getUserByBindingId(user().bindingId)!;
+  assert.equal(before.offline_used, '1000');
+
+  // Raised: the control plane's setting went from 64 MiB to 10 GiB.
+  store.replaceDesiredUsers([user({ offlineAllowanceBytes: String(10n * GIB), quotaRemainingBytes: '1' })], '1');
+  const raised = store.getUserByBindingId(user().bindingId)!;
+  assert.equal(raised.offline_allowance, String(10n * GIB));
+  // Nothing else moved — in particular not the quota the statement carried,
+  // which at an equal revision is older than what this node has metered.
+  for (const column of ['enabled', 'revision', 'quota_remaining', 'offline_used', 'generation',
+    'counter_initialized', 'uplink', 'downlink', 'email', 'uuid', 'flow'] as const) {
+    assert.equal(raised[column], before[column], column);
+  }
+
+  // Lowered: the old, higher cap must not stay in force.
+  store.replaceDesiredUsers([user({ offlineAllowanceBytes: String(32n * MIB) })], '1');
+  assert.equal(store.getUserByBindingId(user().bindingId)?.offline_allowance, String(32n * MIB));
+}));
+
+test('同一 revision 的声明没带离线额度时保留原值', () => withStore((store) => {
+  store.replaceDesiredUsers([user()], '1');
+  store.replaceDesiredUsers([{ ...user(), offlineAllowanceBytes: undefined as unknown as string }], '1');
+  assert.equal(store.getUserByBindingId(user().bindingId)?.offline_allowance, String(64n * MIB));
+}));
+
+test('刷新离线额度不解除本机停用，也不动被停用的行', () => withStore((store) => {
+  store.replaceDesiredUsers([user()], '1');
+  store.recordSample([{ email: user().email, uplinkBytes: '0', downlinkBytes: '0' }], new Date('2026-07-26T00:00:00Z'), false);
+  const cut = store.recordSample(
+    [{ email: user().email, uplinkBytes: '0', downlinkBytes: String(64n * MIB) }], new Date('2026-07-26T00:00:05Z'), false,
+  );
+  assert.deepEqual(cut.disableEmails, [user().email]);
+  assert.equal(store.hasOfflineDisabledUsers(), true);
+
+  // A larger allowance arriving at the same revision would, if applied, make
+  // offline_used < offline_allowance: the row would stop reading as a local
+  // cutoff while still disabled, and nothing could release it.
+  store.replaceDesiredUsers([user({ offlineAllowanceBytes: String(10n * GIB) })], '1');
+  const row = store.getUserByBindingId(user().bindingId)!;
+  assert.equal(row.enabled, 0);
+  assert.equal(row.offline_allowance, String(64n * MIB));
+  assert.equal(store.hasOfflineDisabledUsers(), true);
+
+  // Nor does a disabled statement rewrite an enabled row's policy.
+  store.restoreBackendConfirmedUsers([user()]);
+  store.replaceDesiredUsers([user({ enabled: false, offlineAllowanceBytes: String(10n * GIB) })], '1');
+  assert.equal(store.getUserByBindingId(user().bindingId)?.offline_allowance, String(64n * MIB));
+}));
+
+test('较旧 revision 的声明不刷新离线额度', () => withStore((store) => {
+  store.replaceDesiredUsers([user({ revision: '5' })], '5');
+  store.upsertDesiredUser(user({ revision: '4', offlineAllowanceBytes: String(10n * GIB) }));
+  assert.equal(store.getUserByBindingId(user().bindingId)?.offline_allowance, String(64n * MIB));
+}));

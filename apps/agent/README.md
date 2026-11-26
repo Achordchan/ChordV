@@ -112,11 +112,19 @@ SSE 结束或失败后等待 2 秒重连。所有数据库操作和 Xray 修改�
   队列清空后，快照仍要这个用户（例如期间已续费）就在同一 revision 自动恢复；快照确认
   停用则清掉这笔记录，成为普通的后台停用。没有 `expiresAt` 的用户（旧后台）不做本机
   到期判断。
-- **回退兼容：** 表上只多一列 `expires_at`，旧版本不读它。到期停用留下的行就是 Node
-  Agent 和旧版 Go Agent 自己会写的“allowance 用尽”，回退到它们后照常识别、照常恢复。
-  这一点由两边共用的样本文件保证：`internal/store/testdata/offline-expiry-cutoff.json`
+- **回退兼容：** 表上只多两列，`expires_at` 和它所属的 `expires_revision`，旧版本不读
+  也不写。两个方向都要成立：
+  - 回退：到期停用留下的行就是 Node Agent 和旧版 Go Agent 自己会写的“allowance 用尽”，
+    回退到它们后照常识别、照常恢复。
+  - 再升回来：旧版本照常执行续费等命令、改了 `revision`，但不会更新 `expires_at`，
+    留下的是续费前的日期。所以到期时间只在 `expires_revision` 等于行的 `revision` 时
+    才算数；revision 一变而日期没有重新下发，就当作“未知”，等后台下一次声明（同
+    revision 的快照即可）补上。本 Agent 自己的 `REFRESH_QUOTA`、启用命令同理。
+
+  两边共用一份样本保证这一点：`internal/store/testdata/offline-expiry-cutoff.json`
   由本仓库的测试用真实 store 生成并校验，`apps/node-agent/test/go-agent-rollback.test.ts`
-  把它装进 Node Agent 的库里验证恢复。改动到期停用写入的内容时两边测试都会提示。
+  把它装进 Node Agent 的库里，验证恢复，并验证 Node Agent 改 revision 的每一种写入都
+  不碰这两列。改动到期停用写入的内容时两边测试都会提示。
 - **重启恢复：** 比较 Xray 估计启动时间，同时检查期望用户是否消失；失败保留恢复意图。
 - **退出：** SIGINT/SIGTERM 先取消并等待各循环退出，再用独立的 10 秒 context
   做末次采样和一轮上传。未上传完的批次留在数据库，下次启动继续，不丢弃。

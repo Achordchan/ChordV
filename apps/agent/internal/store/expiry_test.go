@@ -361,16 +361,18 @@ func TestATerminalCommandAfterAnOfflineExpiryKeepsTheUserOff(t *testing.T) {
 	}
 }
 
-// legacySchema strips the column an earlier build never created, leaving the
+// legacySchema strips the columns an earlier build never created, leaving the
 // table as that build wrote it.
 func legacySchema(t *testing.T, store *Store) {
 	t.Helper()
-	if _, err := store.db.Exec(`ALTER TABLE desired_users_v2 DROP COLUMN expires_at`); err != nil {
-		t.Fatalf("drop expires_at: %v", err)
+	for _, column := range []string{"expires_at", "expires_revision"} {
+		if _, err := store.db.Exec(`ALTER TABLE desired_users_v2 DROP COLUMN ` + column); err != nil {
+			t.Fatalf("drop %s: %v", column, err)
+		}
 	}
 }
 
-func TestAnOlderDatabaseGainsTheExpiryColumn(t *testing.T) {
+func TestAnOlderDatabaseGainsTheExpiryColumns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "node-agent.db")
 	first := openAt(t, path, "node-1", "boot-1")
 	seed(t, first, user("b1", "u1@chordv", "3", "5000"))

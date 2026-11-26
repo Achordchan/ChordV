@@ -150,6 +150,58 @@ test('回退后本 Agent 照常写入带额外列的表', () => withRolledBackSt
   assert.equal(result.disableEmails.length, 0);
 }));
 
+/**
+ * The other direction. The Go agent's date is tied to the revision it was
+ * stated at (expires_revision), because this agent will go on applying commands
+ * — a renewal among them — without knowing the date is there. What makes that
+ * work is a property of THIS agent's statements, so it is held here, against
+ * the real store: every write that moves a binding's revision leaves the Go
+ * agent's columns exactly as they were, and therefore no longer equal to it.
+ * apps/agent's TestARenewalTheNodeAgentAppliedDoesNotLeaveItsOldExpiryInForce
+ * is what the Go agent then does with such a row.
+ */
+function goAgentColumns(path: string, bindingId: string): Record<string, string> {
+  const raw = new Database(path, { readonly: true });
+  try {
+    const columns = ['revision', ...Object.keys(fixture.addedColumns)];
+    return raw.prepare(`SELECT ${columns.join(', ')} FROM desired_users_v2 WHERE binding_id = ?`)
+      .get(bindingId) as Record<string, string>;
+  } finally {
+    raw.close();
+  }
+}
+
+test('共享样本带有到期时间所属的 revision，且与行的 revision 一致', () => {
+  assert.equal('expires_revision' in fixture.addedColumns, true);
+  for (const row of fixture.rows) assert.equal(row.expires_revision, row.revision);
+});
+
+for (const [name, write] of Object.entries({
+  '续费（ENSURE_USER，新 revision）': (store: AgentStore, user: DesiredUser) =>
+    store.upsertDesiredUser({ ...user, revision: '2', quotaRemainingBytes: '2147483648' }),
+  '配置快照带来新 revision': (store: AgentStore, user: DesiredUser) =>
+    store.applyConfigSnapshot({ nodeId: 'node-1', revision: '2', controlMode: 'direct_primary', users: [{ ...user, revision: '2' }] }),
+  'REFRESH_QUOTA': (store: AgentStore, user: DesiredUser) => store.updateQuota(user.bindingId, '2147483648', '2'),
+  '启用命令': (store: AgentStore, user: DesiredUser) => store.setUserEnabled(user.bindingId, true, '2'),
+})) {
+  test(`回退期间本 Agent 的写入（${name}）改了 revision，但不碰 Go Agent 的到期列`, () => {
+    const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-rollback-'));
+    const path = rolledBackDatabase(directory);
+    const store = new AgentStore(path, storeOptions);
+    try {
+      const [user] = backendStatement(true);
+      const before = goAgentColumns(path, user.bindingId);
+      write(store, user);
+      const after = goAgentColumns(path, user.bindingId);
+      assert.equal(after.revision, '2');
+      assert.equal(after.expires_at, before.expires_at);
+      assert.equal(after.expires_revision, before.expires_revision);
+      // Which is what tells the Go agent the date is from before this write.
+      assert.notEqual(after.expires_revision, after.revision);
+    } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+  });
+}
+
 test('回退后启动本 Agent：后台可达即把到期停用的用户装回 Xray', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-rollback-runner-'));
   const store = new AgentStore(rolledBackDatabase(directory), storeOptions);
