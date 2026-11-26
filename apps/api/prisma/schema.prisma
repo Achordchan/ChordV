@@ -298,6 +298,22 @@ model User {
   clientPresenceStreams UserClientPresenceStream[]
   supportUnreadState   SupportUnreadState?
   supportRequestUnreads SupportRequestUnread[]
+  subscriptionLink     SubscriptionLink?
+}
+
+// 第三方客户端（小火箭、v2rayN 等）用的订阅链接，每位用户一条。
+// 链接里只有 token；节点凭据在生成订阅内容时从 PanelClientBinding 读取，
+// 所以到期、停用、换节点都不需要换链接。重置链接就是换一个 token。
+model SubscriptionLink {
+  userId    String   @id
+  /// 明文保存：后台要能再次显示链接和二维码。它保护的节点凭据本来就在这个库里。
+  token     String   @unique
+  /// sha256(token) 的十六进制。分发层只按它查找，不保存明文 token。
+  tokenHash String   @unique
+  createdAt DateTime @default(now())
+  /// 最近一次重置 token 的时间；从未重置时为空。
+  rotatedAt DateTime?
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 // 每位用户在各平台最近一次上报的客户端版本（来自已登录客户端的检查更新请求）。

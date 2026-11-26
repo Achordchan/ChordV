@@ -1726,3 +1726,38 @@ export interface SystemUpdateStartResultDto {
   accepted: boolean;
   message: string;
 }
+
+/** What a user's subscription link currently hands to a third-party client. */
+export interface AdminSubscriptionLinkPreviewDto {
+  /** "nodes": real nodes. "notice": a single placeholder entry whose name explains why there are none. */
+  kind: "nodes" | "notice";
+  notice: string | null;
+  nodes: Array<{ nodeId: string; name: string }>;
+}
+
+export interface AdminSubscriptionLinkDto {
+  userId: string;
+  /** Null until a subscription domain is configured. */
+  url: string | null;
+  backupUrl: string | null;
+  createdAt: string;
+  rotatedAt: string | null;
+  preview: AdminSubscriptionLinkPreviewDto;
+}
+
+export interface AdminSubscriptionLinkStateDto {
+  link: AdminSubscriptionLinkDto | null;
+}
+
+export interface SubscriptionLinkSettingsDto {
+  /** Origin the links are issued under, e.g. https://my.example.com. Null: not configured yet. */
+  origin: string | null;
+  /** A second origin serving the same links, shown alongside for when the first is unreachable. */
+  backupOrigin: string | null;
+  updatedAt: string | null;
+}
+
+export interface UpdateSubscriptionLinkSettingsDto {
+  origin: string | null;
+  backupOrigin: string | null;
+}

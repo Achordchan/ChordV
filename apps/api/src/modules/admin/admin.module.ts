@@ -4,8 +4,9 @@ import { RuntimeVersionController } from "./runtime-version.controller";
 import { Module } from "@nestjs/common";
 import { SiteAddressController, ClientSiteAddressController } from "./site-address.controller";
 import { AdminController } from "./admin.controller";
+import { SubscriptionLinkSettingsController, UserSubscriptionLinkController } from "./subscription-link.controller";
 
 @Module({
-  controllers: [StorageController, AdminController, RuntimeVersionController, UserRoutingRulesController, SiteAddressController, ClientSiteAddressController]
+  controllers: [StorageController, AdminController, RuntimeVersionController, UserRoutingRulesController, SiteAddressController, ClientSiteAddressController, UserSubscriptionLinkController, SubscriptionLinkSettingsController]
 })
 export class AdminModule {}
