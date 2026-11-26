@@ -92,6 +92,8 @@ export type SubscriptionLinkDocument = {
   body: string;
   /** Value of the `subscription-userinfo` response header, or null when there is no subscription to describe. */
   userinfo: string | null;
+  /** The figures `userinfo` was written from. */
+  usage: SubscriptionLinkUsage | null;
 };
 
 /** Hours between a client's automatic refreshes (`profile-update-interval`). */
@@ -167,7 +169,8 @@ export function buildNoticeDocument(
     notice: text,
     nodes: [],
     body: encodeBody([buildNoticeShareLink(text)]),
-    userinfo: buildUserinfo(usage)
+    userinfo: buildUserinfo(usage),
+    usage
   };
 }
 
@@ -190,6 +193,36 @@ export function buildNodesDocument(
     notice: null,
     nodes: ordered.map((node) => ({ nodeId: node.nodeId, name: node.name })),
     body: encodeBody(ordered.map(buildVlessRealityShareLink)),
-    userinfo: buildUserinfo(usage)
+    userinfo: buildUserinfo(usage),
+    usage
   };
+}
+
+/**
+ * A document as the distribution layer stores it: everything the edge needs to
+ * answer a request, and nothing else. The version lets the edge refuse a shape
+ * it does not understand instead of serving it wrongly.
+ */
+export function serializeSubscriptionLinkDocument(document: SubscriptionLinkDocument): string {
+  return JSON.stringify({ v: 1, body: document.body, userinfo: document.userinfo });
+}
+
+/**
+ * Identifies a document's content for "has it changed since it was published".
+ *
+ * Used traffic is left out on purpose. It moves with every metering batch, and
+ * a digest that followed it would republish every active user every minute
+ * against a store that allows a limited number of writes a day. The figure a
+ * client displays is refreshed on a slower cycle instead; everything that
+ * decides whether and where a user can connect — the nodes, the notice, the
+ * quota, the expiry — is in the digest and is published as soon as it changes.
+ */
+export function hashSubscriptionLinkDocument(document: SubscriptionLinkDocument): string {
+  const stable = JSON.stringify({
+    v: 1,
+    body: document.body,
+    total: document.usage ? document.usage.totalBytes.toString() : null,
+    expire: document.usage ? Math.floor(document.usage.expireAt.getTime() / 1000) : null
+  });
+  return createHash("sha256").update(stable, "utf8").digest("hex");
 }

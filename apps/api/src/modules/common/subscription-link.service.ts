@@ -1,7 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import type {
   AdminSubscriptionLinkDto,
-  AdminSubscriptionLinkStateDto,
   SubscriptionLinkSettingsDto,
   UpdateSubscriptionLinkSettingsDto
 } from "@chordv/shared";
@@ -24,6 +23,9 @@ import { pickCurrentSubscription, readEffectiveSubscriptionState } from "./subsc
 import { trafficGbNumberToBytes } from "./traffic-bytes.utils";
 
 export const SUBSCRIPTION_LINK_SETTINGS_KEY = "subscription-link";
+
+/** A user's link as the admin sees it; null when none has been issued. */
+export type SubscriptionLinkState = { link: AdminSubscriptionLinkDto | null };
 
 type LinkRow = { userId: string; token: string; createdAt: Date; rotatedAt: Date | null };
 
@@ -77,14 +79,14 @@ export class SubscriptionLinkService {
     return { ...value, updatedAt: row.updatedAt.toISOString() };
   }
 
-  async getForUser(userId: string): Promise<AdminSubscriptionLinkStateDto> {
+  async getForUser(userId: string): Promise<SubscriptionLinkState> {
     await this.assertUserExists(userId);
     const row = await this.prisma.subscriptionLink.findUnique({ where: { userId } });
     return { link: row ? await this.describe(row) : null };
   }
 
   /** Returns the user's link, issuing one if they have none. Never changes an existing token. */
-  async ensureForUser(userId: string): Promise<AdminSubscriptionLinkStateDto> {
+  async ensureForUser(userId: string): Promise<SubscriptionLinkState> {
     await this.assertUserExists(userId);
     const existing = await this.prisma.subscriptionLink.findUnique({ where: { userId } });
     if (existing) return { link: await this.describe(existing) };
@@ -105,7 +107,7 @@ export class SubscriptionLinkService {
   }
 
   /** Replaces the token. The old link stops working; the user's nodes and credentials are untouched. */
-  async resetForUser(userId: string): Promise<AdminSubscriptionLinkStateDto> {
+  async resetForUser(userId: string): Promise<SubscriptionLinkState> {
     await this.assertUserExists(userId);
     const token = generateSubscriptionLinkToken();
     const tokenHash = hashSubscriptionLinkToken(token);

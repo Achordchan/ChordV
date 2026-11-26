@@ -1747,6 +1747,7 @@ export interface AdminSubscriptionLinkDto {
 
 export interface AdminSubscriptionLinkStateDto {
   link: AdminSubscriptionLinkDto | null;
+  distribution: SubscriptionLinkDistributionDto;
 }
 
 export interface SubscriptionLinkSettingsDto {
@@ -1760,4 +1761,21 @@ export interface SubscriptionLinkSettingsDto {
 export interface UpdateSubscriptionLinkSettingsDto {
   origin: string | null;
   backupOrigin: string | null;
+}
+
+/** Whether a user's current link is being served by the distribution layer yet. */
+export interface SubscriptionLinkDistributionDto {
+  /** "not_configured": distribution is off, links are issued but served nowhere. */
+  state: "not_configured" | "pending" | "live";
+  publishedAt: string | null;
+}
+
+export interface SubscriptionLinkPublicationStatusDto {
+  configured: boolean;
+  lastRunAt: string | null;
+  /** Last pass that left nothing to do. */
+  lastSuccessAt: string | null;
+  lastError: string | null;
+  /** Links not yet published as of the last pass. */
+  pending: number;
 }

@@ -519,17 +519,33 @@ async function main() {
     );
   }
   {
+    // Issuing and resetting take effect in the distribution layer right away
+    // (a reset link must stop working); merely looking does not trigger a pass.
     const calls: string[] = [];
-    const controller = new UserSubscriptionLinkController({
-      getForUser: async (userId: string) => { calls.push(`get:${userId}`); return { link: null }; },
-      ensureForUser: async (userId: string) => { calls.push(`ensure:${userId}`); return { link: null }; },
-      resetForUser: async (userId: string) => { calls.push(`reset:${userId}`); return { link: null }; }
-    } as never);
-    await controller.get("user_1");
+    const controller = new UserSubscriptionLinkController(
+      {
+        getForUser: async (userId: string) => { calls.push(`get:${userId}`); return { link: null }; },
+        ensureForUser: async (userId: string) => { calls.push(`ensure:${userId}`); return { link: null }; },
+        resetForUser: async (userId: string) => { calls.push(`reset:${userId}`); return { link: null }; }
+      } as never,
+      {
+        kick: () => { calls.push("kick"); },
+        describeForUser: async (userId: string) => { calls.push(`describe:${userId}`); return { state: "pending", publishedAt: null }; }
+      } as never
+    );
+    assert.deepEqual(await controller.get("user_1"), { link: null, distribution: { state: "pending", publishedAt: null } });
     await controller.ensure("user_1");
     await controller.reset("user_1");
-    assert.deepEqual(calls, ["get:user_1", "ensure:user_1", "reset:user_1"]);
+    assert.deepEqual(calls, [
+      "get:user_1", "describe:user_1",
+      "ensure:user_1", "kick", "describe:user_1",
+      "reset:user_1", "kick", "describe:user_1"
+    ]);
   }
+  assert.deepEqual(
+    Reflect.getMetadata(HEADERS_METADATA, SubscriptionLinkSettingsController.prototype.distribution),
+    [{ name: "Cache-Control", value: "no-store" }]
+  );
 
   console.log("subscription-link.regression.ts passed");
 }

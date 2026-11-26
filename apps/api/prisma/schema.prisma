@@ -316,6 +316,17 @@ model SubscriptionLink {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
+// 分发层（CF KV）里实际存着什么：每个已写入的键一行。
+// 它和 SubscriptionLink 没有外键，是故意的：链接被重置或用户被删除后，这里剩下的
+// 那一行正是“分发层还有一个该删的键”的唯一记录，对账时据此删除。
+model SubscriptionLinkPublication {
+  /// 分发层的键，即 SubscriptionLink.tokenHash。
+  tokenHash   String   @id
+  /// 已写入内容的摘要（不含已用流量），用来判断内容是否变了。
+  contentHash String
+  publishedAt DateTime
+}
+
 // 每位用户在各平台最近一次上报的客户端版本（来自已登录客户端的检查更新请求）。
 // 同一平台只保留最新一条；版本未变时最多每 10 分钟刷新一次 lastSeenAt。
 model UserClientVersion {
