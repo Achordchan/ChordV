@@ -1,3 +1,4 @@
+import { AGENT_OFFLINE_ALLOWANCE_BYTES } from "./agent-offline-policy";
 import { isNodeOnboardingReady } from "./node-onboarding-policy";
 import { workLifecycle, DrainableJob } from "../../work-lifecycle";
 import {
@@ -94,7 +95,6 @@ type ActiveRuntimeUsageContext = {
 
 const NODE_PANEL_ACCESS_SYNC_TIMEOUT_MS = 300;
 const NODE_PANEL_BINDING_SUBSCRIPTION_TIMEOUT_MS = 300;
-const DIRECT_OFFLINE_ALLOWANCE_BYTES = 64n * 1024n * 1024n;
 const CONNECT_PANEL_RUNTIME_READ_TIMEOUT_MS = Number(process.env.CHORDV_CONNECT_PANEL_RUNTIME_READ_TIMEOUT_MS ?? 1500);
 
 type PanelBindingFilter = {
@@ -2621,7 +2621,7 @@ export function buildDirectUserQuotaPayload(subscription: {
     : trafficGbNumberToBytes(subscription.remainingTrafficGb);
   return {
     quotaRemainingBytes: quotaRemainingBytes.toString(),
-    offlineAllowanceBytes: DIRECT_OFFLINE_ALLOWANCE_BYTES.toString()
+    offlineAllowanceBytes: AGENT_OFFLINE_ALLOWANCE_BYTES.toString()
   };
 }
 

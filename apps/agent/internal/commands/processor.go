@@ -1047,6 +1047,14 @@ func validateUser(user protocol.DesiredUser) error {
 			return fmt.Errorf("binding %s 的 offlineAllowanceBytes 非法：%w", user.BindingID, err)
 		}
 	}
+	// Empty means the control plane did not name an expiry, which is allowed. A
+	// value that is present but unreadable is refused here, before anything is
+	// uninstalled, for the same reason a malformed quota is.
+	if user.ExpiresAt != "" {
+		if _, err := protocol.ParseExpiresAt(user.ExpiresAt); err != nil {
+			return fmt.Errorf("binding %s 的 expiresAt 非法：%w", user.BindingID, err)
+		}
+	}
 	return nil
 }
 
@@ -1470,7 +1478,24 @@ func (p *Processor) resolveUser(command protocol.Command, stored *protocol.Desir
 	if value, ok := command.Payload["offlineAllowanceBytes"].(string); ok && value != "" {
 		user.OfflineAllowanceBytes = value
 	}
+	// The expiry is taken from THIS command or not at all — unlike the quota
+	// above, the stored one is never carried forward.
+	//
+	// A command that enables a user is the control plane's newer word on the
+	// subscription, typically a renewal. One that names no expiry (an older
+	// control plane) says nothing about whether the date on record still holds,
+	// and keeping it would let a date from before the renewal cut the user off
+	// the next time the control plane is unreachable. No expiry known is the
+	// state every node was in before this field existed; a wrong one is new.
+	user.ExpiresAt = expiresAtField(command.Payload)
 	return user, nil
+}
+
+// expiresAtField reads a payload's expiry. Anything but a string is "not
+// stated"; whether a string is a valid instant is validateUser's question.
+func expiresAtField(payload map[string]any) string {
+	value, _ := payload["expiresAt"].(string)
+	return value
 }
 
 // --- payload parsing --------------------------------------------------------
@@ -1542,6 +1567,7 @@ func parseDesiredUser(payload map[string]any, revision string) (protocol.Desired
 	if value, ok := payload["offlineAllowanceBytes"].(string); ok && value != "" {
 		user.OfflineAllowanceBytes = value
 	}
+	user.ExpiresAt = expiresAtField(payload)
 	return user, nil
 }
 

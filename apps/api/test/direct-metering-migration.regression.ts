@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { AGENT_OFFLINE_ALLOWANCE_BYTES } from "../src/modules/common/agent-offline-policy";
 import { buildDirectUserQuotaPayload } from "../src/modules/common/runtime-session.service";
 import {
   compareRestartAwareShadowUsage,
@@ -215,6 +216,6 @@ const directEnsureQuota = buildDirectUserQuotaPayload({
   remainingTrafficGb: 0
 });
 assert.equal(directEnsureQuota.quotaRemainingBytes, "1000", "新建 Direct 用户必须携带当前剩余配额");
-assert.equal(directEnsureQuota.offlineAllowanceBytes, String(64n * 1024n * 1024n));
+assert.equal(directEnsureQuota.offlineAllowanceBytes, AGENT_OFFLINE_ALLOWANCE_BYTES.toString());
 
 console.log("direct-metering-migration.regression.ts passed");
