@@ -183,6 +183,11 @@ export class SubscriptionLinkService {
       // A credential can outlive the assignment or the node for a moment while
       // its removal is still being carried out; the link must not advertise it.
       if (!assignedNodeIds.has(node.id) || !node.isActive || !isNodeOnboardingReady(node)) continue;
+      // The credential's source says how it was issued, not who runs the node
+      // today. A node that is not (or no longer) under the Agent's control is
+      // withheld from the native client too: what this row says about it may
+      // not be what the node is serving.
+      if (node.controlMode !== "direct_primary") continue;
       if (node.protocol !== "vless" || node.security !== "reality") continue;
       if (!node.realityPublicKey.trim() || !node.serverName.trim() || !node.fingerprint.trim()) continue;
       nodes.push({

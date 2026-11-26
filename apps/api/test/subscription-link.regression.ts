@@ -172,6 +172,7 @@ function nodeRow(id: string, overrides: Row = {}): Row {
     spiderX: "/",
     mldsa65Verify: "",
     registrationStatus: "agent_ready",
+    controlMode: "direct_primary",
     ...overrides
   };
 }
@@ -358,6 +359,11 @@ async function main() {
     ["凭据属于别的用户", (db) => { db.bindings[1].userId = "user_2"; }],
     ["节点已取消授权", (db) => { db.accesses.pop(); }],
     ["节点已下线", (db) => { db.nodes[1].isActive = false; }],
+    // An Agent-issued credential on a node the Agent does not (or no longer)
+    // run: the native client is not offered such a node either.
+    ["节点仍由面板管理", (db) => { db.nodes[1].controlMode = "xui_primary"; }],
+    ["节点处于影子模式", (db) => { db.nodes[1].controlMode = "shadow_direct"; }],
+    ["节点正在回滚", (db) => { db.nodes[1].controlMode = "rollback_pending"; }],
     ["节点还没完成接入", (db) => { db.nodes[1].registrationStatus = "pending_register"; }],
     ["节点地址还是占位符", (db) => { db.nodes[1].serverHost = "pending-agent"; }],
     ["节点不是 Reality", (db) => { db.nodes[1].registrationStatus = null; db.nodes[1].security = "tls"; }],
