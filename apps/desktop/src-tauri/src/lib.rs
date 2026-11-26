@@ -373,6 +373,11 @@ struct GeneratedRuntimeConfigDto {
     lease_expires_at: String,
     lease_heartbeat_interval_seconds: u32,
     lease_grace_seconds: u32,
+    // Read by the window, not here: it decides how long a connection survives
+    // unanswered heartbeats. Carried so the config this process hands back
+    // after a window reload still has it. Absent from older control planes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lease_offline_hold_seconds: Option<u64>,
     node: NodeSummaryDto,
     mode: String,
     local_http_port: u16,

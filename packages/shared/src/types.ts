@@ -443,6 +443,13 @@ export interface GeneratedRuntimeConfigDto {
   leaseExpiresAt: string;
   leaseHeartbeatIntervalSeconds: number;
   leaseGraceSeconds: number;
+  /**
+   * How long the client keeps its connection while heartbeats fail WITHOUT an
+   * answer from the control plane (no route, timeout, 5xx), and how long the
+   * control plane keeps the silent lease resumable. Absent from control planes
+   * that predate it; the client then falls back to leaseGraceSeconds.
+   */
+  leaseOfflineHoldSeconds?: number;
   node: NodeSummaryDto;
   mode: ConnectionMode;
   localHttpPort: number;
