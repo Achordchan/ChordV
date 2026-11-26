@@ -16,7 +16,7 @@ async function main() {
   // 64 MiB cut every active user off within minutes of any control-plane
   // outage. Whatever the default becomes, it must not drift back to that order
   // of magnitude unnoticed.
-  assert.equal(DEFAULT_AGENT_OFFLINE_ALLOWANCE_BYTES, 10n * 1024n * 1024n * 1024n);
+  assert.equal(DEFAULT_AGENT_OFFLINE_ALLOWANCE_BYTES, 5n * 1024n * 1024n * 1024n);
   assert.equal(resolveAgentOfflineAllowanceBytes(undefined), DEFAULT_AGENT_OFFLINE_ALLOWANCE_BYTES);
   assert.equal(resolveAgentOfflineAllowanceBytes(""), DEFAULT_AGENT_OFFLINE_ALLOWANCE_BYTES);
   assert.equal(resolveAgentOfflineAllowanceBytes("   "), DEFAULT_AGENT_OFFLINE_ALLOWANCE_BYTES);

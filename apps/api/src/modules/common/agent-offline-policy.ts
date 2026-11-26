@@ -21,7 +21,7 @@
  * revocation that could not be delivered. The default trades that for riding
  * out an outage of a day or so at ordinary usage.
  */
-export const DEFAULT_AGENT_OFFLINE_ALLOWANCE_BYTES = 10n * 1024n * 1024n * 1024n;
+export const DEFAULT_AGENT_OFFLINE_ALLOWANCE_BYTES = 5n * 1024n * 1024n * 1024n;
 
 /**
  * Reads CHORDV_AGENT_OFFLINE_ALLOWANCE_BYTES: a positive decimal integer of
