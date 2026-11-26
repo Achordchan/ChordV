@@ -40,11 +40,13 @@ import {
   buildPanelClientEmail,
   buildSnapshotKey,
   DEFAULT_MAX_CONCURRENT_SESSIONS,
-  getLeaseHardExpireCutoff,
+  getLeaseAbandonCutoff,
   getLeaseFailureDetails,
+  isLeaseAbandoned,
   isLeaseHardExpired,
   LEASE_GRACE_SECONDS,
   LEASE_HEARTBEAT_INTERVAL_SECONDS,
+  LEASE_OFFLINE_HOLD_SECONDS,
   LEASE_TTL_SECONDS,
   type PanelBindingFailure,
   type PanelBindingMutationResult,
@@ -348,7 +350,7 @@ export class RuntimeSessionService {
     }
 
     const now = new Date();
-    if (isLeaseHardExpired(lease.expiresAt, now)) {
+    if (isLeaseAbandoned(lease.expiresAt, now)) {
       await this.revokeLease(lease.id, lease.node, "lease_expired");
       this.logLeaseWarning(
         "会话心跳失败：租约已超过宽限期",
@@ -366,24 +368,41 @@ export class RuntimeSessionService {
 
     await this.assertLeaseCanHeartbeat(lease, user.id);
 
-    const nextExpiresAt = new Date(now.getTime() + LEASE_TTL_SECONDS * 1000);
-    const renewed = await this.prisma.nodeSessionLease.updateMany({
-      where: {
-        id: lease.id,
-        userId: user.id,
-        status: "active"
-      },
-      data: {
-        status: "active",
-        expiresAt: nextExpiresAt,
-        lastHeartbeatAt: now,
-        revokedAt: null,
-        revokedReason: null
+    const renew = async () => {
+      const expiresAt = new Date(now.getTime() + LEASE_TTL_SECONDS * 1000);
+      const renewed = await this.prisma.nodeSessionLease.updateMany({
+        where: {
+          id: lease.id,
+          userId: user.id,
+          status: "active"
+        },
+        data: {
+          status: "active",
+          expiresAt,
+          lastHeartbeatAt: now,
+          revokedAt: null,
+          revokedReason: null
+        }
+      });
+      if (renewed.count === 0) {
+        throw new ForbiddenException("当前连接已失效，请重新连接");
       }
-    });
-    if (renewed.count === 0) {
-      throw new ForbiddenException("当前连接已失效，请重新连接");
-    }
+      return expiresAt;
+    };
+    // A STALE lease is a client coming back after being out of contact past
+    // the TTL and the grace — the control plane was unreachable, or the machine
+    // slept. Its tunnel never depended on this lease, so making it reconnect
+    // buys nothing; but while it was silent it stopped counting against the
+    // concurrency limit, and other devices may have taken the slot. So resuming
+    // is decided like a connect: under the same per-user lock, against the
+    // connections that are current now, and with the renewal inside the lock
+    // so a simultaneous connect cannot count around it.
+    const nextExpiresAt = isLeaseHardExpired(lease.expiresAt, now)
+      ? await this.runWithDistributedUserLeaseLock(user.id, async () => {
+          await this.assertStaleLeaseMayResume(lease);
+          return renew();
+        })
+      : await renew();
     this.refreshActiveRuntimeLease(sessionId, nextExpiresAt);
     // 心跳时刻也计入最近在线时间（推送连接断开但仍在使用节点时，离线后显示的最近在线才准确）。
     this.clientPresenceService?.noteHeartbeat(user.id, now);
@@ -1578,7 +1597,11 @@ export class RuntimeSessionService {
     const expired = await this.prisma.nodeSessionLease.findMany({
       where: {
         status: { in: ["active", "expired"] },
-        expiresAt: { lt: getLeaseHardExpireCutoff(now) }
+        // Abandoned, not merely stale: a stale lease is still resumable by its
+        // client (see heartbeatSession), and revoking it here would also push
+        // that client a "session expired" event the moment it reconnected
+        // after an outage.
+        expiresAt: { lt: getLeaseAbandonCutoff(now) }
       },
       include: { node: true },
       take: 100
@@ -1720,6 +1743,7 @@ export class RuntimeSessionService {
       leaseExpiresAt: leaseExpiresAt.toISOString(),
       leaseHeartbeatIntervalSeconds: LEASE_HEARTBEAT_INTERVAL_SECONDS,
       leaseGraceSeconds: LEASE_GRACE_SECONDS,
+      leaseOfflineHoldSeconds: LEASE_OFFLINE_HOLD_SECONDS,
       node: toNodeSummary(effectiveNode),
       mode: request.mode,
       localHttpPort: 17890,
@@ -2358,6 +2382,68 @@ export class RuntimeSessionService {
     }
   }
 
+  /**
+   * Whether a stale lease may be resumed, decided the way a connect is: against
+   * the connections that are current now. This lease stopped counting when it
+   * went stale, so the slot may be taken; if it is, the devices that connected
+   * in the meantime keep theirs and this one is told it was taken over.
+   *
+   * Caller holds the per-user lease lock.
+   */
+  private async assertStaleLeaseMayResume(lease: {
+    id: string;
+    sessionId: string;
+    userId: string;
+    subscriptionId: string;
+    status: string;
+    lastHeartbeatAt: Date;
+    expiresAt: Date;
+    revokedReason: string | null;
+    node: { id: string; flow: string };
+  }) {
+    const [userSecurity, subscription] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: lease.userId },
+        select: { maxConcurrentSessionsOverride: true }
+      }),
+      this.prisma.subscription.findUnique({
+        where: { id: lease.subscriptionId },
+        select: { plan: { select: { maxConcurrentSessions: true } } }
+      })
+    ]);
+    const concurrentLimit = Math.max(
+      1,
+      userSecurity?.maxConcurrentSessionsOverride ??
+        subscription?.plan?.maxConcurrentSessions ??
+        DEFAULT_MAX_CONCURRENT_SESSIONS
+    );
+    const graceWindowStart = new Date(Date.now() - LEASE_GRACE_SECONDS * 1000);
+    const currentConnections = await this.prisma.nodeSessionLease.count({
+      where: {
+        userId: lease.userId,
+        status: "active",
+        expiresAt: { gt: graceWindowStart },
+        id: { not: lease.id }
+      }
+    });
+    if (currentConnections < concurrentLimit) {
+      return;
+    }
+    this.logLeaseWarning(
+      "会话心跳失败：失联期间名额已被其他设备占用",
+      {
+        ...lease,
+        status: "evicted",
+        revokedReason: SECURITY_REASON_CONCURRENCY
+      },
+      {
+        reason: SECURITY_REASON_CONCURRENCY
+      }
+    );
+    await this.revokeLease(lease.id, lease.node, SECURITY_REASON_CONCURRENCY);
+    throw new ForbiddenException(getLeaseFailureDetails("evicted", SECURITY_REASON_CONCURRENCY).reasonMessage);
+  }
+
   private async assertLeaseCanHeartbeat(
     lease: {
       id: string;
@@ -2705,6 +2791,7 @@ function buildRuntimeFromLease(
     leaseExpiresAt: lease.expiresAt.toISOString(),
     leaseHeartbeatIntervalSeconds: LEASE_HEARTBEAT_INTERVAL_SECONDS,
     leaseGraceSeconds: LEASE_GRACE_SECONDS,
+    leaseOfflineHoldSeconds: LEASE_OFFLINE_HOLD_SECONDS,
     node: toNodeSummary(lease.node),
     mode: "rule",
     localHttpPort: 17890,

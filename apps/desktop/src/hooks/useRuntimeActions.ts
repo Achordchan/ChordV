@@ -471,7 +471,8 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           leaseId: lease.leaseId,
           leaseExpiresAt: lease.leaseExpiresAt,
           leaseHeartbeatIntervalSeconds: lease.leaseHeartbeatIntervalSeconds,
-          leaseGraceSeconds: lease.leaseGraceSeconds
+          leaseGraceSeconds: lease.leaseGraceSeconds,
+          leaseOfflineHoldSeconds: lease.leaseOfflineHoldSeconds
         } : current);
       }
 
