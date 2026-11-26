@@ -95,7 +95,12 @@ import {
   recoverDesktopSessionAfterUnauthorized,
   resolveProactiveAccessTokenRefreshDelay
 } from "./lib/desktopSessionRecovery";
-import { buildProtectedAccessNotice, resolveProtectedAccessReason } from "./lib/sessionLeaseState";
+import {
+  buildProtectedAccessNotice,
+  hasLeaseSilenceRunOut,
+  isDefinitiveLeaseFailure,
+  resolveProtectedAccessReason
+} from "./lib/sessionLeaseState";
 import {
   formatVersionLabel,
   updateActionLabel
@@ -1198,19 +1203,16 @@ export function App() {
         return;
       }
 
-      // 403/404 属于明确失效；网络抖动/5xx 等 heartbeat_failed 必须先走宽限，避免闲置一会儿就弹“连接已失效”。
-      const definitiveInvalid =
-        event.reasonCode === "session_invalid" ||
-        event.reasonCode === "session_expired" ||
-        event.reasonCode === "session_replaced";
-      if (!definitiveInvalid) {
-        const graceSeconds = Math.max(30, runtimeRef.current?.leaseGraceSeconds ?? 300);
+      // 403/404 属于明确失效，立即处理。网络不通、超时、5xx 等 heartbeat_failed 是“没有得到答复”：
+      // 隧道走的是节点而不是后台，后台连不上不是断开的理由，所以按宽限 + 失联保持期等待
+      // （见 resolveLeaseSilenceToleranceMs）；后台恢复后同一个会话凭心跳继续。
+      if (!isDefinitiveLeaseFailure(event.reasonCode)) {
         const nowMs = Date.now();
         if (!leaseHeartbeatFailedAtRef.current) {
           leaseHeartbeatFailedAtRef.current = nowMs;
           return;
         }
-        if (nowMs - leaseHeartbeatFailedAtRef.current < graceSeconds * 1000) {
+        if (!hasLeaseSilenceRunOut(leaseHeartbeatFailedAtRef.current, nowMs, runtimeRef.current)) {
           return;
         }
       }
