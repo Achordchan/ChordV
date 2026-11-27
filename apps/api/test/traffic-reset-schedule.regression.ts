@@ -313,12 +313,64 @@ async function testSkipRequiresStillExpiredAtUpdate() {
   }, "跳过只在更新那一刻仍过期时生效");
 }
 
+async function testScheduledResetSkipsSubscriptionsExpiredAtExecution() {
+  const dueAt = bj("2026-11-01T00:00:00");
+  const base = {
+    id: "sub_exp",
+    userId: "user_1",
+    teamId: null,
+    planId: "plan",
+    totalTrafficGb: 500,
+    usedTrafficGb: 120,
+    remainingTrafficGb: 380,
+    totalTrafficBytes: 0n,
+    usedTrafficBytes: 0n,
+    expireAt: bj("2027-06-01T00:00:00"),
+    renewable: true,
+    sourceAction: "created",
+    lastSyncedAt: new Date(),
+    trafficResetDay: 1,
+    nextTrafficResetAt: dueAt,
+    lastTrafficAutoResetAt: null
+  };
+
+  // 管理员把订阅标成过期（到期日仍在将来）：不能被自动重置重新激活
+  const marked = createResetHarness({ ...base, state: "expired" });
+  const skips: unknown[] = [];
+  (marked.service as any).skipScheduledTrafficReset = async (...args: unknown[]) => {
+    skips.push(args);
+    return true;
+  };
+  assert.equal(await marked.service.runScheduledTrafficReset("sub_exp", dueAt), "skipped_expired");
+  assert.equal(marked.state.updates.length, 0);
+  assert.equal(marked.state.quiesced, 0);
+  assert.equal(marked.state.row.state, "expired");
+  assert.equal(skips.length, 1);
+
+  // 批次读取时有效、锁内事务时已过期：不清零，恢复节点账号并推进计划
+  const racing = createResetHarness({ ...base, state: "active" });
+  const tx = (racing.service as any).prisma.subscription;
+  const original = tx.findUnique;
+  let calls = 0;
+  tx.findUnique = async (...args: unknown[]) => {
+    calls += 1;
+    const row = await original(...args);
+    return calls >= 2 ? { ...row, expireAt: bj("2026-10-01T00:00:00") } : row;
+  };
+  (racing.service as any).skipScheduledTrafficReset = async () => true;
+  assert.equal(await racing.service.runScheduledTrafficReset("sub_exp", dueAt), "skipped_expired");
+  assert.equal(racing.state.updates.length, 0, "过期订阅不清零");
+  assert.equal(racing.state.row.usedTrafficGb, 120);
+  assert.equal(racing.state.accessSyncs, 1, "为结清暂停过的节点账号要恢复");
+}
+
 async function main() {
   testComputeNextTrafficResetAt();
   testDtoValidation();
   testResolveTrafficResetScheduleForUpdate();
   await testScheduledResetClearsTeamPoolOnceAndAdvances();
   await testScheduledResetKeepsPausedAndSupersedesInsideLock();
+  await testScheduledResetSkipsSubscriptionsExpiredAtExecution();
   await testSchedulerSkipsExpiredAndBacksOffOnFailure();
   await testSchedulerBackoffDoesNotStarveLaterSubscriptions();
   await testSkipRequiresStillExpiredAtUpdate();

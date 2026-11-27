@@ -85,8 +85,14 @@ type ResetTrafficCountersResult = {
 };
 /** 计划中的自动重置已被别处处理（另一个进程已执行、管理员改了重置日等），本次跳过。 */
 class ScheduledTrafficResetSuperseded extends Error {}
+/** 执行时订阅已过期：不重置，只推进计划。 */
+class ScheduledTrafficResetSubscriptionExpired extends Error {}
 
-export type ScheduledTrafficResetOutcome = "reset" | "superseded";
+export type ScheduledTrafficResetOutcome = "reset" | "superseded" | "skipped_expired";
+
+function isSubscriptionExpiredForScheduledReset(row: { state: SubscriptionState; expireAt: Date }, now: Date) {
+  return row.state === "expired" || row.expireAt.getTime() <= now.getTime();
+}
 
 /**
  * 新建订阅时的重置日：不传用开通当天（北京时间），null 表示不自动重置。
@@ -497,6 +503,9 @@ export class AdminSubscriptionService {
     if (subscription.nextTrafficResetAt?.getTime() !== dueAt.getTime()) {
       return "superseded";
     }
+    if (isSubscriptionExpiredForScheduledReset(subscription, new Date())) {
+      return (await this.skipScheduledTrafficReset(subscriptionId, dueAt)) ? "skipped_expired" : "superseded";
+    }
     let reset: ResetTrafficCountersResult;
     try {
       reset = await this.resetSubscriptionTrafficCounters(subscription, {
@@ -506,6 +515,11 @@ export class AdminSubscriptionService {
     } catch (error) {
       if (error instanceof ScheduledTrafficResetSuperseded) {
         return "superseded";
+      }
+      if (error instanceof ScheduledTrafficResetSubscriptionExpired) {
+        // 锁内发现已过期：节点账号可能已为结清暂停，按当前订阅恢复（过期的会保持停用），再原子推进计划。
+        await this.syncDirectSubscriptionAccessBestEffort(subscriptionId);
+        return (await this.skipScheduledTrafficReset(subscriptionId, dueAt)) ? "skipped_expired" : "superseded";
       }
       // 结清等待超时等失败时，节点账号可能停在“为重置暂停”的状态；立即按当前订阅恢复，不等对账任务。
       await this.syncDirectSubscriptionAccessBestEffort(subscriptionId);
@@ -552,10 +566,13 @@ export class AdminSubscriptionService {
     if (!dueAt) return;
     const fresh = await this.prisma.subscription.findUnique({
       where: { id: subscriptionId },
-      select: { nextTrafficResetAt: true }
+      select: { nextTrafficResetAt: true, state: true, expireAt: true }
     });
     if (!fresh || fresh.nextTrafficResetAt?.getTime() !== dueAt.getTime()) {
       throw new ScheduledTrafficResetSuperseded();
+    }
+    if (isSubscriptionExpiredForScheduledReset(fresh, new Date())) {
+      throw new ScheduledTrafficResetSubscriptionExpired();
     }
   }
 
@@ -1924,6 +1941,9 @@ export class AdminSubscriptionService {
               if (lockedSubscription.nextTrafficResetAt?.getTime() !== options.scheduledDueAt.getTime()) {
                 throw new ScheduledTrafficResetSuperseded();
               }
+              if (isSubscriptionExpiredForScheduledReset(lockedSubscription, resetSampledAt)) {
+                throw new ScheduledTrafficResetSubscriptionExpired();
+              }
               const day = lockedSubscription.trafficResetDay;
               scheduleUpdate = {
                 nextTrafficResetAt: isValidTrafficResetDay(day) ? computeNextTrafficResetAt(day, resetSampledAt) : null,
@@ -1972,7 +1992,11 @@ export class AdminSubscriptionService {
                 usedTrafficBytes,
                 expireAt,
                 state: resolveSubscriptionState(
-                  options.statePreference ?? (lockedSubscription.state === "paused" ? "paused" : "active"),
+                  options.statePreference ??
+                    (options.scheduledDueAt
+                      // 自动重置只把“流量耗尽”恢复为有效，其余状态（有效、暂停）原样保留。
+                      ? (lockedSubscription.state === "exhausted" ? "active" : lockedSubscription.state)
+                      : (lockedSubscription.state === "paused" ? "paused" : "active")),
                   remainingTrafficGb,
                   expireAt
                 ),
@@ -1989,7 +2013,7 @@ export class AdminSubscriptionService {
             });
             });
         } catch (error) {
-          if (error instanceof ScheduledTrafficResetSuperseded) throw error;
+          if (error instanceof ScheduledTrafficResetSuperseded || error instanceof ScheduledTrafficResetSubscriptionExpired) throw error;
           throw toAdminLocalSaveHttpError(error, "订阅流量重置保存失败，请刷新订阅列表后重试。");
         }
         });
