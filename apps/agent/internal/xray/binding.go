@@ -25,8 +25,8 @@ type Binding struct {
 	// is removed. See package connkill for why removal alone is not enough.
 	killer connkill.Killer
 	logf   func(string, ...any)
-	// ensure replaces GRPC.EnsureUser in tests that need a partial failure.
-	ensure func(context.Context, protocol.DesiredUser, Expectation) error
+	// ensure replaces GRPC.ensureUser in tests that need a partial failure.
+	ensure func(context.Context, protocol.DesiredUser, Expectation) (bool, error)
 }
 
 // SetConnectionKiller enables disconnecting removed accounts. logf receives
@@ -122,33 +122,26 @@ func (b *Binding) EnsureUser(ctx context.Context, user protocol.DesiredUser, exp
 		return fmt.Errorf("等待绑定节点入站，禁止修改账号")
 	}
 	// Replacing an account's UUID removes and reinstalls it; sessions that
-	// authenticated with the old credential would otherwise keep working.
-	previous := b.installedUUID(ctx, user.Email)
+	// authenticated with the old credential would otherwise keep working. An
+	// unreadable current identity counts as "may be replaced": reading the IPs
+	// is harmless, and nothing is destroyed unless the removal is confirmed.
 	var before []string
 	watch := false
-	if previous != "" && !strings.EqualFold(previous, user.UUID) {
+	if previous, known := b.installedUUID(ctx, user.Email); !known || (previous != "" && !strings.EqualFold(previous, user.UUID)) {
 		before, watch = b.killTargets(ctx, user.Email)
 	}
-	ensure := b.GRPC.EnsureUser
+	ensure := b.GRPC.ensureUser
 	if b.ensure != nil {
 		ensure = b.ensure
 	}
-	if err := ensure(ctx, user, expect); err != nil {
-		// The replacement may have removed the old account and then failed to
-		// add the new one. The old credential is gone either way, so its
-		// sessions are disconnected now; a retry finds nothing installed and
-		// would never look back.
-		if watch && !strings.EqualFold(b.installedUUID(ctx, user.Email), previous) {
-			b.disconnect(ctx, user.Email, before)
-		}
-		return err
+	// Disconnect only when THIS call removed the previous account, even if the
+	// reinstall then failed: a retry finds nothing installed and never looks
+	// back. A refused or untouched account is left alone.
+	removed, err := ensure(ctx, user, expect)
+	if watch && removed {
+		b.disconnect(ctx, user.Email, before)
 	}
-	if watch {
-		if current := b.installedUUID(ctx, user.Email); current != "" && !strings.EqualFold(current, previous) {
-			b.disconnect(ctx, user.Email, before)
-		}
-	}
-	return nil
+	return err
 }
 func (b *Binding) RemoveUser(ctx context.Context, email string, expect Expectation) error {
 	if !b.InboundReady() {
@@ -165,22 +158,21 @@ func (b *Binding) RemoveUser(ctx context.Context, email string, expect Expectati
 }
 
 // installedUUID is the UUID currently installed for email on the bound
-// inbound, or "" when absent or unreadable. Only used to decide whether a
-// credential is being replaced.
-func (b *Binding) installedUUID(ctx context.Context, email string) string {
+// inbound ("" when absent). known is false when the list could not be read.
+func (b *Binding) installedUUID(ctx context.Context, email string) (uuid string, known bool) {
 	if b.killer == nil {
-		return ""
+		return "", true
 	}
 	users, err := b.GRPC.ListUsers(ctx)
 	if err != nil {
-		return ""
+		return "", false
 	}
 	for _, user := range users {
 		if user.Email == email {
-			return user.UUID
+			return user.UUID, true
 		}
 	}
-	return ""
+	return "", true
 }
 
 // killTargets decides whether email's connections may be destroyed and reads

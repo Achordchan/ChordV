@@ -307,11 +307,11 @@ func TestPartialCredentialReplacementStillDisconnects(t *testing.T) {
 	killer := &recordingKiller{}
 	binding := &Binding{GRPC: g}
 	binding.SetConnectionKiller(killer, nil)
-	binding.ensure = func(ctx context.Context, desired protocol.DesiredUser, _ Expectation) error {
+	binding.ensure = func(ctx context.Context, desired protocol.DesiredUser, _ Expectation) (bool, error) {
 		if err := g.RemoveUser(ctx, desired.Email, Expectation{UUID: user.UUID}); err != nil {
-			return err
+			return false, err
 		}
-		return errors.New("add failed after remove")
+		return true, errors.New("add failed after remove")
 	}
 	rotated := user
 	rotated.UUID = "c27b65ce-e1f0-40ac-a8c0-2ad4d606bf64"
@@ -326,7 +326,9 @@ func TestPartialCredentialReplacementStillDisconnects(t *testing.T) {
 	if err := g.EnsureUser(ctx, user, Expectation{Absent: true}); err != nil {
 		t.Fatal(err)
 	}
-	binding.ensure = func(context.Context, protocol.DesiredUser, Expectation) error { return errors.New("refused up front") }
+	binding.ensure = func(context.Context, protocol.DesiredUser, Expectation) (bool, error) {
+		return false, errors.New("refused up front")
+	}
 	if err := binding.EnsureUser(ctx, rotated, Expectation{UUID: user.UUID}); err == nil {
 		t.Fatal("expected failure")
 	}
@@ -356,5 +358,45 @@ func TestSharedEmailsSeesOtherInbounds(t *testing.T) {
 	}
 	if shared, err := g.SharedEmails(ctx); err != nil || !shared["reused@example.test"] || len(shared) != 1 {
 		t.Fatalf("shared = %v %v", shared, err)
+	}
+}
+
+// The panel replaced the account between our read and the guarded mutation:
+// ensureUser refuses the identity mismatch without removing anything, so the
+// panel account's connections must not be destroyed even though its UUID
+// differs from what we first read.
+func TestARefusedReplacementOfAPanelAccountDisconnectsNobody(t *testing.T) {
+	g, _ := configuredPolicyServer(t, false, nil, &vin.Config{Decryption: "none"}, true)
+	ctx := context.Background()
+	ours := protocol.DesiredUser{Email: "raced@example.test", UUID: "d52ca32b-784a-4f4b-ab51-b8341884f213"}
+	if err := g.EnsureUser(ctx, ours, Expectation{Absent: true}); err != nil {
+		t.Fatal(err)
+	}
+	killer := &recordingKiller{}
+	binding := &Binding{GRPC: g}
+	binding.SetConnectionKiller(killer, nil)
+	panel := protocol.DesiredUser{Email: ours.Email, UUID: "0f8e3b9a-6c1d-4e2f-8a7b-5c4d3e2f1a0b"}
+	binding.ensure = func(ctx context.Context, desired protocol.DesiredUser, expect Expectation) (bool, error) {
+		// The panel swaps the account in, and opens a session with it.
+		if err := g.RemoveUser(ctx, ours.Email, Expectation{UUID: ours.UUID}); err != nil {
+			t.Fatal(err)
+		}
+		if err := g.EnsureUser(ctx, panel, Expectation{Absent: true}); err != nil {
+			t.Fatal(err)
+		}
+		openVLESS(t, g, panel.UUID)
+		waitOnline(t, g, panel.Email, 1)
+		return g.ensureUser(ctx, desired, expect)
+	}
+	rotated := ours
+	rotated.UUID = "c27b65ce-e1f0-40ac-a8c0-2ad4d606bf64"
+	if err := binding.EnsureUser(ctx, rotated, Expectation{UUID: ours.UUID}); err == nil {
+		t.Fatal("identity guard should refuse the panel's account")
+	}
+	if len(killer.calls) != 0 {
+		t.Fatalf("panel account disconnected: %+v", killer.calls)
+	}
+	if users, _ := g.ListUsers(ctx); len(users) != 1 || users[0].UUID != panel.UUID {
+		t.Fatalf("panel account touched: %+v", users)
 	}
 }

@@ -165,50 +165,58 @@ func (g *GRPC) observed(ctx context.Context, email string, expect Expectation) (
 }
 
 func (g *GRPC) EnsureUser(ctx context.Context, user protocol.DesiredUser, expect Expectation) error {
+	_, err := g.ensureUser(ctx, user, expect)
+	return err
+}
+
+// ensureUser also reports whether it removed a previously installed account
+// (a credential or flow replacement), whether or not the reinstall succeeded.
+func (g *GRPC) ensureUser(ctx context.Context, user protocol.DesiredUser, expect Expectation) (removed bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, CallTimeout)
 	defer cancel()
 	if user.Email == "" {
-		return fmt.Errorf("安装用户缺少 email")
+		return removed, fmt.Errorf("安装用户缺少 email")
 	}
 	id, err := canonicalUUID(user.UUID)
 	if err != nil {
-		return fmt.Errorf("安装用户 UUID 非法: %w", err)
+		return removed, fmt.Errorf("安装用户 UUID 非法: %w", err)
 	}
 	if user.Flow != protocol.FlowNone && user.Flow != protocol.FlowVision {
-		return fmt.Errorf("不支持的 VLESS flow")
+		return removed, fmt.Errorf("不支持的 VLESS flow")
 	}
 	if err := g.uniqueCounterEmails(ctx, []LiveUser{{Email: user.Email}}); err != nil {
-		return err
+		return removed, err
 	}
 	existing, err := g.observed(ctx, user.Email, expect)
 	if err != nil {
-		return err
+		return removed, err
 	}
 	// Xray's VLESS validator keys UUIDs independently of email (and masks two
 	// UUID bytes). Reusing that key can silently replace another user's login.
 	if err := g.uniqueIdentity(ctx, user.Email, id); err != nil {
-		return err
+		return removed, err
 	}
 	if existing != nil {
 		if existing.UUID == id.String() && existing.Flow == user.Flow {
-			return nil
+			return false, nil
 		}
 		if err := g.RemoveUser(ctx, user.Email, Expectation{UUID: existing.UUID}); err != nil {
-			return err
+			return false, err
 		}
+		removed = true
 	}
 	// Re-read after the remove/add gap. There is no server-side CAS; a panel
 	// write after this reading remains a deployment-level race (PRD §10).
 	if _, err := g.observed(ctx, user.Email, Expectation{Absent: true}); err != nil {
-		return err
+		return removed, err
 	}
 	_, err = g.handler.AlterInbound(ctx, &handler.AlterInboundRequest{Tag: g.tag, Operation: serial.ToTypedMessage(&handler.AddUserOperation{
 		User: &xprotocol.User{Email: user.Email, Level: 0, Account: serial.ToTypedMessage(&vless.Account{Id: id.String(), Flow: user.Flow})},
 	})})
 	if err != nil {
-		return fmt.Errorf("安装 Xray 用户 %q: %w", user.Email, err)
+		return removed, fmt.Errorf("安装 Xray 用户 %q: %w", user.Email, err)
 	}
-	return nil
+	return removed, nil
 }
 
 func (g *GRPC) RemoveUser(ctx context.Context, email string, expect Expectation) error {
