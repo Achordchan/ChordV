@@ -532,6 +532,13 @@ model Node {
   probeLatencyMs   Int?
   probeCheckedAt   DateTime?
   probeError       String?
+  /// Reachability from mainland China as reported by the domestic probe:
+  /// unknown | reachable | blocked. Only the latest round is kept.
+  domesticStatus    String    @default("unknown")
+  domesticLatencyMs Int?
+  domesticCheckedAt DateTime?
+  domesticFailStreak Int      @default(0)
+  domesticError     String?
   // Direct metering is the only control mode since the 3X-UI retirement; the
   // column stays because the agent protocol still carries it (snapshots and
   // RECONCILE_USERS commands), and legacy enum values remain valid on the

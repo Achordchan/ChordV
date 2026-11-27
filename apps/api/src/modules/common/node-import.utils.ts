@@ -1,5 +1,6 @@
 import * as net from "node:net";
 import type { AdminNodeRecordDto, NodeProbeStatus, NodeSummaryDto } from "@chordv/shared";
+import { effectiveDomesticStatus } from "../domestic-probe/domestic-probe.policy";
 import { getCountryLabelFromCode, resolveCountryCode } from "@chordv/shared";
 
 export function normalizeOptionalString(value: string | null | undefined) {
@@ -142,6 +143,11 @@ export function toAdminNodeRecord(row: {
   probeStatus: NodeProbeStatus;
   probeCheckedAt: Date | null;
   probeError: string | null;
+  domesticStatus?: string | null;
+  domesticLatencyMs?: number | null;
+  domesticCheckedAt?: Date | null;
+  domesticFailStreak?: number | null;
+  domesticError?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }): AdminNodeRecordDto {
@@ -184,8 +190,26 @@ export function toAdminNodeRecord(row: {
     probeLatencyMs: row.probeLatencyMs,
     probeCheckedAt: row.probeCheckedAt?.toISOString() ?? null,
     probeError: row.probeError,
+    ...toDomesticFields(row),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString()
+  };
+}
+
+function toDomesticFields(row: {
+  domesticStatus?: string | null;
+  domesticLatencyMs?: number | null;
+  domesticCheckedAt?: Date | null;
+  domesticFailStreak?: number | null;
+  domesticError?: string | null;
+}) {
+  const status = effectiveDomesticStatus(row.domesticStatus, row.domesticCheckedAt ?? null);
+  return {
+    domesticStatus: status,
+    domesticLatencyMs: status === "reachable" ? row.domesticLatencyMs ?? null : null,
+    domesticCheckedAt: row.domesticCheckedAt?.toISOString() ?? null,
+    domesticFailStreak: row.domesticFailStreak ?? 0,
+    domesticError: row.domesticError ?? null
   };
 }
 
