@@ -78,7 +78,11 @@ export async function recordDirectOnline(
         data: { directOnlineSince: now }
       });
       const byCount = new Map<number, string[]>();
-      for (const [id, count] of counts) byCount.set(count, [...(byCount.get(count) ?? []), id]);
+      for (const [id, count] of counts) {
+        const group = byCount.get(count);
+        if (group) group.push(id);
+        else byCount.set(count, [id]);
+      }
       for (const [count, group] of byCount) {
         await tx.panelClientBinding.updateMany({
           where: { nodeId, id: { in: group } },

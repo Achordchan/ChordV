@@ -100,7 +100,7 @@ echo "ESTAB 0 0 [::ffff:10.0.0.1]:443 [::ffff:180.124.1.2]:5556"
 	if lines := strings.Count(string(calls), "\n"); lines != 1 {
 		t.Fatalf("ss ran %d times: %s", lines, calls)
 	}
-	if !strings.HasPrefix(string(calls), "-K -H -t -n state established ( sport = :443 )") {
+	if !strings.HasPrefix(string(calls), "-K -H -t -n state established state close-wait state fin-wait-1 state fin-wait-2 ( sport = :443 )") {
 		t.Fatalf("unexpected args: %s", calls)
 	}
 }
@@ -137,5 +137,63 @@ func TestKillIsBoundedAsAWhole(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Fatalf("Kill took %v; the deadline must cover all addresses", elapsed)
+	}
+}
+
+// A client that half-closes after its request leaves the server socket in
+// CLOSE_WAIT while the download continues. The real ss must find and destroy
+// it. Skips where ss, CAP_NET_ADMIN or kernel SOCK_DESTROY support is missing.
+func TestRealSSDestroysAHalfClosedTransfer(t *testing.T) {
+	ss, err := Find()
+	if err != nil {
+		t.Skip(err)
+	}
+	server, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := server.Accept()
+		if err == nil {
+			accepted <- conn
+		}
+	}()
+	dialer := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.2")}, Timeout: 2 * time.Second}
+	client, err := dialer.Dial("tcp", server.Addr().String())
+	if err != nil {
+		t.Skipf("cannot bind 127.0.0.2: %v", err)
+	}
+	defer client.Close()
+	serverSide := <-accepted
+	defer serverSide.Close()
+	// Client sends its request and half-closes; the server keeps streaming.
+	if err := client.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	serverSide.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := serverSide.Read(make([]byte, 1)); err == nil {
+		t.Fatal("expected EOF from the half-close")
+	}
+	if _, err := serverSide.Write([]byte("still downloading")); err != nil {
+		t.Fatalf("half-closed transfer should still flow: %v", err)
+	}
+	listener := Listener{IP: net.ParseIP("127.0.0.1"), Port: server.Addr().(*net.TCPAddr).Port}
+	killed, err := ss.killOne(context.Background(), listener, net.ParseIP("127.0.0.2"))
+	if err != nil {
+		t.Skipf("SOCK_DESTROY unavailable here: %v", err)
+	}
+	if killed != 1 {
+		t.Fatalf("destroyed %d sockets, want the one CLOSE_WAIT socket", killed)
+	}
+	serverSide.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	var writeErr error
+	for i := 0; i < 50 && writeErr == nil; i++ {
+		_, writeErr = serverSide.Write([]byte("x"))
+		time.Sleep(10 * time.Millisecond)
+	}
+	if writeErr == nil {
+		t.Fatal("transfer kept flowing after destruction")
 	}
 }

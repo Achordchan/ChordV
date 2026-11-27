@@ -148,8 +148,15 @@ func (s *SS) Kill(ctx context.Context, listener Listener, ips []string) (int, er
 	return total, nil
 }
 
+// StateArgs selects every TCP state in which an authenticated session can
+// still move data: ESTABLISHED, and the half-closed states. A client that
+// shuts its write side after the VLESS request keeps downloading while the
+// server socket sits in CLOSE_WAIT; the server's own half-close leaves it in
+// FIN_WAIT. Listening, SYN and TIME_WAIT sockets carry no session data.
+var StateArgs = []string{"state", "established", "state", "close-wait", "state", "fin-wait-1", "state", "fin-wait-2"}
+
 func (s *SS) killOne(ctx context.Context, listener Listener, ip net.IP) (int, error) {
-	args := append([]string{"-K", "-H", "-t", "-n", "state", "established"}, Filter(listener, ip)...)
+	args := append(append([]string{"-K", "-H", "-t", "-n"}, StateArgs...), Filter(listener, ip)...)
 	command := exec.CommandContext(ctx, s.Path, args...)
 	command.Env = []string{"LANG=C", "LC_ALL=C"}
 	// After the deadline kills ss, do not keep waiting on a pipe some
