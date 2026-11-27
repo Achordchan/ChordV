@@ -1267,7 +1267,8 @@ export class RuntimeSessionService {
     // The cascade deletes the binding — the only record of which node holds
     // which account — so the skipped ones are returned (and logged) with the
     // identifiers an administrator needs to remove them by hand.
-    const skippedBindings: Array<{ nodeId: string; nodeName: string; panelClientEmail: string; panelClientId: string }> = [];
+    // The account UUID is the node-side credential: never returned or logged.
+    const skippedBindings: Array<{ nodeId: string; nodeName: string; panelClientEmail: string }> = [];
     const agentByNode = new Map<string, boolean>();
     const nodeNames = new Map<string, string>();
     for (const binding of bindings) {
@@ -1285,8 +1286,7 @@ export class RuntimeSessionService {
         skippedBindings.push({
           nodeId: binding.nodeId,
           nodeName: nodeNames.get(binding.nodeId) ?? binding.nodeId,
-          panelClientEmail: binding.panelClientEmail,
-          panelClientId: binding.panelClientId
+          panelClientEmail: binding.panelClientEmail
         });
         continue;
       }
@@ -1299,7 +1299,7 @@ export class RuntimeSessionService {
     }
     for (const item of skippedBindings) {
       this.logger.warn(
-        `Binding deleted without node removal; clean up by hand: node=${item.nodeName}(${item.nodeId}) email=${item.panelClientEmail} uuid=${item.panelClientId}`
+        `Binding deleted without node removal; clean up by hand: node=${item.nodeName}(${item.nodeId}) email=${item.panelClientEmail}`
       );
     }
     return { commands, skipped: skippedBindings.length, skippedBindings };

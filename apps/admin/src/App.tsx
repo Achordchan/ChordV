@@ -139,9 +139,9 @@ import {
 import { ADMIN_SESSION_EXPIRED_EVENT, isAdminSessionExpiredMessage } from "./api/base";
 import { AdminLoginPanel } from "./components/AdminLoginPanel";
 import { AdminDrawerForm, type DrawerType } from "./features/editors/AdminDrawerForm";
-import { DeleteEntityModal, type DeleteEntityTarget } from "./features/modals/DeleteEntityModal";
+import { DeleteEntityModal, ManualCleanupModal, type DeleteEntityTarget } from "./features/modals/DeleteEntityModal";
 import { deleteAdminEntity } from "./api/deletion";
-import type { AdminDeleteResultDto } from "@chordv/shared";
+import type { AdminDeleteManualCleanupDto, AdminDeleteResultDto } from "@chordv/shared";
 import { DeleteNodeModal, KickMemberModal, NodeAccessEditorModal, TeamUsageDetailModal } from "./features/modals/AdminModals";
 import { SystemUpdateBadge } from "./features/system-update/SystemUpdateBadge";
 import { AnnouncementsPage } from "./pages/AnnouncementsPage";
@@ -412,6 +412,7 @@ export function App() {
   const [deleteEntityTarget, setDeleteEntityTarget] = useState<DeleteEntityTarget | null>(null);
   const [deleteEntitySubmitting, setDeleteEntitySubmitting] = useState(false);
   const deleteEntitySubmittingRef = useRef(false);
+  const [manualCleanupEntries, setManualCleanupEntries] = useState<AdminDeleteManualCleanupDto[] | null>(null);
   const [deleteNodeSubmitting, setDeleteNodeSubmitting] = useState(false);
   const deleteNodeSubmittingRef = useRef(false);
   const [kickMemberTarget, setKickMemberTarget] = useState<{ teamId: string; memberId: string; memberName: string } | null>(null);
@@ -822,6 +823,7 @@ export function App() {
     setDeleteNodeTarget(null);
     setDeleteEntityTarget(null);
     setDeleteEntitySubmitting(false);
+    setManualCleanupEntries(null);
     setKickMemberTarget(null);
     setKickDisableAccount(false);
     setKickSubmitting(false);
@@ -2328,6 +2330,8 @@ export function App() {
         resolveSuccess: (result) => {
           const outcome = result as Partial<AdminDeleteResultDto> | null;
           if (!outcome || !outcome.skippedNodeRemovalCount) return null;
+          // 消息里最多只列 10 条；完整清单单独弹窗展示，可复制。
+          if (outcome.manualCleanup?.length) setManualCleanupEntries(outcome.manualCleanup);
           return {
             color: "yellow",
             title: "已删除，但有节点账号需要手工清理",
@@ -3410,6 +3414,7 @@ export function App() {
         onClose={() => setDeleteEntityTarget(null)}
         onConfirm={(force) => void handleDeleteEntity(force)}
       />
+      <ManualCleanupModal entries={manualCleanupEntries} onClose={() => setManualCleanupEntries(null)}/>
       <DeleteNodeModal
         target={deleteNodeTarget}
         submitting={deleteNodeSubmitting}

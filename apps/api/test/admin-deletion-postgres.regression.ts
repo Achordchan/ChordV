@@ -79,8 +79,9 @@ async function main() {
   const result = await service.delete("plan", plan.id, { force: true, actorUserId: admin.id });
   assert.equal(result.queuedNodeRemovalCount, 1);
   assert.equal(result.skippedNodeRemovalCount, 1, "没有 Agent 的节点要报出来");
-  assert.deepEqual(result.manualCleanup.map((entry) => [entry.nodeId, entry.panelClientEmail, entry.panelClientId]),
-    [[offlineNode.id, offlineBinding.panelClientEmail, offlineBinding.panelClientId]], "绑定删掉后只能靠返回的明细手工清理");
+  assert.deepEqual(result.manualCleanup.map((entry) => [entry.nodeId, entry.panelClientEmail]),
+    [[offlineNode.id, offlineBinding.panelClientEmail]], "绑定删掉后只能靠返回的明细手工清理");
+  assert.ok(!JSON.stringify(result).includes(offlineBinding.panelClientId), "账号 UUID 是凭据，不能返回");
   assert.ok(result.message.includes(offlineBinding.panelClientEmail));
   assert.equal(await prisma.subscription.count({ where: { id: subscription.id } }), 0);
   assert.equal(await prisma.panelClientBinding.count({ where: { id: { in: [binding.id, offlineBinding.id] } } }), 0);

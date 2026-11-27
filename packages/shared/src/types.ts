@@ -1445,10 +1445,8 @@ export interface AdminDeleteResultDto {
 export interface AdminDeleteManualCleanupDto {
   nodeId: string;
   nodeName: string;
-  /** 节点（Xray）上的账号 email 标识。 */
+  /** 节点（Xray）上的账号 email 标识；账号 UUID 是凭据，不返回。 */
   panelClientEmail: string;
-  /** 节点上的账号 UUID。 */
-  panelClientId: string;
 }
 
 export interface ResetSubscriptionTrafficInputDto {
