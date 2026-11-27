@@ -225,6 +225,27 @@ type PresenceRowState = { userId: string; onlineSince: Date | null; lastSeenAt: 
 type StreamRowState = { userId: string; instanceId: string; connectedAt: Date; lastSeenAt: Date };
 
 // 按 Prisma/SQL 的语义求值条件（NULL 与比较运算不相等），用来验证条件本身而不是测试替身。
+// 库里没填国家代码的节点（Agent 注册时没选国家）要和“节点与同步”一样按地区名补出国旗。
+function testSessionNodeCountryFallback() {
+  const users = [{ id: "user_1", displayName: "张三", email: "a@example.com", teamMemberships: [] }];
+  const snapshot = buildAdminPresenceSnapshot({
+    now,
+    users,
+    presence: [{ userId: "user_1", onlineSince: ago(600), lastSeenAt: ago(10) }],
+    streams: [{ userId: "user_1", connectedAt: ago(600), lastSeenAt: ago(10) }],
+    leases: [
+      lease({ sessionId: "s_us", node: { ...lease().node, id: "node_us", name: "DMIT EB", region: "美国", countryCode: null } }),
+      lease({ sessionId: "s_unknown", issuedAt: ago(300), node: { ...lease().node, id: "node_x", name: "测试", region: "未指定", countryCode: null } }),
+      lease({ sessionId: "s_lower", issuedAt: ago(200), node: { ...lease().node, id: "node_jp", name: "日本", region: "日本", countryCode: "jp" } })
+    ],
+    clientVersions: []
+  });
+  const codes = Object.fromEntries(snapshot.users[0].sessions.map((session) => [session.node.id, session.node.countryCode]));
+  assert.equal(codes.node_us, "US", "国家代码为空时按地区名推断");
+  assert.equal(codes.node_x, null, "推断不出时仍为空");
+  assert.equal(codes.node_jp, "JP", "已填的国家代码统一成大写");
+}
+
 function matchesValue(value: any, condition: any): boolean {
   if (condition instanceof Date) return value instanceof Date && value.getTime() === condition.getTime();
   if (condition === null) return value === null || value === undefined;
@@ -917,6 +938,7 @@ async function main() {
   await testThrottledPingsAreFlushedForOtherInstances();
   await testPingWritesAreThrottledAndForwardOnly();
   await testPingEndpointAndDeclarationWiring();
+  testSessionNodeCountryFallback();
   console.log("client presence regression checks passed");
 }
 
