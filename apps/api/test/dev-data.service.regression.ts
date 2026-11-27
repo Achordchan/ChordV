@@ -48,6 +48,7 @@ import { ClientAuthGuard } from "../src/modules/common/client-auth.guard";
 import { UploadedTempFileCleanupInterceptor } from "../src/modules/common/uploaded-temp-file-cleanup.interceptor";
 import { ClientTicketService } from "../src/modules/common/client-ticket.service";
 import { AdminController } from "../src/modules/admin/admin.controller";
+import { SubscriptionLinkPublicationService } from "../src/modules/common/subscription-link-publication.service";
 import { DownloadsController } from "../src/modules/client/downloads.controller";
 import { LoggingExceptionFilter } from "../src/logging-exception.filter";
 import { forceHttpsMiddleware } from "../src/https-enforcement";
@@ -6974,6 +6975,7 @@ async function testNodeAccessHttpMapsSubscriptionLookupFailureToServiceUnavailab
     controllers: [AdminController],
     providers: [
       AdminAuthGuard,
+      { provide: SubscriptionLinkPublicationService, useValue: { kick: () => undefined } },
       {
         provide: AuthSessionService,
         useValue: {
@@ -7058,6 +7060,7 @@ async function testNodeAccessHttpMapsNodeListFailureToServiceUnavailable() {
     controllers: [AdminController],
     providers: [
       AdminAuthGuard,
+      { provide: SubscriptionLinkPublicationService, useValue: { kick: () => undefined } },
       {
         provide: AuthSessionService,
         useValue: {
@@ -7183,6 +7186,7 @@ async function testNodeAccessHttpReturnsOkWhenAdminRuntimeEventPublishThrowsAfte
     controllers: [AdminController],
     providers: [
       AdminAuthGuard,
+      { provide: SubscriptionLinkPublicationService, useValue: { kick: () => undefined } },
       {
         provide: AuthSessionService,
         useValue: {

@@ -21,6 +21,33 @@ function base64(text) {
   return btoa(binary);
 }
 
+function unbase64(encoded) {
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+}
+
+/** The status line the invalid-link answer carries. */
+export const INVALID_STATUS = `⚠️ ${INVALID_NOTICE}`;
+
+/**
+ * Shadowrocket shows a leading `STATUS=` line of the decoded body on the
+ * subscription card, in place of its own reading of `subscription-userinfo`.
+ * Other clients would take that line for a broken node, so only Shadowrocket
+ * gets it. A body that does not decode is served as stored.
+ */
+export function withStatus(body, status, userAgent) {
+  if (!status || !/shadowrocket/i.test(userAgent ?? "")) return body;
+  let text;
+  try {
+    text = unbase64(body);
+  } catch {
+    return body;
+  }
+  return base64(`STATUS=${status}\n${text}`);
+}
+
 /**
  * What an unknown token gets: one placeholder entry that cannot carry traffic
  * and whose name says the link is no good. A token that was reset and a token
@@ -50,7 +77,9 @@ function subscription(body, userinfo, method) {
     // A link is a credential and its content changes; nothing in between may keep a copy.
     "cache-control": "no-store",
     "profile-update-interval": String(UPDATE_INTERVAL_HOURS),
-    "x-robots-tag": "noindex"
+    "x-robots-tag": "noindex",
+    // The body depends on the client (see withStatus).
+    vary: "user-agent"
   };
   if (userinfo) headers["subscription-userinfo"] = userinfo;
   return new Response(method === "HEAD" ? null : body, { status: 200, headers });
@@ -69,7 +98,11 @@ function readDocument(raw) {
   if (value.userinfo !== null && typeof value.userinfo !== "string") return null;
   // A header value must stay on one line.
   if (typeof value.userinfo === "string" && /[\r\n]/.test(value.userinfo)) return null;
-  return { body: value.body, userinfo: value.userinfo };
+  // Optional: documents published before it existed have none. It becomes a
+  // line of the body, so it too must stay on one line.
+  const status = value.status ?? null;
+  if (status !== null && (typeof status !== "string" || /[\r\n]/.test(status))) return null;
+  return { body: value.body, userinfo: value.userinfo, status };
 }
 
 export default {
@@ -89,13 +122,16 @@ export default {
       // "this link is invalid" would take a paying user's nodes away.
       return plain(503, "Service Unavailable", { "retry-after": "60" });
     }
-    if (raw === null || raw === undefined) return subscription(INVALID_BODY, null, request.method);
+    const userAgent = request.headers.get("user-agent");
+    if (raw === null || raw === undefined) {
+      return subscription(withStatus(INVALID_BODY, INVALID_STATUS, userAgent), null, request.method);
+    }
 
     const document = readDocument(raw);
     // Something is stored for this token but it is not readable by this
     // version. That is our fault, not the user's: fail the refresh rather
     // than replace their nodes with a notice.
     if (!document) return plain(503, "Service Unavailable", { "retry-after": "60" });
-    return subscription(document.body, document.userinfo, request.method);
+    return subscription(withStatus(document.body, document.status, userAgent), document.userinfo, request.method);
   }
 };

@@ -8,8 +8,12 @@ import {
   UserSubscriptionLinkController
 } from "../src/modules/admin/subscription-link.controller";
 import {
+  buildActiveStatus,
+  buildLapsedStatus,
   buildNodesDocument,
   buildNoticeDocument,
+  formatSubscriptionLinkDate,
+  formatSubscriptionLinkTraffic,
   buildNoticeShareLink,
   buildSubscriptionLinkUrl,
   buildVlessRealityShareLink,
@@ -293,6 +297,28 @@ async function main() {
     assert.equal(empty.notice, SUBSCRIPTION_LINK_NOTICES.no_nodes);
     assert.deepEqual(decodeBody(empty.body), [buildNoticeShareLink(SUBSCRIPTION_LINK_NOTICES.no_nodes)]);
     assert.equal(empty.userinfo, document.userinfo);
+
+    // Shadowrocket's status line: what is left and the day it ends, in China time.
+    assert.equal(document.status, "剩余 75.0 GB ｜ 2027-01-01 到期");
+    assert.equal(empty.status, `⚠️ ${SUBSCRIPTION_LINK_NOTICES.no_nodes}`);
+    assert.equal(
+      buildActiveStatus({ usedBytes: 0n, totalBytes: 1000n * GIB - (GIB * 6n) / 100n, expireAt: new Date("2026-12-27T16:00:00Z") }),
+      "剩余 999.9 GB ｜ 2026-12-28 到期",
+      "北京时间零点后算第二天；保留一位小数"
+    );
+    assert.equal(
+      buildActiveStatus({ usedBytes: 120n * GIB, totalBytes: 100n * GIB, expireAt: new Date("2026-12-27T15:59:59Z") }),
+      "剩余 0.0 GB ｜ 2026-12-27 到期",
+      "超用不显示负数"
+    );
+    assert.equal(buildActiveStatus({ usedBytes: 5n, totalBytes: 0n, expireAt: new Date("2027-01-01T00:00:00Z") }), "2027-01-01 到期");
+    assert.equal(buildActiveStatus(null), null);
+    assert.equal(formatSubscriptionLinkTraffic(-1n), "0.0 GB");
+    assert.equal(formatSubscriptionLinkDate(new Date("2026-12-31T23:59:59Z")), "2027-01-01");
+    assert.equal(buildLapsedStatus("expired", usage), "⚠️ 已于 2027-01-01 到期 ｜ 续费后请下拉刷新订阅");
+    for (const line of [document.status, empty.status, buildLapsedStatus("paused", usage)]) {
+      assert.ok(line && !/[\r\n]/.test(line), "状态行必须是单行");
+    }
   }
   {
     const notice = buildNoticeDocument(SUBSCRIPTION_LINK_INVALID_NOTICE);
@@ -326,18 +352,18 @@ async function main() {
   }
 
   // Each reason a link has nothing to give is its own sentence.
-  const notices: Array<[string, (db: ReturnType<typeof createDatabase>["db"]) => void, string, boolean]> = [
-    ["账号被停用", (db) => { db.users[0].status = "disabled"; }, SUBSCRIPTION_LINK_NOTICES.account_disabled, false],
-    ["账号不存在", (db) => { db.users.length = 0; }, SUBSCRIPTION_LINK_NOTICES.account_disabled, false],
-    ["没有订阅", (db) => { db.subscriptions.length = 0; }, SUBSCRIPTION_LINK_NOTICES.no_subscription, false],
-    ["订阅过了到期时间", (db) => { db.subscriptions[0].expireAt = new Date(Date.now() - 1000); }, SUBSCRIPTION_LINK_NOTICES.subscription_expired, true],
-    ["订阅被标记为到期", (db) => { db.subscriptions[0].state = "expired"; }, SUBSCRIPTION_LINK_NOTICES.subscription_expired, true],
-    ["流量用完", (db) => { db.subscriptions[0].remainingTrafficGb = 0; }, SUBSCRIPTION_LINK_NOTICES.subscription_exhausted, true],
-    ["订阅被标记为用尽", (db) => { db.subscriptions[0].state = "exhausted"; }, SUBSCRIPTION_LINK_NOTICES.subscription_exhausted, true],
-    ["订阅暂停", (db) => { db.subscriptions[0].state = "paused"; }, SUBSCRIPTION_LINK_NOTICES.subscription_paused, true],
-    ["没有分配节点", (db) => { db.accesses.length = 0; db.bindings.length = 0; }, SUBSCRIPTION_LINK_NOTICES.no_nodes, true]
+  const notices: Array<[string, (db: ReturnType<typeof createDatabase>["db"]) => void, string, boolean, RegExp]> = [
+    ["账号被停用", (db) => { db.users[0].status = "disabled"; }, SUBSCRIPTION_LINK_NOTICES.account_disabled, false, /^⚠️ /],
+    ["账号不存在", (db) => { db.users.length = 0; }, SUBSCRIPTION_LINK_NOTICES.account_disabled, false, /^⚠️ /],
+    ["没有订阅", (db) => { db.subscriptions.length = 0; }, SUBSCRIPTION_LINK_NOTICES.no_subscription, false, /^⚠️ /],
+    ["订阅过了到期时间", (db) => { db.subscriptions[0].expireAt = new Date(Date.now() - 1000); }, SUBSCRIPTION_LINK_NOTICES.subscription_expired, true, /^⚠️ 已于 \d{4}-\d{2}-\d{2} 到期 ｜ 续费后请下拉刷新订阅$/],
+    ["订阅被标记为到期", (db) => { db.subscriptions[0].state = "expired"; }, SUBSCRIPTION_LINK_NOTICES.subscription_expired, true, /^⚠️ 已于 \d{4}-\d{2}-\d{2} 到期 ｜ 续费后请下拉刷新订阅$/],
+    ["流量用完", (db) => { db.subscriptions[0].remainingTrafficGb = 0; }, SUBSCRIPTION_LINK_NOTICES.subscription_exhausted, true, /^⚠️ 流量已用完 ｜ 续费后请下拉刷新订阅$/],
+    ["订阅被标记为用尽", (db) => { db.subscriptions[0].state = "exhausted"; }, SUBSCRIPTION_LINK_NOTICES.subscription_exhausted, true, /^⚠️ 流量已用完 ｜ 续费后请下拉刷新订阅$/],
+    ["订阅暂停", (db) => { db.subscriptions[0].state = "paused"; }, SUBSCRIPTION_LINK_NOTICES.subscription_paused, true, /^⚠️ 订阅已暂停 ｜ 恢复后请下拉刷新订阅$/],
+    ["没有分配节点", (db) => { db.accesses.length = 0; db.bindings.length = 0; }, SUBSCRIPTION_LINK_NOTICES.no_nodes, true, /^⚠️ /]
   ];
-  for (const [label, mutate, expected, hasUsage] of notices) {
+  for (const [label, mutate, expected, hasUsage, status] of notices) {
     const { db, service } = seedPersonal();
     mutate(db);
     const document = await service.render("user_1");
@@ -347,6 +373,7 @@ async function main() {
     assert.deepEqual(decodeBody(document.body), [buildNoticeShareLink(expected)], `${label}：只返回一条提示节点`);
     assert.ok(!document.body.includes("uuid-of-user_1"), `${label}：不能带出任何凭据`);
     assert.equal(document.userinfo !== null, hasUsage, `${label}：有订阅才带用量信息`);
+    assert.match(document.status ?? "", status, `${label}：小火箭状态行`);
   }
 
   // A credential row can outlive what it was issued for; only a node the user

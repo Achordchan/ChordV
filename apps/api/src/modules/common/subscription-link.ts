@@ -94,6 +94,12 @@ export type SubscriptionLinkDocument = {
   userinfo: string | null;
   /** The figures `userinfo` was written from. */
   usage: SubscriptionLinkUsage | null;
+  /**
+   * One line for the top of Shadowrocket's subscription card (it reads a
+   * leading `STATUS=` line in the body; the edge adds it for that client only),
+   * or null for none.
+   */
+  status: string | null;
 };
 
 /** Hours between a client's automatic refreshes (`profile-update-interval`). */
@@ -160,9 +166,49 @@ function buildUserinfo(usage: SubscriptionLinkUsage | null): string | null {
   return `upload=0; download=${used}; total=${total}; expire=${expire}`;
 }
 
+const GIB = 1024n * 1024n * 1024n;
+/** Customers are in China; dates are theirs. The zone has no daylight saving. */
+const CHINA_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+/** A day as the customer reads it: YYYY-MM-DD in China time. */
+export function formatSubscriptionLinkDate(at: Date): string {
+  return new Date(at.getTime() + CHINA_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+/** Bytes as GB (the admin's unit, 1024³) to one decimal, rounded half up. */
+export function formatSubscriptionLinkTraffic(bytes: bigint): string {
+  const tenths = ((bytes < 0n ? 0n : bytes) * 10n + GIB / 2n) / GIB;
+  return `${tenths / 10n}.${tenths % 10n} GB`;
+}
+
+/** The status line of a link that serves nodes: what is left and until when. */
+export function buildActiveStatus(usage: SubscriptionLinkUsage | null): string | null {
+  if (!usage) return null;
+  const date = formatSubscriptionLinkDate(usage.expireAt);
+  if (usage.totalBytes <= 0n) return `${date} 到期`;
+  const used = usage.usedBytes < 0n ? 0n : usage.usedBytes;
+  const left = usage.totalBytes > used ? usage.totalBytes - used : 0n;
+  return `剩余 ${formatSubscriptionLinkTraffic(left)} ｜ ${date} 到期`;
+}
+
+/**
+ * The status line of a subscription that has lapsed but can come back. The
+ * link then serves a notice, and a client keeps that notice until it refreshes
+ * — so the line says to refresh once the subscription is back.
+ */
+export function buildLapsedStatus(
+  state: "expired" | "exhausted" | "paused",
+  usage: SubscriptionLinkUsage
+): string {
+  if (state === "expired") return `⚠️ 已于 ${formatSubscriptionLinkDate(usage.expireAt)} 到期 ｜ 续费后请下拉刷新订阅`;
+  if (state === "exhausted") return "⚠️ 流量已用完 ｜ 续费后请下拉刷新订阅";
+  return "⚠️ 订阅已暂停 ｜ 恢复后请下拉刷新订阅";
+}
+
 export function buildNoticeDocument(
   text: string,
-  usage: SubscriptionLinkUsage | null = null
+  usage: SubscriptionLinkUsage | null = null,
+  status: string = `⚠️ ${text}`
 ): SubscriptionLinkDocument {
   return {
     kind: "notice",
@@ -170,7 +216,8 @@ export function buildNoticeDocument(
     nodes: [],
     body: encodeBody([buildNoticeShareLink(text)]),
     userinfo: buildUserinfo(usage),
-    usage
+    usage,
+    status
   };
 }
 
@@ -194,7 +241,8 @@ export function buildNodesDocument(
     nodes: ordered.map((node) => ({ nodeId: node.nodeId, name: node.name })),
     body: encodeBody(ordered.map(buildVlessRealityShareLink)),
     userinfo: buildUserinfo(usage),
-    usage
+    usage,
+    status: buildActiveStatus(usage)
   };
 }
 
@@ -204,7 +252,7 @@ export function buildNodesDocument(
  * it does not understand instead of serving it wrongly.
  */
 export function serializeSubscriptionLinkDocument(document: SubscriptionLinkDocument): string {
-  return JSON.stringify({ v: 1, body: document.body, userinfo: document.userinfo });
+  return JSON.stringify({ v: 1, body: document.body, userinfo: document.userinfo, status: document.status });
 }
 
 /**
@@ -216,10 +264,17 @@ export function serializeSubscriptionLinkDocument(document: SubscriptionLinkDocu
  * client displays is refreshed on a slower cycle instead; everything that
  * decides whether and where a user can connect — the nodes, the notice, the
  * quota, the expiry — is in the digest and is published as soon as it changes.
+ *
+ * The status line is left out for the same reason (an active one shows what is
+ * left); everything else in it follows from the notice and the expiry, which
+ * are in. `format` names the stored shape: raising it republishes every link
+ * once, so a field added to the stored document reaches links that are not
+ * otherwise changing.
  */
 export function hashSubscriptionLinkDocument(document: SubscriptionLinkDocument): string {
   const stable = JSON.stringify({
     v: 1,
+    format: 2,
     body: document.body,
     total: document.usage ? document.usage.totalBytes.toString() : null,
     expire: document.usage ? Math.floor(document.usage.expireAt.getTime() / 1000) : null
