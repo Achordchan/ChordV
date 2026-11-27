@@ -105,7 +105,14 @@ export class DomesticProbeService {
     const nodes = await this.prisma.node.findMany({
       where: { isActive: true, OR: [{ registrationStatus: "agent_ready" }, { registrationStatus: null }] },
       select: { id: true, name: true, serverHost: true, serverPort: true },
-      orderBy: [{ domesticScheduledAt: { sort: "asc", nulls: "first" } }, { name: "asc" }],
+      // Ties (a whole batch shares one domesticScheduledAt) break on the last
+      // accepted observation, so nodes the probe did not finish last time,
+      // whose domesticCheckedAt did not advance, come first.
+      orderBy: [
+        { domesticScheduledAt: { sort: "asc", nulls: "first" } },
+        { domesticCheckedAt: { sort: "asc", nulls: "first" } },
+        { name: "asc" }
+      ],
       take: DOMESTIC_MAX_TARGETS
     });
     if (nodes.length > 0) {

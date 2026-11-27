@@ -16,6 +16,7 @@ import { LoggingExceptionFilter } from "./logging-exception.filter";
 import { assertAgentTokenPepperReadyForProduction } from "./modules/agent/agent.service";
 import type { NestExpressApplication } from "@nestjs/platform-express";
 import { ACHORD_CONNECT_WEBHOOK_MAX_BODY_BYTES, isAchordConnectWebhookRequest } from "./modules/support/achord-connect";
+import { createDomesticProbeReportBodyParser } from "./modules/domestic-probe/domestic-probe.policy";
 
 async function bootstrap() {
   await assertPrismaMigrationBaselineOrExit();
@@ -37,6 +38,9 @@ async function bootstrap() {
   // Achord Connect Webhook 要用原始请求体验签：只为这一条路径把正文读成 Buffer，
   // 必须在 Nest 默认的 JSON 解析器（listen 时注册）之前挂上；其他路径的解析与大小限制不变。
   app.useBodyParser("raw", { type: isAchordConnectWebhookRequest, limit: ACHORD_CONNECT_WEBHOOK_MAX_BODY_BYTES });
+  // 国内探针整轮报告走自己的 JSON 解析器和明确的大小上限，不依赖全局默认的 100 KB。
+  // 不能用 app.useBodyParser("json")：Nest 看到名为 jsonParser 的中间件就不再注册默认 JSON 解析器。
+  app.use(createDomesticProbeReportBodyParser());
   app.enableCors({
       origin: resolveCorsOrigin,
       credentials: true,

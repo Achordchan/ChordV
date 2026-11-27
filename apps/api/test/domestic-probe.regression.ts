@@ -7,6 +7,9 @@ import {
   DOMESTIC_BLOCK_STREAK,
   DOMESTIC_MAX_ERROR_LENGTH,
   DOMESTIC_MAX_TARGETS,
+  DOMESTIC_PROBE_REPORT_MAX_BODY_BYTES,
+  DOMESTIC_PROBE_REPORT_PATH,
+  createDomesticProbeReportBodyParser,
   DOMESTIC_STALE_MS,
   effectiveDomesticStatus,
   nextDomesticState,
@@ -144,13 +147,77 @@ async function main() {
   const listed = await service.listTargets(new Date("2026-11-27T09:00:00Z"));
   assert.equal(listed.targets.length, 1);
   assert.deepEqual(lastFindMany.orderBy[0], { domesticScheduledAt: { sort: "asc", nulls: "first" } });
+  assert.deepEqual(lastFindMany.orderBy[1], { domesticCheckedAt: { sort: "asc", nulls: "first" } }, "unfinished nodes win ties");
   assert.equal(lastFindMany.take, DOMESTIC_MAX_TARGETS);
   assert.deepEqual(lastUpdateMany, { where: { id: { in: ["a"] } }, data: { domesticScheduledAt: new Date("2026-11-27T09:00:00Z") } });
+
+  await assertReportRouteBodyLimit();
+  await assertNestKeepsDefaultJsonParser();
 
   const revoked = await service.revokeToken();
   assert.equal(revoked.configured, false);
   assert.equal(await service.authenticate(`Bearer ${issued.token}`), false);
   console.log("domestic-probe regression passed");
+}
+
+// Over HTTP: the report route's own parser accepts a report above the global
+// 100 KB default (the global parser alone would answer 413), other routes keep the default.
+async function assertReportRouteBodyLimit() {
+  const express = (await import("express")).default;
+  const app = express();
+  const reportParser = createDomesticProbeReportBodyParser();
+  assert.notEqual(reportParser.name, "jsonParser", "Nest would skip its default JSON parser");
+  app.use(reportParser);
+  app.use(express.json());
+  app.post("*splat", (req: any, res: any) => res.json({ size: JSON.stringify(req.body).length }));
+  app.use((error: any, _req: any, res: any, _next: any) => res.status(error.status ?? 500).json({ error: error.type }));
+  const server = await new Promise<any>((resolve) => { const s = app.listen(0, "127.0.0.1", () => resolve(s)); });
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const body = JSON.stringify({ controlOk: true, results: [], padding: "x".repeat(150 * 1024) });
+    const post = (path: string) => fetch(base + path, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+    assert.equal((await post(DOMESTIC_PROBE_REPORT_PATH)).status, 200, "report route accepts 150 KB");
+    assert.equal((await post(`${DOMESTIC_PROBE_REPORT_PATH}?x=1`)).status, 200, "query string ignored");
+    assert.equal((await post("/api/other")).status, 413, "other routes keep the default limit");
+    const small = await fetch(base + "/api/other", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ a: 1 }) });
+    assert.deepEqual(await small.json(), { size: 7 }, "other routes still get parsed JSON");
+    const tooLarge = JSON.stringify({ padding: "x".repeat(DOMESTIC_PROBE_REPORT_MAX_BODY_BYTES) });
+    assert.equal((await fetch(base + DOMESTIC_PROBE_REPORT_PATH, { method: "POST", headers: { "Content-Type": "application/json" }, body: tooLarge })).status, 413, "still bounded");
+  } finally {
+    server.close();
+  }
+}
+
+// Inside a real Nest app: installing the report parser must not stop Nest from
+// registering its default JSON parser for every other route.
+async function assertNestKeepsDefaultJsonParser() {
+  const { Body, Controller, Module, Post } = await import("@nestjs/common");
+  const { NestFactory } = await import("@nestjs/core");
+  // Decorators applied by hand: this test file is compiled without experimentalDecorators.
+  class EchoController {
+    other(body: unknown) { return { body }; }
+    report(body: { padding?: string }) { return { size: body?.padding?.length ?? 0 }; }
+  }
+  for (const [method, path] of [["other", "other"], ["report", "domestic-probe/report"]] as const) {
+    Body()(EchoController.prototype, method, 0);
+    Post(path)(EchoController.prototype, method, Object.getOwnPropertyDescriptor(EchoController.prototype, method)!);
+  }
+  Controller()(EchoController);
+  class EchoModule {}
+  Module({ controllers: [EchoController] })(EchoModule);
+  const app = await NestFactory.create(EchoModule, { logger: false });
+  app.use(createDomesticProbeReportBodyParser());
+  app.setGlobalPrefix("api");
+  await app.listen(0, "127.0.0.1");
+  try {
+    const base = (await app.getUrl()).replace("[::1]", "127.0.0.1");
+    const post = (path: string, body: unknown) => fetch(base + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    assert.deepEqual(await (await post("/api/other", { a: 1 })).json(), { body: { a: 1 } }, "default JSON parser still installed");
+    assert.deepEqual(await (await post(DOMESTIC_PROBE_REPORT_PATH, { padding: "x".repeat(150 * 1024) })).json(), { size: 150 * 1024 });
+    assert.equal((await post("/api/other", { padding: "x".repeat(150 * 1024) })).status, 413);
+  } finally {
+    await app.close();
+  }
 }
 
 void main().catch((error) => { console.error(error); process.exit(1); });

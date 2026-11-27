@@ -1,4 +1,6 @@
 import type { DomesticReachabilityStatus } from "@chordv/shared";
+import express from "express";
+import type { NextFunction, Request, Response } from "express";
 
 /** Consecutive failed rounds before a node is shown as blocked (3 rounds = 15 minutes at the default interval). */
 export const DOMESTIC_BLOCK_STREAK = 3;
@@ -14,6 +16,31 @@ export const DOMESTIC_STALE_MS = 15 * 60 * 1000;
 export const DOMESTIC_MAX_TARGETS = 200;
 /** Longest error text accepted per result. */
 export const DOMESTIC_MAX_ERROR_LENGTH = 100;
+/**
+ * The report route gets its own JSON body parser with this limit (see
+ * main.ts), so a full round never depends on the global default. Comfortably
+ * above the largest report the DTO accepts (about 85 KB).
+ */
+export const DOMESTIC_PROBE_REPORT_PATH = "/api/domestic-probe/report";
+export const DOMESTIC_PROBE_REPORT_MAX_BODY_BYTES = 256 * 1024;
+
+/** Body-parser match: POST to the report route only (query string ignored). */
+export function isDomesticProbeReportRequest(request: { method?: string; url?: string }) {
+  return request.method === "POST" && (request.url ?? "").split("?")[0] === DOMESTIC_PROBE_REPORT_PATH;
+}
+
+/**
+ * JSON parser for the report route only. It is wrapped in a function with its
+ * own name on purpose: Nest skips registering its default JSON parser when a
+ * middleware named "jsonParser" (what express.json() returns) is already
+ * installed, which would leave every other route without a parsed body.
+ */
+export function createDomesticProbeReportBodyParser() {
+  const parser = express.json({ type: isDomesticProbeReportRequest, limit: DOMESTIC_PROBE_REPORT_MAX_BODY_BYTES });
+  return function domesticProbeReportBodyParser(req: Request, res: Response, next: NextFunction) {
+    parser(req, res, next);
+  };
+}
 /** Interval the probe script is told to use. */
 export const DOMESTIC_PROBE_INTERVAL_SECONDS = 300;
 
