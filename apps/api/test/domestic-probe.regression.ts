@@ -85,6 +85,7 @@ assert.notDeepEqual(validateSync(plainToInstance(DomesticProbeReportDto, tooMany
 
 // Service: token auth, round handling, and the settings row never holding the plain token.
 let lastFindMany: any = null;
+let lastUpdateMany: any = null;
 type NodeRow = { id: string; domesticStatus: string; domesticFailStreak: number; controlStatus: string; agentLastSeenAt: Date | null; domesticCheckedAt?: Date };
 function createFakePrisma(nodes: NodeRow[]) {
   const settings = new Map<string, unknown>();
@@ -98,7 +99,8 @@ function createFakePrisma(nodes: NodeRow[]) {
         lastFindMany = args;
         return args.where.id ? nodes.filter((node) => args.where.id.in.includes(node.id)) : [];
       },
-      update: async ({ where, data }: any) => Object.assign(nodes.find((node) => node.id === where.id)!, data)
+      update: async ({ where, data }: any) => Object.assign(nodes.find((node) => node.id === where.id)!, data),
+      updateMany: async (args: any) => { lastUpdateMany = args; return { count: args.where.id.in.length }; }
     },
     $executeRaw: async () => 0
   };
@@ -136,9 +138,14 @@ async function main() {
   assert.equal((await service.getState()).lastRoundIgnored, false);
 
   // Targets come least recently checked first, capped at the report limit.
-  await service.listTargets();
-  assert.deepEqual(lastFindMany.orderBy[0], { domesticCheckedAt: { sort: "asc", nulls: "first" } });
+  // Targets rotate by when they were last handed out, independent of accepted rounds.
+  lastFindMany = null;
+  client.node.findMany = async (args: any) => { lastFindMany = args; return [{ id: "a", name: "A", serverHost: "h", serverPort: 443 }]; };
+  const listed = await service.listTargets(new Date("2026-11-27T09:00:00Z"));
+  assert.equal(listed.targets.length, 1);
+  assert.deepEqual(lastFindMany.orderBy[0], { domesticScheduledAt: { sort: "asc", nulls: "first" } });
   assert.equal(lastFindMany.take, DOMESTIC_MAX_TARGETS);
+  assert.deepEqual(lastUpdateMany, { where: { id: { in: ["a"] } }, data: { domesticScheduledAt: new Date("2026-11-27T09:00:00Z") } });
 
   const revoked = await service.revokeToken();
   assert.equal(revoked.configured, false);

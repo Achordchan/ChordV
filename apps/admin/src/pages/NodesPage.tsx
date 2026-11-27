@@ -50,7 +50,8 @@ export function NodesPage(props: NodesPageProps) {
     const total = lease.total + (command?.total ?? 0);
     const failed = lease.failed + (command?.failed ?? 0);
     const agentStatus = node.controlStatus ?? node.agent?.status;
-    const needsAttention = total > 0 || node.probeStatus === "offline" || node.probeStatus === "degraded" || agentStatus === "offline" || agentStatus === "degraded";
+    const domesticTone = describeDomestic(node).tone;
+    const needsAttention = total > 0 || domesticTone === "bad" || domesticTone === "warning" || node.probeStatus === "offline" || node.probeStatus === "degraded" || agentStatus === "offline" || agentStatus === "degraded";
     return { node, lease, total, failed, agentStatus, needsAttention };
   }).filter(row => filter === "全部" || (filter === "待接入" ? needsOnboarding(row.node) : row.needsAttention));
 

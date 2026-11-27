@@ -131,8 +131,8 @@ def main():
     started = time.monotonic()
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS)
     control = pool.submit(lambda: any(probe_tcp(host, port)[0] for host, port in CONTROL_TARGETS))
-    # The API lists the least recently checked nodes first; submitting in that
-    # order means nodes cut off by the deadline go first next round.
+    # The API hands out the least recently scheduled nodes first and rotates
+    # the list itself, so nodes cut off by the deadline come first next round.
     futures = {pool.submit(probe_target, target): target for target in targets}
     done, pending = concurrent.futures.wait([control, *futures], timeout=ROUND_DEADLINE_S)
     pool.shutdown(wait=False, cancel_futures=True)

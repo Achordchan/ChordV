@@ -539,6 +539,9 @@ model Node {
   domesticCheckedAt DateTime?
   domesticFailStreak Int      @default(0)
   domesticError     String?
+  /// When the domestic probe was last handed this node, whether or not the
+  /// round was accepted. Drives fair rotation of the probe's work list.
+  domesticScheduledAt DateTime?
   // Direct metering is the only control mode since the 3X-UI retirement; the
   // column stays because the agent protocol still carries it (snapshots and
   // RECONCILE_USERS commands), and legacy enum values remain valid on the

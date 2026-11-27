@@ -93,19 +93,24 @@ export class DomesticProbeService {
     return expected.length === actual.length && timingSafeEqual(expected, actual);
   }
 
-  /** Nodes the probe should check: active nodes with a registered agent (or legacy nodes without onboarding). */
-  async listTargets() {
+  /**
+   * Nodes the probe should check: active nodes with a registered agent (or
+   * legacy nodes without onboarding), least recently handed out first, capped
+   * at the report limit. Handing a node out stamps domesticScheduledAt
+   * whether or not the round is later accepted, so the list rotates even when
+   * rounds are ignored or cut off by the probe's deadline; reachability state
+   * itself only changes through accepted reports.
+   */
+  async listTargets(now = new Date()) {
     const nodes = await this.prisma.node.findMany({
       where: { isActive: true, OR: [{ registrationStatus: "agent_ready" }, { registrationStatus: null }] },
       select: { id: true, name: true, serverHost: true, serverPort: true },
-      // Least recently checked first: if the fleet outgrows the cap, or the
-      // probe hits its round deadline, the nodes left out this round come
-      // first next round instead of being skipped forever. The probe keeps
-      // this order when scheduling its work.
-      orderBy: [{ domesticCheckedAt: { sort: "asc", nulls: "first" } }, { name: "asc" }],
-      // Same cap as the report DTO, so a full round always fits in one report.
+      orderBy: [{ domesticScheduledAt: { sort: "asc", nulls: "first" } }, { name: "asc" }],
       take: DOMESTIC_MAX_TARGETS
     });
+    if (nodes.length > 0) {
+      await this.prisma.node.updateMany({ where: { id: { in: nodes.map((node) => node.id) } }, data: { domesticScheduledAt: now } });
+    }
     return {
       intervalSeconds: DOMESTIC_PROBE_INTERVAL_SECONDS,
       targets: nodes.map((node) => ({ nodeId: node.id, name: node.name, host: node.serverHost, port: node.serverPort }))
