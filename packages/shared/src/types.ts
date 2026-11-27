@@ -1436,7 +1436,7 @@ export interface AdminDeleteResultDto {
   message: string;
   /** 已下发给节点的“删除账号”命令数。 */
   queuedNodeRemovalCount: number;
-  /** 节点没有可用 Agent、无法下发删除命令的账号数，需要自行检查。 */
+  /** 节点没有可用 Agent 或不在直控模式、无法自动删除的账号数，需要自行检查。 */
   skippedNodeRemovalCount: number;
 }
 

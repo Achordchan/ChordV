@@ -152,7 +152,7 @@ export class AdminDeletionService {
 
     const parts = [`${KIND_LABEL[kind]}「${scope.name}」已删除。`];
     if (commands.length > 0) parts.push(`已通知节点删除 ${commands.length} 个账号。`);
-    if (skipped > 0) parts.push(`${skipped} 个节点账号所在节点没有可用 Agent，需要自行检查。`);
+    if (skipped > 0) parts.push(`${skipped} 个节点账号所在节点没有可用 Agent 或不在 Agent 直控模式，无法自动删除，需要到节点上自行检查。`);
     return {
       ok: true,
       kind,
@@ -314,11 +314,12 @@ export class AdminDeletionService {
       OR: [{ userId }, ...(ownedTeamIds.length > 0 ? [{ teamId: { in: ownedTeamIds } }] : [])]
     };
     const subscriptionIds = subscriptions.map((row) => row.id);
-    const [bindingCount, ledgerCount, ticketCount, sessionCount] = await Promise.all([
+    const [bindingCount, ledgerCount, ticketCount, sessionCount, routingRuleCount] = await Promise.all([
       db.panelClientBinding.count({ where: { AND: [bindingWhere, { status: { in: ["active", "disabled"] } }] } }),
       db.trafficLedger.count({ where: { OR: [{ userId }, ...(subscriptionIds.length > 0 ? [{ subscriptionId: { in: subscriptionIds } }] : [])] } }),
       db.supportTicket.count({ where: { userId } }),
-      this.countActiveSessions(db, { OR: [{ userId }, ...(subscriptionIds.length > 0 ? [{ subscriptionId: { in: subscriptionIds } }] : [])] })
+      this.countActiveSessions(db, { OR: [{ userId }, ...(subscriptionIds.length > 0 ? [{ subscriptionId: { in: subscriptionIds } }] : [])] }),
+      db.clientRoutingRule.count({ where: { userId } })
     ]);
 
     const affected = subscriptionUserIds(teamSubs);
@@ -337,6 +338,7 @@ export class AdminDeletionService {
         item("activeSessions", "在线连接（立即断开）", sessionCount),
         item("trafficRecords", "流量记录", ledgerCount),
         item("tickets", "工单", ticketCount),
+        item("routingRules", "自定义分流规则", routingRuleCount),
         item("subscriptionLink", "第三方订阅链接（失效）", user.subscriptionLink ? 1 : 0)
       ],
       subscriptionIds,

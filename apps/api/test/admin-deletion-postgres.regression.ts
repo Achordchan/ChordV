@@ -127,6 +127,24 @@ async function main() {
   assert.ok(clientEvents.some((event) => event.userIds.includes(teamOwner.id) && event.reasonCode === "auth_invalid"), "被删账号的客户端要退出登录");
   assert.ok(clientEvents.some((event) => event.userIds.includes(teamMember.id) && event.type === "subscription_updated"));
 
+  // 4b. 节点有 Agent 但不在直控模式（Agent 会拒绝写用户）：不能算作已通知，要计入需要手工清理。
+  const observingNode = await prisma.node.update({ where: { id: (await createNode(prisma)).id }, data: { controlMode: "shadow_direct" } });
+  await prisma.nodeAgent.create({ data: { id: id("agent"), agentId: id("a"), nodeId: observingNode.id, tokenHash: randomUUID(), tokenPrefix: "t" } });
+  const observedPlan = await createPlan(prisma, "personal");
+  const observedSub = await createSubscription(prisma, { planId: observedPlan.id, userId: teamMember.id, expireAt: later });
+  const observedBinding = await createBinding(prisma, { subscriptionId: observedSub.id, userId: teamMember.id, nodeId: observingNode.id });
+  const observed = await service.delete("subscription", observedSub.id, { force: true, actorUserId: admin.id });
+  assert.equal(observed.queuedNodeRemovalCount, 0);
+  assert.equal(observed.skippedNodeRemovalCount, 1);
+  assert.equal(await prisma.nodeCommandJob.count({ where: { bindingId: observedBinding.id } }), 0);
+
+  // 4c. 只有自定义分流规则的账号也要强制确认。
+  const ruleOwner = await createUser(prisma, "user");
+  await prisma.clientRoutingRule.create({ data: { id: id("rule"), userId: ruleOwner.id, value: "example.com", matchType: "domain", action: "proxy" } });
+  const rulePreview = await service.preview("user", ruleOwner.id, admin.id);
+  assert.equal(rulePreview.requiresForce, true);
+  assert.equal(rulePreview.related.find((entry) => entry.key === "routingRules")?.count, 1);
+
   // 5. 没有关联数据的账号和团队：直接删。
   const bare = await createUser(prisma, "user");
   assert.equal((await service.preview("user", bare.id, admin.id)).requiresForce, false);

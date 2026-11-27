@@ -1251,7 +1251,10 @@ export class RuntimeSessionService {
    * plan, subscription or team): order every node still serving one of those
    * bindings to remove the account. The command rows have no foreign key to
    * the binding or subscription, so they outlive the delete and the agent
-   * still receives them; nodes with no usable agent are counted as skipped.
+   * still receives them. A node that cannot execute the removal — no
+   * unrevoked agent, or a control mode other than direct_primary (the agent
+   * refuses user writes outside it) — is counted as skipped so the caller can
+   * ask for manual cleanup instead of reporting it as notified.
    * Run it in the same transaction as the delete and publish the returned
    * commands only after commit.
    */
@@ -1266,7 +1269,8 @@ export class RuntimeSessionService {
     for (const binding of bindings) {
       let hasAgent = agentByNode.get(binding.nodeId);
       if (hasAgent === undefined) {
-        hasAgent = Boolean(await writer.nodeAgent.findFirst({
+        const node = await writer.node.findUnique({ where: { id: binding.nodeId }, select: { controlMode: true } });
+        hasAgent = node?.controlMode === "direct_primary" && Boolean(await writer.nodeAgent.findFirst({
           where: { nodeId: binding.nodeId, revokedAt: null },
           select: { id: true }
         }));
