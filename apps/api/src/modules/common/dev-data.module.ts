@@ -29,6 +29,7 @@ import { RuntimeComponentsService } from "./runtime-components.service";
 import { RuntimeSessionService } from "./runtime-session.service";
 import { MeteringIncidentService } from "./metering-incident.service";
 import { MeteringRetentionService } from "./metering-retention.service";
+import { TrafficResetScheduleService } from "./traffic-reset-schedule.service";
 
 @Global()
 @Module({
@@ -57,6 +58,7 @@ import { MeteringRetentionService } from "./metering-retention.service";
     ClientRoutingRuleService,
     MeteringIncidentService,
     MeteringRetentionService,
+    TrafficResetScheduleService,
     AuthSessionService,
     ClientRuntimeEventsService,
     ClientTicketService,
@@ -88,6 +90,7 @@ import { MeteringRetentionService } from "./metering-retention.service";
     ClientRoutingRuleService,
     MeteringIncidentService,
     MeteringRetentionService,
+    TrafficResetScheduleService,
     AuthSessionService,
     ClientRuntimeEventsService,
     ClientTicketService,

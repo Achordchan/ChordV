@@ -23,6 +23,7 @@ import {
 } from "@tabler/icons-react";
 import { DataTable } from "../features/shared/DataTable";
 import { ExpireAtController } from "../features/shared/ExpireAtController";
+import { TrafficResetDayInput } from "../features/shared/TrafficResetDayInput";
 import { MiniMetric } from "../features/shared/MiniMetric";
 import { RowActions } from "../features/shared/RowActions";
 import { SectionCard } from "../features/shared/SectionCard";
@@ -31,7 +32,7 @@ import type { LeaseRevocationQueueFilter } from "../utils/admin-queue-filters";
 import type { TeamSubscriptionFormState } from "../utils/admin-forms";
 import { applyPlanToTeamSubscriptionForm } from "../utils/admin-forms";
 import { summarizeAdminDiagnosticMessage, summarizeTeamUsage } from "../utils/admin-filters";
-import { formatDateTime, formatTrafficGb } from "../utils/admin-format";
+import { describeTrafficReset, formatDateTime, formatTrafficGb } from "../utils/admin-format";
 import { findNodeCommandSummary } from "../utils/node-command-summary";
 import {
   getRenewActionText,
@@ -155,7 +156,12 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                       {item.hasNodeAccess ? `${item.nodeCount} 个节点` : "未分配节点"}
                     </Text>
                   </Table.Td>
-                  <Table.Td>{formatDateTime(item.expireAt)}</Table.Td>
+                  <Table.Td>
+                    <Stack gap={0}>
+                      <Text>{formatDateTime(item.expireAt)}</Text>
+                      <Text size="xs" c="dimmed">{describeTrafficReset(item)}</Text>
+                    </Stack>
+                  </Table.Td>
                   <Table.Td>
                     <Stack gap={4}>
                       <StatusBadge color={subscriptionStateColor(item.state)} label={translateSubscriptionState(item.state)} />
@@ -418,6 +424,10 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                               value={props.teamSubscriptionForm.expireAt}
                               baseValue={props.teamSubscriptionForm.expireAt}
                               onChange={(value) => props.setTeamSubscriptionForm((current) => ({ ...current, expireAt: value }))}
+                            />
+                            <TrafficResetDayInput
+                              value={props.teamSubscriptionForm.trafficResetDay}
+                              onChange={(trafficResetDay) => props.setTeamSubscriptionForm((current) => ({ ...current, trafficResetDay }))}
                             />
                             <Group justify="flex-end">
                               <Button variant="default" onClick={props.onCloseTeamSubscriptionInlineEditor}>取消</Button>
