@@ -44,7 +44,12 @@ export async function applyDirectBatch(
   const bindingById = new Map(bindings.map((binding) => [binding.id, binding]));
   const prepared = samples.flatMap((sample) => {
     const binding = bindingById.get(sample.bindingId);
-    if (!binding || binding.nodeId !== nodeId || binding.source !== "direct") {
+    // A binding only reaches an agent after its row exists, so a missing row
+    // means it was deleted with its user/plan/subscription/team. The agent can
+    // still report it until its REMOVE_USER runs; that usage belongs to nobody
+    // any more. Rejecting it would stall this node's whole usage queue.
+    if (!binding) return [];
+    if (binding.nodeId !== nodeId || binding.source !== "direct") {
       throw new ConflictException(`Direct 用户绑定无效：${sample.bindingId}`);
     }
     if (binding.status === "disabled" || binding.status === "deleted") {

@@ -1246,6 +1246,75 @@ export class RuntimeSessionService {
     return queuedCount;
   }
 
+  /**
+   * Before rows that cascade to PanelClientBinding are hard-deleted (a user,
+   * plan, subscription or team): order every node still serving one of those
+   * bindings to remove the account. The command rows have no foreign key to
+   * the binding or subscription, so they outlive the delete and the agent
+   * still receives them. A node that cannot execute the removal — no
+   * unrevoked agent, or a control mode other than direct_primary (the agent
+   * refuses user writes outside it) — is counted as skipped so the caller can
+   * ask for manual cleanup instead of reporting it as notified.
+   * Run it in the same transaction as the delete and publish the returned
+   * commands only after commit.
+   */
+  async queueBindingRemovalBeforeDeleteTx(writer: any, where: Prisma.PanelClientBindingWhereInput) {
+    const bindings = await writer.panelClientBinding.findMany({
+      where: { AND: [where, { status: { in: ["active", "disabled"] } }] },
+      orderBy: { id: "asc" }
+    });
+    const commands: Array<{ agentId: string; command: AgentCommandDto }> = [];
+    // The cascade deletes the binding — the only record of which node holds
+    // which account — so the skipped ones are returned (and logged) with the
+    // identifiers an administrator needs to remove them by hand.
+    // The account UUID is the node-side credential: never returned or logged.
+    const skippedBindings: Array<{ nodeId: string; nodeName: string; panelClientEmail: string }> = [];
+    const agentByNode = new Map<string, boolean>();
+    const nodeNames = new Map<string, string>();
+    for (const binding of bindings) {
+      let hasAgent = agentByNode.get(binding.nodeId);
+      if (hasAgent === undefined) {
+        const node = await writer.node.findUnique({ where: { id: binding.nodeId }, select: { controlMode: true, name: true } });
+        nodeNames.set(binding.nodeId, node?.name ?? binding.nodeId);
+        hasAgent = node?.controlMode === "direct_primary" && Boolean(await writer.nodeAgent.findFirst({
+          where: { nodeId: binding.nodeId, revokedAt: null },
+          select: { id: true }
+        }));
+        agentByNode.set(binding.nodeId, hasAgent);
+      }
+      if (!hasAgent) {
+        skippedBindings.push({
+          nodeId: binding.nodeId,
+          nodeName: nodeNames.get(binding.nodeId) ?? binding.nodeId,
+          panelClientEmail: binding.panelClientEmail
+        });
+        continue;
+      }
+      commands.push(await this.queueDirectBindingCommand(writer, binding, "REMOVE_USER", {
+        bindingId: binding.id,
+        userKey: binding.panelClientEmail,
+        email: binding.panelClientEmail,
+        uuid: binding.panelClientId
+      }, { publish: false }));
+    }
+    for (const item of skippedBindings) {
+      this.logger.warn(
+        `Binding deleted without node removal; clean up by hand: node=${item.nodeName}(${item.nodeId}) email=${item.panelClientEmail}`
+      );
+    }
+    return { commands, skipped: skippedBindings.length, skippedBindings };
+  }
+
+  publishAgentCommandsBestEffort(commands: Array<{ agentId: string; command: AgentCommandDto }>) {
+    for (const item of commands) {
+      try {
+        this.agentEventsService.publish(item.agentId, item.command);
+      } catch (error) {
+        this.logger.warn(`Agent command saved, but publish failed (${item.command.commandId}): ${readRuntimeErrorMessage(error)}`);
+      }
+    }
+  }
+
   async queueLeaseRevocationJobsForSubscription(
     subscriptionId: string,
     reason: string,

@@ -1410,6 +1410,49 @@ export interface DisconnectUserResultDto {
   user: AdminUserRecordDto;
 }
 
+/** 后台可删除的实体。 */
+export type AdminDeletableEntityKind = "user" | "plan" | "subscription" | "team";
+
+/** 删除时会一起删掉（或受影响）的一类数据。 */
+export interface AdminDeleteRelatedItemDto {
+  key: string;
+  label: string;
+  count: number;
+  /** 最多几条示例名称，方便确认删的是谁。 */
+  samples: string[];
+}
+
+export interface AdminDeletePreviewDto {
+  kind: AdminDeletableEntityKind;
+  id: string;
+  name: string;
+  related: AdminDeleteRelatedItemDto[];
+  /** 有关联数据时必须带 force 才能删。 */
+  requiresForce: boolean;
+  /** 不为空表示无论是否强制都不能删（例如删自己）。 */
+  blockedReason: string | null;
+}
+
+export interface AdminDeleteResultDto {
+  ok: true;
+  kind: AdminDeletableEntityKind;
+  id: string;
+  message: string;
+  /** 已下发给节点的“删除账号”命令数。 */
+  queuedNodeRemovalCount: number;
+  /** 节点没有可用 Agent 或不在直控模式、无法自动删除的账号数，需要自行检查。 */
+  skippedNodeRemovalCount: number;
+  /** 无法自动删除的节点账号明细：在哪个节点、节点上的账号标识，供手工清理。 */
+  manualCleanup: AdminDeleteManualCleanupDto[];
+}
+
+export interface AdminDeleteManualCleanupDto {
+  nodeId: string;
+  nodeName: string;
+  /** 节点（Xray）上的账号 email 标识；账号 UUID 是凭据，不返回。 */
+  panelClientEmail: string;
+}
+
 export interface ResetSubscriptionTrafficInputDto {
   userId?: string | null;
 }

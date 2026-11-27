@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Badge, Button, SegmentedControl, Text, TextInput } from "@mantine/core";
 import type { AdminPlanRecordDto, PlanScope } from "@chordv/shared";
-import { IconArrowLeft, IconListDetails, IconPencil, IconSearch } from "@tabler/icons-react";
+import { IconArrowLeft, IconListDetails, IconPencil, IconSearch, IconTrash } from "@tabler/icons-react";
+import type { DeleteEntityTarget } from "../features/modals/DeleteEntityModal";
 import { formatDateTimeWithYear, formatTrafficGb } from "../utils/admin-format";
 import styles from "../features/plans/PlansPage.module.css";
 
@@ -9,6 +10,7 @@ type PlansPageProps = {
   searchValue: string; onSearchChange: (value: string) => void;
   planScopeTab: PlanScope; onPlanScopeTabChange: (value: PlanScope) => void;
   plans: AdminPlanRecordDto[]; onOpenPlanDrawer: (planId: string) => void;
+  onRequestDelete: (target: DeleteEntityTarget) => void;
 };
 
 export function PlansPage(props: PlansPageProps) {
@@ -38,7 +40,8 @@ export function PlansPage(props: PlansPageProps) {
     <div className={styles.detail}>{selected ? <>
       <button className={styles.back} onClick={() => setDetailOpen(false)}><IconArrowLeft size={16}/>返回套餐列表</button>
       <header className={styles.header}><div><Text size="xs" c="dimmed" mb={8}>{selected.scope === "team" ? "团队共享套餐" : "个人套餐"}</Text><h1>{selected.name}</h1><Badge mt="sm" variant="light" color={selected.isActive ? "#3e7150" : "gray"}>{selected.isActive ? "已启用" : "已停用"}</Badge></div>
-        <Button color="#1c4d37" leftSection={<IconPencil size={16}/>} onClick={() => props.onOpenPlanDrawer(selected.id)} title="编辑套餐" aria-label={`编辑套餐 ${selected.name}`}>编辑套餐</Button></header>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}><Button color="#1c4d37" leftSection={<IconPencil size={16}/>} onClick={() => props.onOpenPlanDrawer(selected.id)} title="编辑套餐" aria-label={`编辑套餐 ${selected.name}`}>编辑套餐</Button>
+          <Button variant="default" color="red" leftSection={<IconTrash size={16}/>} onClick={() => props.onRequestDelete({ kind: "plan", id: selected.id, name: selected.name })} aria-label={`删除套餐 ${selected.name}`}>删除</Button></div></header>
       <section className={styles.surface}><h2>套餐权益</h2><div className={styles.entitlements}>
         <div><small>默认流量额度</small><strong>{formatTrafficGb(selected.totalTrafficGb)}<span>GB</span></strong></div>
         <div><small>最大并发会话</small><strong>{selected.maxConcurrentSessions}<span>个</span></strong></div>

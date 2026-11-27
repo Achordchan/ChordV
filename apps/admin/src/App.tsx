@@ -139,6 +139,9 @@ import {
 import { ADMIN_SESSION_EXPIRED_EVENT, isAdminSessionExpiredMessage } from "./api/base";
 import { AdminLoginPanel } from "./components/AdminLoginPanel";
 import { AdminDrawerForm, type DrawerType } from "./features/editors/AdminDrawerForm";
+import { DeleteEntityModal, ManualCleanupModal, type DeleteEntityTarget } from "./features/modals/DeleteEntityModal";
+import { deleteAdminEntity } from "./api/deletion";
+import type { AdminDeleteManualCleanupDto, AdminDeleteResultDto } from "@chordv/shared";
 import { DeleteNodeModal, KickMemberModal, NodeAccessEditorModal, TeamUsageDetailModal } from "./features/modals/AdminModals";
 import { SystemUpdateBadge } from "./features/system-update/SystemUpdateBadge";
 import { AnnouncementsPage } from "./pages/AnnouncementsPage";
@@ -407,6 +410,10 @@ export function App() {
     announcements: "",
   });
   const [deleteNodeTarget, setDeleteNodeTarget] = useState<AdminNodeRecordDto | null>(null);
+  const [deleteEntityTarget, setDeleteEntityTarget] = useState<DeleteEntityTarget | null>(null);
+  const [deleteEntitySubmitting, setDeleteEntitySubmitting] = useState(false);
+  const deleteEntitySubmittingRef = useRef(false);
+  const [manualCleanupEntries, setManualCleanupEntries] = useState<AdminDeleteManualCleanupDto[] | null>(null);
   const [deleteNodeSubmitting, setDeleteNodeSubmitting] = useState(false);
   const deleteNodeSubmittingRef = useRef(false);
   const [kickMemberTarget, setKickMemberTarget] = useState<{ teamId: string; memberId: string; memberName: string } | null>(null);
@@ -791,6 +798,7 @@ export function App() {
     adminSecuritySavingRef.current = false;
     drawerBusyRef.current = false;
     deleteNodeSubmittingRef.current = false;
+    deleteEntitySubmittingRef.current = false;
     kickSubmittingRef.current = false;
     resetTrafficBusyRef.current = false;
     convertSubmittingRef.current = false;
@@ -814,6 +822,9 @@ export function App() {
     setAuthError("登录已失效，请重新登录");
     setDrawer({ type: null, recordId: null, parentId: null });
     setDeleteNodeTarget(null);
+    setDeleteEntityTarget(null);
+    setDeleteEntitySubmitting(false);
+    setManualCleanupEntries(null);
     setKickMemberTarget(null);
     setKickDisableAccount(false);
     setKickSubmitting(false);
@@ -1653,7 +1664,7 @@ export function App() {
       uncertainMessage?: (message: string) => string;
       refreshAfter?: boolean;
       treatUncertainAsCompleted?: boolean;
-      resolveSuccess?: (result: unknown) => { color?: "green" | "yellow"; title?: string; message?: string } | null;
+      resolveSuccess?: (result: unknown) => { color?: "green" | "yellow"; title?: string; message?: string; autoClose?: false } | null;
     } = {}
   ) {
     sectionMutationSeqRef.current += 1;
@@ -1666,7 +1677,8 @@ export function App() {
       notifications.show({
         color: successOverride?.color ?? "green",
         title: successOverride?.title ?? options.successTitle ?? "操作成功",
-        message: successOverride?.message ?? resolvedMessage
+        message: successOverride?.message ?? resolvedMessage,
+        ...(successOverride?.autoClose === false ? { autoClose: false } : {})
       });
       if (options.refreshAfter ?? true) void refreshCurrentDataAfterAction().catch((refreshReason) => {
         notifications.show({
@@ -2306,6 +2318,35 @@ export function App() {
     } finally {
       entityActionBusyRef.current = null;
       setEntityActionBusyKey(null);
+    }
+  }
+
+  async function handleDeleteEntity(force: boolean) {
+    const target = deleteEntityTarget;
+    if (!target || deleteEntitySubmittingRef.current) return;
+    try {
+      deleteEntitySubmittingRef.current = true;
+      setDeleteEntitySubmitting(true);
+      const success = await runAction(() => deleteAdminEntity(target.kind, target.id, force), "已删除", {
+        ...dbFirstMutationOptions,
+        // 有节点账号无法自动删除时必须醒目提示：这些账号在节点上可能还能用，要手工清理。
+        resolveSuccess: (result) => {
+          const outcome = result as Partial<AdminDeleteResultDto> | null;
+          if (!outcome || !outcome.skippedNodeRemovalCount) return null;
+          // 消息里最多只列 10 条；完整清单单独弹窗展示，可复制。
+          if (outcome.manualCleanup?.length) setManualCleanupEntries(outcome.manualCleanup);
+          return {
+            color: "yellow",
+            title: "已删除，但有节点账号需要手工清理",
+            message: outcome.message ?? `${outcome.skippedNodeRemovalCount} 个节点账号无法自动删除，请到节点上手工清理。`,
+            autoClose: false
+          };
+        }
+      });
+      if (success) setDeleteEntityTarget(null);
+    } finally {
+      setDeleteEntitySubmitting(false);
+      deleteEntitySubmittingRef.current = false;
     }
   }
 
@@ -3113,6 +3154,7 @@ export function App() {
                     onDisconnectUser={(userId, displayName, source) => void handleDisconnectUser(userId, displayName, source)}
                     onRetryLeaseRevocationJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}
                     onOpenLeaseRevocationQueue={openLeaseRevocationQueue}
+                    onRequestDelete={setDeleteEntityTarget}
                   />
                 }
               />
@@ -3126,6 +3168,7 @@ export function App() {
                 onPlanScopeTabChange={setPlanScopeTab}
                 plans={plans}
                 onOpenPlanDrawer={(planId) => openDrawer("plan", planId)}
+                onRequestDelete={setDeleteEntityTarget}
               />
             ) : null}
 
@@ -3368,6 +3411,13 @@ export function App() {
         </Stack>
       </Modal>
 
+      <DeleteEntityModal
+        target={deleteEntityTarget}
+        submitting={deleteEntitySubmitting}
+        onClose={() => setDeleteEntityTarget(null)}
+        onConfirm={(force) => void handleDeleteEntity(force)}
+      />
+      <ManualCleanupModal entries={manualCleanupEntries} onClose={() => setManualCleanupEntries(null)}/>
       <DeleteNodeModal
         target={deleteNodeTarget}
         submitting={deleteNodeSubmitting}
