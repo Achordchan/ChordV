@@ -32,7 +32,8 @@ import (
 	"time"
 )
 
-// Timeout bounds one kill. It runs under the agent's state lock.
+// Timeout bounds one whole Kill call, every source IP included. It runs under
+// the agent's state lock.
 const Timeout = 3 * time.Second
 
 // MaxIPs caps how many source addresses one removal may target. An account
@@ -94,10 +95,16 @@ func (s *SS) Kill(ctx context.Context, port int, ips []string) (int, error) {
 	if len(ips) > MaxIPs {
 		return 0, fmt.Errorf("来源地址 %d 个，超过上限 %d，拒绝断开", len(ips), MaxIPs)
 	}
+	ctx, cancel := context.WithTimeout(ctx, Timeout)
+	defer cancel()
 	seen := map[string]bool{}
 	total := 0
 	var failures []string
 	for _, raw := range ips {
+		if ctx.Err() != nil {
+			failures = append(failures, "断开超时，剩余来源未处理")
+			break
+		}
 		ip, err := NormalizeIP(raw)
 		if err != nil {
 			failures = append(failures, err.Error())
@@ -120,11 +127,12 @@ func (s *SS) Kill(ctx context.Context, port int, ips []string) (int, error) {
 }
 
 func (s *SS) killOne(ctx context.Context, port int, ip net.IP) (int, error) {
-	ctx, cancel := context.WithTimeout(ctx, Timeout)
-	defer cancel()
 	args := append([]string{"-K", "-H", "-t", "-n", "state", "established"}, Filter(port, ip)...)
 	command := exec.CommandContext(ctx, s.Path, args...)
 	command.Env = []string{"LANG=C", "LC_ALL=C"}
+	// After the deadline kills ss, do not keep waiting on a pipe some
+	// descendant still holds open.
+	command.WaitDelay = 500 * time.Millisecond
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	err := command.Run()

@@ -579,7 +579,7 @@ async function testAdminQuery() {
   assert.equal(seen.users.select.passwordHash, undefined);
   assert.deepEqual(snapshot.counts, { online: 2, connected: 1, idle: 1 });
   assert.deepEqual(seen.direct.where.userId, { not: null }, "订阅链接在线只看有用户的绑定");
-  assert.equal(seen.direct.where.directLastOnlineAt.gte.getTime(), now.getTime() - PRESENCE_HEARTBEAT_HISTORY_MS, "订阅链接在线只查近一天，走 directLastOnlineAt 索引");
+  assert.deepEqual(seen.direct.where.directLastOnlineAt, { not: null }, "订阅链接的最近在线不限时间：这是该用户唯一的在线记录");
   assert.equal(seen.direct.select.xrayUserUuid, undefined, "不带出节点账号凭据");
   assert.equal(seen.direct.select.panelClientId, undefined);
 

@@ -122,16 +122,18 @@ function testSnapshot() {
     row({}),
     row({ id: "b_member", userId: "user_member", directLastOnlineAt: ago(DIRECT_ONLINE_WINDOW_SECONDS + 30) }),
     row({ id: "b_gone", userId: "user_gone", directOnlineIpCount: 0, directLastOnlineAt: ago(40) }),
-    row({ id: "b_orphan", userId: null })
+    row({ id: "b_orphan", userId: null }),
+    row({ id: "b_old", userId: "user_old", directOnlineIpCount: 0, directOnlineSince: ago(90 * 86_400), directLastOnlineAt: ago(30 * 86_400) })
   ], now);
-  assert.equal(leases.length, 3, "没有用户的绑定忽略");
+  assert.equal(leases.length, 4, "没有用户的绑定忽略");
 
   const snapshot = buildAdminPresenceSnapshot({
     now,
     users: [
       { id: "user_owner", displayName: "团队负责人", email: "owner@example.com", teamMemberships: [{ team: { id: "team_1", name: "示例团队" } }] },
       { id: "user_member", displayName: "成员", email: "member@example.com", teamMemberships: [{ team: { id: "team_1", name: "示例团队" } }] },
-      { id: "user_gone", displayName: "离开", email: "gone@example.com", teamMemberships: [] }
+      { id: "user_gone", displayName: "离开", email: "gone@example.com", teamMemberships: [] },
+      { id: "user_old", displayName: "老用户", email: "old@example.com", teamMemberships: [] }
     ],
     presence: [], streams: [], leases, clientVersions: []
   });
@@ -149,6 +151,9 @@ function testSnapshot() {
   const gone = snapshot.users.find((user) => user.userId === "user_gone")!;
   assert.equal(gone.state, "offline", "节点报告不在线即离线");
   assert.equal(gone.lastOnlineAt, ago(40).toISOString());
+  const old = snapshot.users.find((user) => user.userId === "user_old")!;
+  assert.equal(old.state, "offline");
+  assert.equal(old.lastOnlineAt, ago(30 * 86_400).toISOString(), "离线一个月后仍显示最近在线时间");
   assert.deepEqual(snapshot.counts, { online: 1, connected: 1, idle: 0 });
 }
 

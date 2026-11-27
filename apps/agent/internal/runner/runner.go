@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -115,6 +116,14 @@ type Runner struct {
 	// it means "the control plane answered", not "we would like it to".
 	backendOnline bool
 	xrayHealthy   bool
+	// trafficTotals and activeEmails remember which accounts moved traffic in
+	// the latest sample. Traffic proves a live connection, which is how an
+	// empty online report is told apart from disabled online statistics.
+	trafficTotals map[string]uint64
+	activeEmails  map[string]bool
+	// onlineUnavailableLogged keeps the "online statistics off" warning to one
+	// line per episode.
+	onlineUnavailableLogged bool
 	// lastXrayStart is the ESTIMATED wall-clock start of the Xray process, from
 	// its reported uptime. Zero until the first reading.
 	lastXrayStart time.Time
@@ -549,10 +558,32 @@ func (r *Runner) bindingsByEmailLocked() (map[string]string, error) {
 	return result, nil
 }
 
+// noteTrafficLocked records which accounts moved traffic since the previous
+// sample. A counter that went backwards (Xray restarted) only re-baselines.
+func (r *Runner) noteTrafficLocked(counters []protocol.AbsoluteCounter) {
+	totals := make(map[string]uint64, len(counters))
+	active := map[string]bool{}
+	for _, counter := range counters {
+		up, upErr := strconv.ParseUint(counter.UplinkBytes, 10, 64)
+		down, downErr := strconv.ParseUint(counter.DownlinkBytes, 10, 64)
+		if upErr != nil || downErr != nil {
+			continue
+		}
+		total := up + down
+		totals[counter.Email] = total
+		if previous, seen := r.trafficTotals[counter.Email]; seen && total > previous {
+			active[counter.Email] = true
+		}
+	}
+	r.trafficTotals = totals
+	r.activeEmails = active
+}
+
 // readOnlineUsers reports which managed accounts Xray sees online. It returns
-// nil — "not observed" — whenever the observation is unavailable, so a failed
-// read never makes the control plane show everyone offline.
-func (r *Runner) readOnlineUsers(ctx context.Context, bindings map[string]string) *[]protocol.OnlineUser {
+// nil — "not observed" — whenever the observation is unavailable or would be
+// incomplete, so the control plane never marks a connected user offline
+// because of what this node could not see.
+func (r *Runner) readOnlineUsers(ctx context.Context, bindings map[string]string, active []string) *[]protocol.OnlineUser {
 	if bindings == nil {
 		return nil
 	}
@@ -565,6 +596,15 @@ func (r *Runner) readOnlineUsers(ctx context.Context, bindings map[string]string
 		r.logf("读取在线账号失败：%v", err)
 		return nil
 	}
+	if !onlineTrackingConsistent(online, active) {
+		if !r.onlineUnavailableLogged {
+			r.onlineUnavailableLogged = true
+			r.logf("警告：有账号正在产生流量，但 Xray 在线统计没有任何记录——多半未开启 policy.levels.0.statsUserOnline。" +
+				"在此之前后台看不到订阅链接用户的在线状态，停用账号时也无法断开其现有连接；请在 3x-ui 的 Xray 配置模板里开启后重启 Xray")
+		}
+		return nil
+	}
+	r.onlineUnavailableLogged = false
 	result := []protocol.OnlineUser{}
 	for email, count := range online {
 		binding, managed := bindings[email]
@@ -573,11 +613,29 @@ func (r *Runner) readOnlineUsers(ctx context.Context, bindings map[string]string
 		}
 		result = append(result, protocol.OnlineUser{BindingID: binding, IPCount: count})
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].BindingID < result[j].BindingID })
 	if len(result) > protocol.MaxOnlineUsers {
-		result = result[:protocol.MaxOnlineUsers]
+		// The server treats an omitted binding as offline, so a truncated
+		// list would keep flipping real users offline. Send nothing instead.
+		r.logf("在线账号 %d 个，超过单次上报上限 %d，本次不上报在线状态", len(result), protocol.MaxOnlineUsers)
+		return nil
 	}
+	sort.Slice(result, func(i, j int) bool { return result[i].BindingID < result[j].BindingID })
 	return &result
+}
+
+// onlineTrackingConsistent is false when accounts moved traffic in the latest
+// sample yet Xray reports none of them online: online statistics are off, and
+// an empty report would wrongly read as "nobody connected".
+func onlineTrackingConsistent(online map[string]int, active []string) bool {
+	if len(active) == 0 {
+		return true
+	}
+	for _, email := range active {
+		if online[email] > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // --- metering ---------------------------------------------------------------
@@ -603,6 +661,7 @@ func (r *Runner) sampleLocked(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	r.noteTrafficLocked(counters)
 	if !r.xrayHealthy {
 		r.reconcilePending = true
 	}
@@ -743,8 +802,12 @@ func (r *Runner) sendHeartbeat(ctx context.Context) error {
 	mode := r.current.ControlMode
 	refreshPending := r.refreshPending
 	var bindings map[string]string
+	var active []string
 	if err == nil && status == protocol.XrayHealthy {
 		bindings, err = r.bindingsByEmailLocked()
+		for email := range r.activeEmails {
+			active = append(active, email)
+		}
 	}
 	r.state.Unlock()
 	if err != nil {
@@ -757,7 +820,7 @@ func (r *Runner) sendHeartbeat(ctx context.Context) error {
 		ConfigRevision: revision,
 		QueueDepth:     depth,
 		XrayStatus:     status,
-		OnlineUsers:    r.readOnlineUsers(ctx, bindings),
+		OnlineUsers:    r.readOnlineUsers(ctx, bindings, active),
 	})
 	if err != nil {
 		r.setBackendOnline(false)

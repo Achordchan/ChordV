@@ -665,10 +665,9 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
           select: { userId: true, platform: true, version: true, build: true, channel: true, lastSeenAt: true }
         }),
         this.prisma.panelClientBinding.findMany({
-          where: {
-            userId: { not: null },
-            directLastOnlineAt: { gte: new Date(now.getTime() - PRESENCE_HEARTBEAT_HISTORY_MS) }
-          },
+          // 不限时间：订阅链接用户没有客户端心跳写进 UserClientPresence，这里的最近在线时间就是他唯一的在线记录。
+          // 只有节点报告过在线的绑定才有值，行数以绑定数为上限，走 directLastOnlineAt 索引。
+          where: { userId: { not: null }, directLastOnlineAt: { not: null } },
           select: {
             id: true,
             userId: true,

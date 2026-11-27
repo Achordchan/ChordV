@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNormalizeIP(t *testing.T) {
@@ -83,5 +84,19 @@ func TestKillRefusesTooManyAddresses(t *testing.T) {
 	}
 	if _, err := ss.Kill(context.Background(), 0, []string{"1.2.3.4"}); err == nil {
 		t.Fatal("expected port refusal")
+	}
+}
+
+func TestKillIsBoundedAsAWhole(t *testing.T) {
+	ss := fakeSS(t, "sleep 5")
+	ips := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	if _, err := ss.Kill(ctx, 443, ips); err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("Kill took %v; the deadline must cover all addresses", elapsed)
 	}
 }
