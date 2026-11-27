@@ -1246,6 +1246,56 @@ export class RuntimeSessionService {
     return queuedCount;
   }
 
+  /**
+   * Before rows that cascade to PanelClientBinding are hard-deleted (a user,
+   * plan, subscription or team): order every node still serving one of those
+   * bindings to remove the account. The command rows have no foreign key to
+   * the binding or subscription, so they outlive the delete and the agent
+   * still receives them; nodes with no usable agent are counted as skipped.
+   * Run it in the same transaction as the delete and publish the returned
+   * commands only after commit.
+   */
+  async queueBindingRemovalBeforeDeleteTx(writer: any, where: Prisma.PanelClientBindingWhereInput) {
+    const bindings = await writer.panelClientBinding.findMany({
+      where: { AND: [where, { status: { in: ["active", "disabled"] } }] },
+      orderBy: { id: "asc" }
+    });
+    const commands: Array<{ agentId: string; command: AgentCommandDto }> = [];
+    let skipped = 0;
+    const agentByNode = new Map<string, boolean>();
+    for (const binding of bindings) {
+      let hasAgent = agentByNode.get(binding.nodeId);
+      if (hasAgent === undefined) {
+        hasAgent = Boolean(await writer.nodeAgent.findFirst({
+          where: { nodeId: binding.nodeId, revokedAt: null },
+          select: { id: true }
+        }));
+        agentByNode.set(binding.nodeId, hasAgent);
+      }
+      if (!hasAgent) {
+        skipped += 1;
+        continue;
+      }
+      commands.push(await this.queueDirectBindingCommand(writer, binding, "REMOVE_USER", {
+        bindingId: binding.id,
+        userKey: binding.panelClientEmail,
+        email: binding.panelClientEmail,
+        uuid: binding.panelClientId
+      }, { publish: false }));
+    }
+    return { commands, skipped };
+  }
+
+  publishAgentCommandsBestEffort(commands: Array<{ agentId: string; command: AgentCommandDto }>) {
+    for (const item of commands) {
+      try {
+        this.agentEventsService.publish(item.agentId, item.command);
+      } catch (error) {
+        this.logger.warn(`Agent command saved, but publish failed (${item.command.commandId}): ${readRuntimeErrorMessage(error)}`);
+      }
+    }
+  }
+
   async queueLeaseRevocationJobsForSubscription(
     subscriptionId: string,
     reason: string,
