@@ -638,7 +638,10 @@ func (r *Runner) readOnlineUsers(ctx context.Context, candidates map[string]onli
 	if !ok {
 		return nil
 	}
-	online, err := reader.OnlineUsers(ctx)
+	online, err := reader.OnlineUsers(ctx, func(email string) bool {
+		_, managed := candidates[email]
+		return managed
+	})
 	if err != nil {
 		r.logf("读取在线账号失败：%v", err)
 		return nil

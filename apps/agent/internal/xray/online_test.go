@@ -87,7 +87,7 @@ func waitOnline(t *testing.T, g *GRPC, email string, want int) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		online, err := g.OnlineUsers(context.Background())
+		online, err := g.OnlineUsers(context.Background(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -113,6 +113,12 @@ func TestRealXrayOnlineTrackingAndDisconnectOnRemoval(t *testing.T) {
 	}
 	openVLESS(t, g, user.UUID)
 	waitOnline(t, g, user.Email, 1)
+	if filtered, err := g.OnlineUsers(ctx, func(string) bool { return false }); err != nil || len(filtered) != 0 {
+		t.Fatalf("excluded accounts must not be read or returned: %v %v", filtered, err)
+	}
+	if only, err := g.OnlineUsers(ctx, func(email string) bool { return email == user.Email }); err != nil || only[user.Email] != 1 {
+		t.Fatalf("included account: %v %v", only, err)
+	}
 	ips, err := g.OnlineIPs(ctx, user.Email)
 	if err != nil || len(ips) != 1 || ips[0] != "127.0.0.2" {
 		t.Fatalf("online IPs: %v %v", ips, err)

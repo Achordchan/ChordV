@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/Achordchan/ChordV/apps/agent/internal/connkill"
 	"github.com/xtls/xray-core/app/proxyman"
@@ -20,9 +22,10 @@ import (
 // `statsUserOnline` policy, on by default in 3x-ui). Adapters that cannot report
 // it simply do not implement the interface.
 type OnlineReader interface {
-	// OnlineUsers maps every account email with at least one live connection to
-	// its number of distinct source IPs. It covers all inbounds; callers filter.
-	OnlineUsers(ctx context.Context) (map[string]int, error)
+	// OnlineUsers maps the online accounts that include accepts to their number
+	// of distinct source IPs. Counts are only fetched for accepted emails, so
+	// unmanaged panel accounts cost nothing.
+	OnlineUsers(ctx context.Context, include func(email string) bool) (map[string]int, error)
 	// OnlineIPs lists the source IPs of one account's live connections. An
 	// account Xray has never seen online yields an empty list, not an error.
 	OnlineIPs(ctx context.Context, email string) ([]string, error)
@@ -50,30 +53,90 @@ func emailFromOnlineName(name string) (string, bool) {
 	return email, email != ""
 }
 
-func (g *GRPC) OnlineUsers(ctx context.Context) (map[string]int, error) {
-	ctx, cancel := context.WithTimeout(ctx, CallTimeout)
+// OnlineReadBudget bounds one whole OnlineUsers call; onlineReadWorkers bounds
+// how many count requests run at once. The call runs under the runner's state
+// lock, so it must stay short however many accounts are online.
+const (
+	OnlineReadBudget  = 5 * time.Second
+	onlineReadWorkers = 8
+)
+
+func (g *GRPC) OnlineUsers(ctx context.Context, include func(email string) bool) (map[string]int, error) {
+	ctx, cancel := context.WithTimeout(ctx, OnlineReadBudget)
 	defer cancel()
-	response, err := g.stats.GetAllOnlineUsers(ctx, &stats.GetAllOnlineUsersRequest{})
+	listCtx, listCancel := context.WithTimeout(ctx, CallTimeout)
+	response, err := g.stats.GetAllOnlineUsers(listCtx, &stats.GetAllOnlineUsersRequest{})
+	listCancel()
 	if err != nil {
 		return nil, fmt.Errorf("读取 Xray 在线账号: %w", err)
 	}
-	result := make(map[string]int, len(response.GetUsers()))
+	emails := make([]string, 0, len(response.GetUsers()))
+	seen := map[string]bool{}
 	for _, name := range response.GetUsers() {
 		email, ok := emailFromOnlineName(name)
 		if !ok {
 			// Older cores returned bare emails; accept them as-is.
 			email = name
 		}
-		count, err := g.stats.GetStatsOnline(ctx, &stats.GetStatsRequest{Name: onlineName(email)})
-		if status.Code(err) == codes.NotFound {
+		if email == "" || seen[email] || (include != nil && !include(email)) {
 			continue
 		}
-		if err != nil {
-			return nil, fmt.Errorf("读取 Xray 在线账号 %q: %w", email, err)
+		seen[email] = true
+		emails = append(emails, email)
+	}
+	type outcome struct {
+		email string
+		count int64
+		err   error
+	}
+	jobs := make(chan string)
+	results := make(chan outcome, len(emails))
+	workers := onlineReadWorkers
+	if len(emails) < workers {
+		workers = len(emails)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for email := range jobs {
+				callCtx, callCancel := context.WithTimeout(ctx, CallTimeout)
+				count, err := g.stats.GetStatsOnline(callCtx, &stats.GetStatsRequest{Name: onlineName(email)})
+				callCancel()
+				if status.Code(err) == codes.NotFound {
+					results <- outcome{email: email}
+					continue
+				}
+				results <- outcome{email: email, count: count.GetStat().GetValue(), err: err}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for _, email := range emails {
+			select {
+			case jobs <- email:
+			case <-ctx.Done():
+				return
+			}
 		}
-		if value := count.GetStat().GetValue(); value > 0 {
-			result[email] = int(value)
+	}()
+	wg.Wait()
+	close(results)
+	result := make(map[string]int, len(emails))
+	received := 0
+	for item := range results {
+		received++
+		if item.err != nil {
+			return nil, fmt.Errorf("读取 Xray 在线账号 %q: %w", item.email, item.err)
 		}
+		if item.count > 0 {
+			result[item.email] = int(item.count)
+		}
+	}
+	if received != len(emails) {
+		return nil, fmt.Errorf("读取 Xray 在线账号超时（%d/%d）", received, len(emails))
 	}
 	return result, nil
 }

@@ -23,7 +23,18 @@ func (x *onlineXray) SharedEmails(context.Context) (map[string]bool, error) {
 	return x.shared, x.sharedErr
 }
 
-func (x *onlineXray) OnlineUsers(context.Context) (map[string]int, error) { return x.online, x.err }
+func (x *onlineXray) OnlineUsers(_ context.Context, include func(string) bool) (map[string]int, error) {
+	if x.err != nil || x.online == nil {
+		return x.online, x.err
+	}
+	result := map[string]int{}
+	for email, count := range x.online {
+		if include(email) {
+			result[email] = count
+		}
+	}
+	return result, nil
+}
 func (x *onlineXray) OnlineIPs(context.Context, string) ([]string, error) { return nil, nil }
 func (x *onlineXray) Listener(context.Context) (connkill.Listener, error) {
 	return connkill.Listener{Port: 443}, nil

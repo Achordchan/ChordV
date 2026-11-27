@@ -197,3 +197,12 @@ func TestRealSSDestroysAHalfClosedTransfer(t *testing.T) {
 		t.Fatal("transfer kept flowing after destruction")
 	}
 }
+
+func TestEffectiveHasNetAdmin(t *testing.T) {
+	if !effectiveHasNetAdmin("Name:\tchordv-agent\nCapEff:\t0000000000001000\n") {
+		t.Fatal("CAP_NET_ADMIN bit set")
+	}
+	if effectiveHasNetAdmin("CapEff:\t0000000000000000\n") || effectiveHasNetAdmin("CapEff:\tzz\n") || effectiveHasNetAdmin("") {
+		t.Fatal("no capability")
+	}
+}

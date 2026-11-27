@@ -74,6 +74,31 @@ func Find() (*SS, error) {
 	return nil, ErrUnavailable
 }
 
+// capNetAdmin is CAP_NET_ADMIN's bit in the /proc capability masks.
+const capNetAdmin = 12
+
+// HasNetAdmin reports whether this process can use SOCK_DESTROY. A unit from
+// an older installer lacks AmbientCapabilities=CAP_NET_ADMIN and, with
+// NoNewPrivileges, can never gain it: rerunning the installer rewrites the
+// unit. The caller logs this once instead of failing every disconnect.
+func HasNetAdmin() bool {
+	data, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return false
+	}
+	return effectiveHasNetAdmin(string(data))
+}
+
+func effectiveHasNetAdmin(status string) bool {
+	for _, line := range strings.Split(status, "\n") {
+		if value, ok := strings.CutPrefix(line, "CapEff:"); ok {
+			mask, err := strconv.ParseUint(strings.TrimSpace(value), 16, 64)
+			return err == nil && mask&(1<<capNetAdmin) != 0
+		}
+	}
+	return false
+}
+
 // NormalizeIP turns an address as Xray prints it ("1.2.3.4", "[2001:db8::1]")
 // into a canonical IP string, rejecting anything else.
 func NormalizeIP(value string) (net.IP, error) {
