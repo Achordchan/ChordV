@@ -67,6 +67,7 @@ async function main() {
   assert.equal(preview.requiresForce, true);
   assert.equal(counts.subscriptions, 1);
   assert.equal(counts.nodeAccounts, 2);
+  assert.equal(counts.manualNodeAccounts, 1, "没有 Agent 的节点要在预览里提示手工清理");
   assert.equal(counts.trafficRecords, 1);
   assert.equal(counts.tickets, 1);
   assert.match(preview.related.find((entry) => entry.key === "subscriptions")!.samples[0]!, /个人套餐/);
@@ -137,6 +138,7 @@ async function main() {
   const observedPlan = await createPlan(prisma, "personal");
   const observedSub = await createSubscription(prisma, { planId: observedPlan.id, userId: teamMember.id, expireAt: later });
   const observedBinding = await createBinding(prisma, { subscriptionId: observedSub.id, userId: teamMember.id, nodeId: observingNode.id });
+  assert.equal((await service.preview("subscription", observedSub.id, admin.id)).related.find((entry) => entry.key === "manualNodeAccounts")?.count, 1);
   const observed = await service.delete("subscription", observedSub.id, { force: true, actorUserId: admin.id });
   assert.equal(observed.queuedNodeRemovalCount, 0);
   assert.equal(observed.skippedNodeRemovalCount, 1);

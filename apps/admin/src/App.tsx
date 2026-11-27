@@ -141,6 +141,7 @@ import { AdminLoginPanel } from "./components/AdminLoginPanel";
 import { AdminDrawerForm, type DrawerType } from "./features/editors/AdminDrawerForm";
 import { DeleteEntityModal, type DeleteEntityTarget } from "./features/modals/DeleteEntityModal";
 import { deleteAdminEntity } from "./api/deletion";
+import type { AdminDeleteResultDto } from "@chordv/shared";
 import { DeleteNodeModal, KickMemberModal, NodeAccessEditorModal, TeamUsageDetailModal } from "./features/modals/AdminModals";
 import { SystemUpdateBadge } from "./features/system-update/SystemUpdateBadge";
 import { AnnouncementsPage } from "./pages/AnnouncementsPage";
@@ -1660,7 +1661,7 @@ export function App() {
       uncertainMessage?: (message: string) => string;
       refreshAfter?: boolean;
       treatUncertainAsCompleted?: boolean;
-      resolveSuccess?: (result: unknown) => { color?: "green" | "yellow"; title?: string; message?: string } | null;
+      resolveSuccess?: (result: unknown) => { color?: "green" | "yellow"; title?: string; message?: string; autoClose?: false } | null;
     } = {}
   ) {
     sectionMutationSeqRef.current += 1;
@@ -1673,7 +1674,8 @@ export function App() {
       notifications.show({
         color: successOverride?.color ?? "green",
         title: successOverride?.title ?? options.successTitle ?? "操作成功",
-        message: successOverride?.message ?? resolvedMessage
+        message: successOverride?.message ?? resolvedMessage,
+        ...(successOverride?.autoClose === false ? { autoClose: false } : {})
       });
       if (options.refreshAfter ?? true) void refreshCurrentDataAfterAction().catch((refreshReason) => {
         notifications.show({
@@ -2321,7 +2323,18 @@ export function App() {
       deleteEntitySubmittingRef.current = true;
       setDeleteEntitySubmitting(true);
       const success = await runAction(() => deleteAdminEntity(target.kind, target.id, force), "已删除", {
-        ...dbFirstMutationOptions
+        ...dbFirstMutationOptions,
+        // 有节点账号无法自动删除时必须醒目提示：这些账号在节点上可能还能用，要手工清理。
+        resolveSuccess: (result) => {
+          const outcome = result as Partial<AdminDeleteResultDto> | null;
+          if (!outcome || !outcome.skippedNodeRemovalCount) return null;
+          return {
+            color: "yellow",
+            title: "已删除，但有节点账号需要手工清理",
+            message: outcome.message ?? `${outcome.skippedNodeRemovalCount} 个节点账号无法自动删除，请到节点上手工清理。`,
+            autoClose: false
+          };
+        }
       });
       if (success) setDeleteEntityTarget(null);
     } finally {

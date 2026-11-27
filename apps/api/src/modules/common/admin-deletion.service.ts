@@ -13,6 +13,7 @@ import { PrismaService } from "./prisma.service";
 import { RuntimeSessionService } from "./runtime-session.service";
 
 const SAMPLE_LIMIT = 5;
+const MANUAL_NODE_ACCOUNTS_LABEL = "其中无法自动删除、需到节点上手工清理的账号（节点无可用 Agent 或不在直控模式）";
 const KIND_LABEL: Record<AdminDeletableEntityKind, string> = {
   user: "账号",
   plan: "套餐",
@@ -320,12 +321,13 @@ export class AdminDeletionService {
         ...(subscriptionIds.length > 0 ? [{ subscriptionId: { in: subscriptionIds } }] : [])
       ]
     };
-    const [bindingCount, ledgerCount, ticketCount, sessionCount, routingRuleCount] = await Promise.all([
+    const [bindingCount, ledgerCount, ticketCount, sessionCount, routingRuleCount, manualCount] = await Promise.all([
       db.panelClientBinding.count({ where: { AND: [bindingWhere, { status: { in: ["active", "disabled"] } }] } }),
       db.trafficLedger.count({ where: { OR: [{ userId }, { teamId: { in: ownedTeamIds } }, { subscriptionId: { in: subscriptionIds } }] } }),
       db.supportTicket.count({ where: { userId } }),
       this.countActiveSessions(db, { OR: [{ userId }, ...(subscriptionIds.length > 0 ? [{ subscriptionId: { in: subscriptionIds } }] : [])] }),
-      db.clientRoutingRule.count({ where: { userId } })
+      db.clientRoutingRule.count({ where: { userId } }),
+      this.countManualBindings(db, bindingWhere)
     ]);
 
     const affected = subscriptionUserIds(teamSubs);
@@ -341,6 +343,7 @@ export class AdminDeletionService {
         item("ownedTeamMembers", "名下团队的其他成员（会失去团队订阅）", ownedTeamMemberCount),
         item("teamMemberships", "加入的其他团队（移出）", memberships.length, memberships.map((row) => row.team.name)),
         item("nodeAccounts", "节点上的账号（通知节点删除）", bindingCount),
+        item("manualNodeAccounts", MANUAL_NODE_ACCOUNTS_LABEL, manualCount),
         item("activeSessions", "在线连接（立即断开）", sessionCount),
         item("trafficRecords", "流量记录", ledgerCount),
         item("tickets", "工单", ticketCount),
@@ -413,11 +416,12 @@ export class AdminDeletionService {
     const subscriptionIds = subscriptions.map((row) => row.id);
     const bindingWhere: Prisma.PanelClientBindingWhereInput = extra.bindingWhere ?? { subscriptionId: { in: subscriptionIds } };
     const ledgerWhere: Prisma.TrafficLedgerWhereInput = extra.ledgerWhere ?? { subscriptionId: { in: subscriptionIds } };
-    const [bindingCount, ledgerCount, ticketCount, sessionCount] = await Promise.all([
+    const [bindingCount, ledgerCount, ticketCount, sessionCount, manualCount] = await Promise.all([
       db.panelClientBinding.count({ where: { AND: [bindingWhere, { status: { in: ["active", "disabled"] } }] } }),
       db.trafficLedger.count({ where: ledgerWhere }),
       db.supportTicket.count({ where: { subscriptionId: { in: subscriptionIds } } }),
-      this.countActiveSessions(db, { subscriptionId: { in: subscriptionIds } })
+      this.countActiveSessions(db, { subscriptionId: { in: subscriptionIds } }),
+      this.countManualBindings(db, bindingWhere)
     ]);
     return {
       name,
@@ -425,6 +429,7 @@ export class AdminDeletionService {
       related: [
         ...leading,
         item("nodeAccounts", "节点上的账号（通知节点删除）", bindingCount),
+        item("manualNodeAccounts", MANUAL_NODE_ACCOUNTS_LABEL, manualCount),
         item("activeSessions", "在线连接（立即断开）", sessionCount),
         item("trafficRecords", "流量记录", ledgerCount),
         item("tickets", "关联工单（保留，解除与订阅的关联）", ticketCount)
@@ -434,6 +439,20 @@ export class AdminDeletionService {
       deletedUserId: null,
       bindingWhere
     };
+  }
+
+  /**
+   * 节点没有可用 Agent，或不在 direct_primary（Agent 拒绝写用户）：删除后这些账号不会被自动移除。
+   * 与 queueBindingRemovalBeforeDeleteTx 的判断一致，预览时就提示管理员要手工清理。
+   */
+  private countManualBindings(db: Db, where: Prisma.PanelClientBindingWhereInput) {
+    return db.panelClientBinding.count({
+      where: {
+        AND: [where, { status: { in: ["active", "disabled"] } }, {
+          node: { OR: [{ controlMode: { not: "direct_primary" } }, { nodeAgents: { none: { revokedAt: null } } }] }
+        }]
+      }
+    });
   }
 
   private countActiveSessions(db: Db, where: Prisma.NodeSessionLeaseWhereInput) {

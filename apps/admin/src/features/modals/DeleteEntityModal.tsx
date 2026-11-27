@@ -63,6 +63,9 @@ export function DeleteEntityModal(props: {
                 {entry.samples.length > 0 && <Text size="xs" c="dimmed">{entry.samples.join("、")}{entry.count > entry.samples.length ? " 等" : ""}</Text>}
               </li>)}
             </ul>
+            {related.some((entry) => entry.key === "manualNodeAccounts") && <Alert color="yellow" icon={<IconAlertTriangle size={18}/>}>
+              有节点账号无法自动删除，删除后这些账号在节点上可能仍能使用，需要到对应节点上手工清理。
+            </Alert>}
             <Checkbox checked={acknowledged} onChange={(event) => setAcknowledged(event.currentTarget.checked)}
               label="我已了解，上面这些数据会一起删除且无法恢复" disabled={props.submitting}/>
           </>)}
