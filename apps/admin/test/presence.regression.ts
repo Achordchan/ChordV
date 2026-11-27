@@ -53,6 +53,8 @@ function entry(overrides: Partial<AdminUserPresenceDto>): AdminUserPresenceDto {
 // 文案与格式
 assert.equal(formatPresenceBrief(entry({ state: "connected", sessions: [session()] }), now), "已连接 · 香港 01");
 assert.equal(formatPresenceBrief(entry({ state: "connected", sessions: [session(), session({ sessionId: "s2" })] }), now), "已连接 · 香港 01 等 2 个连接");
+assert.equal(formatPresenceBrief(entry({ state: "connected", sessions: [session({ via: "subscription_link", onlineIpCount: 1, connectionMode: null })] }), now), "已连接 · 香港 01（订阅链接）");
+assert.equal(formatPresenceBrief(entry({ state: "connected", sessions: [session(), session({ sessionId: "s2", via: "subscription_link" })] }), now), "已连接 · 香港 01 等 2 个连接", "混合来源不标注");
 assert.equal(formatPresenceBrief(entry({ state: "online" }), now), "在线 · 未连接节点");
 assert.equal(formatPresenceBrief(entry({}), now), "离线 · 最近在线 3 小时前");
 assert.equal(formatPresenceBrief(entry({ lastOnlineAt: null }), now), "离线");

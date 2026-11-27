@@ -175,7 +175,19 @@ AGENT_REMOVE_UNKNOWN_USERS=false
 AGENT_ADOPT_EXISTING_ACCOUNTS=false
 EOF
 cat "$STAGE/panel.env" >> "$STAGE/new.env"
-cat > "$STAGE/new.unit" <<'UNIT'
+# CAP_NET_ADMIN lets the agent destroy (SOCK_DESTROY / ss -K) the established
+# connections of an account it has just disabled. Grant it only when this host
+# can: in an unprivileged container whose bounding set lacks it, systemd would
+# refuse to start the unit at all. Without it the agent still runs and only
+# logs that it could not disconnect.
+CAP_LINES=''
+cap_bounding=$(awk '/^CapBnd:/ { print $2 }' /proc/self/status 2>/dev/null || true)
+if [[ $cap_bounding =~ ^[0-9a-fA-F]+$ ]] && (( (16#$cap_bounding >> 12) & 1 )); then
+  CAP_LINES=$'AmbientCapabilities=CAP_NET_ADMIN\nCapabilityBoundingSet=CAP_NET_ADMIN'
+else
+  echo "提示：本机不允许授予 CAP_NET_ADMIN，Agent 照常安装；停用账号时将无法断开其现有连接。" >&2
+fi
+cat > "$STAGE/new.unit.template" <<'UNIT'
 # chordv-managed: go-agent
 [Unit]
 Description=ChordV Go Agent
@@ -191,6 +203,7 @@ ExecStart=/opt/chordv-node-agent/current/chordv-agent
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
+@CAPABILITIES@
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -199,6 +212,13 @@ ReadWritePaths=/var/lib/chordv-node-agent
 [Install]
 WantedBy=multi-user.target
 UNIT
+while IFS= read -r line; do
+  if [[ $line == '@CAPABILITIES@' ]]; then
+    if [[ -n $CAP_LINES ]]; then printf '%s\n' "$CAP_LINES"; fi
+  else
+    printf '%s\n' "$line"
+  fi
+done < "$STAGE/new.unit.template" > "$STAGE/new.unit"
 
 PROMOTING=1
 if [[ $WAS_ACTIVE == 1 ]]; then systemctl stop "$SERVICE"; fi

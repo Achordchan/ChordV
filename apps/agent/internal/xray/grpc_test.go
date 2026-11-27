@@ -50,6 +50,10 @@ func configuredServer(t *testing.T, unix bool, stream *internet.StreamConfig) (*
 }
 
 func configuredProxyServer(t *testing.T, unix bool, stream *internet.StreamConfig, proxy *vin.Config) (*GRPC, *core.Instance) {
+	return configuredPolicyServer(t, unix, stream, proxy, false)
+}
+
+func configuredPolicyServer(t *testing.T, unix bool, stream *internet.StreamConfig, proxy *vin.Config, online bool) (*GRPC, *core.Instance) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -58,7 +62,7 @@ func configuredProxyServer(t *testing.T, unix bool, stream *internet.StreamConfi
 	port := uint32(listener.Addr().(*net.TCPAddr).Port)
 	listener.Close()
 	instance, err := core.New(&core.Config{App: []*serial.TypedMessage{
-		serial.ToTypedMessage(&policy.Config{Level: map[uint32]*policy.Policy{0: {Stats: &policy.Policy_Stats{UserUplink: true, UserDownlink: true}}}}),
+		serial.ToTypedMessage(&policy.Config{Level: map[uint32]*policy.Policy{0: {Stats: &policy.Policy_Stats{UserUplink: true, UserDownlink: true, UserOnline: online}}}}),
 		serial.ToTypedMessage(&dispatcher.Config{}), serial.ToTypedMessage(&proxyman.InboundConfig{}),
 		serial.ToTypedMessage(&proxyman.OutboundConfig{}), serial.ToTypedMessage(&statsapp.Config{}),
 	}, Outbound: []*core.OutboundHandlerConfig{{Tag: "direct", ProxySettings: serial.ToTypedMessage(&freedom.Config{})}}, Inbound: []*core.InboundHandlerConfig{{Tag: "inbound-test", ReceiverSettings: serial.ToTypedMessage(&proxyman.ReceiverConfig{

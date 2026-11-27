@@ -34,7 +34,10 @@ export function PresenceNode({ session }: { session: AdminPresenceSessionDto }) 
 }
 
 export function formatSessionLine(session: AdminPresenceSessionDto) {
-  return [session.node.region || null, formatNodeProtocol(session.node), formatConnectionMode(session.connectionMode)].filter(Boolean).join(" · ");
+  const source = session.via === "subscription_link"
+    ? `订阅链接${session.onlineIpCount ? ` · ${session.onlineIpCount} 个来源 IP` : ""}`
+    : formatConnectionMode(session.connectionMode);
+  return [session.node.region || null, formatNodeProtocol(session.node), source].filter(Boolean).join(" · ");
 }
 
 export function formatSessionUsage(session: AdminPresenceSessionDto) {
@@ -54,13 +57,13 @@ export function PresenceDetails({ entry, loading, error, generatedAt }: { entry:
   const now = generatedAt ? Date.parse(generatedAt) : Date.now();
   return <div className={styles.facts}>
     <PresenceStatus entry={entry}/>
-    {entry.state !== "offline" && entry.onlineSince && <small>客户端已打开 {formatPresenceDuration(entry.onlineSince, now)}（{formatDateTimeWithYear(entry.onlineSince)} 起）</small>}
+    {entry.state !== "offline" && entry.onlineSince && <small>{entry.sessions.length > 0 && entry.sessions.every(session => session.via === "subscription_link") ? "已在线" : "客户端已打开"} {formatPresenceDuration(entry.onlineSince, now)}（{formatDateTimeWithYear(entry.onlineSince)} 起）</small>}
     {entry.state === "offline" && entry.lastOnlineAt && <small>最近在线 {formatDateTimeWithYear(entry.lastOnlineAt)}</small>}
     {entry.sessions.length > 0 && <div className={styles.sessions}>{entry.sessions.map(session => <div key={session.sessionId} className={styles.session}>
       <CountryFlag code={session.node.countryCode} size="sm"/>
       <strong>{session.node.name}</strong>
       <small>{formatSessionLine(session)}</small>
-      <small>已连接 {formatPresenceDuration(session.connectedAt, now)} · 最近心跳 {formatClientLastSeen(session.lastHeartbeatAt, now)}</small>
+      <small>已连接 {formatPresenceDuration(session.connectedAt, now)} · {session.via === "subscription_link" ? "节点最近确认" : "最近心跳"} {formatClientLastSeen(session.lastHeartbeatAt, now)}</small>
       <small>{formatSessionUsage(session)}</small>
     </div>)}</div>}
     {error && <small>{error}</small>}
