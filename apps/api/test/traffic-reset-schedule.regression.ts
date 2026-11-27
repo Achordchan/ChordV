@@ -5,7 +5,9 @@ import { validateSync } from "class-validator";
 import { computeNextTrafficResetAt, defaultTrafficResetDay } from "@chordv/shared";
 import { AdminSubscriptionService } from "../src/modules/common/admin-subscription.service";
 import { TrafficResetScheduleService } from "../src/modules/common/traffic-reset-schedule.service";
-import { defaultTrafficResetDayForNewSubscription } from "../../admin/src/utils/admin-forms";
+import { defaultTrafficResetDayForNewSubscription, readChangedUsedTrafficGb } from "../../admin/src/utils/admin-forms";
+import { roundTrafficGbForForm, trafficQuotaLabels } from "../../admin/src/utils/admin-format";
+import { toSubscriptionStatusDto } from "../src/modules/common/subscription.utils";
 import { CreateSubscriptionDto, CreateTeamSubscriptionDto, UpdateSubscriptionDto } from "../src/modules/admin/admin.dto";
 
 delete process.env.DATABASE_URL;
@@ -364,10 +366,62 @@ async function testScheduledResetSkipsSubscriptionsExpiredAtExecution() {
   assert.equal(racing.state.accessSyncs, 1, "为结清暂停过的节点账号要恢复");
 }
 
+function testQuotaWordingAndFormRounding() {
+  assert.equal(trafficQuotaLabels(9).totalInput, "每月流量 (GB)");
+  assert.equal(trafficQuotaLabels(9).usedInput, "本月已用 (GB)");
+  assert.equal(trafficQuotaLabels("").totalInput, "总流量 (GB)");
+  assert.equal(trafficQuotaLabels(null).usedShort, "已用");
+  assert.equal(roundTrafficGbForForm(19.7382175354287), 19.738);
+  assert.equal(readChangedUsedTrafficGb({ usedTrafficGb: 19.738, baseUsedTrafficGb: 19.738 }), undefined, "没改已用流量时不提交");
+  assert.equal(readChangedUsedTrafficGb({ usedTrafficGb: 0, baseUsedTrafficGb: 19.738 }), 0);
+
+  const status = toSubscriptionStatusDto(
+    {
+      id: "s", planId: "p", totalTrafficGb: 500, usedTrafficGb: 1, remainingTrafficGb: 499,
+      expireAt: new Date(Date.now() + 86_400_000), state: "active", renewable: true, lastSyncedAt: new Date(),
+      trafficResetDay: 9, nextTrafficResetAt: bj("2026-12-09T00:00:00"), plan: { name: "P" }
+    },
+    null, null, { meteringStatus: "ok", meteringMessage: null }
+  );
+  assert.equal(status.trafficResetDay, 9, "客户端能知道总流量是每月额度");
+  assert.equal(status.nextTrafficResetAt, bj("2026-12-09T00:00:00").toISOString());
+}
+
+async function testAdjustWithoutUsedKeepsExactBytes() {
+  const current = {
+    id: "sub", userId: "u", teamId: null, planId: "p",
+    totalTrafficGb: 100, usedTrafficGb: 19.7382175354287, remainingTrafficGb: 80.26,
+    totalTrafficBytes: 100n * 1024n ** 3n, usedTrafficBytes: 21_193_843_712n,
+    expireAt: bj("2027-02-27T14:24:00"), state: "active", renewable: true, sourceAction: "created",
+    lastSyncedAt: new Date(), trafficResetDay: null, nextTrafficResetAt: null,
+    plan: { name: "P" }, user: { email: "a", displayName: "a" }, team: null, nodeAccesses: []
+  };
+  const updates: any[] = [];
+  const tx = { subscription: { update: async (payload: any) => { updates.push(payload); return { ...current, ...payload.data }; } } };
+  const service = createInstance<AdminSubscriptionService>(AdminSubscriptionService.prototype, {
+    prisma: { ...tx, $transaction: async (task: (writer: any) => unknown) => task(tx) },
+    requireSubscription: async () => current,
+    startPanelSyncResultFollowUpInBackground: () => ({ ok: true }),
+    publishSubscriptionUpdatedEvent: async () => undefined
+  });
+  await service.updateSubscription("sub", { totalTrafficGb: 100, trafficResetDay: 9 });
+  assert.equal(updates[0].data.usedTrafficBytes, 21_193_843_712n, "没传已用流量时保留精确字节数");
+  await service.updateSubscription("sub", { usedTrafficGb: 0 });
+  assert.equal(updates[1].data.usedTrafficBytes, 0n);
+
+  // 字节计数未初始化的老订阅：按 GB 换算，不能把已用写成 0
+  const legacy = { ...current, totalTrafficBytes: 0n, usedTrafficBytes: 0n, usedTrafficGb: 20 };
+  (service as any).requireSubscription = async () => legacy;
+  await service.updateSubscription("sub", { trafficResetDay: 9 });
+  assert.equal(updates[2].data.usedTrafficBytes, 20n * 1024n ** 3n);
+}
+
 async function main() {
   testComputeNextTrafficResetAt();
   testDtoValidation();
   testResolveTrafficResetScheduleForUpdate();
+  testQuotaWordingAndFormRounding();
+  await testAdjustWithoutUsedKeepsExactBytes();
   await testScheduledResetClearsTeamPoolOnceAndAdvances();
   await testScheduledResetKeepsPausedAndSupersedesInsideLock();
   await testScheduledResetSkipsSubscriptionsExpiredAtExecution();

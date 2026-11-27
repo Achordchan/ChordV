@@ -90,6 +90,18 @@ class ScheduledTrafficResetSubscriptionExpired extends Error {}
 
 export type ScheduledTrafficResetOutcome = "reset" | "superseded" | "skipped_expired";
 
+/**
+ * 已用流量的精确字节数。与读取方（订阅链接、Agent 配额）同一约定：totalTrafficBytes > 0
+ * 才说明字节计数已初始化；老订阅只有 GB 数时按 GB 换算，免得把已用写成 0。
+ */
+function readUsedTrafficBytes(row: unknown, fallbackGb: number): bigint {
+  const { usedTrafficBytes, totalTrafficBytes } = row as { usedTrafficBytes?: unknown; totalTrafficBytes?: unknown };
+  if (typeof usedTrafficBytes === "bigint" && typeof totalTrafficBytes === "bigint" && totalTrafficBytes > 0n) {
+    return usedTrafficBytes;
+  }
+  return trafficGbNumberToBytes(fallbackGb);
+}
+
 function isSubscriptionExpiredForScheduledReset(row: { state: SubscriptionState; expireAt: Date }, now: Date) {
   return row.state === "expired" || row.expireAt.getTime() <= now.getTime();
 }
@@ -1061,7 +1073,11 @@ export class AdminSubscriptionService {
               usedTrafficGb,
               remainingTrafficGb,
               totalTrafficBytes: trafficGbNumberToBytes(totalTrafficGb),
-              usedTrafficBytes: trafficGbNumberToBytes(usedTrafficGb),
+              // 没有改已用流量时保留锁内读到的精确字节数，不用浮点 GB 反算覆盖。
+              usedTrafficBytes:
+                input.usedTrafficGb === undefined
+                  ? readUsedTrafficBytes(current, usedTrafficGb)
+                  : trafficGbNumberToBytes(usedTrafficGb),
               expireAt,
               state,
               ...resetScheduleUpdate,

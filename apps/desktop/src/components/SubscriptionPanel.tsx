@@ -67,12 +67,21 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
   const isTeam = props.bootstrap.subscription.ownerType === "team";
   const title = isTeam ? props.bootstrap.team?.name ?? props.bootstrap.subscription.teamName ?? "团队订阅" : props.bootstrap.user.displayName;
   const subtitle = isTeam ? props.bootstrap.subscription.planName : `${props.bootstrap.subscription.planName} · 个人订阅`;
+  // 设了每月重置日时，总流量是每月额度、已使用是本月用量。
+  const monthly = typeof props.bootstrap.subscription.trafficResetDay === "number";
+  // 过期的订阅不会重置：重置日在到期之后就不显示。
+  const nextResetAt =
+    props.bootstrap.subscription.nextTrafficResetAt &&
+    Date.parse(props.bootstrap.subscription.nextTrafficResetAt) < Date.parse(props.bootstrap.subscription.expireAt)
+      ? props.bootstrap.subscription.nextTrafficResetAt
+      : null;
   const metrics = [
     { label: isTeam ? "团队剩余流量" : "剩余流量", value: `${formatTrafficGb(props.bootstrap.subscription.remainingTrafficGb)} GB` },
-    { label: isTeam ? "团队总流量" : "总流量", value: `${formatTrafficGb(props.bootstrap.subscription.totalTrafficGb)} GB` },
-    { label: isTeam ? "团队已使用" : "已使用", value: `${formatTrafficGb(props.bootstrap.subscription.usedTrafficGb)} GB` },
+    { label: `${isTeam ? "团队" : ""}${monthly ? "每月流量" : "总流量"}`, value: `${formatTrafficGb(props.bootstrap.subscription.totalTrafficGb)} GB` },
+    { label: `${isTeam ? "团队" : ""}${monthly ? "本月已使用" : "已使用"}`, value: `${formatTrafficGb(props.bootstrap.subscription.usedTrafficGb)} GB` },
     { label: "到期时间", value: formatDate(props.bootstrap.subscription.expireAt) },
-    ...(isTeam ? [{ label: "我已使用", value: `${formatTrafficGb(props.bootstrap.subscription.memberUsedTrafficGb ?? 0)} GB` }] : [])
+    ...(monthly && nextResetAt ? [{ label: "下次流量重置", value: formatDate(nextResetAt) }] : []),
+    ...(isTeam ? [{ label: monthly ? "我本月已使用" : "我已使用", value: `${formatTrafficGb(props.bootstrap.subscription.memberUsedTrafficGb ?? 0)} GB` }] : [])
   ];
   const serverColor = probeColor(props.serverProbe.status);
   const supportBadge = formatSupportUnreadBadge(props.supportUnreadCount);

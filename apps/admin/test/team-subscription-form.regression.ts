@@ -94,7 +94,7 @@ function testCreateTeamSubscriptionPayloadRequiresValidatedExpireAt() {
 function testInlineTeamSubscriptionEditorExposesUsedTrafficInput() {
   const source = readFileSync(resolve(import.meta.dirname, "../src/pages/SubscriptionsPage.tsx"), "utf8");
 
-  assert.match(source, /label="已用流量 \(GB\)"/);
+  assert.match(source, /label=\{trafficQuotaLabels\(props\.teamSubscriptionForm\.trafficResetDay\)\.usedInput\}/);
   assert.match(source, /value=\{props\.teamSubscriptionForm\.usedTrafficGb\}/);
   assert.match(source, /usedTrafficGb: Number\(value\) \|\| 0/);
 }

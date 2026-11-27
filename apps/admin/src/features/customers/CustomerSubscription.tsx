@@ -1,6 +1,6 @@
 import { Badge, Button, Group, Text } from "@mantine/core";
 import { IconPlus } from "@tabler/icons-react";
-import { describeTrafficReset, formatDateTime, formatTrafficGb } from "../../utils/admin-format";
+import { describeTrafficReset, formatDateTime, formatTrafficGb, trafficQuotaLabels } from "../../utils/admin-format";
 import { subscriptionStateColor, translateSourceAction, translateSubscriptionState } from "../../utils/admin-translate";
 import { CustomerNodes } from "./CustomerNodes";
 import type { CustomerRecord } from "./customer-model";
@@ -14,6 +14,7 @@ export function CustomerSubscription({ customer, actions }: { customer: Customer
   if (!subscription) return <div className={styles.empty}><IconPlus size={30}/><h2>为{customer.name}开通订阅</h2><p>选择套餐后，再分配可使用的节点。</p><Button color="#1c4d37" onClick={create}>开通订阅</Button></div>;
   const total = record?.totalTrafficGb ?? (customer.team ? customer.team.currentSubscription?.totalTrafficGb : undefined);
   const used = record?.usedTrafficGb ?? (customer.team ? customer.team.currentSubscription?.usedTrafficGb : undefined);
+  const labels = trafficQuotaLabels(record?.trafficResetDay);
   const percent = total !== undefined && used !== undefined && total > 0 ? Math.max(0, Math.min(100, used / total * 100)) : null;
   const manage = () => actions.onOpenNodeAccessEditor(subscription.id, `${customer.name} · ${subscription.planName}`);
   return <>
@@ -22,8 +23,8 @@ export function CustomerSubscription({ customer, actions }: { customer: Customer
     </div>
     <section className={styles.usage}><h3>{customer.team ? "团队共享剩余流量" : "剩余流量"}</h3>
       <div className={styles.usageNumbers}><strong>{formatTrafficGb(subscription.remainingTrafficGb)}<span>GB</span></strong>{total !== undefined && <span>/ {formatTrafficGb(total)} GB</span>}</div>
-      {percent !== null && <div className={styles.usageBarRow}><div className={styles.usageBar} role="progressbar" aria-label="已用流量比例" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent)}><span style={{ width: `${percent}%`, background: subscription.state === "exhausted" ? "#b32b3c" : undefined }}/></div><span>已用 {Math.round(percent)}%</span></div>}
-      <p>{total !== undefined ? `总额度 ${formatTrafficGb(total)} GB` : "总额度待同步"}{used !== undefined ? ` · 已用 ${formatTrafficGb(used)} GB` : ""} · 剩余 {formatTrafficGb(subscription.remainingTrafficGb)} GB</p>
+      {percent !== null && <div className={styles.usageBarRow}><div className={styles.usageBar} role="progressbar" aria-label="已用流量比例" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent)}><span style={{ width: `${percent}%`, background: subscription.state === "exhausted" ? "#b32b3c" : undefined }}/></div><span>{labels.usedShort} {Math.round(percent)}%</span></div>}
+      <p>{total !== undefined ? `${labels.totalShort} ${formatTrafficGb(total)} GB` : `${labels.totalShort}待同步`}{used !== undefined ? ` · ${labels.usedShort} ${formatTrafficGb(used)} GB` : ""} · 剩余 {formatTrafficGb(subscription.remainingTrafficGb)} GB</p>
       {customer.team && <Text size="sm" c="dimmed" mt="xs">{customer.team.memberCount} 位成员共用团队额度</Text>}
     </section>
     <div className={styles.subscriptionBottom}>

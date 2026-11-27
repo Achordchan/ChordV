@@ -32,7 +32,7 @@ import type { LeaseRevocationQueueFilter } from "../utils/admin-queue-filters";
 import type { TeamSubscriptionFormState } from "../utils/admin-forms";
 import { applyPlanToTeamSubscriptionForm } from "../utils/admin-forms";
 import { summarizeAdminDiagnosticMessage, summarizeTeamUsage } from "../utils/admin-filters";
-import { describeTrafficReset, formatDateTime, formatTrafficGb } from "../utils/admin-format";
+import { describeTrafficReset, formatDateTime, formatTrafficGb, trafficQuotaLabels } from "../utils/admin-format";
 import { findNodeCommandSummary } from "../utils/node-command-summary";
 import {
   getRenewActionText,
@@ -114,7 +114,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
               <Table.Tr>
                 <Table.Th>用户</Table.Th>
                 <Table.Th>套餐</Table.Th>
-                <Table.Th>总量</Table.Th>
+                <Table.Th>额度</Table.Th>
                 <Table.Th>剩余</Table.Th>
                 <Table.Th>节点</Table.Th>
                 <Table.Th>到期时间</Table.Th>
@@ -149,8 +149,8 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                     </Stack>
                   </Table.Td>
                   <Table.Td>{item.planName}</Table.Td>
-                  <Table.Td>{item.totalTrafficGb} GB</Table.Td>
-                  <Table.Td>{item.remainingTrafficGb} GB</Table.Td>
+                  <Table.Td>{formatTrafficGb(item.totalTrafficGb)} GB{trafficQuotaLabels(item.trafficResetDay).monthly ? " / 月" : ""}</Table.Td>
+                  <Table.Td>{formatTrafficGb(item.remainingTrafficGb)} GB</Table.Td>
                   <Table.Td>
                     <Text c={item.hasNodeAccess ? undefined : "orange.7"}>
                       {item.hasNodeAccess ? `${item.nodeCount} 个节点` : "未分配节点"}
@@ -408,13 +408,13 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                               }
                             />
                             <NumberInput
-                              label="总流量 (GB)"
+                              label={trafficQuotaLabels(props.teamSubscriptionForm.trafficResetDay).totalInput}
                               min={0}
                               value={props.teamSubscriptionForm.totalTrafficGb}
                               onChange={(value) => props.setTeamSubscriptionForm((current) => ({ ...current, totalTrafficGb: Number(value) || 0 }))}
                             />
                             <NumberInput
-                              label="已用流量 (GB)"
+                              label={trafficQuotaLabels(props.teamSubscriptionForm.trafficResetDay).usedInput}
                               min={0}
                               value={props.teamSubscriptionForm.usedTrafficGb}
                               onChange={(value) => props.setTeamSubscriptionForm((current) => ({ ...current, usedTrafficGb: Number(value) || 0 }))}

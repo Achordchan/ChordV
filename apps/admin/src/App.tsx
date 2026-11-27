@@ -174,6 +174,7 @@ import {
   emptyTeamSubscriptionForm,
   defaultTrafficResetDayForNewSubscription,
   toTrafficResetDayForm,
+  readChangedUsedTrafficGb,
   toTrafficResetDayPayload,
   emptyUserForm,
   toPolicyForm,
@@ -200,7 +201,7 @@ import {
   readError,
   summarizeAdminDiagnosticMessage
 } from "./utils/admin-filters";
-import { addDays, formatDateTime, formatTrafficGb, fromDateTimeLocal, toDateTimeLocal } from "./utils/admin-format";
+import { addDays, formatDateTime, formatTrafficGb, fromDateTimeLocal, roundTrafficGbForForm, toDateTimeLocal } from "./utils/admin-format";
 import { buildUpdateNodePayload } from "./utils/admin-node-payloads";
 import {
   getRenewActionDescription,
@@ -1871,7 +1872,8 @@ export function App() {
       if (!record) return;
       setSubscriptionAdjustForm({
         totalTrafficGb: record.totalTrafficGb,
-        usedTrafficGb: record.usedTrafficGb,
+        usedTrafficGb: roundTrafficGbForForm(record.usedTrafficGb),
+        baseUsedTrafficGb: roundTrafficGbForForm(record.usedTrafficGb),
         expireAt: toDateTimeLocal(record.expireAt),
         baseExpireAt: toDateTimeLocal(record.expireAt),
         state: record.state,
@@ -1908,7 +1910,8 @@ export function App() {
         planId: record.planId,
         totalTrafficGb: record.totalTrafficGb,
         expireAt: toDateTimeLocal(record.expireAt),
-        baseExpireAt: toDateTimeLocal(record.expireAt)
+        baseExpireAt: toDateTimeLocal(record.expireAt),
+        trafficResetDay: toTrafficResetDayForm(record.trafficResetDay)
       });
     }
 
@@ -2086,7 +2089,7 @@ export function App() {
           () =>
             updateSubscription(drawer.recordId!, {
               totalTrafficGb: subscriptionAdjustForm.totalTrafficGb,
-              usedTrafficGb: subscriptionAdjustForm.usedTrafficGb,
+              usedTrafficGb: readChangedUsedTrafficGb(subscriptionAdjustForm),
               expireAt: fromDateTimeLocal(subscriptionAdjustForm.expireAt),
               state: subscriptionAdjustForm.state,
               trafficResetDay: toTrafficResetDayPayload(subscriptionAdjustForm.trafficResetDay)
