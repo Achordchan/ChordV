@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
-	"github.com/Achordchan/ChordV/apps/agent/internal/connkill"
-	xnet "github.com/xtls/xray-core/common/net"
 	"io"
 	"net"
 	"strconv"
@@ -13,7 +11,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Achordchan/ChordV/apps/agent/internal/connkill"
 	"github.com/Achordchan/ChordV/apps/agent/internal/protocol"
+	"github.com/xtls/xray-core/app/proxyman"
+	xnet "github.com/xtls/xray-core/common/net"
+	xprotocol "github.com/xtls/xray-core/common/protocol"
+	"github.com/xtls/xray-core/common/serial"
+	"github.com/xtls/xray-core/core"
+	"github.com/xtls/xray-core/proxy/vless"
 	vin "github.com/xtls/xray-core/proxy/vless/inbound"
 )
 
@@ -212,5 +217,78 @@ func TestListenIP(t *testing.T) {
 	}
 	if _, err := listenIP(xnet.NewIPOrDomain(xnet.DomainAddress("/run/xray.sock"))); err == nil {
 		t.Fatal("a socket path listener must be refused, not widened to the port")
+	}
+}
+
+// Replacing an account's UUID removes and reinstalls it; sessions opened with
+// the old credential must be disconnected. Re-ensuring an unchanged account
+// must not disconnect anyone.
+func TestCredentialReplacementDisconnectsOldSessions(t *testing.T) {
+	g, _ := configuredPolicyServer(t, false, nil, &vin.Config{Decryption: "none"}, true)
+	ctx := context.Background()
+	user := protocol.DesiredUser{Email: "rotate@example.test", UUID: "d52ca32b-784a-4f4b-ab51-b8341884f213"}
+	killer := &recordingKiller{}
+	binding := &Binding{GRPC: g}
+	binding.SetConnectionKiller(killer, nil)
+	if err := binding.EnsureUser(ctx, user, Expectation{Absent: true}); err != nil {
+		t.Fatal(err)
+	}
+	openVLESS(t, g, user.UUID)
+	waitOnline(t, g, user.Email, 1)
+	if err := binding.EnsureUser(ctx, user, Expectation{UUID: user.UUID}); err != nil {
+		t.Fatal(err)
+	}
+	if len(killer.calls) != 0 {
+		t.Fatalf("unchanged account disconnected: %+v", killer.calls)
+	}
+	rotated := user
+	rotated.UUID = "c27b65ce-e1f0-40ac-a8c0-2ad4d606bf64"
+	if err := binding.EnsureUser(ctx, rotated, Expectation{UUID: user.UUID}); err != nil {
+		t.Fatal(err)
+	}
+	if len(killer.calls) != 1 || len(killer.calls[0].ips) != 1 || killer.calls[0].ips[0] != "127.0.0.2" {
+		t.Fatalf("old sessions not targeted after replacement: %+v", killer.calls)
+	}
+	if users, _ := g.ListUsers(ctx); len(users) != 1 || users[0].UUID != rotated.UUID {
+		t.Fatalf("replacement not installed: %+v", users)
+	}
+}
+
+// Online statistics are process-wide by email. If another inbound carries the
+// same email, its source IPs cannot be told apart, so removal proceeds but no
+// socket is destroyed.
+func TestRemovalSkipsDisconnectWhenTheEmailIsNotUnique(t *testing.T) {
+	g, instance := configuredPolicyServer(t, false, nil, &vin.Config{Decryption: "none"}, true)
+	ctx := context.Background()
+	user := protocol.DesiredUser{Email: "shared-online@example.test", UUID: "d52ca32b-784a-4f4b-ab51-b8341884f213"}
+	if err := g.EnsureUser(ctx, user, Expectation{Absent: true}); err != nil {
+		t.Fatal(err)
+	}
+	openVLESS(t, g, user.UUID)
+	waitOnline(t, g, user.Email, 1)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := uint32(listener.Addr().(*net.TCPAddr).Port)
+	listener.Close()
+	err = core.AddInboundHandler(instance, &core.InboundHandlerConfig{Tag: "panel-other", ReceiverSettings: serial.ToTypedMessage(&proxyman.ReceiverConfig{
+		Listen: xnet.NewIPOrDomain(xnet.LocalHostIP), PortList: &xnet.PortList{Range: []*xnet.PortRange{{From: port, To: port}}},
+	}), ProxySettings: serial.ToTypedMessage(&vin.Config{Decryption: "none", Clients: []*xprotocol.User{{Email: user.Email, Account: serial.ToTypedMessage(&vless.Account{Id: "c27b65ce-e1f0-40ac-a8c0-2ad4d606bf64"})}}})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	killer := &recordingKiller{}
+	binding := &Binding{GRPC: g}
+	var logs []string
+	binding.SetConnectionKiller(killer, func(format string, args ...any) { logs = append(logs, format) })
+	if err := binding.RemoveUser(ctx, user.Email, Expectation{UUID: user.UUID}); err != nil {
+		t.Fatalf("removal must still succeed: %v", err)
+	}
+	if len(killer.calls) != 0 {
+		t.Fatalf("ambiguous email disconnected sockets: %+v", killer.calls)
+	}
+	if len(logs) != 1 || !strings.Contains(logs[0], "唯一") {
+		t.Fatalf("logs: %v", logs)
 	}
 }

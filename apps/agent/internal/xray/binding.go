@@ -3,6 +3,7 @@ package xray
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/Achordchan/ChordV/apps/agent/internal/connkill"
 	"github.com/Achordchan/ChordV/apps/agent/internal/protocol"
@@ -118,26 +119,75 @@ func (b *Binding) EnsureUser(ctx context.Context, user protocol.DesiredUser, exp
 	if !b.InboundReady() {
 		return fmt.Errorf("等待绑定节点入站，禁止修改账号")
 	}
-	return b.GRPC.EnsureUser(ctx, user, expect)
+	// Replacing an account's UUID removes and reinstalls it; sessions that
+	// authenticated with the old credential would otherwise keep working.
+	previous := b.installedUUID(ctx, user.Email)
+	var before []string
+	watch := false
+	if previous != "" && !strings.EqualFold(previous, user.UUID) {
+		before, watch = b.killTargets(ctx, user.Email)
+	}
+	if err := b.GRPC.EnsureUser(ctx, user, expect); err != nil {
+		return err
+	}
+	if watch {
+		if current := b.installedUUID(ctx, user.Email); current != "" && !strings.EqualFold(current, previous) {
+			b.disconnect(ctx, user.Email, before)
+		}
+	}
+	return nil
 }
 func (b *Binding) RemoveUser(ctx context.Context, email string, expect Expectation) error {
 	if !b.InboundReady() {
 		return fmt.Errorf("等待绑定节点入站，禁止修改账号")
 	}
-	var before []string
-	if b.killer != nil {
-		// Read before removing: the online entry outlives removal while the
-		// connections do, but reading both sides costs nothing and covers a
-		// connection that closes in between.
-		before, _ = b.GRPC.OnlineIPs(ctx, email)
-	}
+	before, watch := b.killTargets(ctx, email)
 	if err := b.GRPC.RemoveUser(ctx, email, expect); err != nil {
 		return err
 	}
-	if b.killer != nil {
+	if watch {
 		b.disconnect(ctx, email, before)
 	}
 	return nil
+}
+
+// installedUUID is the UUID currently installed for email on the bound
+// inbound, or "" when absent or unreadable. Only used to decide whether a
+// credential is being replaced.
+func (b *Binding) installedUUID(ctx context.Context, email string) string {
+	if b.killer == nil {
+		return ""
+	}
+	users, err := b.GRPC.ListUsers(ctx)
+	if err != nil {
+		return ""
+	}
+	for _, user := range users {
+		if user.Email == email {
+			return user.UUID
+		}
+	}
+	return ""
+}
+
+// killTargets decides whether email's connections may be destroyed and reads
+// its current source IPs. Xray's online statistics are process-wide, keyed by
+// email only: if another inbound carries the same email, its IPs would be
+// mixed in and an unrelated user could be disconnected, so the disconnect is
+// skipped (removal still proceeds).
+func (b *Binding) killTargets(ctx context.Context, email string) ([]string, bool) {
+	if b.killer == nil {
+		return nil, false
+	}
+	if err := b.GRPC.uniqueCounterEmails(ctx, []LiveUser{{Email: email}}); err != nil {
+		b.log("账号 %s 的 email 无法确认在本机唯一，不断开其现有连接：%v", email, err)
+		return nil, false
+	}
+	// Read before changing the account: the online entry outlives removal while
+	// the connections do, but reading both sides costs nothing and covers a
+	// connection that closes in between.
+	before, _ := b.GRPC.OnlineIPs(ctx, email)
+	return before, true
 }
 
 // disconnect destroys the removed account's established connections. It runs
