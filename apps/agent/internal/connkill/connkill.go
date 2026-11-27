@@ -9,8 +9,8 @@
 // live only in memory) until the next reconcile.
 //
 // So the agent asks the kernel to destroy the sockets instead (SOCK_DESTROY,
-// the same mechanism as `ss -K`), narrowed to the inbound's listening port and
-// the source IPs Xray reports for that account. The cost is bounded: another
+// the same mechanism as `ss -K`), narrowed to the inbound's listening address
+// and port and the source IPs Xray reports for that account. The cost is bounded: another
 // account behind the very same public IP on the same port loses its current
 // connections once and reconnects immediately.
 //
@@ -44,10 +44,19 @@ const MaxIPs = 64
 // ErrUnavailable means no ss binary was found on this host.
 var ErrUnavailable = errors.New("未找到 ss（iproute2），无法断开已建立连接")
 
+// Listener is the bound inbound's local endpoint. A nil IP means the inbound
+// listens on every address (0.0.0.0 / ::), where nothing else can hold the same
+// port; a specific IP constrains the local address too, so another inbound on
+// the same port but a different address is never touched.
+type Listener struct {
+	IP   net.IP
+	Port int
+}
+
 // Killer destroys established connections from the given source IPs to the
-// given local port. It reports how many sockets were destroyed.
+// given listener. It reports how many sockets were destroyed.
 type Killer interface {
-	Kill(ctx context.Context, port int, ips []string) (int, error)
+	Kill(ctx context.Context, listener Listener, ips []string) (int, error)
 }
 
 // SS drives iproute2's `ss -K`.
@@ -76,21 +85,34 @@ func NormalizeIP(value string) (net.IP, error) {
 	return ip, nil
 }
 
-// Filter builds the ss filter tokens for one source IP. An IPv4 client on a
-// dual-stack listener appears as ::ffff:a.b.c.d, so IPv4 matches both forms.
-func Filter(port int, ip net.IP) []string {
-	tokens := []string{"(", "sport", "=", ":" + strconv.Itoa(port), ")", "and", "("}
-	if v4 := ip.To4(); v4 != nil {
-		tokens = append(tokens, "dst", v4.String(), "or", "dst", "[::ffff:"+v4.String()+"]")
-	} else {
-		tokens = append(tokens, "dst", "["+ip.String()+"]")
+// Filter builds the ss filter tokens for one source IP. In ss, "src" is the
+// local address and "dst" the remote one. An IPv4 address on a dual-stack
+// socket appears as ::ffff:a.b.c.d, so IPv4 matches both forms.
+func Filter(listener Listener, ip net.IP) []string {
+	tokens := []string{"(", "sport", "=", ":" + strconv.Itoa(listener.Port), ")"}
+	if listener.IP != nil {
+		tokens = append(tokens, "and", "(")
+		tokens = append(tokens, addressMatch("src", listener.IP)...)
+		tokens = append(tokens, ")")
 	}
+	tokens = append(tokens, "and", "(")
+	tokens = append(tokens, addressMatch("dst", ip)...)
 	return append(tokens, ")")
 }
 
-func (s *SS) Kill(ctx context.Context, port int, ips []string) (int, error) {
-	if port < 1 || port > 65535 {
-		return 0, fmt.Errorf("监听端口 %d 非法", port)
+func addressMatch(side string, ip net.IP) []string {
+	if v4 := ip.To4(); v4 != nil {
+		return []string{side, v4.String(), "or", side, "[::ffff:" + v4.String() + "]"}
+	}
+	return []string{side, "[" + ip.String() + "]"}
+}
+
+func (s *SS) Kill(ctx context.Context, listener Listener, ips []string) (int, error) {
+	if listener.Port < 1 || listener.Port > 65535 {
+		return 0, fmt.Errorf("监听端口 %d 非法", listener.Port)
+	}
+	if listener.IP != nil && listener.IP.IsUnspecified() {
+		listener.IP = nil
 	}
 	if len(ips) > MaxIPs {
 		return 0, fmt.Errorf("来源地址 %d 个，超过上限 %d，拒绝断开", len(ips), MaxIPs)
@@ -114,7 +136,7 @@ func (s *SS) Kill(ctx context.Context, port int, ips []string) (int, error) {
 			continue
 		}
 		seen[ip.String()] = true
-		killed, err := s.killOne(ctx, port, ip)
+		killed, err := s.killOne(ctx, listener, ip)
 		total += killed
 		if err != nil {
 			failures = append(failures, err.Error())
@@ -126,8 +148,8 @@ func (s *SS) Kill(ctx context.Context, port int, ips []string) (int, error) {
 	return total, nil
 }
 
-func (s *SS) killOne(ctx context.Context, port int, ip net.IP) (int, error) {
-	args := append([]string{"-K", "-H", "-t", "-n", "state", "established"}, Filter(port, ip)...)
+func (s *SS) killOne(ctx context.Context, listener Listener, ip net.IP) (int, error) {
+	args := append([]string{"-K", "-H", "-t", "-n", "state", "established"}, Filter(listener, ip)...)
 	command := exec.CommandContext(ctx, s.Path, args...)
 	command.Env = []string{"LANG=C", "LC_ALL=C"}
 	// After the deadline kills ss, do not keep waiting on a pipe some

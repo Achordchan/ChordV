@@ -161,12 +161,12 @@ func (b *Binding) disconnect(ctx context.Context, email string, before []string)
 	for ip := range ips {
 		list = append(list, ip)
 	}
-	port, err := b.GRPC.ListenPort(ctx)
+	listener, err := b.GRPC.Listener(ctx)
 	if err != nil {
-		b.log("账号 %s 已移除，但无法确定入站端口，未断开现有连接：%v", email, err)
+		b.log("账号 %s 已移除，但无法确定入站监听地址，未断开现有连接：%v", email, err)
 		return
 	}
-	killed, err := b.killer.Kill(ctx, port, list)
+	killed, err := b.killer.Kill(ctx, listener, list)
 	if err != nil {
 		b.log("账号 %s 已移除，断开现有连接未完全成功（已断开 %d 条，来源 %d 个）：%v", email, killed, len(list), err)
 		return

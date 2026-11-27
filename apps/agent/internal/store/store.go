@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -589,7 +590,22 @@ func setMetaFrom(q querier, key, value string) error {
 	return err
 }
 
-func (s *Store) meta(key string) (string, error)    { return metaFrom(s.db, key) }
+func (s *Store) meta(key string) (string, error) { return metaFrom(s.db, key) }
+
+// OnlineSequence is the last sequence stamped on an online report; 0 if none.
+// It is persisted so a restarted agent never reuses or goes below a sequence
+// the control plane has already accepted, whatever the clock did meanwhile.
+func (s *Store) OnlineSequence() (int64, error) {
+	value, err := s.meta("online_sequence")
+	if err != nil || value == "" {
+		return 0, err
+	}
+	return strconv.ParseInt(value, 10, 64)
+}
+
+func (s *Store) SetOnlineSequence(sequence int64) error {
+	return s.setMeta("online_sequence", strconv.FormatInt(sequence, 10))
+}
 func (s *Store) setMeta(key, value string) error    { return setMetaFrom(s.db, key, value) }
 func metaTx(tx *sql.Tx, key string) (string, error) { return metaFrom(tx, key) }
 func setMetaTx(tx *sql.Tx, key, value string) error { return setMetaFrom(tx, key, value) }

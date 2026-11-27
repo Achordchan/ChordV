@@ -212,9 +212,9 @@ type Heartbeat struct {
 	// an empty list means "observed, nobody online".
 	OnlineUsers *[]OnlineUser `json:"onlineUsers,omitempty"`
 	// OnlineSequence orders online reports: it is sent with every OnlineUsers
-	// and strictly increases for this agent (wall-clock milliseconds, never
-	// repeating or going back within a process), so the server can drop a
-	// delayed report that arrives after a newer one.
+	// and strictly increases for this agent, across restarts too (wall-clock
+	// milliseconds, but always above the last persisted value), so the server
+	// can drop a delayed report that arrives after a newer one.
 	OnlineSequence int64 `json:"onlineSequence,omitempty"`
 }
 

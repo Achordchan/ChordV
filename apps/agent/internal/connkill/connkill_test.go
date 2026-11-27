@@ -2,6 +2,7 @@ package connkill
 
 import (
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -26,14 +27,52 @@ func TestNormalizeIP(t *testing.T) {
 
 func TestFilterCoversMappedIPv4(t *testing.T) {
 	ip, _ := NormalizeIP("180.124.1.2")
-	got := Filter(443, ip)
+	got := Filter(Listener{Port: 443}, ip)
 	want := []string{"(", "sport", "=", ":443", ")", "and", "(", "dst", "180.124.1.2", "or", "dst", "[::ffff:180.124.1.2]", ")"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Filter = %v", got)
 	}
 	ip6, _ := NormalizeIP("[2001:db8::1]")
-	if got := strings.Join(Filter(8443, ip6), " "); got != "( sport = :8443 ) and ( dst [2001:db8::1] )" {
+	if got := strings.Join(Filter(Listener{Port: 8443}, ip6), " "); got != "( sport = :8443 ) and ( dst [2001:db8::1] )" {
 		t.Fatalf("Filter v6 = %q", got)
+	}
+}
+
+// Two inbounds may share a port on different local addresses. A listener bound
+// to one address must constrain the local address, so disabling an account on
+// it never touches connections to the other inbound.
+func TestFilterConstrainsTheListenAddress(t *testing.T) {
+	client, _ := NormalizeIP("180.124.1.2")
+	first := strings.Join(Filter(Listener{IP: net.ParseIP("10.0.0.1"), Port: 443}, client), " ")
+	want := "( sport = :443 ) and ( src 10.0.0.1 or src [::ffff:10.0.0.1] ) and ( dst 180.124.1.2 or dst [::ffff:180.124.1.2] )"
+	if first != want {
+		t.Fatalf("Filter = %q", first)
+	}
+	second := strings.Join(Filter(Listener{IP: net.ParseIP("10.0.0.2"), Port: 443}, client), " ")
+	if strings.Contains(second, "10.0.0.1") || !strings.Contains(second, "src 10.0.0.2") {
+		t.Fatalf("second listener filter = %q", second)
+	}
+	v6 := strings.Join(Filter(Listener{IP: net.ParseIP("2001:db8::10"), Port: 443}, client), " ")
+	if !strings.Contains(v6, "( src [2001:db8::10] )") {
+		t.Fatalf("v6 listener filter = %q", v6)
+	}
+}
+
+// The listen address reaches ss; an unspecified one widens to the port only.
+func TestKillPassesTheListenAddressToSS(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "calls")
+	ss := fakeSS(t, `echo "$@" >> `+log)
+	if _, err := ss.Kill(context.Background(), Listener{IP: net.ParseIP("10.0.0.1"), Port: 443}, []string{"180.124.1.2"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ss.Kill(context.Background(), Listener{IP: net.IPv4zero, Port: 443}, []string{"180.124.1.2"}); err != nil {
+		t.Fatal(err)
+	}
+	calls, _ := os.ReadFile(log)
+	lines := strings.Split(strings.TrimSpace(string(calls)), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], "( src 10.0.0.1 or src [::ffff:10.0.0.1] )") || strings.Contains(lines[1], "src") {
+		t.Fatalf("ss args: %q", lines)
 	}
 }
 
@@ -53,7 +92,7 @@ func TestKillCountsAndDeduplicates(t *testing.T) {
 echo "ESTAB 0 0 [::ffff:10.0.0.1]:443 [::ffff:180.124.1.2]:5555"
 echo "ESTAB 0 0 [::ffff:10.0.0.1]:443 [::ffff:180.124.1.2]:5556"
 `)
-	killed, err := ss.Kill(context.Background(), 443, []string{"180.124.1.2", "180.124.1.2", "127.0.0.1"})
+	killed, err := ss.Kill(context.Background(), Listener{Port: 443}, []string{"180.124.1.2", "180.124.1.2", "127.0.0.1"})
 	if err != nil || killed != 2 {
 		t.Fatalf("Kill = %d, %v", killed, err)
 	}
@@ -68,7 +107,7 @@ echo "ESTAB 0 0 [::ffff:10.0.0.1]:443 [::ffff:180.124.1.2]:5556"
 
 func TestKillReportsPermissionDenied(t *testing.T) {
 	ss := fakeSS(t, `echo "SOCK_DESTROY answers: Operation not permitted" >&2`)
-	if _, err := ss.Kill(context.Background(), 443, []string{"1.2.3.4"}); err == nil || !strings.Contains(err.Error(), "CAP_NET_ADMIN") {
+	if _, err := ss.Kill(context.Background(), Listener{Port: 443}, []string{"1.2.3.4"}); err == nil || !strings.Contains(err.Error(), "CAP_NET_ADMIN") {
 		t.Fatalf("expected permission error, got %v", err)
 	}
 }
@@ -79,10 +118,10 @@ func TestKillRefusesTooManyAddresses(t *testing.T) {
 	for i := range ips {
 		ips[i] = "10.0.0.1"
 	}
-	if _, err := ss.Kill(context.Background(), 443, ips); err == nil {
+	if _, err := ss.Kill(context.Background(), Listener{Port: 443}, ips); err == nil {
 		t.Fatal("expected refusal")
 	}
-	if _, err := ss.Kill(context.Background(), 0, []string{"1.2.3.4"}); err == nil {
+	if _, err := ss.Kill(context.Background(), Listener{}, []string{"1.2.3.4"}); err == nil {
 		t.Fatal("expected port refusal")
 	}
 }
@@ -93,7 +132,7 @@ func TestKillIsBoundedAsAWhole(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	started := time.Now()
-	if _, err := ss.Kill(ctx, 443, ips); err == nil {
+	if _, err := ss.Kill(ctx, Listener{Port: 443}, ips); err == nil {
 		t.Fatal("expected timeout error")
 	}
 	if elapsed := time.Since(started); elapsed > 2*time.Second {

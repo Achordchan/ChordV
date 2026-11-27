@@ -31,6 +31,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -124,8 +125,6 @@ type Runner struct {
 	// onlineUnavailableLogged keeps the "online statistics off" warning to one
 	// line per episode.
 	onlineUnavailableLogged bool
-	// onlineSequence is the last OnlineSequence sent; guarded by transport.
-	onlineSequence int64
 	// lastXrayStart is the ESTIMATED wall-clock start of the Xray process, from
 	// its reported uptime. Zero until the first reading.
 	lastXrayStart time.Time
@@ -588,7 +587,7 @@ func (r *Runner) onlineCandidatesLocked() (map[string]onlineCandidate, error) {
 // account reusing the address or a claim held by another binding, is not ours.
 func ownsOnlineRecord(candidate onlineCandidate, liveUUID string, installed bool) bool {
 	if installed {
-		return candidate.UUID != "" && liveUUID == candidate.UUID
+		return sameUUID(liveUUID, candidate.UUID)
 	}
 	claim := candidate.Claim
 	if claim == nil || claim.BindingID != candidate.BindingID {
@@ -597,7 +596,13 @@ func ownsOnlineRecord(candidate onlineCandidate, liveUUID string, installed bool
 	if claim.UUID == "" || candidate.UUID == "" {
 		return true
 	}
-	return claim.UUID == candidate.UUID || claim.NextUUID == candidate.UUID
+	return sameUUID(claim.UUID, candidate.UUID) || sameUUID(claim.NextUUID, candidate.UUID)
+}
+
+// sameUUID compares identities canonically: Xray installs and lists a UUID in
+// lowercase even when the binding was given it in uppercase.
+func sameUUID(a, b string) bool {
+	return a != "" && strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
 }
 
 // noteTrafficLocked records which accounts moved traffic since the previous
@@ -681,16 +686,23 @@ func (r *Runner) readOnlineUsers(ctx context.Context, candidates map[string]onli
 	return &result
 }
 
-// nextOnlineSequence stamps an online report. It follows the wall clock so a
-// restarted agent continues above its previous reports, and never repeats or
-// goes back within a process even if the clock does.
-func (r *Runner) nextOnlineSequence() int64 {
-	next := r.deps.Now().UnixMilli()
-	if next <= r.onlineSequence {
-		next = r.onlineSequence + 1
+// nextOnlineSequence stamps an online report. It follows the wall clock but
+// always continues above the last sequence, which is persisted, so neither a
+// clock that goes back nor a restart can produce a sequence the control plane
+// would discard as stale. It is called under the transport lock.
+func (r *Runner) nextOnlineSequence() (int64, error) {
+	last, err := r.deps.Store.OnlineSequence()
+	if err != nil {
+		return 0, err
 	}
-	r.onlineSequence = next
-	return next
+	next := r.deps.Now().UnixMilli()
+	if next <= last {
+		next = last + 1
+	}
+	if err := r.deps.Store.SetOnlineSequence(next); err != nil {
+		return 0, err
+	}
+	return next, nil
 }
 
 // onlineTrackingConsistent is false when accounts moved traffic in the latest
@@ -893,7 +905,15 @@ func (r *Runner) sendHeartbeat(ctx context.Context) error {
 		OnlineUsers:    r.readOnlineUsers(ctx, candidates, active),
 	}
 	if beat.OnlineUsers != nil {
-		beat.OnlineSequence = r.nextOnlineSequence()
+		sequence, err := r.nextOnlineSequence()
+		if err != nil {
+			// Without a durable sequence the report could be mis-ordered;
+			// omitting it only means "not observed this time".
+			r.logf("无法记录在线报告序号，本次不上报在线状态：%v", err)
+			beat.OnlineUsers = nil
+		} else {
+			beat.OnlineSequence = sequence
+		}
 	}
 	ack, err := r.deps.API.Heartbeat(ctx, beat)
 	if err != nil {

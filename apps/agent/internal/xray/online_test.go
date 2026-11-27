@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"github.com/Achordchan/ChordV/apps/agent/internal/connkill"
+	xnet "github.com/xtls/xray-core/common/net"
 	"io"
 	"net"
 	"strconv"
@@ -21,12 +23,12 @@ type recordingKiller struct {
 }
 
 type killCall struct {
-	port int
-	ips  []string
+	listener connkill.Listener
+	ips      []string
 }
 
-func (k *recordingKiller) Kill(_ context.Context, port int, ips []string) (int, error) {
-	k.calls = append(k.calls, killCall{port: port, ips: append([]string(nil), ips...)})
+func (k *recordingKiller) Kill(_ context.Context, listener connkill.Listener, ips []string) (int, error) {
+	k.calls = append(k.calls, killCall{listener: listener, ips: append([]string(nil), ips...)})
 	return len(ips), k.err
 }
 
@@ -48,10 +50,11 @@ func openVLESS(t *testing.T, g *GRPC, uuid string) net.Conn {
 			go io.Copy(conn, conn)
 		}
 	}()
-	port, err := g.ListenPort(context.Background())
+	listener, err := g.Listener(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
+	port := listener.Port
 	dialer := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.2")}, Timeout: 5 * time.Second}
 	conn, err := dialer.Dial("tcp", net.JoinHostPort("127.0.0.1", itoa(port)))
 	if err != nil {
@@ -117,8 +120,11 @@ func TestRealXrayOnlineTrackingAndDisconnectOnRemoval(t *testing.T) {
 	if err := binding.RemoveUser(ctx, user.Email, Expectation{UUID: user.UUID}); err != nil {
 		t.Fatal(err)
 	}
-	port, _ := g.ListenPort(ctx)
-	if len(killer.calls) != 1 || killer.calls[0].port != port || len(killer.calls[0].ips) != 1 || killer.calls[0].ips[0] != "127.0.0.2" {
+	listener, _ := g.Listener(ctx)
+	if !listener.IP.Equal(net.ParseIP("127.0.0.1")) {
+		t.Fatalf("listener should carry the inbound's bound address: %+v", listener)
+	}
+	if len(killer.calls) != 1 || killer.calls[0].listener.Port != listener.Port || !killer.calls[0].listener.IP.Equal(listener.IP) || len(killer.calls[0].ips) != 1 || killer.calls[0].ips[0] != "127.0.0.2" {
 		t.Fatalf("kill calls: %+v", killer.calls)
 	}
 	if users, _ := g.ListUsers(ctx); len(users) != 0 {
@@ -189,5 +195,22 @@ func TestEmailFromOnlineName(t *testing.T) {
 		if _, ok := emailFromOnlineName(bad); ok {
 			t.Fatalf("accepted %q", bad)
 		}
+	}
+}
+
+func TestListenIP(t *testing.T) {
+	if ip, err := listenIP(nil); ip != nil || err != nil {
+		t.Fatalf("nil listen: %v %v", ip, err)
+	}
+	for _, wildcard := range []xnet.Address{xnet.AnyIP, xnet.AnyIPv6} {
+		if ip, err := listenIP(xnet.NewIPOrDomain(wildcard)); ip != nil || err != nil {
+			t.Fatalf("wildcard %v: %v %v", wildcard, ip, err)
+		}
+	}
+	if ip, err := listenIP(xnet.NewIPOrDomain(xnet.ParseAddress("10.0.0.1"))); err != nil || !ip.Equal(net.ParseIP("10.0.0.1")) {
+		t.Fatalf("specific: %v %v", ip, err)
+	}
+	if _, err := listenIP(xnet.NewIPOrDomain(xnet.DomainAddress("/run/xray.sock"))); err == nil {
+		t.Fatal("a socket path listener must be refused, not widened to the port")
 	}
 }
