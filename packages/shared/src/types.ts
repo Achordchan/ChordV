@@ -1438,6 +1438,17 @@ export interface AdminDeleteResultDto {
   queuedNodeRemovalCount: number;
   /** 节点没有可用 Agent 或不在直控模式、无法自动删除的账号数，需要自行检查。 */
   skippedNodeRemovalCount: number;
+  /** 无法自动删除的节点账号明细：在哪个节点、节点上的账号标识，供手工清理。 */
+  manualCleanup: AdminDeleteManualCleanupDto[];
+}
+
+export interface AdminDeleteManualCleanupDto {
+  nodeId: string;
+  nodeName: string;
+  /** 节点（Xray）上的账号 email 标识。 */
+  panelClientEmail: string;
+  /** 节点上的账号 UUID。 */
+  panelClientId: string;
 }
 
 export interface ResetSubscriptionTrafficInputDto {

@@ -1264,12 +1264,17 @@ export class RuntimeSessionService {
       orderBy: { id: "asc" }
     });
     const commands: Array<{ agentId: string; command: AgentCommandDto }> = [];
-    let skipped = 0;
+    // The cascade deletes the binding — the only record of which node holds
+    // which account — so the skipped ones are returned (and logged) with the
+    // identifiers an administrator needs to remove them by hand.
+    const skippedBindings: Array<{ nodeId: string; nodeName: string; panelClientEmail: string; panelClientId: string }> = [];
     const agentByNode = new Map<string, boolean>();
+    const nodeNames = new Map<string, string>();
     for (const binding of bindings) {
       let hasAgent = agentByNode.get(binding.nodeId);
       if (hasAgent === undefined) {
-        const node = await writer.node.findUnique({ where: { id: binding.nodeId }, select: { controlMode: true } });
+        const node = await writer.node.findUnique({ where: { id: binding.nodeId }, select: { controlMode: true, name: true } });
+        nodeNames.set(binding.nodeId, node?.name ?? binding.nodeId);
         hasAgent = node?.controlMode === "direct_primary" && Boolean(await writer.nodeAgent.findFirst({
           where: { nodeId: binding.nodeId, revokedAt: null },
           select: { id: true }
@@ -1277,7 +1282,12 @@ export class RuntimeSessionService {
         agentByNode.set(binding.nodeId, hasAgent);
       }
       if (!hasAgent) {
-        skipped += 1;
+        skippedBindings.push({
+          nodeId: binding.nodeId,
+          nodeName: nodeNames.get(binding.nodeId) ?? binding.nodeId,
+          panelClientEmail: binding.panelClientEmail,
+          panelClientId: binding.panelClientId
+        });
         continue;
       }
       commands.push(await this.queueDirectBindingCommand(writer, binding, "REMOVE_USER", {
@@ -1287,7 +1297,12 @@ export class RuntimeSessionService {
         uuid: binding.panelClientId
       }, { publish: false }));
     }
-    return { commands, skipped };
+    for (const item of skippedBindings) {
+      this.logger.warn(
+        `Binding deleted without node removal; clean up by hand: node=${item.nodeName}(${item.nodeId}) email=${item.panelClientEmail} uuid=${item.panelClientId}`
+      );
+    }
+    return { commands, skipped: skippedBindings.length, skippedBindings };
   }
 
   publishAgentCommandsBestEffort(commands: Array<{ agentId: string; command: AgentCommandDto }>) {

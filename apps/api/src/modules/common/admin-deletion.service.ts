@@ -4,6 +4,7 @@ import type {
   AdminDeletableEntityKind,
   AdminDeletePreviewDto,
   AdminDeleteRelatedItemDto,
+  AdminDeleteManualCleanupDto,
   AdminDeleteResultDto,
   AgentCommandDto
 } from "@chordv/shared";
@@ -121,7 +122,7 @@ export class AdminDeletionService {
 
     let scope = precheck;
     let commands: Array<{ agentId: string; command: AgentCommandDto }> = [];
-    let skipped = 0;
+    let manualCleanup: AdminDeleteManualCleanupDto[] = [];
     for (let attempt = 1; ; attempt += 1) {
       try {
         const outcome = await this.prisma.$transaction(async (tx) => {
@@ -136,7 +137,7 @@ export class AdminDeletionService {
           return { ...removal, scope: locked };
         });
         commands = outcome.commands;
-        skipped = outcome.skipped;
+        manualCleanup = outcome.skippedBindings;
         scope = outcome.scope;
         break;
       } catch (error) {
@@ -153,14 +154,18 @@ export class AdminDeletionService {
 
     const parts = [`${KIND_LABEL[kind]}「${scope.name}」已删除。`];
     if (commands.length > 0) parts.push(`已通知节点删除 ${commands.length} 个账号。`);
-    if (skipped > 0) parts.push(`${skipped} 个节点账号所在节点没有可用 Agent 或不在 Agent 直控模式，无法自动删除，需要到节点上自行检查。`);
+    if (manualCleanup.length > 0) {
+      const listed = manualCleanup.slice(0, 10).map((entry) => `${entry.nodeName}：${entry.panelClientEmail}`).join("；");
+      parts.push(`${manualCleanup.length} 个节点账号所在节点没有可用 Agent 或不在 Agent 直控模式，无法自动删除，请到节点上手工删除：${listed}${manualCleanup.length > 10 ? " 等" : ""}。`);
+    }
     return {
       ok: true,
       kind,
       id,
       message: parts.join(""),
       queuedNodeRemovalCount: commands.length,
-      skippedNodeRemovalCount: skipped
+      skippedNodeRemovalCount: manualCleanup.length,
+      manualCleanup
     };
   }
 
@@ -343,7 +348,7 @@ export class AdminDeletionService {
         item("ownedTeamMembers", "名下团队的其他成员（会失去团队订阅）", ownedTeamMemberCount),
         item("teamMemberships", "加入的其他团队（移出）", memberships.length, memberships.map((row) => row.team.name)),
         item("nodeAccounts", "节点上的账号（通知节点删除）", bindingCount),
-        item("manualNodeAccounts", MANUAL_NODE_ACCOUNTS_LABEL, manualCount),
+        item("manualNodeAccounts", MANUAL_NODE_ACCOUNTS_LABEL, manualCount.count, manualCount.samples),
         item("activeSessions", "在线连接（立即断开）", sessionCount),
         item("trafficRecords", "流量记录", ledgerCount),
         item("tickets", "工单", ticketCount),
@@ -429,7 +434,7 @@ export class AdminDeletionService {
       related: [
         ...leading,
         item("nodeAccounts", "节点上的账号（通知节点删除）", bindingCount),
-        item("manualNodeAccounts", MANUAL_NODE_ACCOUNTS_LABEL, manualCount),
+        item("manualNodeAccounts", MANUAL_NODE_ACCOUNTS_LABEL, manualCount.count, manualCount.samples),
         item("activeSessions", "在线连接（立即断开）", sessionCount),
         item("trafficRecords", "流量记录", ledgerCount),
         item("tickets", "关联工单（保留，解除与订阅的关联）", ticketCount)
@@ -445,14 +450,22 @@ export class AdminDeletionService {
    * 节点没有可用 Agent，或不在 direct_primary（Agent 拒绝写用户）：删除后这些账号不会被自动移除。
    * 与 queueBindingRemovalBeforeDeleteTx 的判断一致，预览时就提示管理员要手工清理。
    */
-  private countManualBindings(db: Db, where: Prisma.PanelClientBindingWhereInput) {
-    return db.panelClientBinding.count({
-      where: {
-        AND: [where, { status: { in: ["active", "disabled"] } }, {
-          node: { OR: [{ controlMode: { not: "direct_primary" } }, { nodeAgents: { none: { revokedAt: null } } }] }
-        }]
-      }
-    });
+  private async countManualBindings(db: Db, where: Prisma.PanelClientBindingWhereInput) {
+    const manualWhere: Prisma.PanelClientBindingWhereInput = {
+      AND: [where, { status: { in: ["active", "disabled"] } }, {
+        node: { OR: [{ controlMode: { not: "direct_primary" } }, { nodeAgents: { none: { revokedAt: null } } }] }
+      }]
+    };
+    const [count, rows] = await Promise.all([
+      db.panelClientBinding.count({ where: manualWhere }),
+      db.panelClientBinding.findMany({
+        where: manualWhere,
+        select: { panelClientEmail: true, node: { select: { name: true } } },
+        orderBy: { id: "asc" },
+        take: SAMPLE_LIMIT
+      })
+    ]);
+    return { count, samples: rows.map((row) => `${row.node.name}：${row.panelClientEmail}`) };
   }
 
   private countActiveSessions(db: Db, where: Prisma.NodeSessionLeaseWhereInput) {

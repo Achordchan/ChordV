@@ -68,6 +68,7 @@ async function main() {
   assert.equal(counts.subscriptions, 1);
   assert.equal(counts.nodeAccounts, 2);
   assert.equal(counts.manualNodeAccounts, 1, "没有 Agent 的节点要在预览里提示手工清理");
+  assert.ok(preview.related.find((entry) => entry.key === "manualNodeAccounts")!.samples[0]!.includes(offlineBinding.panelClientEmail));
   assert.equal(counts.trafficRecords, 1);
   assert.equal(counts.tickets, 1);
   assert.match(preview.related.find((entry) => entry.key === "subscriptions")!.samples[0]!, /个人套餐/);
@@ -78,6 +79,9 @@ async function main() {
   const result = await service.delete("plan", plan.id, { force: true, actorUserId: admin.id });
   assert.equal(result.queuedNodeRemovalCount, 1);
   assert.equal(result.skippedNodeRemovalCount, 1, "没有 Agent 的节点要报出来");
+  assert.deepEqual(result.manualCleanup.map((entry) => [entry.nodeId, entry.panelClientEmail, entry.panelClientId]),
+    [[offlineNode.id, offlineBinding.panelClientEmail, offlineBinding.panelClientId]], "绑定删掉后只能靠返回的明细手工清理");
+  assert.ok(result.message.includes(offlineBinding.panelClientEmail));
   assert.equal(await prisma.subscription.count({ where: { id: subscription.id } }), 0);
   assert.equal(await prisma.panelClientBinding.count({ where: { id: { in: [binding.id, offlineBinding.id] } } }), 0);
   assert.equal(await prisma.trafficLedger.count({ where: { subscriptionId: subscription.id } }), 0);
