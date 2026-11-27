@@ -49,6 +49,15 @@ export function resolveNodeCountry(input: {
   };
 }
 
+/**
+ * 节点国旗/国家代码的唯一口径：库里 countryCode 为空的旧节点（如 Agent 注册时没填国家）
+ * 按地区名推断。所有对外返回节点国家代码的地方都必须走这里，否则同一个节点在
+ * “节点与同步”有国旗、在线用户/仪表台却没有。
+ */
+export function readNodeCountryCode(row: { countryCode?: string | null; region?: string | null }) {
+  return resolveCountryCode({ countryCode: row.countryCode, region: row.region });
+}
+
 export function toNodeSummary(row: {
   id: string;
   name: string;
@@ -66,7 +75,7 @@ export function toNodeSummary(row: {
   return {
     id: row.id,
     name: row.name,
-    countryCode: row.countryCode ?? resolveCountryCode({ region: row.region }),
+    countryCode: readNodeCountryCode(row),
     region: row.region,
     provider: row.provider,
     tags: row.tags,
