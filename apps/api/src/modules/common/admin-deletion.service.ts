@@ -20,6 +20,8 @@ const KIND_LABEL: Record<AdminDeletableEntityKind, string> = {
   team: "团队"
 };
 
+type Db = Prisma.TransactionClient | PrismaService;
+
 type DeletionScope = {
   name: string;
   related: AdminDeleteRelatedItemDto[];
@@ -94,7 +96,7 @@ export class AdminDeletionService {
   ) {}
 
   async preview(kind: AdminDeletableEntityKind, id: string, actorUserId: string | null): Promise<AdminDeletePreviewDto> {
-    const scope = await this.resolveScope(kind, id, actorUserId);
+    const scope = await this.resolveScope(this.prisma, kind, id, actorUserId);
     return {
       kind,
       id,
@@ -110,35 +112,39 @@ export class AdminDeletionService {
     id: string,
     options: { force: boolean; actorUserId: string | null }
   ): Promise<AdminDeleteResultDto> {
-    const scope = await this.resolveScope(kind, id, options.actorUserId);
-    if (scope.blockedReason) {
-      throw new BadRequestException(scope.blockedReason);
-    }
-    const nonEmpty = scope.related.filter((entry) => entry.count > 0);
-    if (nonEmpty.length > 0 && !options.force) {
-      throw new ConflictException(
-        `该${KIND_LABEL[kind]}还有关联数据（${nonEmpty.map((entry) => `${entry.label} ${entry.count}`).join("、")}），需要确认强制删除。`
-      );
-    }
+    // 第一遍不加锁：用来在删除前拒绝、以及先断开在线会话（会话行会随删除消失，
+    // 删除之后就没有办法再通知到客户端）。真正的校验在下面加锁的事务里重做。
+    const precheck = await this.resolveScope(this.prisma, kind, id, options.actorUserId);
+    this.assertDeletable(kind, precheck, options.force);
+    await this.revokeLeasesBestEffort(kind, id, precheck);
 
-    // 先断开在线会话：会话行会随删除消失，删除之后就没有办法再通知到客户端。
-    await this.revokeLeasesBestEffort(kind, id, scope);
-
+    let scope = precheck;
     let commands: Array<{ agentId: string; command: AgentCommandDto }> = [];
     let skipped = 0;
-    try {
-      const outcome = await this.prisma.$transaction(async (tx) => {
-        const removal = await this.runtimeSessionService.queueBindingRemovalBeforeDeleteTx(tx, scope.bindingWhere);
-        await this.deleteRow(tx, kind, id);
-        return removal;
-      });
-      commands = outcome.commands;
-      skipped = outcome.skipped;
-    } catch (error) {
-      if (error instanceof HttpException) throw error;
-      if (isRecordMissing(error)) throw new NotFoundException(`${KIND_LABEL[kind]}不存在或已被删除`);
-      this.logger.warn(`Delete ${kind} ${id} failed: ${readErrorMessage(error)}`);
-      throw new ServiceUnavailableException(`${KIND_LABEL[kind]}删除失败，请刷新后重试。`);
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        const outcome = await this.prisma.$transaction(async (tx) => {
+          // 锁住要删的行和它名下的订阅：新建订阅/节点账号/团队成员都要对这些父行取外键锁，
+          // 会一直等到本事务结束（那时父行已删，插入失败）。所以下面读到的关联数据就是
+          // 删除时级联的全部，不会有漏掉 REMOVE_USER 的绑定，也不会有未经确认的新订阅。
+          await this.lockForDelete(tx, kind, id);
+          const locked = await this.resolveScope(tx, kind, id, options.actorUserId);
+          this.assertDeletable(kind, locked, options.force);
+          const removal = await this.runtimeSessionService.queueBindingRemovalBeforeDeleteTx(tx, locked.bindingWhere);
+          await this.deleteRow(tx, kind, id);
+          return { ...removal, scope: locked };
+        });
+        commands = outcome.commands;
+        skipped = outcome.skipped;
+        scope = outcome.scope;
+        break;
+      } catch (error) {
+        if (error instanceof HttpException) throw error;
+        if (isRecordMissing(error)) throw new NotFoundException(`${KIND_LABEL[kind]}不存在或已被删除`);
+        if (isTransientConflict(error) && attempt < 3) continue;
+        this.logger.warn(`Delete ${kind} ${id} failed: ${readErrorMessage(error)}`);
+        throw new ServiceUnavailableException(`${KIND_LABEL[kind]}删除失败，请刷新后重试。`);
+      }
     }
 
     this.runtimeSessionService.publishAgentCommandsBestEffort(commands);
@@ -155,6 +161,45 @@ export class AdminDeletionService {
       queuedNodeRemovalCount: commands.length,
       skippedNodeRemovalCount: skipped
     };
+  }
+
+  private assertDeletable(kind: AdminDeletableEntityKind, scope: DeletionScope, force: boolean) {
+    if (scope.blockedReason) {
+      throw new BadRequestException(scope.blockedReason);
+    }
+    const nonEmpty = scope.related.filter((entry) => entry.count > 0);
+    if (nonEmpty.length > 0 && !force) {
+      throw new ConflictException(
+        `该${KIND_LABEL[kind]}还有关联数据（${nonEmpty.map((entry) => `${entry.label} ${entry.count}`).join("、")}），需要确认强制删除。`
+      );
+    }
+  }
+
+  /**
+   * FOR UPDATE 与外键检查取的 KEY SHARE 锁冲突，所以锁住父行后，引用它们的插入都会等待。
+   * 删账号时先按 id 顺序锁住全部管理员：两个管理员同时互删时第二个请求会等第一个提交，
+   * 再数管理员时就能看到对方已经被删，“至少保留一个管理员”不会被并发绕过。
+   */
+  private async lockForDelete(tx: Prisma.TransactionClient, kind: AdminDeletableEntityKind, id: string) {
+    switch (kind) {
+      case "user":
+        await tx.$queryRaw`SELECT id FROM "User" WHERE role = 'admin' ORDER BY id FOR UPDATE`;
+        await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${id} FOR UPDATE`;
+        await tx.$queryRaw`SELECT id FROM "Team" WHERE "ownerUserId" = ${id} ORDER BY id FOR UPDATE`;
+        await tx.$queryRaw`SELECT id FROM "Subscription" WHERE "userId" = ${id} OR "teamId" IN (SELECT id FROM "Team" WHERE "ownerUserId" = ${id}) ORDER BY id FOR UPDATE`;
+        return;
+      case "plan":
+        await tx.$queryRaw`SELECT id FROM "Plan" WHERE id = ${id} FOR UPDATE`;
+        await tx.$queryRaw`SELECT id FROM "Subscription" WHERE "planId" = ${id} ORDER BY id FOR UPDATE`;
+        return;
+      case "subscription":
+        await tx.$queryRaw`SELECT id FROM "Subscription" WHERE id = ${id} FOR UPDATE`;
+        return;
+      case "team":
+        await tx.$queryRaw`SELECT id FROM "Team" WHERE id = ${id} FOR UPDATE`;
+        await tx.$queryRaw`SELECT id FROM "Subscription" WHERE "teamId" = ${id} ORDER BY id FOR UPDATE`;
+        return;
+    }
   }
 
   private async deleteRow(tx: Prisma.TransactionClient, kind: AdminDeletableEntityKind, id: string) {
@@ -219,23 +264,23 @@ export class AdminDeletionService {
     }
   }
 
-  private async resolveScope(kind: AdminDeletableEntityKind, id: string, actorUserId: string | null): Promise<DeletionScope> {
+  private async resolveScope(db: Db, kind: AdminDeletableEntityKind, id: string, actorUserId: string | null): Promise<DeletionScope> {
     switch (kind) {
       case "user":
-        return this.resolveUserScope(id, actorUserId);
+        return this.resolveUserScope(db, id, actorUserId);
       case "plan":
-        return this.resolvePlanScope(id);
+        return this.resolvePlanScope(db, id);
       case "subscription":
-        return this.resolveSubscriptionScope(id);
+        return this.resolveSubscriptionScope(db, id);
       case "team":
-        return this.resolveTeamScope(id);
+        return this.resolveTeamScope(db, id);
       default:
         throw new BadRequestException("不支持删除这种数据");
     }
   }
 
-  private async resolveUserScope(userId: string, actorUserId: string | null): Promise<DeletionScope> {
-    const user = await this.prisma.user.findUnique({
+  private async resolveUserScope(db: Db, userId: string, actorUserId: string | null): Promise<DeletionScope> {
+    const user = await db.user.findUnique({
       where: { id: userId },
       select: { id: true, email: true, displayName: true, role: true, subscriptionLink: { select: { userId: true } } }
     });
@@ -245,22 +290,22 @@ export class AdminDeletionService {
     if (actorUserId && actorUserId === userId) {
       blockedReason = "不能删除当前登录的管理员账号。";
     } else if (user.role === "admin") {
-      const otherAdmins = await this.prisma.user.count({ where: { role: "admin", id: { not: userId } } });
+      const otherAdmins = await db.user.count({ where: { role: "admin", id: { not: userId } } });
       if (otherAdmins === 0) blockedReason = "这是最后一个管理员账号，不能删除。";
     }
 
-    const ownedTeams = await this.prisma.team.findMany({
+    const ownedTeams = await db.team.findMany({
       where: { ownerUserId: userId },
       select: { id: true, name: true, members: { select: { userId: true } } }
     });
     const ownedTeamIds = ownedTeams.map((team) => team.id);
-    const subscriptions: SubscriptionSample[] = await this.prisma.subscription.findMany({
+    const subscriptions: SubscriptionSample[] = await db.subscription.findMany({
       where: { OR: [{ userId }, ...(ownedTeamIds.length > 0 ? [{ teamId: { in: ownedTeamIds } }] : [])] },
       select: SUBSCRIPTION_SAMPLE_SELECT
     });
     const personal = subscriptions.filter((row) => row.userId === userId);
     const teamSubs = subscriptions.filter((row) => row.teamId !== null);
-    const memberships = await this.prisma.teamMember.findMany({
+    const memberships = await db.teamMember.findMany({
       where: { userId, teamId: { notIn: ownedTeamIds } },
       select: { team: { select: { name: true } } }
     });
@@ -270,10 +315,10 @@ export class AdminDeletionService {
     };
     const subscriptionIds = subscriptions.map((row) => row.id);
     const [bindingCount, ledgerCount, ticketCount, sessionCount] = await Promise.all([
-      this.prisma.panelClientBinding.count({ where: { AND: [bindingWhere, { status: { in: ["active", "disabled"] } }] } }),
-      this.prisma.trafficLedger.count({ where: { OR: [{ userId }, ...(subscriptionIds.length > 0 ? [{ subscriptionId: { in: subscriptionIds } }] : [])] } }),
-      this.prisma.supportTicket.count({ where: { userId } }),
-      this.countActiveSessions({ OR: [{ userId }, ...(subscriptionIds.length > 0 ? [{ subscriptionId: { in: subscriptionIds } }] : [])] })
+      db.panelClientBinding.count({ where: { AND: [bindingWhere, { status: { in: ["active", "disabled"] } }] } }),
+      db.trafficLedger.count({ where: { OR: [{ userId }, ...(subscriptionIds.length > 0 ? [{ subscriptionId: { in: subscriptionIds } }] : [])] } }),
+      db.supportTicket.count({ where: { userId } }),
+      this.countActiveSessions(db, { OR: [{ userId }, ...(subscriptionIds.length > 0 ? [{ subscriptionId: { in: subscriptionIds } }] : [])] })
     ]);
 
     const affected = subscriptionUserIds(teamSubs);
@@ -301,38 +346,38 @@ export class AdminDeletionService {
     };
   }
 
-  private async resolvePlanScope(planId: string): Promise<DeletionScope> {
-    const plan = await this.prisma.plan.findUnique({ where: { id: planId }, select: { id: true, name: true } });
+  private async resolvePlanScope(db: Db, planId: string): Promise<DeletionScope> {
+    const plan = await db.plan.findUnique({ where: { id: planId }, select: { id: true, name: true } });
     if (!plan) throw new NotFoundException("套餐不存在或已被删除");
-    const subscriptions: SubscriptionSample[] = await this.prisma.subscription.findMany({
+    const subscriptions: SubscriptionSample[] = await db.subscription.findMany({
       where: { planId },
       select: SUBSCRIPTION_SAMPLE_SELECT
     });
-    return this.subscriptionsScope(plan.name, subscriptions, { planId }, [
+    return this.subscriptionsScope(db, plan.name, subscriptions, { planId }, [
       item("subscriptions", "使用此套餐的订阅（一起删除）", subscriptions.length, subscriptions.map(describeSubscription))
     ]);
   }
 
-  private async resolveSubscriptionScope(subscriptionId: string): Promise<DeletionScope> {
-    const subscription: SubscriptionSample | null = await this.prisma.subscription.findUnique({
+  private async resolveSubscriptionScope(db: Db, subscriptionId: string): Promise<DeletionScope> {
+    const subscription: SubscriptionSample | null = await db.subscription.findUnique({
       where: { id: subscriptionId },
       select: SUBSCRIPTION_SAMPLE_SELECT
     });
     if (!subscription) throw new NotFoundException("订阅不存在或已被删除");
-    return this.subscriptionsScope(describeSubscription(subscription), [subscription], { id: subscriptionId }, []);
+    return this.subscriptionsScope(db, describeSubscription(subscription), [subscription], { id: subscriptionId }, []);
   }
 
-  private async resolveTeamScope(teamId: string): Promise<DeletionScope> {
-    const team = await this.prisma.team.findUnique({
+  private async resolveTeamScope(db: Db, teamId: string): Promise<DeletionScope> {
+    const team = await db.team.findUnique({
       where: { id: teamId },
       select: { id: true, name: true, members: { select: { userId: true, user: { select: { displayName: true, email: true } } } } }
     });
     if (!team) throw new NotFoundException("团队不存在或已被删除");
-    const subscriptions: SubscriptionSample[] = await this.prisma.subscription.findMany({
+    const subscriptions: SubscriptionSample[] = await db.subscription.findMany({
       where: { teamId },
       select: SUBSCRIPTION_SAMPLE_SELECT
     });
-    const scope = await this.subscriptionsScope(team.name, subscriptions, { teamId }, [
+    const scope = await this.subscriptionsScope(db, team.name, subscriptions, { teamId }, [
       item("members", "团队成员（移出团队，账号保留）", team.members.length, team.members.map((member) => member.user.displayName || member.user.email)),
       item("subscriptions", "团队订阅（一起删除）", subscriptions.length, subscriptions.map(describeSubscription))
     ]);
@@ -341,7 +386,7 @@ export class AdminDeletionService {
     return { ...scope, affectedUserIds: Array.from(affected), bindingWhere: { OR: [{ teamId }, ...(scope.subscriptionIds.length > 0 ? [{ subscriptionId: { in: scope.subscriptionIds } }] : [])] } };
   }
 
-  private async subscriptionsScope(
+  private async subscriptionsScope(db: Db, 
     name: string,
     subscriptions: SubscriptionSample[],
     owner: Prisma.SubscriptionWhereInput,
@@ -352,10 +397,10 @@ export class AdminDeletionService {
     const [bindingCount, ledgerCount, ticketCount, sessionCount] = subscriptionIds.length === 0
       ? [0, 0, 0, 0]
       : await Promise.all([
-          this.prisma.panelClientBinding.count({ where: { AND: [bindingWhere, { status: { in: ["active", "disabled"] } }] } }),
-          this.prisma.trafficLedger.count({ where: { subscriptionId: { in: subscriptionIds } } }),
-          this.prisma.supportTicket.count({ where: { subscriptionId: { in: subscriptionIds } } }),
-          this.countActiveSessions({ subscriptionId: { in: subscriptionIds } })
+          db.panelClientBinding.count({ where: { AND: [bindingWhere, { status: { in: ["active", "disabled"] } }] } }),
+          db.trafficLedger.count({ where: { subscriptionId: { in: subscriptionIds } } }),
+          db.supportTicket.count({ where: { subscriptionId: { in: subscriptionIds } } }),
+          this.countActiveSessions(db, { subscriptionId: { in: subscriptionIds } })
         ]);
     return {
       name,
@@ -374,11 +419,18 @@ export class AdminDeletionService {
     };
   }
 
-  private countActiveSessions(where: Prisma.NodeSessionLeaseWhereInput) {
-    return this.prisma.nodeSessionLease.count({
+  private countActiveSessions(db: Db, where: Prisma.NodeSessionLeaseWhereInput) {
+    return db.nodeSessionLease.count({
       where: { AND: [where, { status: "active", expiresAt: { gt: new Date() } }] }
     });
   }
+}
+
+/** 死锁或写冲突：和并发的开通/计量撞上了，整个事务重来即可。 */
+function isTransientConflict(error: unknown) {
+  const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+  if (code === "P2034") return true;
+  return /deadlock detected|could not serialize/i.test(readErrorMessage(error));
 }
 
 function isRecordMissing(error: unknown) {

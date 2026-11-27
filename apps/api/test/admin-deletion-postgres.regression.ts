@@ -138,6 +138,33 @@ async function main() {
 
   await assert.rejects(service.preview("subscription", "missing", admin.id), /不存在/);
 
+  // 6. 预检之后、删除之前有人给空套餐开了订阅：加锁事务里重新校验，未强制的删除要被拒绝。
+  const racePlan = await createPlan(prisma, "personal");
+  const racing = new AdminDeletionService(prisma as never, runtime, clientRuntime as never, adminEvents as never);
+  (racing as unknown as { revokeLeasesBestEffort: () => Promise<void> }).revokeLeasesBestEffort = async () => {
+    await createSubscription(prisma, { planId: racePlan.id, userId: customer.id, expireAt: later });
+  };
+  await assert.rejects(racing.delete("plan", racePlan.id, { force: false, actorUserId: admin.id }), /需要确认强制删除/);
+  assert.equal(await prisma.subscription.count({ where: { planId: racePlan.id } }), 1, "新订阅不能被未经确认地级联删掉");
+
+  // 7. 节点账号在预检之后才建出来：也要收到 REMOVE_USER。
+  const lateSub = await createSubscription(prisma, { planId: racePlan.id, userId: customer.id, expireAt: later });
+  let lateBindingId = "";
+  (racing as unknown as { revokeLeasesBestEffort: () => Promise<void> }).revokeLeasesBestEffort = async () => {
+    lateBindingId = (await createBinding(prisma, { subscriptionId: lateSub.id, userId: customer.id, nodeId: node.id })).id;
+  };
+  await racing.delete("subscription", lateSub.id, { force: true, actorUserId: admin.id });
+  assert.equal((await prisma.nodeCommandJob.findFirstOrThrow({ where: { bindingId: lateBindingId } })).commandType, "REMOVE_USER");
+
+  // 8. 两个管理员同时互删：只能成功一个。
+  const admin2 = await createUser(prisma, "admin");
+  const outcomes = await Promise.allSettled([
+    service.delete("user", admin.id, { force: true, actorUserId: admin2.id }),
+    service.delete("user", admin2.id, { force: true, actorUserId: admin.id })
+  ]);
+  assert.equal(outcomes.filter((outcome) => outcome.status === "fulfilled").length, 1, "并发互删后至少保留一个管理员");
+  assert.equal(await prisma.user.count({ where: { role: "admin" } }), 1);
+
   await prisma.$disconnect();
   console.log("admin deletion postgres regression passed");
 }
