@@ -35,6 +35,8 @@ export class DomesticProbeController {
       controlOk: body.controlOk,
       results: body.results.map((item) => ({
         nodeId: item.nodeId,
+        host: item.host,
+        port: item.port,
         tcpOk: item.tcpOk,
         tcpLatencyMs: item.tcpLatencyMs ?? null,
         error: item.error ?? null

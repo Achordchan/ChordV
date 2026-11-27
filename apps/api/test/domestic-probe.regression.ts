@@ -70,26 +70,34 @@ const fresh = toAdminNodeRecord({ ...baseRow, domesticStatus: "reachable", domes
 assert.equal(fresh.domesticStatus, "reachable");
 assert.equal(fresh.domesticLatencyMs, 30);
 
-// The largest report the DTO accepts must fit in Nest's default 100 KB JSON body
+// The largest report the DTO accepts must fit the report route's own body
 // limit, otherwise a full round would get HTTP 413 before validation.
 const largest = {
   controlOk: true,
   results: Array.from({ length: DOMESTIC_MAX_TARGETS }, () => ({
     nodeId: "n".repeat(64),
+    host: "h".repeat(255),
+    port: 65535,
     tcpOk: false,
     tcpLatencyMs: 60000,
     error: "墙".repeat(DOMESTIC_MAX_ERROR_LENGTH)
   }))
 };
 assert.deepEqual(validateSync(plainToInstance(DomesticProbeReportDto, largest)), [], "largest report must pass validation");
-assert.ok(Buffer.byteLength(JSON.stringify(largest), "utf8") < 100 * 1024, "largest report must fit the default body limit");
+assert.ok(Buffer.byteLength(JSON.stringify(largest), "utf8") < DOMESTIC_PROBE_REPORT_MAX_BODY_BYTES, "largest report must fit the report route's body limit");
 const tooMany = { ...largest, results: [...largest.results, largest.results[0]] };
 assert.notDeepEqual(validateSync(plainToInstance(DomesticProbeReportDto, tooMany)), [], "one more than the cap is rejected");
+
+// A block decided while the agent was online is not shown once the agent is offline.
+const blockedRow = { ...baseRow, domesticStatus: "blocked", domesticCheckedAt: new Date(), domesticFailStreak: 3 };
+assert.equal(toAdminNodeRecord({ ...blockedRow, controlStatus: "online", agentLastSeenAt: new Date() }).domesticStatus, "blocked");
+assert.equal(toAdminNodeRecord({ ...blockedRow, controlStatus: "offline", agentLastSeenAt: new Date() }).domesticStatus, "unknown");
+assert.equal(toAdminNodeRecord({ ...blockedRow, controlStatus: "online", agentLastSeenAt: new Date(Date.now() - 10 * 60 * 1000) }).domesticStatus, "unknown", "stale heartbeat counts as offline");
 
 // Service: token auth, round handling, and the settings row never holding the plain token.
 let lastFindMany: any = null;
 let lastUpdateMany: any = null;
-type NodeRow = { id: string; domesticStatus: string; domesticFailStreak: number; controlStatus: string; agentLastSeenAt: Date | null; domesticCheckedAt?: Date };
+type NodeRow = { id: string; serverHost: string; serverPort: number; domesticStatus: string; domesticFailStreak: number; controlStatus: string; agentLastSeenAt: Date | null; domesticCheckedAt?: Date };
 function createFakePrisma(nodes: NodeRow[]) {
   const settings = new Map<string, unknown>();
   const client: any = {
@@ -114,8 +122,8 @@ function createFakePrisma(nodes: NodeRow[]) {
 async function main() {
   const seen = new Date();
   const nodes: NodeRow[] = [
-    { id: "a", domesticStatus: "unknown", domesticFailStreak: 0, controlStatus: "online", agentLastSeenAt: seen },
-    { id: "b", domesticStatus: "reachable", domesticFailStreak: 2, controlStatus: "online", agentLastSeenAt: seen }
+    { id: "a", serverHost: "h", serverPort: 443, domesticStatus: "unknown", domesticFailStreak: 0, controlStatus: "online", agentLastSeenAt: seen },
+    { id: "b", serverHost: "h", serverPort: 443, domesticStatus: "reachable", domesticFailStreak: 2, controlStatus: "online", agentLastSeenAt: seen }
   ];
   const { client, settings } = createFakePrisma(nodes);
   const service = new DomesticProbeService(client);
@@ -129,16 +137,23 @@ async function main() {
   assert.equal(await service.authenticate(`Bearer ${issued.token}x`), false);
   assert.equal(await service.authenticate(issued.token), false, "Bearer scheme required");
 
-  const ignored = await service.report({ controlOk: false, results: [{ nodeId: "a", ...ok }] });
+  const ignored = await service.report({ controlOk: false, results: [{ nodeId: "a", host: "h", port: 443, ...ok }] });
   assert.equal(ignored.ignored, true);
   assert.equal(nodes[0].domesticStatus, "unknown", "ignored round must not touch nodes");
   assert.equal((await service.getState()).lastRoundIgnored, true);
 
-  const result = await service.report({ controlOk: true, results: [{ nodeId: "a", ...ok }, { nodeId: "b", ...fail }, { nodeId: "b", ...ok }, { nodeId: "missing", ...ok }] });
+  const result = await service.report({ controlOk: true, results: [{ nodeId: "a", host: "h", port: 443, ...ok }, { nodeId: "b", host: "h", port: 443, ...fail }, { nodeId: "b", host: "h", port: 443, ...ok }, { nodeId: "a", host: "old-host", port: 443, ...fail }, { nodeId: "missing", host: "h", port: 443, ...ok }] });
   assert.deepEqual(result, { accepted: 2, ignored: false, reason: null });
   assert.equal(nodes[0].domesticStatus, "reachable");
   assert.equal(nodes[1].domesticStatus, "blocked", "third consecutive failure blocks; duplicate observation is ignored");
   assert.equal((await service.getState()).lastRoundIgnored, false);
+
+  // A result for an endpoint the node no longer has is dropped.
+  nodes[0].serverPort = 8443;
+  const stale = await service.report({ controlOk: true, results: [{ nodeId: "a", host: "h", port: 443, ...fail }, { nodeId: "b", host: "h", port: 443, ...ok }] });
+  assert.equal(stale.accepted, 1);
+  assert.equal(nodes[0].domesticStatus, "reachable", "observation of the old port must not touch the node");
+  assert.equal(nodes[0].domesticFailStreak, 0);
 
   // Targets come least recently checked first, capped at the report limit.
   // Targets rotate by when they were last handed out, independent of accepted rounds.

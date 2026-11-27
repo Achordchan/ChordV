@@ -26,7 +26,7 @@ type StoredDomesticProbeConfig = {
 
 export type DomesticProbeReport = {
   controlOk: boolean;
-  results: Array<DomesticObservation & { nodeId: string }>;
+  results: Array<DomesticObservation & { nodeId: string; host: string; port: number }>;
 };
 
 export function hashDomesticProbeToken(token: string) {
@@ -143,12 +143,15 @@ export class DomesticProbeService {
         const ids = [...new Set(report.results.map((item) => item.nodeId))];
         const nodes = await tx.node.findMany({
           where: { id: { in: ids } },
-          select: { id: true, domesticStatus: true, domesticFailStreak: true, controlStatus: true, agentLastSeenAt: true }
+          select: { id: true, serverHost: true, serverPort: true, domesticStatus: true, domesticFailStreak: true, controlStatus: true, agentLastSeenAt: true }
         });
         const byId = new Map(nodes.map((node) => [node.id, node]));
         for (const result of report.results) {
           const node = byId.get(result.nodeId);
           if (!node) continue;
+          // The node's address or port changed after the probe got its list:
+          // this observation is about an endpoint the node no longer has.
+          if (node.serverHost !== result.host || node.serverPort !== result.port) continue;
           byId.delete(result.nodeId); // one observation per node per round
           const agentOnline = node.agentLastSeenAt !== null
             && readEffectiveControlStatus(node.controlStatus, node.agentLastSeenAt, now) !== "offline";

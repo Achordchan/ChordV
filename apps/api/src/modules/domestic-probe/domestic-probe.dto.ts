@@ -4,6 +4,9 @@ import { ArrayMaxSize, IsArray, IsBoolean, IsInt, IsOptional, IsString, Max, Max
 
 export class DomesticProbeResultDto {
   @IsString() @MaxLength(64) nodeId!: string;
+  /** The endpoint actually probed, echoed from the target list; a result for an endpoint the node no longer has is dropped. */
+  @IsString() @MaxLength(255) host!: string;
+  @IsInt() @Min(1) @Max(65535) port!: number;
   @IsBoolean() tcpOk!: boolean;
   @IsOptional() @IsInt() @Min(0) @Max(60000) tcpLatencyMs!: number | null;
   @IsOptional() @IsString() @MaxLength(DOMESTIC_MAX_ERROR_LENGTH) error!: string | null;

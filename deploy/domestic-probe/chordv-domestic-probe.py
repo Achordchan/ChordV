@@ -92,7 +92,7 @@ def probe_target(target):
         ping = ping_summary(address)
         if ping:
             error = f"{error}；{ping}"
-    return {"nodeId": target["nodeId"], "tcpOk": ok, "tcpLatencyMs": latency, "error": error[:100] if error else None}
+    return {"nodeId": target["nodeId"], "host": target["host"], "port": int(target["port"]), "tcpOk": ok, "tcpLatencyMs": latency, "error": error[:100] if error else None}
 
 
 def ping_summary(address):

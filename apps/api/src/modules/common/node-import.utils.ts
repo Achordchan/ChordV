@@ -190,7 +190,7 @@ export function toAdminNodeRecord(row: {
     probeLatencyMs: row.probeLatencyMs,
     probeCheckedAt: row.probeCheckedAt?.toISOString() ?? null,
     probeError: row.probeError,
-    ...toDomesticFields(row),
+    ...toDomesticFields(row, readEffectiveControlStatus(row.controlStatus ?? "unknown", row.agentLastSeenAt ?? null) !== "offline"),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString()
   };
@@ -202,8 +202,11 @@ function toDomesticFields(row: {
   domesticCheckedAt?: Date | null;
   domesticFailStreak?: number | null;
   domesticError?: string | null;
-}) {
-  const status = effectiveDomesticStatus(row.domesticStatus, row.domesticCheckedAt ?? null);
+}, agentOnline: boolean) {
+  const stored = effectiveDomesticStatus(row.domesticStatus, row.domesticCheckedAt ?? null);
+  // "blocked" was decided while the agent was online; if the agent has gone
+  // offline since, the machine may simply be down, so don't keep claiming a block.
+  const status = stored === "blocked" && !agentOnline ? "unknown" : stored;
   return {
     domesticStatus: status,
     domesticLatencyMs: status === "reachable" ? row.domesticLatencyMs ?? null : null,
