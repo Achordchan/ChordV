@@ -4,6 +4,12 @@ import type { DomesticReachabilityStatus } from "@chordv/shared";
 export const DOMESTIC_BLOCK_STREAK = 3;
 /** Results older than this are shown as unknown: the probe has stopped reporting. */
 export const DOMESTIC_STALE_MS = 15 * 60 * 1000;
+/**
+ * Most targets handed out in one round, and most results accepted in one
+ * report. The two must stay equal: a round is always reported whole, so the
+ * "every node failed at once" check sees the complete round.
+ */
+export const DOMESTIC_MAX_TARGETS = 500;
 /** Interval the probe script is told to use. */
 export const DOMESTIC_PROBE_INTERVAL_SECONDS = 300;
 

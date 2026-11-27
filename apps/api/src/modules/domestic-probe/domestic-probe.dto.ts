@@ -1,4 +1,5 @@
 import { Type } from "class-transformer";
+import { DOMESTIC_MAX_TARGETS } from "./domestic-probe.policy";
 import { ArrayMaxSize, IsArray, IsBoolean, IsInt, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from "class-validator";
 
 export class DomesticProbeResultDto {
@@ -11,7 +12,7 @@ export class DomesticProbeResultDto {
 export class DomesticProbeReportDto {
   /** Whether the probe's own control target (a well-known domestic site) answered this round. */
   @IsBoolean() controlOk!: boolean;
-  @IsArray() @ArrayMaxSize(200)
+  @IsArray() @ArrayMaxSize(DOMESTIC_MAX_TARGETS)
   @ValidateNested({ each: true }) @Type(() => DomesticProbeResultDto)
   results!: DomesticProbeResultDto[];
 }

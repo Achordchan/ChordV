@@ -4,6 +4,7 @@ import type { AdminDomesticProbeStateDto, AdminDomesticProbeTokenDto } from "@ch
 import { PrismaService } from "../common/prisma.service";
 import { readEffectiveControlStatus } from "../common/node-import.utils";
 import {
+  DOMESTIC_MAX_TARGETS,
   DOMESTIC_PROBE_INTERVAL_SECONDS,
   nextDomesticState,
   shouldIgnoreRound,
@@ -97,7 +98,9 @@ export class DomesticProbeService {
     const nodes = await this.prisma.node.findMany({
       where: { isActive: true, OR: [{ registrationStatus: "agent_ready" }, { registrationStatus: null }] },
       select: { id: true, name: true, serverHost: true, serverPort: true },
-      orderBy: { name: "asc" }
+      orderBy: { name: "asc" },
+      // Same cap as the report DTO, so a full round always fits in one report.
+      take: DOMESTIC_MAX_TARGETS
     });
     return {
       intervalSeconds: DOMESTIC_PROBE_INTERVAL_SECONDS,
