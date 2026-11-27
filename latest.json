@@ -1,0 +1,16 @@
+{
+  "version": "0.0.41",
+  "channel": "stable",
+  "tag": "backend-v0.0.41",
+  "publishedAt": "2026-11-27T08:00:55Z",
+  "htmlUrl": "https://github.com/Achordchan/ChordV/releases/tag/backend-v0.0.41",
+  "changelog": [
+    "后台可删除用户、套餐、订阅、团队（删除前列出关联项，可强制删除）",
+    "国内探针：节点列表显示国内可达/被墙"
+  ],
+  "artifact": {
+    "url": "https://github.com/Achordchan/ChordV/releases/download/backend-v0.0.41/chordv-backend-0.0.41.tar.gz",
+    "sha256": "92e0c718b689601d9a10f4dc106f466b7342ad65deeda7d327c24c1e09782413",
+    "sizeBytes": 104333252
+  }
+}
