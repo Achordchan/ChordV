@@ -84,6 +84,7 @@ import {
   UpdateUserDto
 } from "./admin.dto";
 import type { Response } from "express";
+import { SubscriptionLinkKickInterceptor } from "../common/subscription-link-kick.interceptor";
 
 type UploadedReleaseFile = {
   path: string;
@@ -95,6 +96,8 @@ type MulterCallback = (error: Error | null, filename: string) => void;
 
 @Controller("admin")
 @UseGuards(AdminAuthGuard)
+// A write here can change what a subscription link serves; publish it now.
+@UseInterceptors(SubscriptionLinkKickInterceptor)
 export class AdminController {
   constructor(
     private readonly devDataService: DevDataService,

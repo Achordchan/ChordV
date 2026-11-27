@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import worker, { hashToken, INVALID_BODY, INVALID_NOTICE, UPDATE_INTERVAL_HOURS } from "../src/worker.mjs";
+import worker, { hashToken, INVALID_BODY, INVALID_NOTICE, INVALID_STATUS, UPDATE_INTERVAL_HOURS } from "../src/worker.mjs";
 
 const TOKEN = "A".repeat(43);
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
@@ -23,9 +23,13 @@ function createEnv(entries = {}) {
   };
 }
 
-function request(path, method = "GET") {
-  return new Request(`https://sub.example.com${path}`, { method });
+function request(path, method = "GET", userAgent = "v2rayN/7.0") {
+  return new Request(`https://sub.example.com${path}`, { method, headers: { "user-agent": userAgent } });
 }
+
+const SHADOWROCKET = "Shadowrocket/2070 CFNetwork/1568.300.101 Darwin/24.2.0";
+const encode = (text) => Buffer.from(text, "utf8").toString("base64");
+const decode = (body) => Buffer.from(body, "base64").toString("utf8");
 
 const stored = (document) => ({ [sha256(TOKEN)]: JSON.stringify(document) });
 
@@ -99,7 +103,9 @@ test("a stored value this version cannot read fails the refresh too", async () =
     JSON.stringify({ v: 1, body: 5, userinfo: null }),
     JSON.stringify({ v: 1, body: "Ym9keQ==", userinfo: 5 }),
     JSON.stringify({ v: 1, body: "Ym9keQ==" }),
-    JSON.stringify({ v: 1, body: "Ym9keQ==", userinfo: "upload=0\r\nx-injected: 1" })
+    JSON.stringify({ v: 1, body: "Ym9keQ==", userinfo: "upload=0\r\nx-injected: 1" }),
+    JSON.stringify({ v: 1, body: "Ym9keQ==", userinfo: null, status: 5 }),
+    JSON.stringify({ v: 1, body: "Ym9keQ==", userinfo: null, status: "a\nvless://injected" })
   ]) {
     const { env } = createEnv({ [sha256(TOKEN)]: value });
     const response = await worker.fetch(request(`/s/${TOKEN}`), env);
@@ -148,4 +154,49 @@ test("only GET and HEAD are served", async () => {
     assert.equal(response.headers.get("allow"), "GET, HEAD");
     assert.deepEqual(reads, [], method);
   }
+});
+
+test("Shadowrocket gets the status line on top of the stored body", async () => {
+  const nodes = "vless://a@example.com:443?security=reality#%E8%8A%82%E7%82%B9\nvless://b@example.com:443#b";
+  const status = "剩余 779.9 GB ｜ 2026-12-27 到期";
+  const { env } = createEnv(stored({ v: 1, body: encode(nodes), userinfo: "upload=0; download=0; total=1; expire=2", status }));
+  const response = await worker.fetch(request(`/s/${TOKEN}`, "GET", SHADOWROCKET), env);
+  assert.equal(response.status, 200);
+  assert.equal(decode(await response.text()), `STATUS=${status}\n${nodes}`);
+  assert.equal(response.headers.get("subscription-userinfo"), "upload=0; download=0; total=1; expire=2");
+  assert.equal(response.headers.get("vary"), "user-agent");
+});
+
+test("other clients, and documents without a status, get the body exactly as stored", async () => {
+  const body = encode("vless://a@example.com:443#a");
+  for (const [document, userAgent] of [
+    [{ v: 1, body, userinfo: null, status: "剩余 1.0 GB ｜ 2026-12-27 到期" }, "v2rayN/7.0"],
+    [{ v: 1, body, userinfo: null, status: "剩余 1.0 GB ｜ 2026-12-27 到期" }, "clash-verge/v2.0"],
+    [{ v: 1, body, userinfo: null, status: "剩余 1.0 GB ｜ 2026-12-27 到期" }, ""],
+    [{ v: 1, body, userinfo: null }, SHADOWROCKET],
+    [{ v: 1, body, userinfo: null, status: null }, SHADOWROCKET],
+    [{ v: 1, body, userinfo: null, status: "" }, SHADOWROCKET]
+  ]) {
+    const { env } = createEnv(stored(document));
+    const response = await worker.fetch(request(`/s/${TOKEN}`, "GET", userAgent), env);
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), body, `${userAgent} ${JSON.stringify(document.status)}`);
+  }
+});
+
+test("a body that does not decode is served as stored rather than mangled", async () => {
+  for (const body of ["not base64!", encode("x").slice(0, -1) + "\u0000", Buffer.from([0xff, 0xfe, 0xfd]).toString("base64")]) {
+    const { env } = createEnv(stored({ v: 1, body, userinfo: null, status: "剩余 1.0 GB ｜ 2026-12-27 到期" }));
+    const response = await worker.fetch(request(`/s/${TOKEN}`, "GET", SHADOWROCKET), env);
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), body);
+  }
+});
+
+test("Shadowrocket is told an unknown link is invalid on the card too", async () => {
+  const { env } = createEnv();
+  const response = await worker.fetch(request(`/s/${TOKEN}`, "GET", SHADOWROCKET), env);
+  assert.equal(response.status, 200);
+  assert.equal(decode(await response.text()), `STATUS=${INVALID_STATUS}\n${decode(INVALID_BODY)}`);
+  assert.equal(INVALID_STATUS, `⚠️ ${INVALID_NOTICE}`);
 });

@@ -187,12 +187,14 @@ async function main() {
     assert.deepEqual(JSON.parse(serializeSubscriptionLinkDocument(document)), {
       v: 1,
       body: document.body,
-      userinfo: "upload=0; download=1073741824; total=107374182400; expire=1798761600"
+      userinfo: "upload=0; download=1073741824; total=107374182400; expire=1798761600",
+      status: "剩余 99.0 GB ｜ 2027-01-01 到期"
     });
     assert.deepEqual(JSON.parse(serializeSubscriptionLinkDocument(buildNoticeDocument("提示"))), {
       v: 1,
       body: buildNoticeDocument("提示").body,
-      userinfo: null
+      userinfo: null,
+      status: "⚠️ 提示"
     });
 
     const hash = hashSubscriptionLinkDocument(document);

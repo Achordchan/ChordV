@@ -9,6 +9,7 @@ import { isPrismaCodedError } from "./prisma-error.utils";
 import { PrismaService } from "./prisma.service";
 import { normalizeSiteOrigin } from "./site-address.service";
 import {
+  buildLapsedStatus,
   buildNodesDocument,
   buildNoticeDocument,
   buildSubscriptionLinkUrl,
@@ -162,9 +163,9 @@ export class SubscriptionLinkService {
       return buildNoticeDocument(SUBSCRIPTION_LINK_NOTICES.team_disabled, usage);
     }
     const state = readEffectiveSubscriptionState(subscription);
-    if (state === "expired") return buildNoticeDocument(SUBSCRIPTION_LINK_NOTICES.subscription_expired, usage);
-    if (state === "exhausted") return buildNoticeDocument(SUBSCRIPTION_LINK_NOTICES.subscription_exhausted, usage);
-    if (state === "paused") return buildNoticeDocument(SUBSCRIPTION_LINK_NOTICES.subscription_paused, usage);
+    if (state === "expired") return buildNoticeDocument(SUBSCRIPTION_LINK_NOTICES.subscription_expired, usage, buildLapsedStatus("expired", usage));
+    if (state === "exhausted") return buildNoticeDocument(SUBSCRIPTION_LINK_NOTICES.subscription_exhausted, usage, buildLapsedStatus("exhausted", usage));
+    if (state === "paused") return buildNoticeDocument(SUBSCRIPTION_LINK_NOTICES.subscription_paused, usage, buildLapsedStatus("paused", usage));
 
     const [bindings, accesses] = await Promise.all([
       this.prisma.panelClientBinding.findMany({
