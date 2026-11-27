@@ -98,7 +98,11 @@ export class DomesticProbeService {
     const nodes = await this.prisma.node.findMany({
       where: { isActive: true, OR: [{ registrationStatus: "agent_ready" }, { registrationStatus: null }] },
       select: { id: true, name: true, serverHost: true, serverPort: true },
-      orderBy: { name: "asc" },
+      // Least recently checked first: if the fleet outgrows the cap, or the
+      // probe hits its round deadline, the nodes left out this round come
+      // first next round instead of being skipped forever. The probe keeps
+      // this order when scheduling its work.
+      orderBy: [{ domesticCheckedAt: { sort: "asc", nulls: "first" } }, { name: "asc" }],
       // Same cap as the report DTO, so a full round always fits in one report.
       take: DOMESTIC_MAX_TARGETS
     });

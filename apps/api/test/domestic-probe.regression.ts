@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
+import "reflect-metadata";
+import { plainToInstance } from "class-transformer";
+import { validateSync } from "class-validator";
+import { DomesticProbeReportDto } from "../src/modules/domestic-probe/domestic-probe.dto";
 import {
   DOMESTIC_BLOCK_STREAK,
+  DOMESTIC_MAX_ERROR_LENGTH,
+  DOMESTIC_MAX_TARGETS,
   DOMESTIC_STALE_MS,
   effectiveDomesticStatus,
   nextDomesticState,
@@ -61,7 +67,24 @@ const fresh = toAdminNodeRecord({ ...baseRow, domesticStatus: "reachable", domes
 assert.equal(fresh.domesticStatus, "reachable");
 assert.equal(fresh.domesticLatencyMs, 30);
 
+// The largest report the DTO accepts must fit in Nest's default 100 KB JSON body
+// limit, otherwise a full round would get HTTP 413 before validation.
+const largest = {
+  controlOk: true,
+  results: Array.from({ length: DOMESTIC_MAX_TARGETS }, () => ({
+    nodeId: "n".repeat(64),
+    tcpOk: false,
+    tcpLatencyMs: 60000,
+    error: "墙".repeat(DOMESTIC_MAX_ERROR_LENGTH)
+  }))
+};
+assert.deepEqual(validateSync(plainToInstance(DomesticProbeReportDto, largest)), [], "largest report must pass validation");
+assert.ok(Buffer.byteLength(JSON.stringify(largest), "utf8") < 100 * 1024, "largest report must fit the default body limit");
+const tooMany = { ...largest, results: [...largest.results, largest.results[0]] };
+assert.notDeepEqual(validateSync(plainToInstance(DomesticProbeReportDto, tooMany)), [], "one more than the cap is rejected");
+
 // Service: token auth, round handling, and the settings row never holding the plain token.
+let lastFindMany: any = null;
 type NodeRow = { id: string; domesticStatus: string; domesticFailStreak: number; controlStatus: string; agentLastSeenAt: Date | null; domesticCheckedAt?: Date };
 function createFakePrisma(nodes: NodeRow[]) {
   const settings = new Map<string, unknown>();
@@ -71,7 +94,10 @@ function createFakePrisma(nodes: NodeRow[]) {
       upsert: async ({ where, create, update }: any) => { settings.set(where.key, settings.has(where.key) ? update.value : create.value); }
     },
     node: {
-      findMany: async ({ where }: any) => nodes.filter((node) => where.id.in.includes(node.id)),
+      findMany: async (args: any) => {
+        lastFindMany = args;
+        return args.where.id ? nodes.filter((node) => args.where.id.in.includes(node.id)) : [];
+      },
       update: async ({ where, data }: any) => Object.assign(nodes.find((node) => node.id === where.id)!, data)
     },
     $executeRaw: async () => 0
@@ -108,6 +134,11 @@ async function main() {
   assert.equal(nodes[0].domesticStatus, "reachable");
   assert.equal(nodes[1].domesticStatus, "blocked", "third consecutive failure blocks; duplicate observation is ignored");
   assert.equal((await service.getState()).lastRoundIgnored, false);
+
+  // Targets come least recently checked first, capped at the report limit.
+  await service.listTargets();
+  assert.deepEqual(lastFindMany.orderBy[0], { domesticCheckedAt: { sort: "asc", nulls: "first" } });
+  assert.equal(lastFindMany.take, DOMESTIC_MAX_TARGETS);
 
   const revoked = await service.revokeToken();
   assert.equal(revoked.configured, false);

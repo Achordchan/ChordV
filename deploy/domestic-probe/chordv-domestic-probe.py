@@ -91,7 +91,7 @@ def probe_target(target):
         ping = ping_summary(address)
         if ping:
             error = f"{error}；{ping}"
-    return {"nodeId": target["nodeId"], "tcpOk": ok, "tcpLatencyMs": latency, "error": error[:300] if error else None}
+    return {"nodeId": target["nodeId"], "tcpOk": ok, "tcpLatencyMs": latency, "error": error[:100] if error else None}
 
 
 def ping_summary(address):
@@ -106,7 +106,7 @@ def ping_summary(address):
 
 
 def api(base, token, method, path, body=None):
-    data = json.dumps(body).encode() if body is not None else None
+    data = json.dumps(body, ensure_ascii=False).encode() if body is not None else None
     request = urllib.request.Request(base.rstrip("/") + "/api" + path, data=data, method=method, headers={
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -131,6 +131,8 @@ def main():
     started = time.monotonic()
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS)
     control = pool.submit(lambda: any(probe_tcp(host, port)[0] for host, port in CONTROL_TARGETS))
+    # The API lists the least recently checked nodes first; submitting in that
+    # order means nodes cut off by the deadline go first next round.
     futures = {pool.submit(probe_target, target): target for target in targets}
     done, pending = concurrent.futures.wait([control, *futures], timeout=ROUND_DEADLINE_S)
     pool.shutdown(wait=False, cancel_futures=True)
@@ -153,4 +155,6 @@ if __name__ == "__main__":
         main()
     except Exception as error:  # cron mails/logs this; never retry in a loop
         print(f"{time.strftime('%F %T')} probe failed: {error}", file=sys.stderr, flush=True)
-        sys.exit(1)
+        # os._exit, not sys.exit: a normal interpreter shutdown waits for stuck
+        # worker threads, which would keep the process and its lock alive.
+        os._exit(1)

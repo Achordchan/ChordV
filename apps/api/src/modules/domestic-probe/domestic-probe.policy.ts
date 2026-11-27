@@ -7,9 +7,13 @@ export const DOMESTIC_STALE_MS = 15 * 60 * 1000;
 /**
  * Most targets handed out in one round, and most results accepted in one
  * report. The two must stay equal: a round is always reported whole, so the
- * "every node failed at once" check sees the complete round.
+ * "every node failed at once" check sees the complete round. Together with
+ * DOMESTIC_MAX_ERROR_LENGTH this keeps the largest possible report under the
+ * default 100 KB JSON body limit (checked by the regression test).
  */
-export const DOMESTIC_MAX_TARGETS = 500;
+export const DOMESTIC_MAX_TARGETS = 200;
+/** Longest error text accepted per result. */
+export const DOMESTIC_MAX_ERROR_LENGTH = 100;
 /** Interval the probe script is told to use. */
 export const DOMESTIC_PROBE_INTERVAL_SECONDS = 300;
 

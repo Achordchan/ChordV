@@ -1,12 +1,12 @@
 import { Type } from "class-transformer";
-import { DOMESTIC_MAX_TARGETS } from "./domestic-probe.policy";
+import { DOMESTIC_MAX_ERROR_LENGTH, DOMESTIC_MAX_TARGETS } from "./domestic-probe.policy";
 import { ArrayMaxSize, IsArray, IsBoolean, IsInt, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from "class-validator";
 
 export class DomesticProbeResultDto {
-  @IsString() @MaxLength(128) nodeId!: string;
+  @IsString() @MaxLength(64) nodeId!: string;
   @IsBoolean() tcpOk!: boolean;
   @IsOptional() @IsInt() @Min(0) @Max(60000) tcpLatencyMs!: number | null;
-  @IsOptional() @IsString() @MaxLength(300) error!: string | null;
+  @IsOptional() @IsString() @MaxLength(DOMESTIC_MAX_ERROR_LENGTH) error!: string | null;
 }
 
 export class DomesticProbeReportDto {
