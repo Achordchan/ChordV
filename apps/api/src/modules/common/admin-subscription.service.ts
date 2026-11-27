@@ -90,9 +90,16 @@ class ScheduledTrafficResetSubscriptionExpired extends Error {}
 
 export type ScheduledTrafficResetOutcome = "reset" | "superseded" | "skipped_expired";
 
+/**
+ * 已用流量的精确字节数。与读取方（订阅链接、Agent 配额）同一约定：totalTrafficBytes > 0
+ * 才说明字节计数已初始化；老订阅只有 GB 数时按 GB 换算，免得把已用写成 0。
+ */
 function readUsedTrafficBytes(row: unknown, fallbackGb: number): bigint {
-  const bytes = (row as { usedTrafficBytes?: unknown }).usedTrafficBytes;
-  return typeof bytes === "bigint" ? bytes : trafficGbNumberToBytes(fallbackGb);
+  const { usedTrafficBytes, totalTrafficBytes } = row as { usedTrafficBytes?: unknown; totalTrafficBytes?: unknown };
+  if (typeof usedTrafficBytes === "bigint" && typeof totalTrafficBytes === "bigint" && totalTrafficBytes > 0n) {
+    return usedTrafficBytes;
+  }
+  return trafficGbNumberToBytes(fallbackGb);
 }
 
 function isSubscriptionExpiredForScheduledReset(row: { state: SubscriptionState; expireAt: Date }, now: Date) {

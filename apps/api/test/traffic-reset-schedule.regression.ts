@@ -408,6 +408,12 @@ async function testAdjustWithoutUsedKeepsExactBytes() {
   assert.equal(updates[0].data.usedTrafficBytes, 21_193_843_712n, "没传已用流量时保留精确字节数");
   await service.updateSubscription("sub", { usedTrafficGb: 0 });
   assert.equal(updates[1].data.usedTrafficBytes, 0n);
+
+  // 字节计数未初始化的老订阅：按 GB 换算，不能把已用写成 0
+  const legacy = { ...current, totalTrafficBytes: 0n, usedTrafficBytes: 0n, usedTrafficGb: 20 };
+  (service as any).requireSubscription = async () => legacy;
+  await service.updateSubscription("sub", { trafficResetDay: 9 });
+  assert.equal(updates[2].data.usedTrafficBytes, 20n * 1024n ** 3n);
 }
 
 async function main() {

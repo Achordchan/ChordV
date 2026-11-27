@@ -69,7 +69,12 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
   const subtitle = isTeam ? props.bootstrap.subscription.planName : `${props.bootstrap.subscription.planName} · 个人订阅`;
   // 设了每月重置日时，总流量是每月额度、已使用是本月用量。
   const monthly = typeof props.bootstrap.subscription.trafficResetDay === "number";
-  const nextResetAt = props.bootstrap.subscription.nextTrafficResetAt;
+  // 过期的订阅不会重置：重置日在到期之后就不显示。
+  const nextResetAt =
+    props.bootstrap.subscription.nextTrafficResetAt &&
+    Date.parse(props.bootstrap.subscription.nextTrafficResetAt) < Date.parse(props.bootstrap.subscription.expireAt)
+      ? props.bootstrap.subscription.nextTrafficResetAt
+      : null;
   const metrics = [
     { label: isTeam ? "团队剩余流量" : "剩余流量", value: `${formatTrafficGb(props.bootstrap.subscription.remainingTrafficGb)} GB` },
     { label: `${isTeam ? "团队" : ""}${monthly ? "每月流量" : "总流量"}`, value: `${formatTrafficGb(props.bootstrap.subscription.totalTrafficGb)} GB` },
