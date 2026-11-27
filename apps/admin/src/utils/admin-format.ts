@@ -56,3 +56,31 @@ export function addDays(base: Date, value: number) {
   next.setDate(next.getDate() + value);
   return next;
 }
+
+/** 订阅的每月流量重置说明，例如“每月 15 号 · 下次 12/15 00:00”。 */
+export function describeTrafficReset(record: { trafficResetDay?: number | null; nextTrafficResetAt?: string | null } | null | undefined) {
+  if (!record || typeof record.trafficResetDay !== "number") return "不自动重置";
+  const day = `每月 ${record.trafficResetDay} 号`;
+  return record.nextTrafficResetAt ? `${day} · 下次 ${formatDateTime(record.nextTrafficResetAt)}` : day;
+}
+
+/**
+ * 设了每月重置日时，订阅的“总流量”其实是每月额度、“已用”是本月已用；
+ * 没设时仍是整个订阅期的总量。界面按这个口径取文字。
+ */
+export function trafficQuotaLabels(resetDay: number | "" | null | undefined) {
+  const monthly = typeof resetDay === "number";
+  return {
+    monthly,
+    totalInput: monthly ? "每月流量 (GB)" : "总流量 (GB)",
+    usedInput: monthly ? "本月已用 (GB)" : "已用流量 (GB)",
+    totalShort: monthly ? "每月额度" : "总额度",
+    usedShort: monthly ? "本月已用" : "已用",
+    totalDescription: monthly ? "每到重置日已用流量清零，重新从这个额度开始用。" : undefined
+  };
+}
+
+/** 表单里显示的 GB 数保留 3 位小数，避免出现 19.7382175354287 这样的长小数。 */
+export function roundTrafficGbForForm(value: number) {
+  return Math.round(value * 1000) / 1000;
+}

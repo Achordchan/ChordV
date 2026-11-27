@@ -12,6 +12,8 @@ import type {
 } from "@chordv/shared";
 import type { Dispatch, SetStateAction } from "react";
 import { ExpireAtController } from "../shared/ExpireAtController";
+import { TrafficResetDayInput } from "../shared/TrafficResetDayInput";
+import { trafficQuotaLabels } from "../../utils/admin-format";
 import {
   announcementLevelOptions,
   applyPlanToChangePlanForm,
@@ -115,13 +117,13 @@ export function SubscriptionCreateEditorSection(props: {
       />
       <Group grow>
         <NumberInput
-          label="总流量 (GB)"
+          label={trafficQuotaLabels(props.subscriptionCreateForm.trafficResetDay).totalInput}
           min={0}
           value={props.subscriptionCreateForm.totalTrafficGb}
           onChange={(value) => props.setSubscriptionCreateForm((current) => ({ ...current, totalTrafficGb: Number(value) || 0 }))}
         />
         <NumberInput
-          label="已用流量 (GB)"
+          label={trafficQuotaLabels(props.subscriptionCreateForm.trafficResetDay).usedInput}
           min={0}
           value={props.subscriptionCreateForm.usedTrafficGb}
           onChange={(value) => props.setSubscriptionCreateForm((current) => ({ ...current, usedTrafficGb: Number(value) || 0 }))}
@@ -132,6 +134,10 @@ export function SubscriptionCreateEditorSection(props: {
         type="datetime-local"
         value={props.subscriptionCreateForm.expireAt}
         onChange={(event) => { const expireAt = event.currentTarget.value; props.setSubscriptionCreateForm((current) => ({ ...current, expireAt })); }}
+      />
+      <TrafficResetDayInput
+        value={props.subscriptionCreateForm.trafficResetDay}
+        onChange={(trafficResetDay) => props.setSubscriptionCreateForm((current) => ({ ...current, trafficResetDay }))}
       />
       <Select
         label="状态"
@@ -150,14 +156,16 @@ export function SubscriptionAdjustEditorSection(props: {
   return (
     <>
       <NumberInput
-        label="总流量 (GB)"
+        label={trafficQuotaLabels(props.subscriptionAdjustForm.trafficResetDay).totalInput}
+        description={trafficQuotaLabels(props.subscriptionAdjustForm.trafficResetDay).totalDescription}
         min={0}
         value={props.subscriptionAdjustForm.totalTrafficGb}
         onChange={(value) => props.setSubscriptionAdjustForm((current) => ({ ...current, totalTrafficGb: Number(value) || 0 }))}
       />
       <NumberInput
-        label="已用流量 (GB)"
+        label={trafficQuotaLabels(props.subscriptionAdjustForm.trafficResetDay).usedInput}
         min={0}
+        decimalScale={3}
         value={props.subscriptionAdjustForm.usedTrafficGb}
         onChange={(value) => props.setSubscriptionAdjustForm((current) => ({ ...current, usedTrafficGb: Number(value) || 0 }))}
       />
@@ -166,6 +174,10 @@ export function SubscriptionAdjustEditorSection(props: {
         value={props.subscriptionAdjustForm.expireAt}
         baseValue={props.subscriptionAdjustForm.baseExpireAt}
         onChange={(value) => props.setSubscriptionAdjustForm((current) => ({ ...current, expireAt: value }))}
+      />
+      <TrafficResetDayInput
+        value={props.subscriptionAdjustForm.trafficResetDay}
+        onChange={(trafficResetDay) => props.setSubscriptionAdjustForm((current) => ({ ...current, trafficResetDay }))}
       />
       <Select
         label="状态"
@@ -193,7 +205,7 @@ export function SubscriptionChangePlanEditorSection(props: {
         onChange={(value) => props.setSubscriptionChangePlanForm((current) => applyPlanToChangePlanForm(props.snapshot, current, value || ""))}
       />
       <NumberInput
-        label="总流量 (GB)"
+        label={trafficQuotaLabels(props.subscriptionChangePlanForm.trafficResetDay).totalInput}
         min={0}
         value={props.subscriptionChangePlanForm.totalTrafficGb}
         onChange={(value) => props.setSubscriptionChangePlanForm((current) => ({ ...current, totalTrafficGb: Number(value) || 0 }))}
@@ -290,13 +302,13 @@ export function TeamSubscriptionEditorSection(props: {
         onChange={(value) => props.setTeamSubscriptionForm((current) => applyPlanToTeamSubscriptionForm(props.snapshot, current, value || ""))}
       />
       <NumberInput
-        label="总流量 (GB)"
+        label={trafficQuotaLabels(props.teamSubscriptionForm.trafficResetDay).totalInput}
         min={0}
         value={props.teamSubscriptionForm.totalTrafficGb}
         onChange={(value) => props.setTeamSubscriptionForm((current) => ({ ...current, totalTrafficGb: Number(value) || 0 }))}
       />
       <NumberInput
-        label="已用流量 GB"
+        label={trafficQuotaLabels(props.teamSubscriptionForm.trafficResetDay).usedInput}
         min={0}
         value={props.teamSubscriptionForm.usedTrafficGb}
         onChange={(value) => props.setTeamSubscriptionForm((current) => ({ ...current, usedTrafficGb: Number(value) || 0 }))}
@@ -306,6 +318,10 @@ export function TeamSubscriptionEditorSection(props: {
         type="datetime-local"
         value={props.teamSubscriptionForm.expireAt}
         onChange={(event) => { const expireAt = event.currentTarget.value; props.setTeamSubscriptionForm((current) => ({ ...current, expireAt })); }}
+      />
+      <TrafficResetDayInput
+        value={props.teamSubscriptionForm.trafficResetDay}
+        onChange={(trafficResetDay) => props.setTeamSubscriptionForm((current) => ({ ...current, trafficResetDay }))}
       />
     </>
   );

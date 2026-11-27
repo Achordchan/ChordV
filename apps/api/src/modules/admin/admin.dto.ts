@@ -322,6 +322,12 @@ export class CreateSubscriptionDto {
   @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["active", "expired", "exhausted", "paused"])
   state?: SubscriptionState;
+
+  @ValidateIf((_object, value) => value !== undefined && value !== null)
+  @IsInt()
+  @Min(1)
+  @Max(31)
+  trafficResetDay?: number | null;
 }
 
 export class RenewSubscriptionDto {
@@ -382,6 +388,12 @@ export class UpdateSubscriptionDto {
   @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["active", "expired", "exhausted", "paused"])
   state?: SubscriptionState;
+
+  @ValidateIf((_object, value) => value !== undefined && value !== null)
+  @IsInt()
+  @Min(1)
+  @Max(31)
+  trafficResetDay?: number | null;
 }
 
 export class ConvertSubscriptionToTeamDto {
@@ -475,6 +487,11 @@ export class CreateTeamSubscriptionDto {
   @Min(0)
   usedTrafficGb?: number;
 
+  @ValidateIf((_object, value) => value !== undefined && value !== null)
+  @IsInt()
+  @Min(1)
+  @Max(31)
+  trafficResetDay?: number | null;
 }
 
 export class UpdateNodeDto {

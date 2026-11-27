@@ -53,6 +53,7 @@ import { RuntimeSessionService, assertDirectTerminalWatermarksSettled } from "./
 import { runWithSubscriptionOwnerLock, runWithSubscriptionProvisioningLock, runWithSubscriptionUsageLock } from "./usage-lock.utils";
 import { buildSnapshotKey, DEFAULT_MAX_CONCURRENT_SESSIONS } from "./runtime-session.utils";
 import { trafficGbNumberToBytes } from "./traffic-bytes.utils";
+import { computeNextTrafficResetAt, defaultTrafficResetDay, isValidTrafficResetDay } from "@chordv/shared";
 import { isPrismaCodedError, toPrismaTransientHttpError } from "./prisma-error.utils";
 import {
   isEffectiveSubscription,
@@ -82,6 +83,43 @@ type ResetTrafficCountersResult = {
   clearedBindingCount: number;
   panelSync: PanelSyncBestEffortResult;
 };
+/** 计划中的自动重置已被别处处理（另一个进程已执行、管理员改了重置日等），本次跳过。 */
+class ScheduledTrafficResetSuperseded extends Error {}
+/** 执行时订阅已过期：不重置，只推进计划。 */
+class ScheduledTrafficResetSubscriptionExpired extends Error {}
+
+export type ScheduledTrafficResetOutcome = "reset" | "superseded" | "skipped_expired";
+
+/**
+ * 已用流量的精确字节数。与读取方（订阅链接、Agent 配额）同一约定：totalTrafficBytes > 0
+ * 才说明字节计数已初始化；老订阅只有 GB 数时按 GB 换算，免得把已用写成 0。
+ */
+function readUsedTrafficBytes(row: unknown, fallbackGb: number): bigint {
+  const { usedTrafficBytes, totalTrafficBytes } = row as { usedTrafficBytes?: unknown; totalTrafficBytes?: unknown };
+  if (typeof usedTrafficBytes === "bigint" && typeof totalTrafficBytes === "bigint" && totalTrafficBytes > 0n) {
+    return usedTrafficBytes;
+  }
+  return trafficGbNumberToBytes(fallbackGb);
+}
+
+function isSubscriptionExpiredForScheduledReset(row: { state: SubscriptionState; expireAt: Date }, now: Date) {
+  return row.state === "expired" || row.expireAt.getTime() <= now.getTime();
+}
+
+/**
+ * 新建订阅时的重置日：不传用开通当天（北京时间），null 表示不自动重置。
+ */
+function resolveTrafficResetScheduleForCreate(input: number | null | undefined, now: Date) {
+  const day = input === undefined ? defaultTrafficResetDay(now) : input;
+  if (day === null) {
+    return { trafficResetDay: null, nextTrafficResetAt: null };
+  }
+  if (!isValidTrafficResetDay(day)) {
+    throw new BadRequestException("流量重置日必须是 1 到 31 的整数");
+  }
+  return { trafficResetDay: day, nextTrafficResetAt: computeNextTrafficResetAt(day, now) };
+}
+
 type SubscriptionWithSecurityPlan = AdminSubscriptionEntity & {
   plan: AdminSubscriptionEntity["plan"] & { maxConcurrentSessions: number };
 };
@@ -467,6 +505,106 @@ export class AdminSubscriptionService {
     };
   }
 
+  /**
+   * 按每月重置日自动重置一个订阅的流量。团队订阅整队清零。
+   * 复用手动重置的完整流程（先结清节点最后的用量，再清零并把新额度推给 Agent）。
+   * 计划已被别处处理时返回 "superseded"，不做任何改动。
+   */
+  async runScheduledTrafficReset(subscriptionId: string, dueAt: Date): Promise<ScheduledTrafficResetOutcome> {
+    const subscription = await this.requireSubscription(subscriptionId);
+    if (subscription.nextTrafficResetAt?.getTime() !== dueAt.getTime()) {
+      return "superseded";
+    }
+    if (isSubscriptionExpiredForScheduledReset(subscription, new Date())) {
+      return (await this.skipScheduledTrafficReset(subscriptionId, dueAt)) ? "skipped_expired" : "superseded";
+    }
+    let reset: ResetTrafficCountersResult;
+    try {
+      reset = await this.resetSubscriptionTrafficCounters(subscription, {
+        allowTeamWideReset: true,
+        scheduledDueAt: dueAt
+      });
+    } catch (error) {
+      if (error instanceof ScheduledTrafficResetSuperseded) {
+        return "superseded";
+      }
+      if (error instanceof ScheduledTrafficResetSubscriptionExpired) {
+        // 锁内发现已过期：节点账号可能已为结清暂停，按当前订阅恢复（过期的会保持停用），再原子推进计划。
+        await this.syncDirectSubscriptionAccessBestEffort(subscriptionId);
+        return (await this.skipScheduledTrafficReset(subscriptionId, dueAt)) ? "skipped_expired" : "superseded";
+      }
+      // 结清等待超时等失败时，节点账号可能停在“为重置暂停”的状态；立即按当前订阅恢复，不等对账任务。
+      await this.syncDirectSubscriptionAccessBestEffort(subscriptionId);
+      throw error;
+    }
+    await this.syncDirectSubscriptionAccessBestEffort(reset.subscription.id);
+    await this.publishSubscriptionUpdatedEvent({
+      subscriptionId: reset.subscription.id,
+      userId: reset.subscription.userId,
+      teamId: reset.subscription.teamId,
+      state: reset.subscription.state
+    });
+    return "reset";
+  }
+
+  /**
+   * 订阅已过期时不重置，只把计划推到下一次，免得续期后立刻补一次重置。
+   * 仅在计划仍等于 dueAt、且更新那一刻订阅仍是过期状态时生效（同一条 UPDATE 判定），
+   * 读到过期后管理员又续期的订阅不会被跳过，下一轮按正常重置处理。
+   */
+  async skipScheduledTrafficReset(subscriptionId: string, dueAt: Date, now: Date = new Date()): Promise<boolean> {
+    const current = await this.prisma.subscription.findUnique({
+      where: { id: subscriptionId },
+      select: { trafficResetDay: true }
+    });
+    if (!current) return false;
+    const next = isValidTrafficResetDay(current.trafficResetDay) ? computeNextTrafficResetAt(current.trafficResetDay, now) : null;
+    const updated = await this.prisma.subscription.updateMany({
+      where: {
+        id: subscriptionId,
+        nextTrafficResetAt: dueAt,
+        OR: [{ state: "expired" }, { expireAt: { lte: now } }]
+      },
+      data: { nextTrafficResetAt: next }
+    });
+    return updated.count > 0;
+  }
+
+  /**
+   * 自动重置在供给锁内、暂停节点账号之前复核计划仍然有效，
+   * 避免为一次已被别处处理的重置去打断客户连接。手动重置（不带计划时间）直接通过。
+   */
+  private async assertScheduledTrafficResetStillDue(subscriptionId: string, dueAt: Date | undefined) {
+    if (!dueAt) return;
+    const fresh = await this.prisma.subscription.findUnique({
+      where: { id: subscriptionId },
+      select: { nextTrafficResetAt: true, state: true, expireAt: true }
+    });
+    if (!fresh || fresh.nextTrafficResetAt?.getTime() !== dueAt.getTime()) {
+      throw new ScheduledTrafficResetSuperseded();
+    }
+    if (isSubscriptionExpiredForScheduledReset(fresh, new Date())) {
+      throw new ScheduledTrafficResetSubscriptionExpired();
+    }
+  }
+
+  private resolveTrafficResetScheduleForUpdate(
+    current: { trafficResetDay?: number | null; nextTrafficResetAt?: Date | null },
+    input: number | null | undefined
+  ): { trafficResetDay?: number | null; nextTrafficResetAt?: Date | null } {
+    if (input === undefined) return {};
+    if (input === null) {
+      return { trafficResetDay: null, nextTrafficResetAt: null };
+    }
+    if (!isValidTrafficResetDay(input)) {
+      throw new BadRequestException("流量重置日必须是 1 到 31 的整数");
+    }
+    if (input === current.trafficResetDay && current.nextTrafficResetAt) {
+      return {};
+    }
+    return { trafficResetDay: input, nextTrafficResetAt: computeNextTrafficResetAt(input, new Date()) };
+  }
+
   async listAdminPlans(): Promise<AdminPlanRecordDto[]> {
     const [plans, subscriptionCounts] = await runAdminSubscriptionLocalOperation(
       () => workLifecycle.all([
@@ -695,6 +833,7 @@ export class AdminSubscriptionService {
     const usedTrafficGb = input.usedTrafficGb ?? 0;
     const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
     const state = resolveSubscriptionState(input.state ?? "active", remainingTrafficGb, expireAt);
+    const resetSchedule = resolveTrafficResetScheduleForCreate(input.trafficResetDay, new Date());
 
     let row: AdminSubscriptionEntity;
     try {
@@ -702,6 +841,7 @@ export class AdminSubscriptionService {
         data: {
           id: createId("subscription"),
           userId: input.userId,
+          ...resetSchedule,
           planId: input.planId,
           totalTrafficGb,
           usedTrafficGb,
@@ -917,6 +1057,7 @@ export class AdminSubscriptionService {
       }
       const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
       const state = resolveSubscriptionState(input.state ?? current.state, remainingTrafficGb, expireAt);
+      const resetScheduleUpdate = this.resolveTrafficResetScheduleForUpdate(current, input.trafficResetDay);
       disconnectReason = getSubscriptionDisconnectReason({
         state,
         remainingTrafficGb,
@@ -932,9 +1073,14 @@ export class AdminSubscriptionService {
               usedTrafficGb,
               remainingTrafficGb,
               totalTrafficBytes: trafficGbNumberToBytes(totalTrafficGb),
-              usedTrafficBytes: trafficGbNumberToBytes(usedTrafficGb),
+              // 没有改已用流量时保留锁内读到的精确字节数，不用浮点 GB 反算覆盖。
+              usedTrafficBytes:
+                input.usedTrafficGb === undefined
+                  ? readUsedTrafficBytes(current, usedTrafficGb)
+                  : trafficGbNumberToBytes(usedTrafficGb),
               expireAt,
               state,
+              ...resetScheduleUpdate,
               sourceAction: "adjusted",
               lastSyncedAt: new Date()
             },
@@ -1646,6 +1792,7 @@ export class AdminSubscriptionService {
     const usedTrafficGb = input.usedTrafficGb ?? 0;
     const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
     const state = resolveSubscriptionState("active", remainingTrafficGb, expireAt);
+    const resetSchedule = resolveTrafficResetScheduleForCreate(input.trafficResetDay, new Date());
 
     let row: AdminSubscriptionEntity;
     try {
@@ -1653,6 +1800,7 @@ export class AdminSubscriptionService {
         data: {
           id: createId("subscription"),
           teamId,
+          ...resetSchedule,
           planId: input.planId,
           totalTrafficGb,
           usedTrafficGb,
@@ -1703,6 +1851,11 @@ export class AdminSubscriptionService {
       renewExpireAt?: string | null;
       sourceAction?: "renewed";
       statePreference?: SubscriptionState;
+      /**
+       * 按重置日自动执行时传入计划时间。只有订阅的 nextTrafficResetAt 仍等于它时才执行，
+       * 并在同一事务里把 nextTrafficResetAt 推到下一次，所以多进程或重复调用只会清零一次。
+       */
+      scheduledDueAt?: Date;
     }
   ): Promise<ResetTrafficCountersResult> {
     const requestedUserId = normalizeOptionalString(options.requestedUserId);
@@ -1757,6 +1910,7 @@ export class AdminSubscriptionService {
     // as the same-process fast path.
     await this.runtimeSessionService.withDirectTrafficResetInFlight(subscription.id, async () => {
       await runWithSubscriptionProvisioningLock(subscription.id, async () => {
+        await this.assertScheduledTrafficResetStillDue(subscription.id, options.scheduledDueAt);
         await this.quiesceAndSettleDirectTrafficReset(subscription.id, targetUserId);
 
         const resetSampledAt = new Date();
@@ -1797,6 +1951,20 @@ export class AdminSubscriptionService {
             });
             if (!lockedSubscription) {
               return null;
+            }
+            let scheduleUpdate: { nextTrafficResetAt: Date | null; lastTrafficAutoResetAt: Date } | null = null;
+            if (options.scheduledDueAt) {
+              if (lockedSubscription.nextTrafficResetAt?.getTime() !== options.scheduledDueAt.getTime()) {
+                throw new ScheduledTrafficResetSuperseded();
+              }
+              if (isSubscriptionExpiredForScheduledReset(lockedSubscription, resetSampledAt)) {
+                throw new ScheduledTrafficResetSubscriptionExpired();
+              }
+              const day = lockedSubscription.trafficResetDay;
+              scheduleUpdate = {
+                nextTrafficResetAt: isValidTrafficResetDay(day) ? computeNextTrafficResetAt(day, resetSampledAt) : null,
+                lastTrafficAutoResetAt: resetSampledAt
+              };
             }
 
             await this.persistTrafficResetBaselineSamples(baselineSamples.filter((item): item is NonNullable<typeof item> => Boolean(item)), tx);
@@ -1840,11 +2008,16 @@ export class AdminSubscriptionService {
                 usedTrafficBytes,
                 expireAt,
                 state: resolveSubscriptionState(
-                  options.statePreference ?? (lockedSubscription.state === "paused" ? "paused" : "active"),
+                  options.statePreference ??
+                    (options.scheduledDueAt
+                      // 自动重置只把“流量耗尽”恢复为有效，其余状态（有效、暂停）原样保留。
+                      ? (lockedSubscription.state === "exhausted" ? "active" : lockedSubscription.state)
+                      : (lockedSubscription.state === "paused" ? "paused" : "active")),
                   remainingTrafficGb,
                   expireAt
                 ),
                 ...(options.sourceAction ? { sourceAction: options.sourceAction } : {}),
+                ...(scheduleUpdate ?? {}),
                 lastSyncedAt: new Date()
               },
               include: {
@@ -1856,6 +2029,7 @@ export class AdminSubscriptionService {
             });
             });
         } catch (error) {
+          if (error instanceof ScheduledTrafficResetSuperseded || error instanceof ScheduledTrafficResetSubscriptionExpired) throw error;
           throw toAdminLocalSaveHttpError(error, "订阅流量重置保存失败，请刷新订阅列表后重试。");
         }
         });

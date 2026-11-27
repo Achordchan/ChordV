@@ -552,7 +552,7 @@ async function main() {
   //     would deadlock the reset against its own settlement.
   assert.match(
     adminSubscriptionSource,
-    /await this\.runtimeSessionService\.withDirectTrafficResetInFlight\(subscription\.id, async \(\) => \{\s*\n\s*await runWithSubscriptionProvisioningLock\(subscription\.id, async \(\) => \{\s*\n\s*await this\.quiesceAndSettleDirectTrafficReset\(subscription\.id, targetUserId\);/,
+    /await this\.runtimeSessionService\.withDirectTrafficResetInFlight\(subscription\.id, async \(\) => \{\s*\n\s*await runWithSubscriptionProvisioningLock\(subscription\.id, async \(\) => \{\s*\n\s*(?:await this\.assertScheduledTrafficResetStillDue\(subscription\.id, options\.scheduledDueAt\);\s*\n\s*)?await this\.quiesceAndSettleDirectTrafficReset\(subscription\.id, targetUserId\);/,
     "流量重置必须从 quiesce 起持有供给锁（与供给互斥）"
   );
   assert.match(

@@ -154,6 +154,10 @@ export interface SubscriptionStatusDto {
   teamId?: string | null;
   teamName?: string | null;
   memberUsedTrafficGb?: number | null;
+  /** 每月流量重置日（1–31）；为空表示总流量不按月重置。旧版后台不返回。 */
+  trafficResetDay?: number | null;
+  /** 下次自动重置已用流量的时间。 */
+  nextTrafficResetAt?: string | null;
   meteringStatus: MeteringStatus;
   meteringMessage?: string | null;
   stateReasonCode?: SessionReasonCode | null;
@@ -443,6 +447,13 @@ export interface GeneratedRuntimeConfigDto {
   leaseExpiresAt: string;
   leaseHeartbeatIntervalSeconds: number;
   leaseGraceSeconds: number;
+  /**
+   * How long the client keeps its connection while heartbeats fail WITHOUT an
+   * answer from the control plane (no route, timeout, 5xx), and how long the
+   * control plane keeps the silent lease resumable. Absent from control planes
+   * that predate it; the client then falls back to leaseGraceSeconds.
+   */
+  leaseOfflineHoldSeconds?: number;
   node: NodeSummaryDto;
   mode: ConnectionMode;
   localHttpPort: number;
@@ -510,6 +521,13 @@ export type AdminPresenceState = "connected" | "online" | "offline";
 export interface AdminPresenceSessionDto {
   /** 仅用作列表键，不在界面展示。 */
   sessionId: string;
+  /**
+   * 连接来源：client 为 ChordV 客户端（有租约与心跳）；subscription_link 为订阅链接导入的第三方客户端
+   * （小火箭、v2rayN 等），由节点 Xray 的在线统计得出，没有连接模式与客户端版本。缺省按 client。
+   */
+  via?: "client" | "subscription_link";
+  /** 订阅链接连接的在线来源 IP 数。 */
+  onlineIpCount?: number;
   connectedAt: string;
   lastHeartbeatAt: string;
   /** 建立连接时选择的模式；旧连接没有记录时为 null。 */
@@ -604,6 +622,12 @@ export interface AdminSubscriptionRecordDto {
   renewable: boolean;
   sourceAction: SubscriptionSourceAction;
   lastSyncedAt: string;
+  /** 每月流量重置日（1–31，北京时间 0 点）；为空表示不自动重置。 */
+  trafficResetDay?: number | null;
+  /** 下次自动重置的时间；不自动重置时为空。 */
+  nextTrafficResetAt?: string | null;
+  /** 最近一次按重置日自动重置的时间。 */
+  lastTrafficAutoResetAt?: string | null;
   nodeCount: number;
   hasNodeAccess: boolean;
   stateReasonCode?: SessionReasonCode | null;
@@ -1239,6 +1263,8 @@ export interface CreateSubscriptionInputDto {
   usedTrafficGb?: number;
   expireAt: string;
   state?: SubscriptionState;
+  /** 每月流量重置日；不传时默认开通当天（北京时间）的日期，传 null 表示不自动重置。 */
+  trafficResetDay?: number | null;
 }
 
 export interface RenewSubscriptionInputDto {
@@ -1258,6 +1284,8 @@ export interface UpdateSubscriptionInputDto {
   usedTrafficGb?: number;
   expireAt?: string;
   state?: SubscriptionState;
+  /** 不传表示不改；传 null 表示取消自动重置。 */
+  trafficResetDay?: number | null;
 }
 
 export interface ConvertSubscriptionToTeamInputDto {
@@ -1405,6 +1433,8 @@ export interface CreateTeamSubscriptionInputDto {
   expireAt: string;
   totalTrafficGb?: number;
   usedTrafficGb?: number;
+  /** 每月流量重置日；不传时默认开通当天（北京时间）的日期，传 null 表示不自动重置。 */
+  trafficResetDay?: number | null;
 }
 
 export interface CreateReleaseInputDto {
@@ -1582,6 +1612,12 @@ export interface AgentDesiredUserDto {
   enabled: boolean;
   quotaRemainingBytes: string;
   offlineAllowanceBytes: string;
+  /**
+   * When the subscription behind the binding runs out (ISO 8601). An agent
+   * enforces it only while it cannot reach the control plane; agents that
+   * predate the field ignore it.
+   */
+  expiresAt?: string;
 }
 
 export interface AgentConfigDto {
@@ -1712,4 +1748,71 @@ export interface SystemUpdateStartResultDto {
   operationId: string;
   accepted: boolean;
   message: string;
+}
+
+/** What a user's subscription link currently hands to a third-party client. */
+export interface AdminSubscriptionLinkPreviewDto {
+  /** "nodes": real nodes. "notice": a single placeholder entry whose name explains why there are none. */
+  kind: "nodes" | "notice";
+  notice: string | null;
+  nodes: Array<{ nodeId: string; name: string }>;
+}
+
+export interface AdminSubscriptionLinkDto {
+  userId: string;
+  /** Null until a subscription domain is configured. */
+  url: string | null;
+  backupUrl: string | null;
+  createdAt: string;
+  rotatedAt: string | null;
+  preview: AdminSubscriptionLinkPreviewDto;
+}
+
+export interface AdminSubscriptionLinkStateDto {
+  link: AdminSubscriptionLinkDto | null;
+  distribution: SubscriptionLinkDistributionDto;
+}
+
+export interface SubscriptionLinkSettingsDto {
+  /** Origin the links are issued under, e.g. https://my.example.com. Null: not configured yet. */
+  origin: string | null;
+  /** A second origin serving the same links, shown alongside for when the first is unreachable. */
+  backupOrigin: string | null;
+  updatedAt: string | null;
+}
+
+export interface UpdateSubscriptionLinkSettingsDto {
+  origin: string | null;
+  backupOrigin: string | null;
+}
+
+/** Whether a user's current link is being served by the distribution layer yet. */
+export interface SubscriptionLinkDistributionDto {
+  /** "not_configured": distribution is off, links are issued but served nowhere. */
+  state: "not_configured" | "pending" | "live";
+  publishedAt: string | null;
+  /**
+   * Earlier links of this user that the distribution layer has not yet been
+   * confirmed to have dropped. While this is above zero an old link may still
+   * be answered; zero means the store accepted every delete (its edge caches
+   * can lag a little behind that).
+   */
+  revoking: number;
+}
+
+export interface SubscriptionLinkPublicationStatusDto {
+  configured: boolean;
+  lastRunAt: string | null;
+  /** Last pass that left nothing to do. */
+  lastSuccessAt: string | null;
+  lastError: string | null;
+  /** Links not yet published as of the last pass. */
+  pending: number;
+  /** Reset or removed links not yet confirmed gone from the distribution layer. */
+  revoking: number;
+  /**
+   * Records written to a distribution destination other than the configured
+   * one. Whatever was published there is neither updated nor revoked.
+   */
+  elsewhere: number;
 }

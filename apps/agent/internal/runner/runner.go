@@ -29,6 +29,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -114,6 +117,14 @@ type Runner struct {
 	// it means "the control plane answered", not "we would like it to".
 	backendOnline bool
 	xrayHealthy   bool
+	// trafficTotals and activeEmails remember which accounts moved traffic in
+	// the latest sample. Traffic proves a live connection, which is how an
+	// empty online report is told apart from disabled online statistics.
+	trafficTotals map[string]uint64
+	activeEmails  map[string]bool
+	// onlineUnavailableLogged keeps the "online statistics off" warning to one
+	// line per episode.
+	onlineUnavailableLogged bool
 	// lastXrayStart is the ESTIMATED wall-clock start of the Xray process, from
 	// its reported uptime. Zero until the first reading.
 	lastXrayStart time.Time
@@ -345,6 +356,14 @@ func (r *Runner) applyRefreshedLocked(ctx context.Context, snapshot protocol.Con
 		if err := r.restoreOfflineUsersLocked(snapshot.Users, local); err != nil {
 			return protocol.ConfigSnapshot{}, err
 		}
+		// The other half of the same settlement: a user this node cut off for
+		// expiring offline, whom the control plane now confirms disabled, stops
+		// being a local decision. The raw snapshot, not the merged one — the
+		// merge may have substituted this node's own row for the control
+		// plane's statement.
+		if err := r.deps.Store.SettleOfflineExpiry(snapshot.Users, r.deps.Now()); err != nil {
+			return protocol.ConfigSnapshot{}, err
+		}
 		// Re-merge after recovery: equal-revision local disables otherwise win.
 		prepared, err = r.deps.Commands.PrepareSnapshot(snapshot)
 		if err != nil {
@@ -525,6 +544,195 @@ func (r *Runner) detectMissingUsersLocked(ctx context.Context) error {
 	return nil
 }
 
+// onlineCandidate is a managed account whose online record may be reported,
+// together with what proves that the address is still this agent's account.
+type onlineCandidate struct {
+	BindingID string
+	UUID      string
+	Claim     *store.Claim
+}
+
+// onlineCandidatesLocked lists the managed accounts by email. Online stats are
+// keyed only by email, so the caller must still prove the record belongs to
+// this binding before attributing it (see ownsOnlineRecord).
+func (r *Runner) onlineCandidatesLocked() (map[string]onlineCandidate, error) {
+	users, err := r.deps.Store.ListDesiredUsers()
+	if err != nil {
+		return nil, err
+	}
+	claims, err := r.deps.Store.ProvisionedAccounts()
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]onlineCandidate, len(users))
+	for _, user := range users {
+		if user.Email == "" || user.BindingID == "" {
+			continue
+		}
+		candidate := onlineCandidate{BindingID: user.BindingID, UUID: user.UUID}
+		if claim, ok := claims[user.Email]; ok {
+			claim := claim
+			candidate.Claim = &claim
+		}
+		result[user.Email] = candidate
+	}
+	return result, nil
+}
+
+// ownsOnlineRecord decides whether an email's online record is this binding's.
+// An installed account proves it by identity: the live UUID must be the one
+// the binding expects. An account that is no longer installed (removed, but its
+// connections linger) proves it by this agent's own provisioning claim for the
+// same binding, with no contradicting identity. Anything else, such as a panel
+// account reusing the address or a claim held by another binding, is not ours.
+func ownsOnlineRecord(candidate onlineCandidate, liveUUID string, installed bool) bool {
+	if installed {
+		return sameUUID(liveUUID, candidate.UUID)
+	}
+	claim := candidate.Claim
+	if claim == nil || claim.BindingID != candidate.BindingID {
+		return false
+	}
+	if claim.UUID == "" || candidate.UUID == "" {
+		return true
+	}
+	return sameUUID(claim.UUID, candidate.UUID) || sameUUID(claim.NextUUID, candidate.UUID)
+}
+
+// sameUUID compares identities canonically: Xray installs and lists a UUID in
+// lowercase even when the binding was given it in uppercase.
+func sameUUID(a, b string) bool {
+	return a != "" && strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+// noteTrafficLocked records which accounts moved traffic since the previous
+// sample. A counter that went backwards (Xray restarted) only re-baselines.
+func (r *Runner) noteTrafficLocked(counters []protocol.AbsoluteCounter) {
+	totals := make(map[string]uint64, len(counters))
+	active := map[string]bool{}
+	for _, counter := range counters {
+		up, upErr := strconv.ParseUint(counter.UplinkBytes, 10, 64)
+		down, downErr := strconv.ParseUint(counter.DownlinkBytes, 10, 64)
+		if upErr != nil || downErr != nil {
+			continue
+		}
+		total := up + down
+		totals[counter.Email] = total
+		if previous, seen := r.trafficTotals[counter.Email]; seen && total > previous {
+			active[counter.Email] = true
+		}
+	}
+	r.trafficTotals = totals
+	r.activeEmails = active
+}
+
+// readOnlineUsers reports which managed accounts Xray sees online. It returns
+// nil — "not observed" — whenever the observation is unavailable or would be
+// incomplete, so the control plane never marks a connected user offline
+// because of what this node could not see.
+func (r *Runner) readOnlineUsers(ctx context.Context, candidates map[string]onlineCandidate, active []string) *[]protocol.OnlineUser {
+	if candidates == nil {
+		return nil
+	}
+	reader, ok := r.deps.Xray.(xray.OnlineReader)
+	if !ok {
+		return nil
+	}
+	online, err := reader.OnlineUsers(ctx, func(email string) bool {
+		_, managed := candidates[email]
+		return managed
+	})
+	if err != nil {
+		r.logf("读取在线账号失败：%v", err)
+		return nil
+	}
+	if !onlineTrackingConsistent(online, active) {
+		if !r.onlineUnavailableLogged {
+			r.onlineUnavailableLogged = true
+			r.logf("警告：有账号正在产生流量，但 Xray 在线统计没有任何记录——多半未开启 policy.levels.0.statsUserOnline。" +
+				"在此之前后台看不到订阅链接用户的在线状态，停用账号时也无法断开其现有连接；请在 3x-ui 的 Xray 配置模板里开启后重启 Xray")
+		}
+		return nil
+	}
+	r.onlineUnavailableLogged = false
+	live, err := r.deps.Xray.ListUsers(ctx)
+	if err != nil {
+		r.logf("读取在线账号失败：%v", err)
+		return nil
+	}
+	installed := make(map[string]string, len(live))
+	for _, account := range live {
+		installed[account.Email] = account.UUID
+	}
+	shared, err := reader.SharedEmails(ctx)
+	if err != nil {
+		r.logf("无法确认在线账号 email 在本机唯一，本次不上报在线状态：%v", err)
+		return nil
+	}
+	result := []protocol.OnlineUser{}
+	for email, count := range online {
+		candidate, managed := candidates[email]
+		if !managed || count <= 0 {
+			continue
+		}
+		liveUUID, isInstalled := installed[email]
+		if !ownsOnlineRecord(candidate, liveUUID, isInstalled) {
+			continue
+		}
+		// The online record is process-wide by email: if another inbound
+		// carries the same email, its connections would be counted here.
+		if shared[email] {
+			continue
+		}
+		if count > protocol.MaxOnlineIPCount {
+			count = protocol.MaxOnlineIPCount
+		}
+		result = append(result, protocol.OnlineUser{BindingID: candidate.BindingID, IPCount: count})
+	}
+	if len(result) > protocol.MaxOnlineUsers {
+		// The server treats an omitted binding as offline, so a truncated
+		// list would keep flipping real users offline. Send nothing instead.
+		r.logf("在线账号 %d 个，超过单次上报上限 %d，本次不上报在线状态", len(result), protocol.MaxOnlineUsers)
+		return nil
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].BindingID < result[j].BindingID })
+	return &result
+}
+
+// nextOnlineSequence stamps an online report. It follows the wall clock but
+// always continues above the last sequence, which is persisted, so neither a
+// clock that goes back nor a restart can produce a sequence the control plane
+// would discard as stale. It is called under the transport lock.
+func (r *Runner) nextOnlineSequence() (int64, error) {
+	last, err := r.deps.Store.OnlineSequence()
+	if err != nil {
+		return 0, err
+	}
+	next := r.deps.Now().UnixMilli()
+	if next <= last {
+		next = last + 1
+	}
+	if err := r.deps.Store.SetOnlineSequence(next); err != nil {
+		return 0, err
+	}
+	return next, nil
+}
+
+// onlineTrackingConsistent is false when accounts moved traffic in the latest
+// sample yet Xray reports none of them online: online statistics are off, and
+// an empty report would wrongly read as "nobody connected".
+func onlineTrackingConsistent(online map[string]int, active []string) bool {
+	if len(active) == 0 {
+		return true
+	}
+	for _, email := range active {
+		if online[email] > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // --- metering ---------------------------------------------------------------
 
 func (r *Runner) sample(ctx context.Context) error {
@@ -548,6 +756,7 @@ func (r *Runner) sampleLocked(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	r.noteTrafficLocked(counters)
 	if !r.xrayHealthy {
 		r.reconcilePending = true
 	}
@@ -559,6 +768,9 @@ func (r *Runner) sampleLocked(ctx context.Context) error {
 	result, err := r.deps.Store.RecordSample(counters, r.deps.Now(), r.backendOnline)
 	if err != nil {
 		return err
+	}
+	if len(result.ExpiredEmails) > 0 {
+		r.logf("后台不可达期间有 %d 个用户的订阅已到期，已在本机停用；后台恢复后以后台为准", len(result.ExpiredEmails))
 	}
 	if r.current.ControlMode == protocol.ModeDirectPrimary {
 		if err := r.deps.Commands.UninstallExhausted(ctx, result.DisableEmails); err != nil {
@@ -684,18 +896,46 @@ func (r *Runner) sendHeartbeat(ctx context.Context) error {
 	}
 	mode := r.current.ControlMode
 	refreshPending := r.refreshPending
+	var online *[]protocol.OnlineUser
+	if err == nil && status == protocol.XrayHealthy {
+		var candidates map[string]onlineCandidate
+		candidates, err = r.onlineCandidatesLocked()
+		if err == nil {
+			var active []string
+			for email := range r.activeEmails {
+				active = append(active, email)
+			}
+			// Read under the state lock: the Binding is swapped by inbound
+			// rebinding under this lock, so every read in one report sees the
+			// same bound inbound.
+			online = r.readOnlineUsers(ctx, candidates, active)
+		}
+	}
 	r.state.Unlock()
 	if err != nil {
 		return err
 	}
 
-	ack, err := r.deps.API.Heartbeat(ctx, protocol.Heartbeat{
+	beat := protocol.Heartbeat{
 		BootID:         heartbeatBoot,
 		Version:        version.Wire(),
 		ConfigRevision: revision,
 		QueueDepth:     depth,
 		XrayStatus:     status,
-	})
+		OnlineUsers:    online,
+	}
+	if beat.OnlineUsers != nil {
+		sequence, err := r.nextOnlineSequence()
+		if err != nil {
+			// Without a durable sequence the report could be mis-ordered;
+			// omitting it only means "not observed this time".
+			r.logf("无法记录在线报告序号，本次不上报在线状态：%v", err)
+			beat.OnlineUsers = nil
+		} else {
+			beat.OnlineSequence = sequence
+		}
+	}
+	ack, err := r.deps.API.Heartbeat(ctx, beat)
 	if err != nil {
 		r.setBackendOnline(false)
 		return err

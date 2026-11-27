@@ -17,6 +17,9 @@ import { ClientPresenceService } from "./client-presence.service";
 import { DevDataBootstrapService } from "./dev-data-bootstrap.service";
 import { Global, Module } from "@nestjs/common";
 import { SiteAddressService } from "./site-address.service";
+import { SubscriptionLinkPublicationService } from "./subscription-link-publication.service";
+import { CloudflareKvStore, readCloudflareKvConfig, SUBSCRIPTION_LINK_STORE } from "./subscription-link-store";
+import { SubscriptionLinkService } from "./subscription-link.service";
 import { DevDataService } from "./dev-data.service";
 import { ImageBedService } from "./image-bed.service";
 import { DownloadMirrorService } from "./download-mirror.service";
@@ -26,13 +29,23 @@ import { RuntimeComponentsService } from "./runtime-components.service";
 import { RuntimeSessionService } from "./runtime-session.service";
 import { MeteringIncidentService } from "./metering-incident.service";
 import { MeteringRetentionService } from "./metering-retention.service";
+import { TrafficResetScheduleService } from "./traffic-reset-schedule.service";
 
 @Global()
 @Module({
   providers: [
+    {
+      provide: SUBSCRIPTION_LINK_STORE,
+      useFactory: () => {
+        const config = readCloudflareKvConfig(process.env, (message) => console.warn(message));
+        return config ? new CloudflareKvStore(config) : null;
+      }
+    },
+    SubscriptionLinkPublicationService,
     FileMaintenanceService,
     StorageCatalogService,
     SiteAddressService,
+    SubscriptionLinkService,
     DevDataService,
     AdminRuntimeEventsService,
     AdminNodeService,
@@ -45,6 +58,7 @@ import { MeteringRetentionService } from "./metering-retention.service";
     ClientRoutingRuleService,
     MeteringIncidentService,
     MeteringRetentionService,
+    TrafficResetScheduleService,
     AuthSessionService,
     ClientRuntimeEventsService,
     ClientTicketService,
@@ -59,9 +73,11 @@ import { MeteringRetentionService } from "./metering-retention.service";
     AdminAuthGuard
   ],
   exports: [
+    SubscriptionLinkPublicationService,
     FileMaintenanceService,
     StorageCatalogService,
     SiteAddressService,
+    SubscriptionLinkService,
     DevDataService,
     AdminRuntimeEventsService,
     AdminNodeService,
@@ -74,6 +90,7 @@ import { MeteringRetentionService } from "./metering-retention.service";
     ClientRoutingRuleService,
     MeteringIncidentService,
     MeteringRetentionService,
+    TrafficResetScheduleService,
     AuthSessionService,
     ClientRuntimeEventsService,
     ClientTicketService,

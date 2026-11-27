@@ -256,6 +256,11 @@ export class CommandProcessor {
         email: optionalString(command.payload.email) || optionalString(command.payload.userKey) || stored.email,
         uuid: optionalString(command.payload.uuid) || stored.uuid,
         flow: parseFlow(command.payload.flow) ?? stored.flow,
+        // The allowance the command names is the control plane's current
+        // setting; the stored one is whatever was in force when the user was
+        // first installed. Without this an existing user never picked up a
+        // changed setting, not even on a newer revision.
+        offlineAllowanceBytes: optionalString(command.payload.offlineAllowanceBytes) || stored.offlineAllowanceBytes,
       };
     }
     return parseDesiredUser(command.payload, command.targetRevision);

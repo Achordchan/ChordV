@@ -23,6 +23,7 @@ import {
 } from "@tabler/icons-react";
 import { DataTable } from "../features/shared/DataTable";
 import { ExpireAtController } from "../features/shared/ExpireAtController";
+import { TrafficResetDayInput } from "../features/shared/TrafficResetDayInput";
 import { MiniMetric } from "../features/shared/MiniMetric";
 import { RowActions } from "../features/shared/RowActions";
 import { SectionCard } from "../features/shared/SectionCard";
@@ -31,7 +32,7 @@ import type { LeaseRevocationQueueFilter } from "../utils/admin-queue-filters";
 import type { TeamSubscriptionFormState } from "../utils/admin-forms";
 import { applyPlanToTeamSubscriptionForm } from "../utils/admin-forms";
 import { summarizeAdminDiagnosticMessage, summarizeTeamUsage } from "../utils/admin-filters";
-import { formatDateTime, formatTrafficGb } from "../utils/admin-format";
+import { describeTrafficReset, formatDateTime, formatTrafficGb, trafficQuotaLabels } from "../utils/admin-format";
 import { findNodeCommandSummary } from "../utils/node-command-summary";
 import {
   getRenewActionText,
@@ -113,7 +114,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
               <Table.Tr>
                 <Table.Th>用户</Table.Th>
                 <Table.Th>套餐</Table.Th>
-                <Table.Th>总量</Table.Th>
+                <Table.Th>额度</Table.Th>
                 <Table.Th>剩余</Table.Th>
                 <Table.Th>节点</Table.Th>
                 <Table.Th>到期时间</Table.Th>
@@ -148,14 +149,19 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                     </Stack>
                   </Table.Td>
                   <Table.Td>{item.planName}</Table.Td>
-                  <Table.Td>{item.totalTrafficGb} GB</Table.Td>
-                  <Table.Td>{item.remainingTrafficGb} GB</Table.Td>
+                  <Table.Td>{formatTrafficGb(item.totalTrafficGb)} GB{trafficQuotaLabels(item.trafficResetDay).monthly ? " / 月" : ""}</Table.Td>
+                  <Table.Td>{formatTrafficGb(item.remainingTrafficGb)} GB</Table.Td>
                   <Table.Td>
                     <Text c={item.hasNodeAccess ? undefined : "orange.7"}>
                       {item.hasNodeAccess ? `${item.nodeCount} 个节点` : "未分配节点"}
                     </Text>
                   </Table.Td>
-                  <Table.Td>{formatDateTime(item.expireAt)}</Table.Td>
+                  <Table.Td>
+                    <Stack gap={0}>
+                      <Text>{formatDateTime(item.expireAt)}</Text>
+                      <Text size="xs" c="dimmed">{describeTrafficReset(item)}</Text>
+                    </Stack>
+                  </Table.Td>
                   <Table.Td>
                     <Stack gap={4}>
                       <StatusBadge color={subscriptionStateColor(item.state)} label={translateSubscriptionState(item.state)} />
@@ -402,13 +408,13 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                               }
                             />
                             <NumberInput
-                              label="总流量 (GB)"
+                              label={trafficQuotaLabels(props.teamSubscriptionForm.trafficResetDay).totalInput}
                               min={0}
                               value={props.teamSubscriptionForm.totalTrafficGb}
                               onChange={(value) => props.setTeamSubscriptionForm((current) => ({ ...current, totalTrafficGb: Number(value) || 0 }))}
                             />
                             <NumberInput
-                              label="已用流量 (GB)"
+                              label={trafficQuotaLabels(props.teamSubscriptionForm.trafficResetDay).usedInput}
                               min={0}
                               value={props.teamSubscriptionForm.usedTrafficGb}
                               onChange={(value) => props.setTeamSubscriptionForm((current) => ({ ...current, usedTrafficGb: Number(value) || 0 }))}
@@ -418,6 +424,10 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                               value={props.teamSubscriptionForm.expireAt}
                               baseValue={props.teamSubscriptionForm.expireAt}
                               onChange={(value) => props.setTeamSubscriptionForm((current) => ({ ...current, expireAt: value }))}
+                            />
+                            <TrafficResetDayInput
+                              value={props.teamSubscriptionForm.trafficResetDay}
+                              onChange={(trafficResetDay) => props.setTeamSubscriptionForm((current) => ({ ...current, trafficResetDay }))}
                             />
                             <Group justify="flex-end">
                               <Button variant="default" onClick={props.onCloseTeamSubscriptionInlineEditor}>取消</Button>

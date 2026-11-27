@@ -172,6 +172,10 @@ import {
   emptyTeamForm,
   emptyTeamMemberForm,
   emptyTeamSubscriptionForm,
+  defaultTrafficResetDayForNewSubscription,
+  toTrafficResetDayForm,
+  readChangedUsedTrafficGb,
+  toTrafficResetDayPayload,
   emptyUserForm,
   toPolicyForm,
   type AnnouncementFormState,
@@ -197,7 +201,7 @@ import {
   readError,
   summarizeAdminDiagnosticMessage
 } from "./utils/admin-filters";
-import { addDays, formatDateTime, formatTrafficGb, fromDateTimeLocal, toDateTimeLocal } from "./utils/admin-format";
+import { addDays, formatDateTime, formatTrafficGb, fromDateTimeLocal, roundTrafficGbForForm, toDateTimeLocal } from "./utils/admin-format";
 import { buildUpdateNodePayload } from "./utils/admin-node-payloads";
 import {
   getRenewActionDescription,
@@ -1868,10 +1872,12 @@ export function App() {
       if (!record) return;
       setSubscriptionAdjustForm({
         totalTrafficGb: record.totalTrafficGb,
-        usedTrafficGb: record.usedTrafficGb,
+        usedTrafficGb: roundTrafficGbForForm(record.usedTrafficGb),
+        baseUsedTrafficGb: roundTrafficGbForForm(record.usedTrafficGb),
         expireAt: toDateTimeLocal(record.expireAt),
         baseExpireAt: toDateTimeLocal(record.expireAt),
-        state: record.state
+        state: record.state,
+        trafficResetDay: toTrafficResetDayForm(record.trafficResetDay)
       });
     }
 
@@ -1904,7 +1910,8 @@ export function App() {
         planId: record.planId,
         totalTrafficGb: record.totalTrafficGb,
         expireAt: toDateTimeLocal(record.expireAt),
-        baseExpireAt: toDateTimeLocal(record.expireAt)
+        baseExpireAt: toDateTimeLocal(record.expireAt),
+        trafficResetDay: toTrafficResetDayForm(record.trafficResetDay)
       });
     }
 
@@ -1943,7 +1950,8 @@ export function App() {
         planId: defaultPlan?.id ?? "",
         totalTrafficGb: defaultPlan?.totalTrafficGb ?? 100,
         usedTrafficGb: 0,
-        expireAt: toDateTimeLocal(team?.currentSubscription?.expireAt ?? addDays(new Date(), 30).toISOString())
+        expireAt: toDateTimeLocal(team?.currentSubscription?.expireAt ?? addDays(new Date(), 30).toISOString()),
+        trafficResetDay: defaultTrafficResetDayForNewSubscription()
       });
     }
 
@@ -2067,7 +2075,8 @@ export function App() {
               totalTrafficGb: subscriptionCreateForm.totalTrafficGb,
               usedTrafficGb: subscriptionCreateForm.usedTrafficGb,
               expireAt,
-              state: subscriptionCreateForm.state
+              state: subscriptionCreateForm.state,
+              trafficResetDay: toTrafficResetDayPayload(subscriptionCreateForm.trafficResetDay)
             } satisfies CreateSubscriptionInputDto),
           "订阅已创建",
           dbFirstMutationOptions
@@ -2080,9 +2089,10 @@ export function App() {
           () =>
             updateSubscription(drawer.recordId!, {
               totalTrafficGb: subscriptionAdjustForm.totalTrafficGb,
-              usedTrafficGb: subscriptionAdjustForm.usedTrafficGb,
+              usedTrafficGb: readChangedUsedTrafficGb(subscriptionAdjustForm),
               expireAt: fromDateTimeLocal(subscriptionAdjustForm.expireAt),
-              state: subscriptionAdjustForm.state
+              state: subscriptionAdjustForm.state,
+              trafficResetDay: toTrafficResetDayPayload(subscriptionAdjustForm.trafficResetDay)
             } satisfies UpdateSubscriptionInputDto),
           "订阅已校正",
           dbFirstMutationOptions
@@ -2698,7 +2708,8 @@ export function App() {
       planId: defaultPlan?.id ?? "",
       totalTrafficGb: defaultPlan?.totalTrafficGb ?? 100,
       usedTrafficGb: 0,
-      expireAt: toDateTimeLocal(team?.currentSubscription?.expireAt ?? addDays(new Date(), 30).toISOString())
+      expireAt: toDateTimeLocal(team?.currentSubscription?.expireAt ?? addDays(new Date(), 30).toISOString()),
+      trafficResetDay: defaultTrafficResetDayForNewSubscription()
     });
     setTeamSubscriptionInlineEditorId(teamId);
     setTeamInlineEditorId(null);

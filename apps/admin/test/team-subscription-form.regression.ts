@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   applyPlanToTeamSubscriptionForm,
+  defaultTrafficResetDayForNewSubscription,
   buildCreateTeamSubscriptionPayload,
   emptyTeamSubscriptionForm,
   type TeamSubscriptionFormState
@@ -20,6 +21,7 @@ function testEmptyTeamSubscriptionFormDefaultsUsedTrafficToZero() {
   const form = emptyTeamSubscriptionForm();
 
   assert.equal(form.usedTrafficGb, 0);
+  assert.equal(form.trafficResetDay, defaultTrafficResetDayForNewSubscription(), "新建团队订阅默认按开通日重置");
 }
 
 function testApplyTeamPlanKeepsUsedTraffic() {
@@ -27,7 +29,8 @@ function testApplyTeamPlanKeepsUsedTraffic() {
     planId: "",
     totalTrafficGb: 100,
     usedTrafficGb: 12.5,
-    expireAt: "2026-07-18T10:30"
+    expireAt: "2026-07-18T10:30",
+    trafficResetDay: 18
   };
 
   const next = applyPlanToTeamSubscriptionForm({ plans: [teamPlan] } as any, form, teamPlan.id);
@@ -42,7 +45,8 @@ function testApplyMissingTeamPlanKeepsUsedTraffic() {
     planId: "old_plan",
     totalTrafficGb: 300,
     usedTrafficGb: 7.75,
-    expireAt: "2026-07-18T10:30"
+    expireAt: "2026-07-18T10:30",
+    trafficResetDay: ""
   };
 
   const next = applyPlanToTeamSubscriptionForm({ plans: [teamPlan] } as any, form, "missing_plan");
@@ -57,7 +61,8 @@ function testCreateTeamSubscriptionPayloadIncludesUsedTraffic() {
     planId: teamPlan.id,
     totalTrafficGb: 2048,
     usedTrafficGb: 88.25,
-    expireAt: "2026-07-18T10:30"
+    expireAt: "2026-07-18T10:30",
+    trafficResetDay: 31
   };
 
   const expireAt = new Date(form.expireAt).toISOString();
@@ -67,8 +72,10 @@ function testCreateTeamSubscriptionPayloadIncludesUsedTraffic() {
     planId: teamPlan.id,
     totalTrafficGb: 2048,
     usedTrafficGb: 88.25,
-    expireAt
+    expireAt,
+    trafficResetDay: 31
   });
+  assert.equal(buildCreateTeamSubscriptionPayload({ ...form, trafficResetDay: "" }, expireAt).trafficResetDay, null, "留空表示不自动重置");
 }
 
 function testCreateTeamSubscriptionPayloadRequiresValidatedExpireAt() {
@@ -87,7 +94,7 @@ function testCreateTeamSubscriptionPayloadRequiresValidatedExpireAt() {
 function testInlineTeamSubscriptionEditorExposesUsedTrafficInput() {
   const source = readFileSync(resolve(import.meta.dirname, "../src/pages/SubscriptionsPage.tsx"), "utf8");
 
-  assert.match(source, /label="已用流量 \(GB\)"/);
+  assert.match(source, /label=\{trafficQuotaLabels\(props\.teamSubscriptionForm\.trafficResetDay\)\.usedInput\}/);
   assert.match(source, /value=\{props\.teamSubscriptionForm\.usedTrafficGb\}/);
   assert.match(source, /usedTrafficGb: Number\(value\) \|\| 0/);
 }

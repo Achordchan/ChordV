@@ -10,6 +10,7 @@ import {
   IsOptional,
   IsString,
   Matches,
+  ValidateIf,
   Max,
   MaxLength,
   Min,
@@ -23,6 +24,19 @@ export interface AgentRegisterResultDto {
   accepted: boolean;
   agentId: string;
   nodeId: string;
+}
+
+export class AgentOnlineUserDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(128)
+  bindingId!: string;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(10_000)
+  ipCount!: number;
 }
 
 export class AgentHeartbeatDto {
@@ -48,6 +62,25 @@ export class AgentHeartbeatDto {
 
   @IsIn(["unknown", "healthy", "degraded", "offline", "awaiting_inbound"])
   xrayStatus!: "unknown" | "healthy" | "degraded" | "offline" | "awaiting_inbound";
+
+  /**
+   * 本节点 Xray 当前在线的账号（按绑定）。缺省表示这次没有观察到（旧版 Agent、读取失败或尚未绑定入站），
+   * 服务端保持原有记录；空数组表示观察到了、没有人在线。
+   */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(5000)
+  @ValidateNested({ each: true })
+  @Type(() => AgentOnlineUserDto)
+  onlineUsers?: AgentOnlineUserDto[];
+
+  /** 在线报告的序号，随 onlineUsers 一起发送，同一 Agent 严格递增；服务端据此丢弃迟到的旧报告。 */
+  @ValidateIf((input: AgentHeartbeatDto) => input.onlineUsers !== undefined)
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(Number.MAX_SAFE_INTEGER)
+  onlineSequence?: number;
 }
 
 export class AgentUsageSampleInputDto {

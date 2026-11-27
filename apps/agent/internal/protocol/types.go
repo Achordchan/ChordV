@@ -9,6 +9,11 @@
 // matching the server's /^(0|[1-9]\d*)$/ validators.
 package protocol
 
+import (
+	"fmt"
+	"time"
+)
+
 // CommandType enumerates what the control plane may ask an agent to do.
 // The server validates against this exact list (QueueAgentCommandDto).
 type CommandType string
@@ -80,6 +85,39 @@ type DesiredUser struct {
 	Enabled               bool   `json:"enabled"`
 	QuotaRemainingBytes   string `json:"quotaRemainingBytes"`
 	OfflineAllowanceBytes string `json:"offlineAllowanceBytes"`
+	// ExpiresAt is when the subscription behind this binding runs out, as an
+	// RFC 3339 instant. Empty means the control plane did not say — an older
+	// control plane, or a command that carries no expiry — and the agent then
+	// enforces nothing on its own.
+	//
+	// The control plane stays the authority on expiry while it can be reached.
+	// This field only bounds what a node serves on its own word while it
+	// cannot: see Store.RecordSample.
+	ExpiresAt string `json:"expiresAt,omitempty"`
+}
+
+// ParseExpiresAt reads an ExpiresAt value. The control plane writes
+// Date.toISOString(), which RFC 3339 covers.
+func ParseExpiresAt(value string) (time.Time, error) {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("expiresAt %q 不是合法的 RFC 3339 时间", value)
+	}
+	return parsed.UTC(), nil
+}
+
+// NormalizeExpiresAt returns the canonical stored form of an ExpiresAt value:
+// "" stays "" (no expiry known), anything else becomes UTC with millisecond
+// precision so two spellings of one instant compare equal as strings.
+func NormalizeExpiresAt(value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	parsed, err := ParseExpiresAt(value)
+	if err != nil {
+		return "", err
+	}
+	return parsed.Format("2006-01-02T15:04:05.000Z"), nil
 }
 
 // AbsoluteCounter is one user's cumulative traffic as Xray reports it.
@@ -168,6 +206,30 @@ type Heartbeat struct {
 	ConfigRevision string     `json:"configRevision"`
 	QueueDepth     int        `json:"queueDepth"`
 	XrayStatus     XrayStatus `json:"xrayStatus"`
+	// OnlineUsers lists this node's accounts that Xray currently sees online.
+	// nil (field absent) means "not observed this time" — an older agent, a
+	// failed read, or no bound inbound — and the server must keep what it had;
+	// an empty list means "observed, nobody online".
+	OnlineUsers *[]OnlineUser `json:"onlineUsers,omitempty"`
+	// OnlineSequence orders online reports: it is sent with every OnlineUsers
+	// and strictly increases for this agent, across restarts too (wall-clock
+	// milliseconds, but always above the last persisted value), so the server
+	// can drop a delayed report that arrives after a newer one.
+	OnlineSequence int64 `json:"onlineSequence,omitempty"`
+}
+
+// MaxOnlineUsers caps one heartbeat's online report.
+const MaxOnlineUsers = 5000
+
+// MaxOnlineIPCount caps one account's reported source-IP count. The control
+// plane rejects larger values, so the agent clamps rather than lose the beat.
+const MaxOnlineIPCount = 10000
+
+// OnlineUser is one online account, identified by its binding.
+type OnlineUser struct {
+	BindingID string `json:"bindingId"`
+	// IPCount is the number of distinct source IPs with a live connection.
+	IPCount int `json:"ipCount"`
 }
 
 // HeartbeatAck carries the server's ack watermark and its current revision, so

@@ -1,6 +1,7 @@
 import "reflect-metadata";
 import { ReportNodeProbesDto } from "../src/modules/client/report-node-probes.dto";
 import { ClientAccessService } from "../src/modules/common/client-access.service";
+import { SubscriptionLinkPublicationService } from "../src/modules/common/subscription-link-publication.service";
 import { ImportReleaseArtifactDto } from "../src/modules/admin/import-release-artifact.dto";
 import assert from "node:assert/strict";
 import { Module, RequestMethod, UnauthorizedException, ValidationPipe } from "@nestjs/common";
@@ -306,6 +307,7 @@ const imageBedServiceStub = {
   controllers: [AdminController, ClientController, DownloadsController],
   providers: [
     AdminAuthGuard,
+    { provide: SubscriptionLinkPublicationService, useValue: { kick: () => undefined } },
     ClientAuthGuard,
     { provide: PrismaService, useValue: prismaStub },
     {

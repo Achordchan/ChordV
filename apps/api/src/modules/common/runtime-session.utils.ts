@@ -12,6 +12,34 @@ import { getSubscriptionStateReason, readEffectiveSubscriptionState } from "./su
 export const LEASE_TTL_SECONDS = Number(process.env.CHORDV_SESSION_LEASE_TTL_SECONDS ?? 1800);
 export const LEASE_HEARTBEAT_INTERVAL_SECONDS = Number(process.env.CHORDV_SESSION_HEARTBEAT_INTERVAL_SECONDS ?? 30);
 export const LEASE_GRACE_SECONDS = Number(process.env.CHORDV_SESSION_GRACE_SECONDS ?? 300);
+
+/**
+ * How long a connected client may go WITHOUT reaching the control plane before
+ * its session is given up on — by the client, which keeps its tunnel up for
+ * this long while heartbeats fail for reasons that are not an answer (no route,
+ * timeout, 5xx), and by the control plane, which keeps the silent lease
+ * resumable for the same period.
+ *
+ * It exists because the tunnel does not depend on the control plane: the
+ * client talks to the node, and the node serves from its own configuration.
+ * Before this, the only thing that took a desktop user offline when the
+ * control plane was unreachable was the client itself, disconnecting after
+ * LEASE_GRACE_SECONDS of failed heartbeats.
+ *
+ * 0 restores that behaviour exactly.
+ */
+export const DEFAULT_LEASE_OFFLINE_HOLD_SECONDS = 24 * 60 * 60;
+
+export function resolveLeaseOfflineHoldSeconds(raw: string | undefined): number {
+  const value = raw?.trim() ?? "";
+  if (!/^\d+$/.test(value)) return DEFAULT_LEASE_OFFLINE_HOLD_SECONDS;
+  const seconds = Number(value);
+  return Number.isSafeInteger(seconds) ? seconds : DEFAULT_LEASE_OFFLINE_HOLD_SECONDS;
+}
+
+export const LEASE_OFFLINE_HOLD_SECONDS = resolveLeaseOfflineHoldSeconds(
+  process.env.CHORDV_SESSION_OFFLINE_HOLD_SECONDS
+);
 export const SECURITY_REASON_CONCURRENCY = "concurrency_limit";
 export const DEFAULT_MAX_CONCURRENT_SESSIONS = 3;
 
@@ -65,6 +93,30 @@ export function isLeaseHardExpired(expiresAt: Date, now: Date, graceSeconds = LE
 
 export function getLeaseHardExpireCutoff(now: Date, graceSeconds = LEASE_GRACE_SECONDS) {
   return new Date(now.getTime() - graceSeconds * 1000);
+}
+
+/**
+ * A lease is STALE once it is hard-expired (isLeaseHardExpired): the client has
+ * been silent past the TTL and the grace. Stale is not gone. It no longer counts
+ * as a connection anywhere — presence and the concurrency limit both read
+ * expiresAt — but for LEASE_OFFLINE_HOLD_SECONDS more its client may resume it
+ * with a heartbeat. Past that it is abandoned, and only then revoked.
+ */
+export function isLeaseAbandoned(
+  expiresAt: Date,
+  now: Date,
+  graceSeconds = LEASE_GRACE_SECONDS,
+  offlineHoldSeconds = LEASE_OFFLINE_HOLD_SECONDS
+) {
+  return isLeaseHardExpired(expiresAt, now, graceSeconds + offlineHoldSeconds);
+}
+
+export function getLeaseAbandonCutoff(
+  now: Date,
+  graceSeconds = LEASE_GRACE_SECONDS,
+  offlineHoldSeconds = LEASE_OFFLINE_HOLD_SECONDS
+) {
+  return getLeaseHardExpireCutoff(now, graceSeconds + offlineHoldSeconds);
 }
 
 export function buildLeaseDiagnosticFields(

@@ -15,6 +15,7 @@ import { workLifecycle } from "../../work-lifecycle";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { throwLocalReadAsServiceUnavailable } from "./prisma-error.utils";
 import { PrismaService } from "./prisma.service";
+import { directOnlineCutoff } from "./direct-presence";
 import { readNodeCountryCode } from "./node-import.utils";
 import { isLeaseHardExpired, LEASE_HEARTBEAT_INTERVAL_SECONDS } from "./runtime-session.utils";
 import { readEffectiveSubscriptionState, roundTrafficGb, toAdminUserClientVersion } from "./subscription.utils";
@@ -95,6 +96,9 @@ export type PresenceStreamRow = {
 
 export type PresenceLeaseRow = {
   sessionId: string;
+  /** 订阅链接（第三方客户端）的在线记录，见 direct-presence.ts。缺省为 ChordV 客户端租约。 */
+  via?: "client" | "subscription_link";
+  onlineIpCount?: number;
   userId: string;
   status: string;
   issuedAt: Date;
@@ -205,6 +209,7 @@ function toPresenceSession(lease: PresenceLeaseRow): AdminPresenceSessionDto {
   const subscription = lease.subscription;
   return {
     sessionId: lease.sessionId,
+    ...(lease.via === "subscription_link" ? { via: "subscription_link" as const, onlineIpCount: lease.onlineIpCount ?? 0 } : {}),
     connectedAt: lease.issuedAt.toISOString(),
     lastHeartbeatAt: lease.lastHeartbeatAt.toISOString(),
     connectionMode: normalizeConnectionMode(lease.connectionMode),
@@ -231,6 +236,42 @@ function toPresenceSession(lease: PresenceLeaseRow): AdminPresenceSessionDto {
         }
       : null
   };
+}
+
+export type DirectPresenceBindingRow = {
+  id: string;
+  userId: string | null;
+  directOnlineSince: Date | null;
+  directLastOnlineAt: Date | null;
+  directOnlineIpCount: number;
+  node: PresenceLeaseRow["node"];
+  subscription: NonNullable<PresenceLeaseRow["subscription"]>;
+};
+
+/**
+ * 订阅链接的在线记录换成与租约同形的行：节点报告在线（来源 IP 数大于 0）且最近一次报告仍在判定窗口内的算“已连接”，
+ * 其余只用来提供最近在线时间。到期时间放在最近在线时间之后一天，只为不被租约的硬过期规则误判。
+ */
+export function toDirectPresenceLeases(rows: DirectPresenceBindingRow[], now: Date): PresenceLeaseRow[] {
+  const result: PresenceLeaseRow[] = [];
+  for (const row of rows) {
+    if (!row.userId || !row.directLastOnlineAt) continue;
+    const live = row.directOnlineIpCount > 0 && row.directLastOnlineAt.getTime() >= directOnlineCutoff(now).getTime();
+    result.push({
+      sessionId: `direct:${row.id}`,
+      via: "subscription_link",
+      onlineIpCount: live ? row.directOnlineIpCount : 0,
+      userId: row.userId,
+      status: live ? "active" : "released",
+      issuedAt: row.directOnlineSince ?? row.directLastOnlineAt,
+      expiresAt: new Date(row.directLastOnlineAt.getTime() + 24 * 60 * 60_000),
+      lastHeartbeatAt: row.directLastOnlineAt,
+      connectionMode: null,
+      node: row.node,
+      subscription: row.subscription
+    });
+  }
+  return result;
 }
 
 function groupByUser<T extends { userId: string }>(rows: T[], keep: (row: T) => boolean = () => true) {
@@ -584,7 +625,7 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
       // 连接只查近一天内有过心跳的（不限状态，走 lastHeartbeatAt 索引）：活跃且仍在心跳的是当前连接，
       // 已撤销或心跳超时的只用来取离线用户的最后心跳。更早的心跳由 noteHeartbeat 写进了 UserClientPresence.lastSeenAt。
       // 不扫全部历史租约：租约表没有保留期，而后台每 30 秒会拉一次。
-      const [presence, streams, leases, clientVersions] = await workLifecycle.all([
+      const [presence, streams, clientLeases, clientVersions, directBindings] = await workLifecycle.all([
         this.prisma.userClientPresence.findMany({
           select: { userId: true, onlineSince: true, lastSeenAt: true }
         }),
@@ -623,8 +664,37 @@ export class ClientPresenceService implements OnModuleInit, OnModuleDestroy {
         }),
         this.prisma.userClientVersion.findMany({
           select: { userId: true, platform: true, version: true, build: true, channel: true, lastSeenAt: true }
+        }),
+        this.prisma.panelClientBinding.findMany({
+          // 不限时间：订阅链接用户没有客户端心跳写进 UserClientPresence，这里的最近在线时间就是他唯一的在线记录。
+          // 只有节点报告过在线的绑定才有值，行数以绑定数为上限，走 directLastOnlineAt 索引。
+          where: { userId: { not: null }, directLastOnlineAt: { not: null } },
+          select: {
+            id: true,
+            userId: true,
+            directOnlineSince: true,
+            directLastOnlineAt: true,
+            directOnlineIpCount: true,
+            node: {
+              select: { id: true, name: true, region: true, countryCode: true, provider: true, protocol: true, security: true }
+            },
+            subscription: {
+              select: {
+                id: true,
+                teamId: true,
+                state: true,
+                expireAt: true,
+                totalTrafficGb: true,
+                usedTrafficGb: true,
+                remainingTrafficGb: true,
+                plan: { select: { name: true } },
+                team: { select: { name: true } }
+              }
+            }
+          }
         })
       ]);
+      const leases: PresenceLeaseRow[] = [...clientLeases, ...toDirectPresenceLeases(directBindings, now)];
       const userIds = Array.from(
         new Set([
           ...presence.map((row) => row.userId),

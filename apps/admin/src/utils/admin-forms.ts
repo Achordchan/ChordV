@@ -14,6 +14,16 @@ import type {
 } from "@chordv/shared";
 import { addDays, toDateTimeLocal } from "./admin-format";
 
+/**
+ * 新建订阅默认的每月重置日：开通当天（北京时间）是几号。
+ * 与 @chordv/shared 的 defaultTrafficResetDay 相同；这里不在运行时引用共享包，
+ * 因为本文件会被 Node 直接加载的回归测试引入，而那种加载方式拿不到共享包的具名导出。
+ * 两者一致由 apps/api/test/traffic-reset-schedule.regression.ts 校验。
+ */
+export function defaultTrafficResetDayForNewSubscription(now: Date = new Date()): number {
+  return new Date(now.getTime() + 8 * 60 * 60 * 1000).getUTCDate();
+}
+
 export type UserFormState = {
   email: string;
   password: string;
@@ -39,14 +49,19 @@ export type SubscriptionCreateFormState = {
   usedTrafficGb: number;
   expireAt: string;
   state: SubscriptionState;
+  /** 每月流量重置日；空字符串表示不自动重置。 */
+  trafficResetDay: number | "";
 };
 
 export type SubscriptionAdjustFormState = {
   totalTrafficGb: number;
   usedTrafficGb: number;
+  /** 打开表单时的已用流量（已取整）；提交时没改就不发送，避免覆盖期间新产生的用量。 */
+  baseUsedTrafficGb: number;
   expireAt: string;
   baseExpireAt: string;
   state: SubscriptionState;
+  trafficResetDay: number | "";
 };
 
 export type SubscriptionRenewFormState = {
@@ -62,6 +77,8 @@ export type SubscriptionChangePlanFormState = {
   totalTrafficGb: number;
   expireAt: string;
   baseExpireAt: string;
+  /** 只用来决定“总流量/每月流量”的文字，变更套餐不改重置日。 */
+  trafficResetDay: number | "";
 };
 
 export type TeamFormState = {
@@ -80,6 +97,7 @@ export type TeamSubscriptionFormState = {
   totalTrafficGb: number;
   usedTrafficGb: number;
   expireAt: string;
+  trafficResetDay: number | "";
 };
 
 export type NodeFormState = {
@@ -171,7 +189,8 @@ export function emptySubscriptionCreateForm(snapshot?: AdminSnapshotDto | null):
     totalTrafficGb: plan?.totalTrafficGb ?? 100,
     usedTrafficGb: 0,
     expireAt: toDateTimeLocal(addDays(new Date(), 30).toISOString()),
-    state: "active"
+    state: "active",
+    trafficResetDay: defaultTrafficResetDayForNewSubscription()
   };
 }
 
@@ -180,9 +199,11 @@ export function emptySubscriptionAdjustForm(): SubscriptionAdjustFormState {
   return {
     totalTrafficGb: 100,
     usedTrafficGb: 0,
+    baseUsedTrafficGb: 0,
     expireAt: now,
     baseExpireAt: now,
-    state: "active"
+    state: "active",
+    trafficResetDay: ""
   };
 }
 
@@ -202,7 +223,8 @@ export function emptySubscriptionChangePlanForm(): SubscriptionChangePlanFormSta
     planId: "",
     totalTrafficGb: 100,
     expireAt: "",
-    baseExpireAt: toDateTimeLocal(new Date().toISOString())
+    baseExpireAt: toDateTimeLocal(new Date().toISOString()),
+    trafficResetDay: ""
   };
 }
 
@@ -226,7 +248,8 @@ export function emptyTeamSubscriptionForm(): TeamSubscriptionFormState {
     planId: "",
     totalTrafficGb: 100,
     usedTrafficGb: 0,
-    expireAt: toDateTimeLocal(addDays(new Date(), 30).toISOString())
+    expireAt: toDateTimeLocal(addDays(new Date(), 30).toISOString()),
+    trafficResetDay: defaultTrafficResetDayForNewSubscription()
   };
 }
 
@@ -313,6 +336,22 @@ export function buildCreateTeamSubscriptionPayload(
     planId: form.planId,
     totalTrafficGb: form.totalTrafficGb,
     usedTrafficGb: form.usedTrafficGb,
-    expireAt
+    expireAt,
+    trafficResetDay: toTrafficResetDayPayload(form.trafficResetDay)
   };
+}
+
+/** 表单里的重置日转成接口参数：空表示不自动重置（null）。 */
+/** 校正订阅时只在管理员改了已用流量才提交它。 */
+export function readChangedUsedTrafficGb(form: Pick<SubscriptionAdjustFormState, "usedTrafficGb" | "baseUsedTrafficGb">): number | undefined {
+  return form.usedTrafficGb === form.baseUsedTrafficGb ? undefined : form.usedTrafficGb;
+}
+
+export function toTrafficResetDayPayload(value: number | ""): number | null {
+  return value === "" ? null : value;
+}
+
+/** 已有订阅的重置日转成表单值。 */
+export function toTrafficResetDayForm(value: number | null | undefined): number | "" {
+  return typeof value === "number" ? value : "";
 }

@@ -22,7 +22,7 @@ import { NestFactory } from "@nestjs/core";
 import * as bcrypt from "bcryptjs";
 import * as jwt from "jsonwebtoken";
 import { lastValueFrom, throwError } from "rxjs";
-import { LEASE_GRACE_SECONDS } from "../src/modules/common/runtime-session.utils";
+import { LEASE_GRACE_SECONDS, LEASE_OFFLINE_HOLD_SECONDS } from "../src/modules/common/runtime-session.utils";
 import { RuntimeSessionService } from "../src/modules/common/runtime-session.service";
 import { DevDataService } from "../src/modules/common/dev-data.service";
 import { AdminSubscriptionService } from "../src/modules/common/admin-subscription.service";
@@ -48,6 +48,7 @@ import { ClientAuthGuard } from "../src/modules/common/client-auth.guard";
 import { UploadedTempFileCleanupInterceptor } from "../src/modules/common/uploaded-temp-file-cleanup.interceptor";
 import { ClientTicketService } from "../src/modules/common/client-ticket.service";
 import { AdminController } from "../src/modules/admin/admin.controller";
+import { SubscriptionLinkPublicationService } from "../src/modules/common/subscription-link-publication.service";
 import { DownloadsController } from "../src/modules/client/downloads.controller";
 import { LoggingExceptionFilter } from "../src/logging-exception.filter";
 import { forceHttpsMiddleware } from "../src/https-enforcement";
@@ -4546,7 +4547,7 @@ async function testHeartbeatBeyondGraceFailsWithLeaseExpired() {
           subscriptionId: "sub_1",
           nodeId: "node_1",
           status: "active",
-          expiresAt: new Date(Date.now() - (LEASE_GRACE_SECONDS * 1000 + 5_000)),
+          expiresAt: new Date(Date.now() - ((LEASE_GRACE_SECONDS + LEASE_OFFLINE_HOLD_SECONDS) * 1000 + 5_000)),
           revokedReason: null,
           xrayUserEmail: "demo@example.com",
           xrayUserUuid: "uuid_3",
@@ -4558,7 +4559,7 @@ async function testHeartbeatBeyondGraceFailsWithLeaseExpired() {
 
   await assert.rejects(() => service.heartbeatSession("session_3"), /会话已过期/);
 
-  assert.deepEqual(revoked, [{ leaseId: "lease_3", reason: "lease_expired" }], "超过 TTL + grace 后，心跳应走统一回收逻辑");
+  assert.deepEqual(revoked, [{ leaseId: "lease_3", reason: "lease_expired" }], "超过 TTL + grace + 失联保持期后，心跳应走统一回收逻辑");
 }
 
 async function testGetActiveRuntimeRevokesDisabledUserLease() {
@@ -4937,11 +4938,22 @@ async function testSweepExpiredLeasesDoesNotRevokeTooEarly() {
     revokedReason: null,
     node: { id: "node_1", flow: "" }
   };
+  // Past the TTL and the grace, but its client may still be riding out a
+  // control-plane outage: stale leases stay resumable for the offline hold.
+  const staleLease = {
+    id: "lease_stale",
+    sessionId: "session_stale",
+    status: "active",
+    expiresAt: new Date(Date.now() - (LEASE_GRACE_SECONDS * 1000 + 5_000)),
+    lastHeartbeatAt: new Date(),
+    revokedReason: null,
+    node: { id: "node_1", flow: "" }
+  };
   const hardExpiredLease = {
     id: "lease_hard",
     sessionId: "session_hard",
     status: "active",
-    expiresAt: new Date(Date.now() - (LEASE_GRACE_SECONDS * 1000 + 5_000)),
+    expiresAt: new Date(Date.now() - ((LEASE_GRACE_SECONDS + LEASE_OFFLINE_HOLD_SECONDS) * 1000 + 5_000)),
     lastHeartbeatAt: new Date(),
     revokedReason: null,
     node: { id: "node_1", flow: "" }
@@ -4956,7 +4968,7 @@ async function testSweepExpiredLeasesDoesNotRevokeTooEarly() {
       nodeSessionLease: {
         findMany: async ({ where }: { where: { expiresAt: { lt: Date } } }) => {
           const cutoff = where.expiresAt.lt.getTime();
-          return [softExpiredLease, hardExpiredLease].filter((lease) => lease.expiresAt.getTime() < cutoff);
+          return [softExpiredLease, staleLease, hardExpiredLease].filter((lease) => lease.expiresAt.getTime() < cutoff);
         }
       }
     }
@@ -4964,7 +4976,7 @@ async function testSweepExpiredLeasesDoesNotRevokeTooEarly() {
 
   await service.sweepExpiredLeases();
 
-  assert.deepEqual(revokedLeaseIds, ["lease_hard"], "sweepExpiredLeases 只能回收超过 TTL + grace 的租约");
+  assert.deepEqual(revokedLeaseIds, ["lease_hard"], "sweepExpiredLeases 只能回收超过 TTL + grace + 失联保持期的租约");
 }
 
 async function testLeaseRevocationKeepsLocalStateWhenRuntimeEventPublishFails() {
@@ -6963,6 +6975,7 @@ async function testNodeAccessHttpMapsSubscriptionLookupFailureToServiceUnavailab
     controllers: [AdminController],
     providers: [
       AdminAuthGuard,
+      { provide: SubscriptionLinkPublicationService, useValue: { kick: () => undefined } },
       {
         provide: AuthSessionService,
         useValue: {
@@ -7047,6 +7060,7 @@ async function testNodeAccessHttpMapsNodeListFailureToServiceUnavailable() {
     controllers: [AdminController],
     providers: [
       AdminAuthGuard,
+      { provide: SubscriptionLinkPublicationService, useValue: { kick: () => undefined } },
       {
         provide: AuthSessionService,
         useValue: {
@@ -7172,6 +7186,7 @@ async function testNodeAccessHttpReturnsOkWhenAdminRuntimeEventPublishThrowsAfte
     controllers: [AdminController],
     providers: [
       AdminAuthGuard,
+      { provide: SubscriptionLinkPublicationService, useValue: { kick: () => undefined } },
       {
         provide: AuthSessionService,
         useValue: {

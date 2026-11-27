@@ -16,6 +16,7 @@ import { ClientController } from "../src/modules/client/client.controller";
 import { ClientService } from "../src/modules/client/client.service";
 import { DownloadsController } from "../src/modules/client/downloads.controller";
 import { PrismaService } from "../src/modules/common/prisma.service";
+import { SubscriptionLinkPublicationService } from "../src/modules/common/subscription-link-publication.service";
 import { LegacyAdminTicketWriteGuard, LegacyClientTicketWriteGuard } from "../src/modules/common/legacy-support-tickets.guard";
 
 type RouteCall = {
@@ -328,10 +329,13 @@ async function testAdminSseRouteMetadataAndAdminValidation() {
   await observedInput?.validate?.();
 }
 
+let subscriptionLinkKicks = 0;
+
 @Module({
   controllers: [AdminController, DownloadsController, ClientController],
   providers: [
     AdminAuthGuard,
+    { provide: SubscriptionLinkPublicationService, useValue: { kick: () => { subscriptionLinkKicks += 1; } } },
     ClientAuthGuard,
     { provide: PrismaService, useValue: prismaStub },
     {
@@ -488,6 +492,7 @@ async function main() {
       status: 201,
       body: { id: "cmd_1", action: "retry" }
     });
+    assert.equal(subscriptionLinkKicks, 1, "后台写操作成功后立即触发一次订阅链接发布");
     assert.deepEqual(await requestJson(baseUrl, "/api/admin/nodes/node-command-jobs/cmd_1/dismiss"), {
       status: 201,
       body: { id: "cmd_1", action: "dismiss" }
@@ -767,6 +772,11 @@ async function main() {
       },
       "后台在线状态接口走管理员鉴权并转发到在线状态查询"
     );
+    {
+      const before = subscriptionLinkKicks;
+      await requestJson(baseUrl, "/api/admin/presence", { method: "GET" });
+      assert.equal(subscriptionLinkKicks, before, "只读请求不触发订阅链接发布");
+    }
     assert.deepEqual(
       await requestJson(baseUrl, "/api/admin/image-bed/config", {
         method: "GET"

@@ -22,6 +22,7 @@ import (
 	"github.com/Achordchan/ChordV/apps/agent/internal/apiclient"
 	"github.com/Achordchan/ChordV/apps/agent/internal/commands"
 	"github.com/Achordchan/ChordV/apps/agent/internal/componentcheck"
+	"github.com/Achordchan/ChordV/apps/agent/internal/connkill"
 	"github.com/Achordchan/ChordV/apps/agent/internal/credentials"
 	"github.com/Achordchan/ChordV/apps/agent/internal/durable"
 	"github.com/Achordchan/ChordV/apps/agent/internal/onboarding"
@@ -155,6 +156,14 @@ func serve(config *agentcfg.Config) error {
 	bound, err := xray.NewBinding(adapter, state)
 	if err != nil {
 		return err
+	}
+	if killer, err := connkill.Find(); err != nil {
+		logf("提示：%v；停用或到期的账号要等客户端重连才会断开", err)
+	} else if !connkill.HasNetAdmin() {
+		logf("提示：Agent 没有 CAP_NET_ADMIN，停用或到期的账号要等客户端重连才会断开。" +
+			"旧版安装脚本生成的服务不带该权限，请在节点上重新运行安装命令以更新服务配置（非特权容器无法授予时会保持现状）")
+	} else {
+		bound.SetConnectionKiller(killer, logf)
 	}
 	if bound.InboundReady() {
 		if err := bound.ValidateInbound(ctx); err != nil {

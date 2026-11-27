@@ -1,0 +1,216 @@
+// Package connkill closes the established TCP connections a removed account
+// still holds.
+//
+// Xray authenticates a VLESS account only during the handshake. Removing the
+// account over gRPC stops NEW connections, but every connection already
+// established keeps working until the client reconnects — a disabled or
+// expired user can stay online for hours. xray-core has no "kick user" call, and
+// restarting Xray would drop every account this agent installed over gRPC (they
+// live only in memory) until the next reconcile.
+//
+// So the agent asks the kernel to destroy the sockets instead (SOCK_DESTROY,
+// the same mechanism as `ss -K`), narrowed to the inbound's listening address
+// and port and the source IPs Xray reports for that account. The cost is bounded: another
+// account behind the very same public IP on the same port loses its current
+// connections once and reconnects immediately.
+//
+// SOCK_DESTROY needs CAP_NET_ADMIN and a kernel built with
+// CONFIG_INET_DIAG_DESTROY. Without either the kill fails and the caller only
+// logs it: removal itself has already succeeded.
+package connkill
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Timeout bounds one whole Kill call, every source IP included. It runs under
+// the agent's state lock.
+const Timeout = 3 * time.Second
+
+// MaxIPs caps how many source addresses one removal may target. An account
+// reporting more than this is not a household; refusing keeps a bad counter
+// from turning into a node-wide disconnect.
+const MaxIPs = 64
+
+// ErrUnavailable means no ss binary was found on this host.
+var ErrUnavailable = errors.New("未找到 ss（iproute2），无法断开已建立连接")
+
+// Listener is the bound inbound's local endpoint. A nil IP means the inbound
+// listens on every address (0.0.0.0 / ::), where nothing else can hold the same
+// port; a specific IP constrains the local address too, so another inbound on
+// the same port but a different address is never touched.
+type Listener struct {
+	IP   net.IP
+	Port int
+}
+
+// Killer destroys established connections from the given source IPs to the
+// given listener. It reports how many sockets were destroyed.
+type Killer interface {
+	Kill(ctx context.Context, listener Listener, ips []string) (int, error)
+}
+
+// SS drives iproute2's `ss -K`.
+type SS struct{ Path string }
+
+var candidates = []string{"/usr/bin/ss", "/bin/ss", "/usr/sbin/ss", "/sbin/ss"}
+
+// Find locates ss at a fixed system path; PATH is not consulted.
+func Find() (*SS, error) {
+	for _, path := range candidates {
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+			return &SS{Path: path}, nil
+		}
+	}
+	return nil, ErrUnavailable
+}
+
+// capNetAdmin is CAP_NET_ADMIN's bit in the /proc capability masks.
+const capNetAdmin = 12
+
+// HasNetAdmin reports whether this process can use SOCK_DESTROY. A unit from
+// an older installer lacks AmbientCapabilities=CAP_NET_ADMIN and, with
+// NoNewPrivileges, can never gain it: rerunning the installer rewrites the
+// unit. The caller logs this once instead of failing every disconnect.
+func HasNetAdmin() bool {
+	data, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return false
+	}
+	return effectiveHasNetAdmin(string(data))
+}
+
+func effectiveHasNetAdmin(status string) bool {
+	for _, line := range strings.Split(status, "\n") {
+		if value, ok := strings.CutPrefix(line, "CapEff:"); ok {
+			mask, err := strconv.ParseUint(strings.TrimSpace(value), 16, 64)
+			return err == nil && mask&(1<<capNetAdmin) != 0
+		}
+	}
+	return false
+}
+
+// NormalizeIP turns an address as Xray prints it ("1.2.3.4", "[2001:db8::1]")
+// into a canonical IP string, rejecting anything else.
+func NormalizeIP(value string) (net.IP, error) {
+	trimmed := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(value), "["), "]")
+	ip := net.ParseIP(trimmed)
+	if ip == nil {
+		return nil, fmt.Errorf("来源地址 %q 不是 IP", value)
+	}
+	return ip, nil
+}
+
+// Filter builds the ss filter tokens for one source IP. In ss, "src" is the
+// local address and "dst" the remote one. An IPv4 address on a dual-stack
+// socket appears as ::ffff:a.b.c.d, so IPv4 matches both forms.
+func Filter(listener Listener, ip net.IP) []string {
+	tokens := []string{"(", "sport", "=", ":" + strconv.Itoa(listener.Port), ")"}
+	if listener.IP != nil {
+		tokens = append(tokens, "and", "(")
+		tokens = append(tokens, addressMatch("src", listener.IP)...)
+		tokens = append(tokens, ")")
+	}
+	tokens = append(tokens, "and", "(")
+	tokens = append(tokens, addressMatch("dst", ip)...)
+	return append(tokens, ")")
+}
+
+func addressMatch(side string, ip net.IP) []string {
+	if v4 := ip.To4(); v4 != nil {
+		return []string{side, v4.String(), "or", side, "[::ffff:" + v4.String() + "]"}
+	}
+	return []string{side, "[" + ip.String() + "]"}
+}
+
+func (s *SS) Kill(ctx context.Context, listener Listener, ips []string) (int, error) {
+	if listener.Port < 1 || listener.Port > 65535 {
+		return 0, fmt.Errorf("监听端口 %d 非法", listener.Port)
+	}
+	if listener.IP != nil && listener.IP.IsUnspecified() {
+		listener.IP = nil
+	}
+	if len(ips) > MaxIPs {
+		return 0, fmt.Errorf("来源地址 %d 个，超过上限 %d，拒绝断开", len(ips), MaxIPs)
+	}
+	ctx, cancel := context.WithTimeout(ctx, Timeout)
+	defer cancel()
+	seen := map[string]bool{}
+	total := 0
+	var failures []string
+	for _, raw := range ips {
+		if ctx.Err() != nil {
+			failures = append(failures, "断开超时，剩余来源未处理")
+			break
+		}
+		ip, err := NormalizeIP(raw)
+		if err != nil {
+			failures = append(failures, err.Error())
+			continue
+		}
+		if ip.IsLoopback() || ip.IsUnspecified() || seen[ip.String()] {
+			continue
+		}
+		seen[ip.String()] = true
+		killed, err := s.killOne(ctx, listener, ip)
+		total += killed
+		if err != nil {
+			failures = append(failures, err.Error())
+		}
+	}
+	if len(failures) > 0 {
+		return total, errors.New(strings.Join(failures, "；"))
+	}
+	return total, nil
+}
+
+// StateArgs selects every TCP state in which an authenticated session can
+// still move data: ESTABLISHED, and the half-closed states. A client that
+// shuts its write side after the VLESS request keeps downloading while the
+// server socket sits in CLOSE_WAIT; the server's own half-close leaves it in
+// FIN_WAIT. Listening, SYN and TIME_WAIT sockets carry no session data.
+var StateArgs = []string{"state", "established", "state", "close-wait", "state", "fin-wait-1", "state", "fin-wait-2"}
+
+func (s *SS) killOne(ctx context.Context, listener Listener, ip net.IP) (int, error) {
+	args := append(append([]string{"-K", "-H", "-t", "-n"}, StateArgs...), Filter(listener, ip)...)
+	command := exec.CommandContext(ctx, s.Path, args...)
+	command.Env = []string{"LANG=C", "LC_ALL=C"}
+	// After the deadline kills ss, do not keep waiting on a pipe some
+	// descendant still holds open.
+	command.WaitDelay = 500 * time.Millisecond
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
+	err := command.Run()
+	message := strings.TrimSpace(stderr.String())
+	// ss reports a refused SOCK_DESTROY on stderr and may still exit 0.
+	if lower := strings.ToLower(message); strings.Contains(lower, "not permitted") || strings.Contains(lower, "not supported") {
+		return 0, fmt.Errorf("断开 %s 的连接被拒绝（需要 CAP_NET_ADMIN 与内核 SOCK_DESTROY 支持）：%s", ip, message)
+	}
+	if err != nil {
+		if message == "" {
+			message = err.Error()
+		}
+		return 0, fmt.Errorf("断开 %s 的连接失败：%s", ip, message)
+	}
+	return CountSockets(stdout.String()), nil
+}
+
+// CountSockets counts the socket lines ss printed (-H: no header).
+func CountSockets(output string) int {
+	count := 0
+	for _, line := range strings.Split(output, "\n") {
+		if strings.TrimSpace(line) != "" {
+			count++
+		}
+	}
+	return count
+}

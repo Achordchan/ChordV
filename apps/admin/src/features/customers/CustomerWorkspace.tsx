@@ -1,4 +1,5 @@
 import { CustomerRoutingRules } from "./CustomerRoutingRules";
+import { CustomerSubscriptionLink, TeamSubscriptionLinks } from "./CustomerSubscriptionLink";
 import { useMemo, useState } from "react";
 import { Alert, Avatar, Button, Group, Menu, Stack, Tabs, Text, TextInput } from "@mantine/core";
 import { IconAlertCircle, IconArrowLeft, IconChevronDown, IconGaugeOff, IconLock, IconLockOpen2, IconPencil, IconPlugConnectedX, IconSearch, IconUsers } from "@tabler/icons-react";
@@ -15,7 +16,7 @@ import { TeamProfileEditorPanel } from "./TeamEditors";
 import type { UsersPageProps } from "./types";
 import styles from "./CustomerWorkspace.module.css";
 
-type DetailTab = "rights" | "nodes" | "members" | "profile" | "activity" | "routing";
+type DetailTab = "rights" | "nodes" | "link" | "members" | "profile" | "activity" | "routing";
 
 export function CustomerWorkspace(props: UsersPageProps) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -70,7 +71,7 @@ function CustomerDetail({ customer, actions, onBack }: { customer: CustomerRecor
   const { hasTasks } = customerTasks(customer, actions);
   const create = () => customer.user ? actions.onCreateSubscriptionForUser(customer.user) : customer.team && actions.onOpenTeamSubscriptions(customer.team);
   const manageNodes = () => subscription && actions.onOpenNodeAccessEditor(subscription.id, ownerLabel);
-  const tabs: Array<{ id: DetailTab; label: string }> = [{ id: "rights", label: "订阅权益" }, { id: "nodes", label: "节点授权" },
+  const tabs: Array<{ id: DetailTab; label: string }> = [{ id: "rights", label: "订阅权益" }, { id: "nodes", label: "节点授权" }, { id: "link", label: "订阅链接" },
     ...(customer.team ? [{ id: "members" as const, label: "团队成员" }] : [{ id: "routing" as const, label: "自定义规则" }]), { id: "profile", label: customer.team ? "团队资料" : "账号资料" }, { id: "activity", label: "执行状态" }];
   return <>
     <button className={styles.backButton} onClick={onBack}><IconArrowLeft size={17}/>返回列表</button>
@@ -100,6 +101,8 @@ function CustomerDetail({ customer, actions, onBack }: { customer: CustomerRecor
       {tab === "rights" && <CustomerSubscription customer={customer} actions={actions}/>}
       {tab === "nodes" && (customer.subscription ? <CustomerNodes subscription={customer.subscription} onManage={manageNodes}/>
         : <div className={styles.empty}><p>{subscription ? "订阅详情尚未同步，可打开授权管理查看。" : "请先开通订阅，再分配节点。"}</p><Button color="#1c4d37" onClick={subscription ? manageNodes : create}>{subscription ? "管理授权" : "开通订阅"}</Button></div>)}
+      {tab === "link" && (customer.user ? <CustomerSubscriptionLink key={customer.user.id} userId={customer.user.id}/>
+        : customer.team ? <TeamSubscriptionLinks key={customer.team.id} members={customer.team.members}/> : null)}
       {tab === "members" && customer.team && <CustomerMembers team={customer.team} actions={actions}/>}
       {tab === "routing" && customer.user && <CustomerRoutingRules key={customer.user.id} userId={customer.user.id}/>}
       {tab === "profile" && <CustomerProfile customer={customer} actions={actions}/>}
