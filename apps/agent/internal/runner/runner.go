@@ -661,6 +661,11 @@ func (r *Runner) readOnlineUsers(ctx context.Context, candidates map[string]onli
 	for _, account := range live {
 		installed[account.Email] = account.UUID
 	}
+	shared, err := reader.SharedEmails(ctx)
+	if err != nil {
+		r.logf("无法确认在线账号 email 在本机唯一，本次不上报在线状态：%v", err)
+		return nil
+	}
 	result := []protocol.OnlineUser{}
 	for email, count := range online {
 		candidate, managed := candidates[email]
@@ -669,6 +674,11 @@ func (r *Runner) readOnlineUsers(ctx context.Context, candidates map[string]onli
 		}
 		liveUUID, isInstalled := installed[email]
 		if !ownsOnlineRecord(candidate, liveUUID, isInstalled) {
+			continue
+		}
+		// The online record is process-wide by email: if another inbound
+		// carries the same email, its connections would be counted here.
+		if shared[email] {
 			continue
 		}
 		if count > protocol.MaxOnlineIPCount {

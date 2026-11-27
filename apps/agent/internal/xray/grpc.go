@@ -310,10 +310,26 @@ func (g *GRPC) uniqueCounterEmails(ctx context.Context, users []LiveUser) error 
 	if len(wanted) == 0 {
 		return nil
 	}
+	others, err := g.otherInboundEmails(ctx)
+	if err != nil {
+		return err
+	}
+	for email := range wanted {
+		if tag, shared := others[email]; shared {
+			return fmt.Errorf("email %q 在入站 %q 与 %q 重复，Xray 计数无法分离", email, g.tag, tag)
+		}
+	}
+	return nil
+}
+
+// otherInboundEmails maps every account email on the OTHER inbounds of this
+// Xray process to one inbound carrying it.
+func (g *GRPC) otherInboundEmails(ctx context.Context) (map[string]string, error) {
 	response, err := g.handler.ListInbounds(ctx, &handler.ListInboundsRequest{})
 	if err != nil {
-		return fmt.Errorf("无法确认进程范围的计量 email 唯一性: %w", err)
+		return nil, fmt.Errorf("无法确认进程范围的计量 email 唯一性: %w", err)
 	}
+	result := map[string]string{}
 	for _, inbound := range response.GetInbounds() {
 		if inbound.GetTag() == g.tag {
 			continue
@@ -324,24 +340,26 @@ func (g *GRPC) uniqueCounterEmails(ctx context.Context, users []LiveUser) error 
 		}
 		emails, known, err := accountEmails(inbound.GetProxySettings())
 		if err != nil {
-			return fmt.Errorf("无法解析入站 %q 的账号配置，拒绝歧义计量: %w", inbound.GetTag(), err)
+			return nil, fmt.Errorf("无法解析入站 %q 的账号配置，拒绝歧义计量: %w", inbound.GetTag(), err)
 		}
 		if !known {
 			other, err := g.handler.GetInboundUsers(ctx, &handler.GetInboundUserRequest{Tag: inbound.GetTag()})
 			if err != nil {
-				return fmt.Errorf("无法检查入站 %q 的计量身份，拒绝歧义计量: %w", inbound.GetTag(), err)
+				return nil, fmt.Errorf("无法检查入站 %q 的计量身份，拒绝歧义计量: %w", inbound.GetTag(), err)
 			}
 			for _, user := range other.GetUsers() {
 				emails = append(emails, user.GetEmail())
 			}
 		}
 		for _, email := range emails {
-			if wanted[email] {
-				return fmt.Errorf("email %q 在入站 %q 与 %q 重复，Xray 计数无法分离", email, g.tag, inbound.GetTag())
+			if email != "" {
+				if _, seen := result[email]; !seen {
+					result[email] = inbound.GetTag()
+				}
 			}
 		}
 	}
-	return nil
+	return result, nil
 }
 
 // accountEmails reads the counter identities of inbounds that have no user

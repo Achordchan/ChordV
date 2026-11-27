@@ -13,8 +13,14 @@ import (
 
 type onlineXray struct {
 	*fakeXray
-	online map[string]int
-	err    error
+	online    map[string]int
+	err       error
+	shared    map[string]bool
+	sharedErr error
+}
+
+func (x *onlineXray) SharedEmails(context.Context) (map[string]bool, error) {
+	return x.shared, x.sharedErr
 }
 
 func (x *onlineXray) OnlineUsers(context.Context) (map[string]int, error) { return x.online, x.err }
@@ -298,5 +304,39 @@ func TestOwnershipComparesUUIDsCanonically(t *testing.T) {
 	upper.Claim = &store.Claim{BindingID: "b1", UUID: "6f1c1a5e-0d4b-4c1e-9c1a-1234567890ab"}
 	if !ownsOnlineRecord(upper, "", false) {
 		t.Fatal("claim recorded in lowercase is still ours")
+	}
+}
+
+// Another inbound reusing a managed email (here: a disabled account whose
+// claim we still hold) makes its online record ambiguous; it is not reported.
+// If uniqueness cannot be checked, nothing is reported.
+func TestSharedEmailsAreNotAttributed(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "7", protocol.ModeDirectPrimary,
+		user("b1", "a@example.com", "7", true, "1000"),
+		user("b2", "b@example.com", "7", false, "1000"))
+	r := h.build(t)
+	x := &onlineXray{fakeXray: h.xray, online: map[string]int{"a@example.com": 1, "b@example.com": 1}, shared: map[string]bool{"b@example.com": true}}
+	r.deps.Xray = x
+	if err := r.sample(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.RecordProvisioned("b2", "b@example.com", "uuid-b2"); err != nil {
+		t.Fatal(err)
+	}
+	h.api.heartbeatAck = protocol.HeartbeatAck{Accepted: true, AckThrough: "0", ConfigRevision: "7"}
+	if err := r.sendHeartbeat(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	beat := h.api.heartbeats[len(h.api.heartbeats)-1]
+	if beat.OnlineUsers == nil || len(*beat.OnlineUsers) != 1 || (*beat.OnlineUsers)[0].BindingID != "b1" {
+		t.Fatalf("shared email must not be attributed: %+v", beat.OnlineUsers)
+	}
+	x.sharedErr = errors.New("list inbounds failed")
+	if err := r.sendHeartbeat(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if beat := h.api.heartbeats[len(h.api.heartbeats)-1]; beat.OnlineUsers != nil {
+		t.Fatalf("unverifiable uniqueness must omit the report: %+v", *beat.OnlineUsers)
 	}
 }

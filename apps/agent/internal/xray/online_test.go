@@ -292,3 +292,69 @@ func TestRemovalSkipsDisconnectWhenTheEmailIsNotUnique(t *testing.T) {
 		t.Fatalf("logs: %v", logs)
 	}
 }
+
+// A replacement that removes the old account and then fails to add the new
+// one must still disconnect the old sessions: a retry finds nothing installed.
+func TestPartialCredentialReplacementStillDisconnects(t *testing.T) {
+	g, _ := configuredPolicyServer(t, false, nil, &vin.Config{Decryption: "none"}, true)
+	ctx := context.Background()
+	user := protocol.DesiredUser{Email: "partial@example.test", UUID: "d52ca32b-784a-4f4b-ab51-b8341884f213"}
+	if err := g.EnsureUser(ctx, user, Expectation{Absent: true}); err != nil {
+		t.Fatal(err)
+	}
+	openVLESS(t, g, user.UUID)
+	waitOnline(t, g, user.Email, 1)
+	killer := &recordingKiller{}
+	binding := &Binding{GRPC: g}
+	binding.SetConnectionKiller(killer, nil)
+	binding.ensure = func(ctx context.Context, desired protocol.DesiredUser, _ Expectation) error {
+		if err := g.RemoveUser(ctx, desired.Email, Expectation{UUID: user.UUID}); err != nil {
+			return err
+		}
+		return errors.New("add failed after remove")
+	}
+	rotated := user
+	rotated.UUID = "c27b65ce-e1f0-40ac-a8c0-2ad4d606bf64"
+	if err := binding.EnsureUser(ctx, rotated, Expectation{UUID: user.UUID}); err == nil {
+		t.Fatal("partial failure must still be reported")
+	}
+	if len(killer.calls) != 1 || len(killer.calls[0].ips) != 1 || killer.calls[0].ips[0] != "127.0.0.2" {
+		t.Fatalf("old sessions not disconnected after partial replacement: %+v", killer.calls)
+	}
+
+	// A replacement that fails before touching the old account disconnects nobody.
+	if err := g.EnsureUser(ctx, user, Expectation{Absent: true}); err != nil {
+		t.Fatal(err)
+	}
+	binding.ensure = func(context.Context, protocol.DesiredUser, Expectation) error { return errors.New("refused up front") }
+	if err := binding.EnsureUser(ctx, rotated, Expectation{UUID: user.UUID}); err == nil {
+		t.Fatal("expected failure")
+	}
+	if len(killer.calls) != 1 {
+		t.Fatalf("intact account disconnected: %+v", killer.calls)
+	}
+}
+
+// SharedEmails sees an email reused on another inbound.
+func TestSharedEmailsSeesOtherInbounds(t *testing.T) {
+	g, instance := configuredPolicyServer(t, false, nil, &vin.Config{Decryption: "none"}, true)
+	ctx := context.Background()
+	if shared, err := g.SharedEmails(ctx); err != nil || len(shared) != 0 {
+		t.Fatalf("no other inbound: %v %v", shared, err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := uint32(listener.Addr().(*net.TCPAddr).Port)
+	listener.Close()
+	err = core.AddInboundHandler(instance, &core.InboundHandlerConfig{Tag: "panel-other", ReceiverSettings: serial.ToTypedMessage(&proxyman.ReceiverConfig{
+		Listen: xnet.NewIPOrDomain(xnet.LocalHostIP), PortList: &xnet.PortList{Range: []*xnet.PortRange{{From: port, To: port}}},
+	}), ProxySettings: serial.ToTypedMessage(&vin.Config{Decryption: "none", Clients: []*xprotocol.User{{Email: "reused@example.test", Account: serial.ToTypedMessage(&vless.Account{Id: "c27b65ce-e1f0-40ac-a8c0-2ad4d606bf64"})}}})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shared, err := g.SharedEmails(ctx); err != nil || !shared["reused@example.test"] || len(shared) != 1 {
+		t.Fatalf("shared = %v %v", shared, err)
+	}
+}

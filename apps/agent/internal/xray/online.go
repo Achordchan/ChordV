@@ -26,6 +26,10 @@ type OnlineReader interface {
 	// OnlineIPs lists the source IPs of one account's live connections. An
 	// account Xray has never seen online yields an empty list, not an error.
 	OnlineIPs(ctx context.Context, email string) ([]string, error)
+	// SharedEmails reports which emails also exist on another inbound of this
+	// Xray process. Online statistics are process-wide by email, so such an
+	// email's online record cannot be attributed to the bound inbound.
+	SharedEmails(ctx context.Context) (map[string]bool, error)
 	// Listener is the bound inbound's local address and single port.
 	Listener(ctx context.Context) (connkill.Listener, error)
 }
@@ -143,4 +147,18 @@ func listenIP(listen *xnet.IPOrDomain) (net.IP, error) {
 		return nil, fmt.Errorf("入站监听 %q 不是 IP 地址，无法按地址断开连接", domain)
 	}
 	return nil, nil
+}
+
+func (g *GRPC) SharedEmails(ctx context.Context) (map[string]bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, CallTimeout)
+	defer cancel()
+	others, err := g.otherInboundEmails(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]bool, len(others))
+	for email := range others {
+		result[email] = true
+	}
+	return result, nil
 }

@@ -25,6 +25,8 @@ type Binding struct {
 	// is removed. See package connkill for why removal alone is not enough.
 	killer connkill.Killer
 	logf   func(string, ...any)
+	// ensure replaces GRPC.EnsureUser in tests that need a partial failure.
+	ensure func(context.Context, protocol.DesiredUser, Expectation) error
 }
 
 // SetConnectionKiller enables disconnecting removed accounts. logf receives
@@ -127,7 +129,18 @@ func (b *Binding) EnsureUser(ctx context.Context, user protocol.DesiredUser, exp
 	if previous != "" && !strings.EqualFold(previous, user.UUID) {
 		before, watch = b.killTargets(ctx, user.Email)
 	}
-	if err := b.GRPC.EnsureUser(ctx, user, expect); err != nil {
+	ensure := b.GRPC.EnsureUser
+	if b.ensure != nil {
+		ensure = b.ensure
+	}
+	if err := ensure(ctx, user, expect); err != nil {
+		// The replacement may have removed the old account and then failed to
+		// add the new one. The old credential is gone either way, so its
+		// sessions are disconnected now; a retry finds nothing installed and
+		// would never look back.
+		if watch && !strings.EqualFold(b.installedUUID(ctx, user.Email), previous) {
+			b.disconnect(ctx, user.Email, before)
+		}
 		return err
 	}
 	if watch {
