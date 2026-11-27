@@ -893,12 +893,19 @@ func (r *Runner) sendHeartbeat(ctx context.Context) error {
 	}
 	mode := r.current.ControlMode
 	refreshPending := r.refreshPending
-	var candidates map[string]onlineCandidate
-	var active []string
+	var online *[]protocol.OnlineUser
 	if err == nil && status == protocol.XrayHealthy {
+		var candidates map[string]onlineCandidate
 		candidates, err = r.onlineCandidatesLocked()
-		for email := range r.activeEmails {
-			active = append(active, email)
+		if err == nil {
+			var active []string
+			for email := range r.activeEmails {
+				active = append(active, email)
+			}
+			// Read under the state lock: the Binding is swapped by inbound
+			// rebinding under this lock, so every read in one report sees the
+			// same bound inbound.
+			online = r.readOnlineUsers(ctx, candidates, active)
 		}
 	}
 	r.state.Unlock()
@@ -912,7 +919,7 @@ func (r *Runner) sendHeartbeat(ctx context.Context) error {
 		ConfigRevision: revision,
 		QueueDepth:     depth,
 		XrayStatus:     status,
-		OnlineUsers:    r.readOnlineUsers(ctx, candidates, active),
+		OnlineUsers:    online,
 	}
 	if beat.OnlineUsers != nil {
 		sequence, err := r.nextOnlineSequence()
