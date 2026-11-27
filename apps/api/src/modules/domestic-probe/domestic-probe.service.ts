@@ -6,6 +6,8 @@ import { readEffectiveControlStatus } from "../common/node-import.utils";
 import {
   DOMESTIC_MAX_TARGETS,
   DOMESTIC_PROBE_INTERVAL_SECONDS,
+  currentEndpointState,
+  domesticEndpointKey,
   nextDomesticState,
   shouldIgnoreRound,
   type DomesticObservation
@@ -104,8 +106,9 @@ export class DomesticProbeService {
    * only changes through accepted reports.
    */
   async listTargets(now = new Date()) {
+    const where = { isActive: true, OR: [{ registrationStatus: "agent_ready" as const }, { registrationStatus: null }] };
     const nodes = await this.prisma.node.findMany({
-      where: { isActive: true, OR: [{ registrationStatus: "agent_ready" }, { registrationStatus: null }] },
+      where,
       select: { id: true, name: true, serverHost: true, serverPort: true },
       // Ties (a whole batch shares one domesticScheduledAt) break on the last
       // accepted observation, so nodes the probe did not finish last time,
@@ -117,6 +120,9 @@ export class DomesticProbeService {
       ],
       take: DOMESTIC_MAX_TARGETS
     });
+    if (nodes.length === DOMESTIC_MAX_TARGETS && (await this.prisma.node.count({ where })) > DOMESTIC_MAX_TARGETS) {
+      this.logger.warn(`More than ${DOMESTIC_MAX_TARGETS} nodes are eligible; the domestic probe now rotates and some results will read as unknown between visits.`);
+    }
     if (nodes.length > 0) {
       await this.prisma.node.updateMany({ where: { id: { in: nodes.map((node) => node.id) } }, data: { domesticScheduledAt: now } });
     }
@@ -143,7 +149,7 @@ export class DomesticProbeService {
         const ids = [...new Set(report.results.map((item) => item.nodeId))];
         const nodes = await tx.node.findMany({
           where: { id: { in: ids } },
-          select: { id: true, serverHost: true, serverPort: true, domesticStatus: true, domesticFailStreak: true, controlStatus: true, agentLastSeenAt: true }
+          select: { id: true, serverHost: true, serverPort: true, domesticEndpoint: true, domesticStatus: true, domesticFailStreak: true, controlStatus: true, agentLastSeenAt: true }
         });
         const byId = new Map(nodes.map((node) => [node.id, node]));
         for (const result of report.results) {
@@ -155,8 +161,14 @@ export class DomesticProbeService {
           byId.delete(result.nodeId); // one observation per node per round
           const agentOnline = node.agentLastSeenAt !== null
             && readEffectiveControlStatus(node.controlStatus, node.agentLastSeenAt, now) !== "offline";
-          const next = nextDomesticState(node, result, agentOnline);
-          await tx.node.update({ where: { id: node.id }, data: { ...next, domesticCheckedAt: now } });
+          const next = nextDomesticState(currentEndpointState(node), result, agentOnline);
+          // Conditional on the endpoint still matching, so an address edit
+          // committed after the read above is never stamped with this result.
+          const written = await tx.node.updateMany({
+            where: { id: node.id, serverHost: result.host, serverPort: result.port },
+            data: { ...next, domesticCheckedAt: now, domesticEndpoint: domesticEndpointKey(result.host, result.port) }
+          });
+          if (written.count === 0) continue;
           accepted += 1;
         }
       }

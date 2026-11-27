@@ -66,7 +66,7 @@ const baseRow = {
 const legacy = toAdminNodeRecord(baseRow);
 assert.equal(legacy.domesticStatus, "unknown");
 assert.equal(legacy.domesticFailStreak, 0);
-const fresh = toAdminNodeRecord({ ...baseRow, domesticStatus: "reachable", domesticLatencyMs: 30, domesticCheckedAt: new Date(), domesticFailStreak: 0 });
+const fresh = toAdminNodeRecord({ ...baseRow, domesticEndpoint: "h:443", domesticStatus: "reachable", domesticLatencyMs: 30, domesticCheckedAt: new Date(), domesticFailStreak: 0 });
 assert.equal(fresh.domesticStatus, "reachable");
 assert.equal(fresh.domesticLatencyMs, 30);
 
@@ -89,15 +89,20 @@ const tooMany = { ...largest, results: [...largest.results, largest.results[0]] 
 assert.notDeepEqual(validateSync(plainToInstance(DomesticProbeReportDto, tooMany)), [], "one more than the cap is rejected");
 
 // A block decided while the agent was online is not shown once the agent is offline.
-const blockedRow = { ...baseRow, domesticStatus: "blocked", domesticCheckedAt: new Date(), domesticFailStreak: 3 };
+const blockedRow = { ...baseRow, domesticEndpoint: "h:443", domesticStatus: "blocked", domesticCheckedAt: new Date(), domesticFailStreak: 3 };
 assert.equal(toAdminNodeRecord({ ...blockedRow, controlStatus: "online", agentLastSeenAt: new Date() }).domesticStatus, "blocked");
 assert.equal(toAdminNodeRecord({ ...blockedRow, controlStatus: "offline", agentLastSeenAt: new Date() }).domesticStatus, "unknown");
 assert.equal(toAdminNodeRecord({ ...blockedRow, controlStatus: "online", agentLastSeenAt: new Date(Date.now() - 10 * 60 * 1000) }).domesticStatus, "unknown", "stale heartbeat counts as offline");
 
+// History recorded against a previous endpoint is not shown for the new one.
+const moved = toAdminNodeRecord({ ...blockedRow, domesticEndpoint: "h:8443", controlStatus: "online", agentLastSeenAt: new Date() });
+assert.equal(moved.domesticStatus, "unknown");
+assert.equal(moved.domesticFailStreak, 0);
+
 // Service: token auth, round handling, and the settings row never holding the plain token.
 let lastFindMany: any = null;
 let lastUpdateMany: any = null;
-type NodeRow = { id: string; serverHost: string; serverPort: number; domesticStatus: string; domesticFailStreak: number; controlStatus: string; agentLastSeenAt: Date | null; domesticCheckedAt?: Date };
+type NodeRow = { id: string; serverHost: string; serverPort: number; domesticEndpoint: string | null; domesticStatus: string; domesticFailStreak: number; controlStatus: string; agentLastSeenAt: Date | null; domesticCheckedAt?: Date };
 function createFakePrisma(nodes: NodeRow[]) {
   const settings = new Map<string, unknown>();
   const client: any = {
@@ -111,7 +116,14 @@ function createFakePrisma(nodes: NodeRow[]) {
         return args.where.id ? nodes.filter((node) => args.where.id.in.includes(node.id)) : [];
       },
       update: async ({ where, data }: any) => Object.assign(nodes.find((node) => node.id === where.id)!, data),
-      updateMany: async (args: any) => { lastUpdateMany = args; return { count: args.where.id.in.length }; }
+      updateMany: async (args: any) => {
+        lastUpdateMany = args;
+        if (args.where.id?.in) return { count: args.where.id.in.length };
+        const node = nodes.find((item) => item.id === args.where.id && item.serverHost === args.where.serverHost && item.serverPort === args.where.serverPort);
+        if (!node) return { count: 0 };
+        Object.assign(node, args.data);
+        return { count: 1 };
+      }
     },
     $executeRaw: async () => 0
   };
@@ -122,8 +134,8 @@ function createFakePrisma(nodes: NodeRow[]) {
 async function main() {
   const seen = new Date();
   const nodes: NodeRow[] = [
-    { id: "a", serverHost: "h", serverPort: 443, domesticStatus: "unknown", domesticFailStreak: 0, controlStatus: "online", agentLastSeenAt: seen },
-    { id: "b", serverHost: "h", serverPort: 443, domesticStatus: "reachable", domesticFailStreak: 2, controlStatus: "online", agentLastSeenAt: seen }
+    { id: "a", serverHost: "h", serverPort: 443, domesticEndpoint: null, domesticStatus: "unknown", domesticFailStreak: 0, controlStatus: "online", agentLastSeenAt: seen },
+    { id: "b", serverHost: "h", serverPort: 443, domesticEndpoint: "h:443", domesticStatus: "reachable", domesticFailStreak: 2, controlStatus: "online", agentLastSeenAt: seen }
   ];
   const { client, settings } = createFakePrisma(nodes);
   const service = new DomesticProbeService(client);
@@ -147,6 +159,17 @@ async function main() {
   assert.equal(nodes[0].domesticStatus, "reachable");
   assert.equal(nodes[1].domesticStatus, "blocked", "third consecutive failure blocks; duplicate observation is ignored");
   assert.equal((await service.getState()).lastRoundIgnored, false);
+
+  assert.equal(nodes[0].domesticEndpoint, "h:443", "observation records its endpoint");
+
+  // After an endpoint change, the old streak no longer counts: one failure on
+  // the new endpoint must not complete a block started on the old one.
+  nodes[1].serverPort = 8443; nodes[1].domesticStatus = "reachable"; nodes[1].domesticFailStreak = 2; nodes[1].domesticEndpoint = "h:443";
+  await service.report({ controlOk: true, results: [{ nodeId: "a", host: "h", port: 443, ...ok }, { nodeId: "b", host: "h", port: 8443, ...fail }] });
+  assert.equal(nodes[1].domesticFailStreak, 1);
+  assert.equal(nodes[1].domesticStatus, "unknown");
+  assert.equal(nodes[1].domesticEndpoint, "h:8443");
+  nodes[1].serverPort = 443;
 
   // A result for an endpoint the node no longer has is dropped.
   nodes[0].serverPort = 8443;

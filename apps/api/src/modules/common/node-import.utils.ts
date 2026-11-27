@@ -1,6 +1,6 @@
 import * as net from "node:net";
 import type { AdminNodeRecordDto, NodeProbeStatus, NodeSummaryDto } from "@chordv/shared";
-import { effectiveDomesticStatus } from "../domestic-probe/domestic-probe.policy";
+import { domesticEndpointKey, effectiveDomesticStatus } from "../domestic-probe/domestic-probe.policy";
 import { getCountryLabelFromCode, resolveCountryCode } from "@chordv/shared";
 
 export function normalizeOptionalString(value: string | null | undefined) {
@@ -148,6 +148,7 @@ export function toAdminNodeRecord(row: {
   domesticCheckedAt?: Date | null;
   domesticFailStreak?: number | null;
   domesticError?: string | null;
+  domesticEndpoint?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }): AdminNodeRecordDto {
@@ -197,12 +198,19 @@ export function toAdminNodeRecord(row: {
 }
 
 function toDomesticFields(row: {
+  serverHost: string;
+  serverPort: number;
+  domesticEndpoint?: string | null;
   domesticStatus?: string | null;
   domesticLatencyMs?: number | null;
   domesticCheckedAt?: Date | null;
   domesticFailStreak?: number | null;
   domesticError?: string | null;
 }, agentOnline: boolean) {
+  // An observation made against a previous host or port does not describe the current endpoint.
+  if (row.domesticEndpoint !== domesticEndpointKey(row.serverHost, row.serverPort)) {
+    return { domesticStatus: "unknown" as const, domesticLatencyMs: null, domesticCheckedAt: null, domesticFailStreak: 0, domesticError: null };
+  }
   const stored = effectiveDomesticStatus(row.domesticStatus, row.domesticCheckedAt ?? null);
   // "blocked" was decided while the agent was online; if the agent has gone
   // offline since, the machine may simply be down, so don't keep claiming a block.

@@ -4,25 +4,30 @@ import type { NextFunction, Request, Response } from "express";
 
 /** Consecutive failed rounds before a node is shown as blocked (3 rounds = 15 minutes at the default interval). */
 export const DOMESTIC_BLOCK_STREAK = 3;
-/** Results older than this are shown as unknown: the probe has stopped reporting. */
+/**
+ * Results older than this are shown as unknown: the probe has stopped reporting.
+ * Valid because every eligible node is handed out every round while the fleet
+ * stays within DOMESTIC_MAX_TARGETS; listTargets warns if it ever does not.
+ */
 export const DOMESTIC_STALE_MS = 15 * 60 * 1000;
 /**
  * Most targets handed out in one round, and most results accepted in one
  * report. The two must stay equal: a round is always reported whole, so the
- * "every node failed at once" check sees the complete round. Together with
- * DOMESTIC_MAX_ERROR_LENGTH this keeps the largest possible report under the
- * default 100 KB JSON body limit (checked by the regression test).
+ * "every node failed at once" check sees the complete round. Set well above
+ * any realistic fleet so every node is checked every round (see
+ * DOMESTIC_STALE_MS); the largest possible report stays under
+ * DOMESTIC_PROBE_REPORT_MAX_BODY_BYTES (checked by the regression test).
  */
-export const DOMESTIC_MAX_TARGETS = 200;
+export const DOMESTIC_MAX_TARGETS = 1000;
 /** Longest error text accepted per result. */
 export const DOMESTIC_MAX_ERROR_LENGTH = 100;
 /**
  * The report route gets its own JSON body parser with this limit (see
  * main.ts), so a full round never depends on the global default. Comfortably
- * above the largest report the DTO accepts (about 85 KB).
+ * above the largest report the DTO accepts (about 680 KB).
  */
 export const DOMESTIC_PROBE_REPORT_PATH = "/api/domestic-probe/report";
-export const DOMESTIC_PROBE_REPORT_MAX_BODY_BYTES = 256 * 1024;
+export const DOMESTIC_PROBE_REPORT_MAX_BODY_BYTES = 1024 * 1024;
 
 /** Body-parser match: POST to the report route only (query string ignored). */
 export function isDomesticProbeReportRequest(request: { method?: string; url?: string }) {
@@ -116,6 +121,23 @@ export function shouldIgnoreRound(controlOk: boolean, observations: DomesticObse
     return "本轮所有节点同时失败，按探针网络故障处理";
   }
   return null;
+}
+
+export function domesticEndpointKey(host: string, port: number) {
+  return `${host}:${port}`;
+}
+
+/**
+ * Stored state that still applies to the node's current endpoint. History
+ * recorded against a previous host or port says nothing about the new one,
+ * so it is treated as a fresh start.
+ */
+export function currentEndpointState(
+  node: DomesticNodeState & { domesticEndpoint: string | null; serverHost: string; serverPort: number }
+): DomesticNodeState {
+  return node.domesticEndpoint === domesticEndpointKey(node.serverHost, node.serverPort)
+    ? { domesticStatus: node.domesticStatus, domesticFailStreak: node.domesticFailStreak }
+    : { domesticStatus: "unknown", domesticFailStreak: 0 };
 }
 
 export function readDomesticStatus(value: string | null | undefined): DomesticReachabilityStatus {
