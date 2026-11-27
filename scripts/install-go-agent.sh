@@ -191,6 +191,10 @@ ExecStart=/opt/chordv-node-agent/current/chordv-agent
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
+# CAP_NET_ADMIN lets the agent destroy (SOCK_DESTROY / ss -K) the established
+# connections of an account it has just disabled; nothing else is granted.
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

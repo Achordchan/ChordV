@@ -13,6 +13,7 @@ import { AgentCommandResultDto, AgentHeartbeatDto, AgentUsageBatchDto, QueueAgen
 import { AgentEventsService } from "./agent-events.service";
 import { inboundSpecKey, normalizeInboundSpec, parseInboundReport, type NormalizedInboundSpec } from "./agent-inbound";
 import { AGENT_OFFLINE_ALLOWANCE_BYTES } from "../common/agent-offline-policy";
+import { recordDirectOnline } from "../common/direct-presence";
 import { ClientEventsPublisher } from "../common/client-events.publisher";
 import { PrismaService } from "../common/prisma.service";
 import { resolveExhaustedCommands } from "../common/node-command-job.utils";
@@ -115,6 +116,10 @@ export class AgentService {
           }
         })
       ]);
+      if (input.onlineUsers) {
+        // 在线状态只是展示用，写入失败不能让心跳失败（心跳还承担计量 ack 与节点在线）。
+        await recordDirectOnline(this.prisma, agent.nodeId, input.onlineUsers, now).catch(() => undefined);
+      }
       if (currentAgent.xrayStatus !== input.xrayStatus ||
         (input.xrayStatus === "awaiting_inbound" && (!currentAgent.lastSeenAt || now.getTime() - currentAgent.lastSeenAt.getTime() >= 60_000))) {
         this.adminEvents?.publish({ type: "node_access_updated", nodeId: agent.nodeId, occurredAt: now.toISOString() });

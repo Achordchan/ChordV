@@ -22,6 +22,7 @@ import (
 	"github.com/Achordchan/ChordV/apps/agent/internal/apiclient"
 	"github.com/Achordchan/ChordV/apps/agent/internal/commands"
 	"github.com/Achordchan/ChordV/apps/agent/internal/componentcheck"
+	"github.com/Achordchan/ChordV/apps/agent/internal/connkill"
 	"github.com/Achordchan/ChordV/apps/agent/internal/credentials"
 	"github.com/Achordchan/ChordV/apps/agent/internal/durable"
 	"github.com/Achordchan/ChordV/apps/agent/internal/onboarding"
@@ -155,6 +156,11 @@ func serve(config *agentcfg.Config) error {
 	bound, err := xray.NewBinding(adapter, state)
 	if err != nil {
 		return err
+	}
+	if killer, err := connkill.Find(); err == nil {
+		bound.SetConnectionKiller(killer, logf)
+	} else {
+		logf("提示：%v；停用或到期的账号要等客户端重连才会断开", err)
 	}
 	if bound.InboundReady() {
 		if err := bound.ValidateInbound(ctx); err != nil {

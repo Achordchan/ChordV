@@ -552,6 +552,7 @@ async function testAdminQuery() {
       }
     },
     userClientVersion: { findMany: async (args: any) => { seen.versions = args; return []; } },
+    panelClientBinding: { findMany: async (args: any) => { seen.direct = args; return []; } },
     user: {
       findMany: async (args: any) => {
         seen.users = args;
@@ -577,12 +578,17 @@ async function testAdminQuery() {
   assert.equal(recentlyDisconnected.lastOnlineAt, ago(900).toISOString(), "连接已撤销或超时后，最近在线取最后一次心跳");
   assert.equal(seen.users.select.passwordHash, undefined);
   assert.deepEqual(snapshot.counts, { online: 2, connected: 1, idle: 1 });
+  assert.deepEqual(seen.direct.where.userId, { not: null }, "订阅链接在线只看有用户的绑定");
+  assert.equal(seen.direct.where.directLastOnlineAt.gte.getTime(), now.getTime() - PRESENCE_HEARTBEAT_HISTORY_MS, "订阅链接在线只查近一天，走 directLastOnlineAt 索引");
+  assert.equal(seen.direct.select.xrayUserUuid, undefined, "不带出节点账号凭据");
+  assert.equal(seen.direct.select.panelClientId, undefined);
 
   const failing = new ClientPresenceService({
     userClientPresence: { findMany: async () => { throw Object.assign(new Error("connection terminated"), { code: "P1001" }); } },
     userClientPresenceStream: { findMany: async () => [] },
     nodeSessionLease: { findMany: async () => [] },
     userClientVersion: { findMany: async () => [] },
+    panelClientBinding: { findMany: async () => [] },
     user: { findMany: async () => [] }
   } as never, { publishPresenceUpdated: () => undefined } as never);
   await assert.rejects(failing.getAdminPresenceSnapshot(now), (error: any) => error?.getStatus?.() === 503, "数据库暂不可用时返回 503 而不是 500");

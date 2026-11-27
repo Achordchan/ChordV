@@ -517,6 +517,13 @@ export type AdminPresenceState = "connected" | "online" | "offline";
 export interface AdminPresenceSessionDto {
   /** 仅用作列表键，不在界面展示。 */
   sessionId: string;
+  /**
+   * 连接来源：client 为 ChordV 客户端（有租约与心跳）；subscription_link 为订阅链接导入的第三方客户端
+   * （小火箭、v2rayN 等），由节点 Xray 的在线统计得出，没有连接模式与客户端版本。缺省按 client。
+   */
+  via?: "client" | "subscription_link";
+  /** 订阅链接连接的在线来源 IP 数。 */
+  onlineIpCount?: number;
   connectedAt: string;
   lastHeartbeatAt: string;
   /** 建立连接时选择的模式；旧连接没有记录时为 null。 */

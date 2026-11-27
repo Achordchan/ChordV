@@ -70,7 +70,8 @@ export function formatPresenceBrief(entry: AdminUserPresenceDto | null | undefin
   if (entry.state === "connected") {
     const [first, ...rest] = entry.sessions;
     const node = first?.node.name ?? "节点";
-    return rest.length ? `已连接 · ${node} 等 ${entry.sessions.length} 个连接` : `已连接 · ${node}`;
+    const viaLink = entry.sessions.length > 0 && entry.sessions.every((session) => session.via === "subscription_link") ? "（订阅链接）" : "";
+    return rest.length ? `已连接 · ${node} 等 ${entry.sessions.length} 个连接${viaLink}` : `已连接 · ${node}${viaLink}`;
   }
   if (entry.state === "online") return "在线 · 未连接节点";
   return entry.lastOnlineAt ? `离线 · 最近在线 ${formatClientLastSeen(entry.lastOnlineAt, now)}` : "离线";

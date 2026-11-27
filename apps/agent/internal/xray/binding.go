@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/Achordchan/ChordV/apps/agent/internal/connkill"
 	"github.com/Achordchan/ChordV/apps/agent/internal/protocol"
 	handler "github.com/xtls/xray-core/app/proxyman/command"
 )
@@ -19,6 +20,17 @@ type BindingState interface {
 type Binding struct {
 	*GRPC
 	state BindingState
+	// killer, when set, closes the connections an account still holds after it
+	// is removed. See package connkill for why removal alone is not enough.
+	killer connkill.Killer
+	logf   func(string, ...any)
+}
+
+// SetConnectionKiller enables disconnecting removed accounts. logf receives
+// the outcome of each attempt; a failed kill never fails the removal.
+func (b *Binding) SetConnectionKiller(killer connkill.Killer, logf func(string, ...any)) {
+	b.killer = killer
+	b.logf = logf
 }
 
 func NewBinding(connection *GRPC, state BindingState) (*Binding, error) {
@@ -112,7 +124,60 @@ func (b *Binding) RemoveUser(ctx context.Context, email string, expect Expectati
 	if !b.InboundReady() {
 		return fmt.Errorf("等待绑定节点入站，禁止修改账号")
 	}
-	return b.GRPC.RemoveUser(ctx, email, expect)
+	var before []string
+	if b.killer != nil {
+		// Read before removing: the online entry outlives removal while the
+		// connections do, but reading both sides costs nothing and covers a
+		// connection that closes in between.
+		before, _ = b.GRPC.OnlineIPs(ctx, email)
+	}
+	if err := b.GRPC.RemoveUser(ctx, email, expect); err != nil {
+		return err
+	}
+	if b.killer != nil {
+		b.disconnect(ctx, email, before)
+	}
+	return nil
+}
+
+// disconnect destroys the removed account's established connections. It runs
+// AFTER removal, so a client that reconnects is refused at the handshake.
+func (b *Binding) disconnect(ctx context.Context, email string, before []string) {
+	ips := map[string]bool{}
+	for _, ip := range before {
+		ips[ip] = true
+	}
+	after, err := b.GRPC.OnlineIPs(ctx, email)
+	if err != nil {
+		b.log("账号 %s 已移除，但读取其在线 IP 失败，未断开现有连接：%v", email, err)
+	}
+	for _, ip := range after {
+		ips[ip] = true
+	}
+	if len(ips) == 0 {
+		return
+	}
+	list := make([]string, 0, len(ips))
+	for ip := range ips {
+		list = append(list, ip)
+	}
+	port, err := b.GRPC.ListenPort(ctx)
+	if err != nil {
+		b.log("账号 %s 已移除，但无法确定入站端口，未断开现有连接：%v", email, err)
+		return
+	}
+	killed, err := b.killer.Kill(ctx, port, list)
+	if err != nil {
+		b.log("账号 %s 已移除，断开现有连接未完全成功（已断开 %d 条，来源 %d 个）：%v", email, killed, len(list), err)
+		return
+	}
+	b.log("账号 %s 已移除，已断开其现有连接 %d 条（来源 %d 个）", email, killed, len(list))
+}
+
+func (b *Binding) log(format string, args ...any) {
+	if b.logf != nil {
+		b.logf(format, args...)
+	}
 }
 func (b *Binding) ReadAbsoluteCounters(ctx context.Context) ([]protocol.AbsoluteCounter, error) {
 	if !b.InboundReady() {

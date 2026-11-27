@@ -29,6 +29,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -533,6 +534,52 @@ func (r *Runner) detectMissingUsersLocked(ctx context.Context) error {
 	return nil
 }
 
+// bindingsByEmailLocked maps every account this agent manages to its binding.
+func (r *Runner) bindingsByEmailLocked() (map[string]string, error) {
+	users, err := r.deps.Store.ListDesiredUsers()
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]string, len(users))
+	for _, user := range users {
+		if user.Email != "" && user.BindingID != "" {
+			result[user.Email] = user.BindingID
+		}
+	}
+	return result, nil
+}
+
+// readOnlineUsers reports which managed accounts Xray sees online. It returns
+// nil — "not observed" — whenever the observation is unavailable, so a failed
+// read never makes the control plane show everyone offline.
+func (r *Runner) readOnlineUsers(ctx context.Context, bindings map[string]string) *[]protocol.OnlineUser {
+	if bindings == nil {
+		return nil
+	}
+	reader, ok := r.deps.Xray.(xray.OnlineReader)
+	if !ok {
+		return nil
+	}
+	online, err := reader.OnlineUsers(ctx)
+	if err != nil {
+		r.logf("读取在线账号失败：%v", err)
+		return nil
+	}
+	result := []protocol.OnlineUser{}
+	for email, count := range online {
+		binding, managed := bindings[email]
+		if !managed || count <= 0 {
+			continue
+		}
+		result = append(result, protocol.OnlineUser{BindingID: binding, IPCount: count})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].BindingID < result[j].BindingID })
+	if len(result) > protocol.MaxOnlineUsers {
+		result = result[:protocol.MaxOnlineUsers]
+	}
+	return &result
+}
+
 // --- metering ---------------------------------------------------------------
 
 func (r *Runner) sample(ctx context.Context) error {
@@ -695,6 +742,10 @@ func (r *Runner) sendHeartbeat(ctx context.Context) error {
 	}
 	mode := r.current.ControlMode
 	refreshPending := r.refreshPending
+	var bindings map[string]string
+	if err == nil && status == protocol.XrayHealthy {
+		bindings, err = r.bindingsByEmailLocked()
+	}
 	r.state.Unlock()
 	if err != nil {
 		return err
@@ -706,6 +757,7 @@ func (r *Runner) sendHeartbeat(ctx context.Context) error {
 		ConfigRevision: revision,
 		QueueDepth:     depth,
 		XrayStatus:     status,
+		OnlineUsers:    r.readOnlineUsers(ctx, bindings),
 	})
 	if err != nil {
 		r.setBackendOnline(false)

@@ -206,6 +206,21 @@ type Heartbeat struct {
 	ConfigRevision string     `json:"configRevision"`
 	QueueDepth     int        `json:"queueDepth"`
 	XrayStatus     XrayStatus `json:"xrayStatus"`
+	// OnlineUsers lists this node's accounts that Xray currently sees online.
+	// nil (field absent) means "not observed this time" — an older agent, a
+	// failed read, or no bound inbound — and the server must keep what it had;
+	// an empty list means "observed, nobody online".
+	OnlineUsers *[]OnlineUser `json:"onlineUsers,omitempty"`
+}
+
+// MaxOnlineUsers caps one heartbeat's online report.
+const MaxOnlineUsers = 5000
+
+// OnlineUser is one online account, identified by its binding.
+type OnlineUser struct {
+	BindingID string `json:"bindingId"`
+	// IPCount is the number of distinct source IPs with a live connection.
+	IPCount int `json:"ipCount"`
 }
 
 // HeartbeatAck carries the server's ack watermark and its current revision, so

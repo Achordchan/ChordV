@@ -704,6 +704,12 @@ model PanelClientBinding {
   directRevision   BigInt       @default(0)
   directDisabledAt DateTime?
   directDisableWatermarks Json?
+  /// 节点 Agent 心跳报告该账号在线（Xray 有活动连接）的本次开始时间；离线超过判定窗口后重置。
+  directOnlineSince DateTime?
+  /// 最近一次心跳报告该账号在线的时间。
+  directLastOnlineAt DateTime?
+  /// 最近一次心跳里该账号的在线来源 IP 数；报告离线时置 0。
+  directOnlineIpCount Int       @default(0)
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
   subscription     Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
@@ -713,6 +719,7 @@ model PanelClientBinding {
 
   @@unique([subscriptionId, userId, nodeId])
   @@index([subscriptionId, nodeId, status])
+  @@index([directLastOnlineAt])
   @@index([nodeId, panelClientEmail])
   @@index([nodeId, source, status])
 }

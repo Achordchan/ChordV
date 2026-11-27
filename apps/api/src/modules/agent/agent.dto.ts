@@ -25,6 +25,19 @@ export interface AgentRegisterResultDto {
   nodeId: string;
 }
 
+export class AgentOnlineUserDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(128)
+  bindingId!: string;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(10_000)
+  ipCount!: number;
+}
+
 export class AgentHeartbeatDto {
   @IsString()
   @IsNotEmpty()
@@ -48,6 +61,17 @@ export class AgentHeartbeatDto {
 
   @IsIn(["unknown", "healthy", "degraded", "offline", "awaiting_inbound"])
   xrayStatus!: "unknown" | "healthy" | "degraded" | "offline" | "awaiting_inbound";
+
+  /**
+   * 本节点 Xray 当前在线的账号（按绑定）。缺省表示这次没有观察到（旧版 Agent、读取失败或尚未绑定入站），
+   * 服务端保持原有记录；空数组表示观察到了、没有人在线。
+   */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(5000)
+  @ValidateNested({ each: true })
+  @Type(() => AgentOnlineUserDto)
+  onlineUsers?: AgentOnlineUserDto[];
 }
 
 export class AgentUsageSampleInputDto {
