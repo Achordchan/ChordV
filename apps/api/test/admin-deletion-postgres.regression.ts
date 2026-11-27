@@ -106,13 +106,16 @@ async function main() {
   ] });
   const teamSubscription = await createSubscription(prisma, { planId: teamPlan.id, teamId: team.id, expireAt: later });
   const memberBinding = await createBinding(prisma, { subscriptionId: teamSubscription.id, userId: teamMember.id, teamId: team.id, nodeId: node.id });
+  // 团队订阅下没带 teamId 的成员绑定：只能经由订阅级联，也要被清理。
+  const looseMember = await createUser(prisma, "user");
+  const looseBinding = await createBinding(prisma, { subscriptionId: teamSubscription.id, userId: looseMember.id, nodeId: node.id });
   await prisma.subscriptionLink.create({ data: { userId: teamOwner.id, token: randomUUID(), tokenHash: randomUUID() } });
 
   const ownerPreview = await service.preview("user", teamOwner.id, admin.id);
   const ownerCounts = Object.fromEntries(ownerPreview.related.map((entry) => [entry.key, entry.count]));
   assert.equal(ownerCounts.ownedTeams, 1);
   assert.equal(ownerCounts.ownedTeamMembers, 1);
-  assert.equal(ownerCounts.nodeAccounts, 1);
+  assert.equal(ownerCounts.nodeAccounts, 2);
   assert.equal(ownerCounts.subscriptionLink, 1);
   assert.equal(ownerPreview.blockedReason, null);
 
@@ -124,6 +127,7 @@ async function main() {
   assert.equal(await prisma.subscription.count({ where: { id: teamSubscription.id } }), 0);
   assert.equal(await prisma.user.count({ where: { id: teamMember.id } }), 1, "成员账号本身保留");
   assert.equal((await prisma.nodeCommandJob.findFirstOrThrow({ where: { bindingId: memberBinding.id } })).commandType, "REMOVE_USER");
+  assert.equal((await prisma.nodeCommandJob.findFirstOrThrow({ where: { bindingId: looseBinding.id } })).commandType, "REMOVE_USER");
   assert.ok(clientEvents.some((event) => event.userIds.includes(teamOwner.id) && event.reasonCode === "auth_invalid"), "被删账号的客户端要退出登录");
   assert.ok(clientEvents.some((event) => event.userIds.includes(teamMember.id) && event.type === "subscription_updated"));
 

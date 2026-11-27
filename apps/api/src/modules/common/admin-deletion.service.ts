@@ -310,10 +310,16 @@ export class AdminDeletionService {
       select: { team: { select: { name: true } } }
     });
     const ownedTeamMemberCount = ownedTeams.reduce((sum, team) => sum + team.members.filter((member) => member.userId !== userId).length, 0);
-    const bindingWhere: Prisma.PanelClientBindingWhereInput = {
-      OR: [{ userId }, ...(ownedTeamIds.length > 0 ? [{ teamId: { in: ownedTeamIds } }] : [])]
-    };
     const subscriptionIds = subscriptions.map((row) => row.id);
+    // 绑定会经由三条外键级联消失：账号本身、名下团队、名下订阅（团队订阅的成员绑定
+    // 不一定带 teamId）。三者都要覆盖，才不会有绑定没收到 REMOVE_USER 就被删掉。
+    const bindingWhere: Prisma.PanelClientBindingWhereInput = {
+      OR: [
+        { userId },
+        ...(ownedTeamIds.length > 0 ? [{ teamId: { in: ownedTeamIds } }] : []),
+        ...(subscriptionIds.length > 0 ? [{ subscriptionId: { in: subscriptionIds } }] : [])
+      ]
+    };
     const [bindingCount, ledgerCount, ticketCount, sessionCount, routingRuleCount] = await Promise.all([
       db.panelClientBinding.count({ where: { AND: [bindingWhere, { status: { in: ["active", "disabled"] } }] } }),
       db.trafficLedger.count({ where: { OR: [{ userId }, ...(subscriptionIds.length > 0 ? [{ subscriptionId: { in: subscriptionIds } }] : [])] } }),
