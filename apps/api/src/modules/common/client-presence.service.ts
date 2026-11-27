@@ -16,6 +16,7 @@ import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { throwLocalReadAsServiceUnavailable } from "./prisma-error.utils";
 import { PrismaService } from "./prisma.service";
 import { directOnlineCutoff } from "./direct-presence";
+import { readNodeCountryCode } from "./node-import.utils";
 import { isLeaseHardExpired, LEASE_HEARTBEAT_INTERVAL_SECONDS } from "./runtime-session.utils";
 import { readEffectiveSubscriptionState, roundTrafficGb, toAdminUserClientVersion } from "./subscription.utils";
 
@@ -216,7 +217,7 @@ function toPresenceSession(lease: PresenceLeaseRow): AdminPresenceSessionDto {
       id: lease.node.id,
       name: lease.node.name,
       region: lease.node.region,
-      countryCode: lease.node.countryCode ?? null,
+      countryCode: readNodeCountryCode(lease.node),
       provider: lease.node.provider,
       protocol: lease.node.protocol,
       security: lease.node.security

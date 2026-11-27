@@ -2,7 +2,7 @@ import { CustomerRoutingRules } from "./CustomerRoutingRules";
 import { CustomerSubscriptionLink, TeamSubscriptionLinks } from "./CustomerSubscriptionLink";
 import { useMemo, useState } from "react";
 import { Alert, Avatar, Button, Group, Menu, Stack, Tabs, Text, TextInput } from "@mantine/core";
-import { IconAlertCircle, IconArrowLeft, IconChevronDown, IconGaugeOff, IconLock, IconLockOpen2, IconPencil, IconPlugConnectedX, IconSearch, IconUsers } from "@tabler/icons-react";
+import { IconAlertCircle, IconArrowLeft, IconChevronDown, IconGaugeOff, IconLock, IconLockOpen2, IconPencil, IconPlugConnectedX, IconSearch, IconTrash, IconUsers } from "@tabler/icons-react";
 import { formatDateTime } from "../../utils/admin-format";
 import { getRenewActionText, subscriptionStateColor, translateRole, translateSubscriptionState } from "../../utils/admin-translate";
 import { customerNotice, personalCustomer, teamCustomer, type CustomerRecord } from "./customer-model";
@@ -91,6 +91,12 @@ function CustomerDetail({ customer, actions, onBack }: { customer: CustomerRecor
             onClick={() => actions.onToggleUserStatus(customer.user!.id, customer.enabled ? "disabled" : "active", customer.name)}>{customer.enabled ? "禁用账号" : "启用账号"}</Menu.Item></>}
         {subscription && <><Menu.Divider/><Menu.Item color="orange" leftSection={<IconGaugeOff size={16}/>} disabled={actions.resetTrafficBusyKey !== null}
           onClick={() => actions.onResetSubscriptionTraffic(subscription.id, customer.name)}>重置流量</Menu.Item></>}
+        <Menu.Divider/>
+        {subscription && <Menu.Item color="red" leftSection={<IconTrash size={16}/>}
+          onClick={() => actions.onRequestDelete({ kind: "subscription", id: subscription.id, name: ownerLabel })}>删除订阅</Menu.Item>}
+        <Menu.Item color="red" leftSection={<IconTrash size={16}/>}
+          onClick={() => actions.onRequestDelete(customer.user ? { kind: "user", id: customer.user.id, name: customer.name } : { kind: "team", id: customer.team!.id, name: customer.name })}>
+          {customer.team ? "删除团队" : "删除账号"}</Menu.Item>
       </Menu.Dropdown></Menu>
     </Group></header>
     {notice && <Alert icon={<IconAlertCircle size={20}/>} color="yellow" className={styles.notice}>{notice}</Alert>}

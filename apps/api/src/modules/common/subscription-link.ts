@@ -82,6 +82,8 @@ export type SubscriptionLinkUsage = {
   usedBytes: bigint;
   totalBytes: bigint;
   expireAt: Date;
+  /** 设了每月重置日时的下次重置时间：此时 totalBytes 是每月额度。 */
+  nextResetAt?: Date | null;
 };
 
 export type SubscriptionLinkDocument = {
@@ -181,6 +183,11 @@ export function formatSubscriptionLinkTraffic(bytes: bigint): string {
   return `${tenths / 10n}.${tenths % 10n} GB`;
 }
 
+/** 下次重置在到期之前才会真的发生（过期的订阅不重置），只有这时才提重置日。 */
+function resetsBeforeExpiry(usage: SubscriptionLinkUsage): usage is SubscriptionLinkUsage & { nextResetAt: Date } {
+  return Boolean(usage.nextResetAt && usage.nextResetAt.getTime() < usage.expireAt.getTime());
+}
+
 /** The status line of a link that serves nodes: what is left and until when. */
 export function buildActiveStatus(usage: SubscriptionLinkUsage | null): string | null {
   if (!usage) return null;
@@ -188,6 +195,9 @@ export function buildActiveStatus(usage: SubscriptionLinkUsage | null): string |
   if (usage.totalBytes <= 0n) return `${date} 到期`;
   const used = usage.usedBytes < 0n ? 0n : usage.usedBytes;
   const left = usage.totalBytes > used ? usage.totalBytes - used : 0n;
+  if (resetsBeforeExpiry(usage)) {
+    return `本月剩余 ${formatSubscriptionLinkTraffic(left)} ｜ ${formatSubscriptionLinkDate(usage.nextResetAt)} 重置 ｜ ${date} 到期`;
+  }
   return `剩余 ${formatSubscriptionLinkTraffic(left)} ｜ ${date} 到期`;
 }
 
@@ -201,7 +211,12 @@ export function buildLapsedStatus(
   usage: SubscriptionLinkUsage
 ): string {
   if (state === "expired") return `⚠️ 已于 ${formatSubscriptionLinkDate(usage.expireAt)} 到期 ｜ 续费后请下拉刷新订阅`;
-  if (state === "exhausted") return "⚠️ 流量已用完 ｜ 续费后请下拉刷新订阅";
+  if (state === "exhausted") {
+    if (resetsBeforeExpiry(usage)) {
+      return `⚠️ 本月流量已用完 ｜ ${formatSubscriptionLinkDate(usage.nextResetAt)} 自动恢复，届时请下拉刷新订阅`;
+    }
+    return "⚠️ 流量已用完 ｜ 续费后请下拉刷新订阅";
+  }
   return "⚠️ 订阅已暂停 ｜ 恢复后请下拉刷新订阅";
 }
 

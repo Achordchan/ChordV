@@ -2,6 +2,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { AdminLeaseRevocationJobDto, AdminNodeCommandQueueDto, AdminSubscriptionRecordDto, AdminTeamRecordDto, AdminTeamUsageRecordDto, AdminUserRecordDto } from "@chordv/shared";
 import type { LeaseRevocationQueueFilter } from "../../utils/admin-queue-filters";
 import type { TeamFormState, TeamMemberFormState } from "../../utils/admin-forms";
+import type { DeleteEntityTarget } from "../modals/DeleteEntityModal";
 
 export type UsersPageProps = {
   searchValue: string;
@@ -57,4 +58,5 @@ export type UsersPageProps = {
   onDisconnectUser: (userId: string, displayName: string, source?: "personal" | "team-member") => void;
   onRetryLeaseRevocationJob: (jobId: string) => void;
   onOpenLeaseRevocationQueue: (filter?: LeaseRevocationQueueFilter) => void;
+  onRequestDelete: (target: DeleteEntityTarget) => void;
 };

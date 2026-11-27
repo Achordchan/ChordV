@@ -56,6 +56,8 @@ export type SubscriptionCreateFormState = {
 export type SubscriptionAdjustFormState = {
   totalTrafficGb: number;
   usedTrafficGb: number;
+  /** 打开表单时的已用流量（已取整）；提交时没改就不发送，避免覆盖期间新产生的用量。 */
+  baseUsedTrafficGb: number;
   expireAt: string;
   baseExpireAt: string;
   state: SubscriptionState;
@@ -75,6 +77,8 @@ export type SubscriptionChangePlanFormState = {
   totalTrafficGb: number;
   expireAt: string;
   baseExpireAt: string;
+  /** 只用来决定“总流量/每月流量”的文字，变更套餐不改重置日。 */
+  trafficResetDay: number | "";
 };
 
 export type TeamFormState = {
@@ -195,6 +199,7 @@ export function emptySubscriptionAdjustForm(): SubscriptionAdjustFormState {
   return {
     totalTrafficGb: 100,
     usedTrafficGb: 0,
+    baseUsedTrafficGb: 0,
     expireAt: now,
     baseExpireAt: now,
     state: "active",
@@ -218,7 +223,8 @@ export function emptySubscriptionChangePlanForm(): SubscriptionChangePlanFormSta
     planId: "",
     totalTrafficGb: 100,
     expireAt: "",
-    baseExpireAt: toDateTimeLocal(new Date().toISOString())
+    baseExpireAt: toDateTimeLocal(new Date().toISOString()),
+    trafficResetDay: ""
   };
 }
 
@@ -336,6 +342,11 @@ export function buildCreateTeamSubscriptionPayload(
 }
 
 /** 表单里的重置日转成接口参数：空表示不自动重置（null）。 */
+/** 校正订阅时只在管理员改了已用流量才提交它。 */
+export function readChangedUsedTrafficGb(form: Pick<SubscriptionAdjustFormState, "usedTrafficGb" | "baseUsedTrafficGb">): number | undefined {
+  return form.usedTrafficGb === form.baseUsedTrafficGb ? undefined : form.usedTrafficGb;
+}
+
 export function toTrafficResetDayPayload(value: number | ""): number | null {
   return value === "" ? null : value;
 }

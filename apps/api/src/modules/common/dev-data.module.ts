@@ -4,6 +4,7 @@ import { AdminAuthGuard } from "./admin-auth.guard";
 import { AdminNodeService } from "./admin-node.service";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { AdminSubscriptionService } from "./admin-subscription.service";
+import { AdminDeletionService } from "./admin-deletion.service";
 import { AnnouncementPolicyService } from "./announcement-policy.service";
 import { AuthSessionService } from "./auth-session.service";
 import { ClientAccessService } from "./client-access.service";
@@ -50,6 +51,7 @@ import { TrafficResetScheduleService } from "./traffic-reset-schedule.service";
     AdminRuntimeEventsService,
     AdminNodeService,
     AdminSubscriptionService,
+    AdminDeletionService,
     AnnouncementPolicyService,
     RuntimeComponentsService,
     RuntimeVersionService,
@@ -82,6 +84,7 @@ import { TrafficResetScheduleService } from "./traffic-reset-schedule.service";
     AdminRuntimeEventsService,
     AdminNodeService,
     AdminSubscriptionService,
+    AdminDeletionService,
     AnnouncementPolicyService,
     RuntimeComponentsService,
     RuntimeVersionService,
