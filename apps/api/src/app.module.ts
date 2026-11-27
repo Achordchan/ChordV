@@ -9,6 +9,7 @@ import { PrismaModule } from "./modules/common/prisma.module";
 import { SystemModule } from "./modules/system/system.module";
 import { AgentModule } from "./modules/agent/agent.module";
 import { SupportModule } from "./modules/support/support.module";
+import { DomesticProbeModule } from "./modules/domestic-probe/domestic-probe.module";
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { SupportModule } from "./modules/support/support.module";
     AdminModule,
     AgentModule,
     SupportModule,
+    DomesticProbeModule,
     SystemModule
   ]
 })

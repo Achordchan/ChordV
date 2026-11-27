@@ -685,9 +685,39 @@ export interface AdminNodeRecordDto extends NodeSummaryDto {
   probeLatencyMs: number | null;
   probeCheckedAt: string | null;
   probeError: string | null;
+  /**
+   * Reachability from mainland China, measured by the domestic probe (a
+   * server inside China doing a plain TCP handshake to serverHost:serverPort).
+   * "unknown" also covers results older than the staleness window. A reachable
+   * port does not prove the Reality handshake works; it only shows the IP and
+   * port are not blocked. Optional for legacy fixtures; the API always sets it.
+   */
+  domesticStatus?: DomesticReachabilityStatus;
+  domesticLatencyMs?: number | null;
+  domesticCheckedAt?: string | null;
+  /** Consecutive failed rounds; "blocked" needs DOMESTIC_BLOCK_STREAK of them. */
+  domesticFailStreak?: number;
+  domesticError?: string | null;
   message?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export type DomesticReachabilityStatus = "unknown" | "reachable" | "blocked";
+
+export interface AdminDomesticProbeStateDto {
+  configured: boolean;
+  tokenPrefix: string | null;
+  tokenCreatedAt: string | null;
+  lastReportAt: string | null;
+  /** True when the last round was discarded because the probe itself looked unhealthy. */
+  lastRoundIgnored: boolean;
+  lastRoundReason: string | null;
+}
+
+export interface AdminDomesticProbeTokenDto extends AdminDomesticProbeStateDto {
+  /** Shown once; only its hash is stored. */
+  token: string;
 }
 
 export type AdminLeaseRevocationJobStatus = "pending" | "running" | "failed" | "completed";

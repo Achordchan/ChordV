@@ -5,6 +5,7 @@ import { IconAlertCircle, IconArrowRight, IconChevronDown, IconChevronUp, IconDo
 import { CountryFlag } from "../components/CountryFlag";
 import { DataTable } from "../features/shared/DataTable";
 import { NodeControlDetails } from "../features/nodes/NodeControlCenter";
+import { DomesticProbeModal } from "../features/nodes/DomesticProbeModal";
 import styles from "../features/nodes/NodesWorkspace.module.css";
 import { formatDateTime } from "../utils/admin-format";
 import { findNodeCommandSummary } from "../utils/node-command-summary";
@@ -42,13 +43,15 @@ function needsOnboarding(node: AdminNodeRecordDto) {
 export function NodesPage(props: NodesPageProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [filter, setFilter] = useState("全部");
+  const [domesticProbeOpened, setDomesticProbeOpened] = useState(false);
   const rows = props.nodes.map(node => {
     const lease = summarizeLeaseRevocationJobsForNode(props.leaseRevocationJobs, node.id);
     const command = findNodeCommandSummary(props.nodeCommandQueue.summaries, "nodes", node.id);
     const total = lease.total + (command?.total ?? 0);
     const failed = lease.failed + (command?.failed ?? 0);
     const agentStatus = node.controlStatus ?? node.agent?.status;
-    const needsAttention = total > 0 || node.probeStatus === "offline" || node.probeStatus === "degraded" || agentStatus === "offline" || agentStatus === "degraded";
+    const domesticTone = describeDomestic(node).tone;
+    const needsAttention = total > 0 || domesticTone === "bad" || domesticTone === "warning" || node.probeStatus === "offline" || node.probeStatus === "degraded" || agentStatus === "offline" || agentStatus === "degraded";
     return { node, lease, total, failed, agentStatus, needsAttention };
   }).filter(row => filter === "全部" || (filter === "待接入" ? needsOnboarding(row.node) : row.needsAttention));
 
@@ -56,7 +59,7 @@ export function NodesPage(props: NodesPageProps) {
     <div className={styles.toolbar}>
       <TextInput className={styles.search} aria-label="搜索节点" placeholder="搜索节点、地区或地址" leftSection={<IconSearch size={16}/>} value={props.searchValue} onChange={event => props.onSearchChange(event.currentTarget.value)}/>
       <SegmentedControl classNames={{root: styles.filters, label: styles.filterLabel, indicator: styles.filterIndicator}} aria-label="节点筛选" value={filter} onChange={setFilter} data={["全部", "需处理", "待接入"]}/>
-      <div className={styles.toolbarActions}><Button variant="subtle" color="gray" loading={props.probingAll} disabled={props.probingNodeId !== null} onClick={props.onProbeAll}>全部探测</Button><Button className={styles.addButton} onClick={props.onOpenAgentNodeCreate}>添加节点</Button></div>
+      <div className={styles.toolbarActions}><Button variant="subtle" color="gray" onClick={() => setDomesticProbeOpened(true)}>国内探针</Button><Button variant="subtle" color="gray" loading={props.probingAll} disabled={props.probingNodeId !== null} onClick={props.onProbeAll}>全部探测</Button><Button className={styles.addButton} onClick={props.onOpenAgentNodeCreate}>添加节点</Button></div>
     </div>
     <div className={styles.tableArea}>
       <DataTable minWidth={920}>
@@ -71,7 +74,7 @@ export function NodesPage(props: NodesPageProps) {
                 <Table.Td><div className={styles.identity}><CountryFlag code={node.countryCode}/><div><button className={styles.nodeName} onClick={() => props.onOpenNodeDrawer(node.id)}>{node.name}</button><Text size="xs" c="dimmed" className={styles.address}>{node.serverHost}:{node.serverPort}</Text></div></div></Table.Td>
                 <Table.Td><Text className={styles.status} data-tone={node.isActive === false ? "muted" : "good"} size="sm">{node.isActive === false ? "已停用" : "已启用"}</Text></Table.Td>
                 <Table.Td><Text className={styles.status} data-tone={agentStatus === "online" || agentStatus === "active" ? "good" : agentStatus === "offline" ? "bad" : "muted"} size="sm">{node.registrationStatus === "pending_register" ? "待接入" : `Agent ${translateAgentStatus(agentStatus)}`}</Text></Table.Td>
-                <Table.Td><Text className={styles.status} data-tone={node.probeStatus === "healthy" ? "good" : node.probeStatus === "offline" ? "bad" : node.probeStatus === "degraded" ? "warning" : "muted"} size="sm">{node.probeStatus === "healthy" && node.probeLatencyMs != null ? `服务器 ${node.probeLatencyMs} ms` : `服务器 ${translateProbeStatus(node.probeStatus)}`} </Text><Text size="xs" c="dimmed" title="最近 15 分钟客户端上报的本机 TCP 延迟；每个账号保留一份结果，不代表带宽。">{node.clientProbeSummary ? `客户端 ${node.clientProbeSummary.averageLatencyMs == null ? "不可达" : node.clientProbeSummary.averageLatencyMs + " ms"} · ${node.clientProbeSummary.healthy}/${node.clientProbeSummary.samples} 可达` : "客户端暂无上报"}</Text></Table.Td>
+                <Table.Td><Text className={styles.status} data-tone={node.probeStatus === "healthy" ? "good" : node.probeStatus === "offline" ? "bad" : node.probeStatus === "degraded" ? "warning" : "muted"} size="sm">{node.probeStatus === "healthy" && node.probeLatencyMs != null ? `服务器 ${node.probeLatencyMs} ms` : `服务器 ${translateProbeStatus(node.probeStatus)}`} </Text><Text size="xs" c="dimmed" title="最近 15 分钟客户端上报的本机 TCP 延迟；每个账号保留一份结果，不代表带宽。">{node.clientProbeSummary ? `客户端 ${node.clientProbeSummary.averageLatencyMs == null ? "不可达" : node.clientProbeSummary.averageLatencyMs + " ms"} · ${node.clientProbeSummary.healthy}/${node.clientProbeSummary.samples} 可达` : "客户端暂无上报"}</Text>{(() => { const domestic = describeDomestic(node); return <Text className={`${styles.status} ${styles.domestic}`} data-tone={domestic.tone} title={domestic.title}>{domestic.label}</Text>; })()}</Table.Td>
                 <Table.Td>{total > 0 ? <Button className={styles.syncButton} data-tone={failed > 0 ? "warning" : "progress"} variant="subtle" size="compact-sm" color="dark" onClick={() => props.onOpenLeaseRevocationQueue({nodeId: node.id, title: node.name})}>{total} 项待处理</Button> : <Text className={styles.status} data-tone="good" size="sm">无待处理</Text>}</Table.Td>
                 <Table.Td className={styles.actionsCell}><Group gap={6} wrap="nowrap" justify="flex-end">
                   {needsOnboarding(node) ? <Button variant="subtle" size="compact-sm" color="teal.9" onClick={() => props.onResumeAgentNode(node.id)}>继续接入</Button> : null}
@@ -101,7 +104,24 @@ export function NodesPage(props: NodesPageProps) {
       </DataTable>
     </div>
     <Text size="xs" c="dimmed" ta="right" mt="md">当前显示 {rows.length} 个节点</Text>
+    <DomesticProbeModal opened={domesticProbeOpened} onClose={() => setDomesticProbeOpened(false)}/>
   </section>;
+}
+
+/** One line for reachability from mainland China, as reported by the domestic probe. */
+export function describeDomestic(node: AdminNodeRecordDto): { label: string; tone: "good" | "bad" | "warning" | "muted"; title: string } {
+  const checked = node.domesticCheckedAt ? `最后检测 ${formatDateTime(node.domesticCheckedAt)}` : "国内探针还没有上报";
+  const streak = node.domesticFailStreak ?? 0;
+  switch (node.domesticStatus) {
+    case "blocked":
+      return { label: "国内 被墙", tone: "bad", title: `${node.domesticError ?? "国内 TCP 握手失败"}，已连续 ${streak} 轮。${checked}` };
+    case "reachable":
+      return streak > 0
+        ? { label: `国内 异常 ${streak} 轮`, tone: "warning", title: `${node.domesticError ?? "国内 TCP 握手失败"}。${checked}` }
+        : { label: node.domesticLatencyMs != null ? `国内 可达 ${node.domesticLatencyMs} ms` : "国内 可达", tone: "good", title: `端口能连通，不代表 Reality 一定可用。${checked}` };
+    default:
+      return { label: "国内 未知", tone: "muted", title: node.domesticError ? `${node.domesticError}。${checked}` : checked };
+  }
 }
 
 function summarizeLeaseRevocationJobsForNode(jobs: AdminLeaseRevocationJobDto[], nodeId: string) {

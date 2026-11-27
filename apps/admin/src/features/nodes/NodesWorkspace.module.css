@@ -24,6 +24,8 @@
 .address { margin-top: 4px; font-size: 13px; color: #8590a0; overflow-wrap: anywhere; }
 .status { display: flex; gap: 12px; align-items: center; color: #344155; font-size: 14px; white-space: nowrap; }
 .status::before, .syncButton::before { content: ''; width: 11px; height: 11px; flex: 0 0 11px; border-radius: 50%; background: var(--node-status-color, #879098); }
+.status.domestic { gap: 8px; margin-top: 4px; font-size: 12px; }
+.status.domestic::before { width: 8px; height: 8px; flex-basis: 8px; }
 [data-tone="good"].status { --node-status-color: #238b50; }
 [data-tone="bad"].status { --node-status-color: #d8212c; }
 [data-tone="warning"].status, .syncButton[data-tone="warning"] { --node-status-color: #eba514; }
