@@ -16,6 +16,7 @@ import concurrent.futures
 import fcntl
 import json
 import os
+import random
 import socket
 import subprocess
 import sys
@@ -131,9 +132,14 @@ def main():
     started = time.monotonic()
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS)
     control = pool.submit(lambda: any(probe_tcp(host, port)[0] for host, port in CONTROL_TARGETS))
-    # The API hands out the least recently scheduled nodes first and rotates
-    # the list itself, so nodes cut off by the deadline come first next round.
-    futures = {pool.submit(probe_target, target): target for target in targets}
+    # Work order is shuffled every round: if slow or blackholed targets eat the
+    # deadline, a different subset is cut off next time, so no node is starved
+    # even when a cut-off round is ignored and nothing in the API advances.
+    # (The API also rotates which nodes it hands out once the fleet exceeds
+    # its per-round cap.)
+    work = list(targets)
+    random.shuffle(work)
+    futures = {pool.submit(probe_target, target): target for target in work}
     done, pending = concurrent.futures.wait([control, *futures], timeout=ROUND_DEADLINE_S)
     pool.shutdown(wait=False, cancel_futures=True)
     if control not in done:

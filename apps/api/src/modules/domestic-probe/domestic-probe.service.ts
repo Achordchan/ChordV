@@ -97,9 +97,11 @@ export class DomesticProbeService {
    * Nodes the probe should check: active nodes with a registered agent (or
    * legacy nodes without onboarding), least recently handed out first, capped
    * at the report limit. Handing a node out stamps domesticScheduledAt
-   * whether or not the round is later accepted, so the list rotates even when
-   * rounds are ignored or cut off by the probe's deadline; reachability state
-   * itself only changes through accepted reports.
+   * whether or not the round is later accepted, so which nodes are handed out
+   * rotates once the fleet exceeds the cap, even when rounds are ignored.
+   * Within a round the probe shuffles its work order, so the nodes its
+   * deadline cuts off differ from round to round. Reachability state itself
+   * only changes through accepted reports.
    */
   async listTargets(now = new Date()) {
     const nodes = await this.prisma.node.findMany({
