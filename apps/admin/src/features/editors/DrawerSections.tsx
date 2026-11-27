@@ -12,6 +12,7 @@ import type {
 } from "@chordv/shared";
 import type { Dispatch, SetStateAction } from "react";
 import { ExpireAtController } from "../shared/ExpireAtController";
+import { TrafficResetDayInput } from "../shared/TrafficResetDayInput";
 import {
   announcementLevelOptions,
   applyPlanToChangePlanForm,
@@ -133,6 +134,10 @@ export function SubscriptionCreateEditorSection(props: {
         value={props.subscriptionCreateForm.expireAt}
         onChange={(event) => { const expireAt = event.currentTarget.value; props.setSubscriptionCreateForm((current) => ({ ...current, expireAt })); }}
       />
+      <TrafficResetDayInput
+        value={props.subscriptionCreateForm.trafficResetDay}
+        onChange={(trafficResetDay) => props.setSubscriptionCreateForm((current) => ({ ...current, trafficResetDay }))}
+      />
       <Select
         label="状态"
         data={subscriptionStateOptions}
@@ -166,6 +171,10 @@ export function SubscriptionAdjustEditorSection(props: {
         value={props.subscriptionAdjustForm.expireAt}
         baseValue={props.subscriptionAdjustForm.baseExpireAt}
         onChange={(value) => props.setSubscriptionAdjustForm((current) => ({ ...current, expireAt: value }))}
+      />
+      <TrafficResetDayInput
+        value={props.subscriptionAdjustForm.trafficResetDay}
+        onChange={(trafficResetDay) => props.setSubscriptionAdjustForm((current) => ({ ...current, trafficResetDay }))}
       />
       <Select
         label="状态"
@@ -306,6 +315,10 @@ export function TeamSubscriptionEditorSection(props: {
         type="datetime-local"
         value={props.teamSubscriptionForm.expireAt}
         onChange={(event) => { const expireAt = event.currentTarget.value; props.setTeamSubscriptionForm((current) => ({ ...current, expireAt })); }}
+      />
+      <TrafficResetDayInput
+        value={props.teamSubscriptionForm.trafficResetDay}
+        onChange={(trafficResetDay) => props.setTeamSubscriptionForm((current) => ({ ...current, trafficResetDay }))}
       />
     </>
   );

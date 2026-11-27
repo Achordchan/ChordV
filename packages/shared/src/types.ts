@@ -618,6 +618,12 @@ export interface AdminSubscriptionRecordDto {
   renewable: boolean;
   sourceAction: SubscriptionSourceAction;
   lastSyncedAt: string;
+  /** 每月流量重置日（1–31，北京时间 0 点）；为空表示不自动重置。 */
+  trafficResetDay?: number | null;
+  /** 下次自动重置的时间；不自动重置时为空。 */
+  nextTrafficResetAt?: string | null;
+  /** 最近一次按重置日自动重置的时间。 */
+  lastTrafficAutoResetAt?: string | null;
   nodeCount: number;
   hasNodeAccess: boolean;
   stateReasonCode?: SessionReasonCode | null;
@@ -1253,6 +1259,8 @@ export interface CreateSubscriptionInputDto {
   usedTrafficGb?: number;
   expireAt: string;
   state?: SubscriptionState;
+  /** 每月流量重置日；不传时默认开通当天（北京时间）的日期，传 null 表示不自动重置。 */
+  trafficResetDay?: number | null;
 }
 
 export interface RenewSubscriptionInputDto {
@@ -1272,6 +1280,8 @@ export interface UpdateSubscriptionInputDto {
   usedTrafficGb?: number;
   expireAt?: string;
   state?: SubscriptionState;
+  /** 不传表示不改；传 null 表示取消自动重置。 */
+  trafficResetDay?: number | null;
 }
 
 export interface ConvertSubscriptionToTeamInputDto {
@@ -1419,6 +1429,8 @@ export interface CreateTeamSubscriptionInputDto {
   expireAt: string;
   totalTrafficGb?: number;
   usedTrafficGb?: number;
+  /** 每月流量重置日；不传时默认开通当天（北京时间）的日期，传 null 表示不自动重置。 */
+  trafficResetDay?: number | null;
 }
 
 export interface CreateReleaseInputDto {

@@ -1,6 +1,6 @@
 import { Badge, Button, Group, Text } from "@mantine/core";
 import { IconPlus } from "@tabler/icons-react";
-import { formatDateTime, formatTrafficGb } from "../../utils/admin-format";
+import { describeTrafficReset, formatDateTime, formatTrafficGb } from "../../utils/admin-format";
 import { subscriptionStateColor, translateSourceAction, translateSubscriptionState } from "../../utils/admin-translate";
 import { CustomerNodes } from "./CustomerNodes";
 import type { CustomerRecord } from "./customer-model";
@@ -17,7 +17,7 @@ export function CustomerSubscription({ customer, actions }: { customer: Customer
   const percent = total !== undefined && used !== undefined && total > 0 ? Math.max(0, Math.min(100, used / total * 100)) : null;
   const manage = () => actions.onOpenNodeAccessEditor(subscription.id, `${customer.name} · ${subscription.planName}`);
   return <>
-    <div className={styles.planHeader}><div><Group gap="md"><h2>{subscription.planName}</h2><Badge variant="light" color={subscriptionStateColor(subscription.state)}>{translateSubscriptionState(subscription.state)}</Badge></Group><p>到期时间 <span>{formatDateTime(subscription.expireAt)}</span></p></div>
+    <div className={styles.planHeader}><div><Group gap="md"><h2>{subscription.planName}</h2><Badge variant="light" color={subscriptionStateColor(subscription.state)}>{translateSubscriptionState(subscription.state)}</Badge></Group><p>到期时间 <span>{formatDateTime(subscription.expireAt)}</span>{record?.nextTrafficResetAt ? <> · 下次重置流量 <span>{formatDateTime(record.nextTrafficResetAt)}</span></> : null}</p></div>
       <div className={styles.textActions}><button onClick={() => actions.onOpenChangePlanDrawer(subscription.id)}>变更套餐</button><button onClick={() => actions.onOpenAdjustDrawer(subscription.id)}>调整订阅</button></div>
     </div>
     <section className={styles.usage}><h3>{customer.team ? "团队共享剩余流量" : "剩余流量"}</h3>
@@ -28,7 +28,7 @@ export function CustomerSubscription({ customer, actions }: { customer: Customer
     </section>
     <div className={styles.subscriptionBottom}>
       {record ? <CustomerNodes subscription={record} compact onManage={manage}/> : <section><div className={styles.sectionHeading}><h3>节点授权</h3><button className={styles.textButton} onClick={manage}>管理授权</button></div><Text size="sm" c="dimmed">订阅详情尚未同步，请刷新客户数据。</Text></section>}
-      <section className={styles.facts}><h3>订阅信息</h3><dl><div><dt>开通方式</dt><dd>{record ? translateSourceAction(record.sourceAction) : "待同步"}</dd></div><div><dt>到期时间</dt><dd>{formatDateTime(subscription.expireAt)}</dd></div><div><dt>订阅类型</dt><dd>{customer.team ? "团队共享" : "个人订阅"}</dd></div></dl></section>
+      <section className={styles.facts}><h3>订阅信息</h3><dl><div><dt>开通方式</dt><dd>{record ? translateSourceAction(record.sourceAction) : "待同步"}</dd></div><div><dt>到期时间</dt><dd>{formatDateTime(subscription.expireAt)}</dd></div><div><dt>流量重置</dt><dd>{record ? describeTrafficReset(record) : "待同步"}</dd></div><div><dt>订阅类型</dt><dd>{customer.team ? "团队共享" : "个人订阅"}</dd></div></dl></section>
     </div>
   </>;
 }

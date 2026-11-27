@@ -56,3 +56,10 @@ export function addDays(base: Date, value: number) {
   next.setDate(next.getDate() + value);
   return next;
 }
+
+/** 订阅的每月流量重置说明，例如“每月 15 号 · 下次 12/15 00:00”。 */
+export function describeTrafficReset(record: { trafficResetDay?: number | null; nextTrafficResetAt?: string | null } | null | undefined) {
+  if (!record || typeof record.trafficResetDay !== "number") return "不自动重置";
+  const day = `每月 ${record.trafficResetDay} 号`;
+  return record.nextTrafficResetAt ? `${day} · 下次 ${formatDateTime(record.nextTrafficResetAt)}` : day;
+}

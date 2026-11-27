@@ -430,6 +430,12 @@ model Subscription {
   renewable          Boolean
   sourceAction       SubscriptionSourceAction @default(created)
   lastSyncedAt       DateTime
+  /// 每月流量重置日（1–31，北京时间 0 点；当月没有这一天就在月末）。为空表示不自动重置。
+  trafficResetDay        Int?
+  /// 下次自动重置的时间，由 trafficResetDay 算出；定时任务只看这一列，且用它做“只执行一次”的判定。
+  nextTrafficResetAt     DateTime?
+  /// 最近一次按重置日自动重置的时间（手动重置不改它）。
+  lastTrafficAutoResetAt DateTime?
   createdAt          DateTime                 @default(now())
   updatedAt          DateTime                 @updatedAt
   plan               Plan                     @relation(fields: [planId], references: [id], onDelete: Cascade)
@@ -443,6 +449,8 @@ model Subscription {
   securityEvents     SecurityEvent[]
   panelClientBindings PanelClientBinding[]
   supportTickets     SupportTicket[]
+
+  @@index([nextTrafficResetAt])
 }
 
 model Team {

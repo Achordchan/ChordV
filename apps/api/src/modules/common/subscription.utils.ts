@@ -161,6 +161,9 @@ export function toAdminSubscriptionRecord(row: {
   renewable: boolean;
   sourceAction: SubscriptionSourceAction;
   lastSyncedAt: Date;
+  trafficResetDay?: number | null;
+  nextTrafficResetAt?: Date | null;
+  lastTrafficAutoResetAt?: Date | null;
   plan: { name: string };
   user: { email: string; displayName: string } | null;
   team: { name: string } | null;
@@ -188,6 +191,9 @@ export function toAdminSubscriptionRecord(row: {
     renewable: row.renewable,
     sourceAction: row.sourceAction,
     lastSyncedAt: row.lastSyncedAt.toISOString(),
+    trafficResetDay: row.trafficResetDay ?? null,
+    nextTrafficResetAt: row.nextTrafficResetAt ? row.nextTrafficResetAt.toISOString() : null,
+    lastTrafficAutoResetAt: row.lastTrafficAutoResetAt ? row.lastTrafficAutoResetAt.toISOString() : null,
     nodeCount,
     hasNodeAccess: nodeCount > 0,
     stateReasonCode: stateReason.reasonCode,
