@@ -322,7 +322,7 @@ export class AdminDeletionService {
     };
     const [bindingCount, ledgerCount, ticketCount, sessionCount, routingRuleCount] = await Promise.all([
       db.panelClientBinding.count({ where: { AND: [bindingWhere, { status: { in: ["active", "disabled"] } }] } }),
-      db.trafficLedger.count({ where: { OR: [{ userId }, ...(subscriptionIds.length > 0 ? [{ subscriptionId: { in: subscriptionIds } }] : [])] } }),
+      db.trafficLedger.count({ where: { OR: [{ userId }, { teamId: { in: ownedTeamIds } }, { subscriptionId: { in: subscriptionIds } }] } }),
       db.supportTicket.count({ where: { userId } }),
       this.countActiveSessions(db, { OR: [{ userId }, ...(subscriptionIds.length > 0 ? [{ subscriptionId: { in: subscriptionIds } }] : [])] }),
       db.clientRoutingRule.count({ where: { userId } })
@@ -361,7 +361,7 @@ export class AdminDeletionService {
       where: { planId },
       select: SUBSCRIPTION_SAMPLE_SELECT
     });
-    return this.subscriptionsScope(db, plan.name, subscriptions, { planId }, [
+    return this.subscriptionsScope(db, plan.name, subscriptions, [
       item("subscriptions", "使用此套餐的订阅（一起删除）", subscriptions.length, subscriptions.map(describeSubscription))
     ]);
   }
@@ -372,7 +372,7 @@ export class AdminDeletionService {
       select: SUBSCRIPTION_SAMPLE_SELECT
     });
     if (!subscription) throw new NotFoundException("订阅不存在或已被删除");
-    return this.subscriptionsScope(db, describeSubscription(subscription), [subscription], { id: subscriptionId }, []);
+    return this.subscriptionsScope(db, describeSubscription(subscription), [subscription], []);
   }
 
   private async resolveTeamScope(db: Db, teamId: string): Promise<DeletionScope> {
@@ -385,31 +385,40 @@ export class AdminDeletionService {
       where: { teamId },
       select: SUBSCRIPTION_SAMPLE_SELECT
     });
-    const scope = await this.subscriptionsScope(db, team.name, subscriptions, { teamId }, [
+    // 流量记录、节点账号除了经由团队订阅，还直接引用 teamId（同样级联删除），两条路都要算。
+    const subscriptionIds = subscriptions.map((row) => row.id);
+    const scope = await this.subscriptionsScope(db, team.name, subscriptions, [
       item("members", "团队成员（移出团队，账号保留）", team.members.length, team.members.map((member) => member.user.displayName || member.user.email)),
       item("subscriptions", "团队订阅（一起删除）", subscriptions.length, subscriptions.map(describeSubscription))
-    ]);
+    ], {
+      bindingWhere: { OR: [{ teamId }, { subscriptionId: { in: subscriptionIds } }] },
+      ledgerWhere: { OR: [{ teamId }, { subscriptionId: { in: subscriptionIds } }] }
+    });
     const affected = new Set(scope.affectedUserIds);
     for (const member of team.members) affected.add(member.userId);
-    return { ...scope, affectedUserIds: Array.from(affected), bindingWhere: { OR: [{ teamId }, ...(scope.subscriptionIds.length > 0 ? [{ subscriptionId: { in: scope.subscriptionIds } }] : [])] } };
+    return { ...scope, affectedUserIds: Array.from(affected) };
   }
 
-  private async subscriptionsScope(db: Db, 
+  /**
+   * 以一组订阅为中心的删除范围。默认只算经由这些订阅级联的数据；团队删除时
+   * 调用方再传入直接引用 teamId 的条件。
+   */
+  private async subscriptionsScope(
+    db: Db,
     name: string,
     subscriptions: SubscriptionSample[],
-    owner: Prisma.SubscriptionWhereInput,
-    leading: AdminDeleteRelatedItemDto[]
+    leading: AdminDeleteRelatedItemDto[],
+    extra: { bindingWhere?: Prisma.PanelClientBindingWhereInput; ledgerWhere?: Prisma.TrafficLedgerWhereInput } = {}
   ): Promise<DeletionScope> {
     const subscriptionIds = subscriptions.map((row) => row.id);
-    const bindingWhere: Prisma.PanelClientBindingWhereInput = { subscription: owner };
-    const [bindingCount, ledgerCount, ticketCount, sessionCount] = subscriptionIds.length === 0
-      ? [0, 0, 0, 0]
-      : await Promise.all([
-          db.panelClientBinding.count({ where: { AND: [bindingWhere, { status: { in: ["active", "disabled"] } }] } }),
-          db.trafficLedger.count({ where: { subscriptionId: { in: subscriptionIds } } }),
-          db.supportTicket.count({ where: { subscriptionId: { in: subscriptionIds } } }),
-          this.countActiveSessions(db, { subscriptionId: { in: subscriptionIds } })
-        ]);
+    const bindingWhere: Prisma.PanelClientBindingWhereInput = extra.bindingWhere ?? { subscriptionId: { in: subscriptionIds } };
+    const ledgerWhere: Prisma.TrafficLedgerWhereInput = extra.ledgerWhere ?? { subscriptionId: { in: subscriptionIds } };
+    const [bindingCount, ledgerCount, ticketCount, sessionCount] = await Promise.all([
+      db.panelClientBinding.count({ where: { AND: [bindingWhere, { status: { in: ["active", "disabled"] } }] } }),
+      db.trafficLedger.count({ where: ledgerWhere }),
+      db.supportTicket.count({ where: { subscriptionId: { in: subscriptionIds } } }),
+      this.countActiveSessions(db, { subscriptionId: { in: subscriptionIds } })
+    ]);
     return {
       name,
       blockedReason: null,

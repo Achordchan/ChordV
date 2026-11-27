@@ -149,6 +149,16 @@ async function main() {
   assert.equal(rulePreview.requiresForce, true);
   assert.equal(rulePreview.related.find((entry) => entry.key === "routingRules")?.count, 1);
 
+  // 4d. 团队没有订阅、没有成员，但流量记录直接引用它的 teamId：也要强制确认。
+  const ledgerTeam = await prisma.team.create({ data: { id: id("team"), name: "ledger-only", ownerUserId: ruleOwner.id, status: "active" } });
+  const ledgerPlan = await createPlan(prisma, "personal");
+  const ledgerSub = await createSubscription(prisma, { planId: ledgerPlan.id, userId: ruleOwner.id, expireAt: later });
+  await prisma.trafficLedger.create({ data: { id: id("ledger"), teamId: ledgerTeam.id, userId: ruleOwner.id, subscriptionId: ledgerSub.id, usedTrafficGb: 1, recordedAt: now } });
+  const ledgerPreview = await service.preview("team", ledgerTeam.id, admin.id);
+  assert.equal(ledgerPreview.requiresForce, true);
+  assert.equal(ledgerPreview.related.find((entry) => entry.key === "trafficRecords")?.count, 1);
+  await assert.rejects(service.delete("team", ledgerTeam.id, { force: false, actorUserId: admin.id }), /需要确认强制删除/);
+
   // 5. 没有关联数据的账号和团队：直接删。
   const bare = await createUser(prisma, "user");
   assert.equal((await service.preview("user", bare.id, admin.id)).requiresForce, false);
