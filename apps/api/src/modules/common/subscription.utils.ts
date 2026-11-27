@@ -212,6 +212,8 @@ export function toSubscriptionStatusDto(
     state: SubscriptionState;
     renewable: boolean;
     lastSyncedAt: Date;
+    trafficResetDay?: number | null;
+    nextTrafficResetAt?: Date | null;
     plan: { name: string };
   },
   team: { id: string; name: string } | null,
@@ -235,6 +237,8 @@ export function toSubscriptionStatusDto(
     teamId: team?.id ?? null,
     teamName: team?.name ?? null,
     memberUsedTrafficGb,
+    trafficResetDay: row.trafficResetDay ?? null,
+    nextTrafficResetAt: row.nextTrafficResetAt ? row.nextTrafficResetAt.toISOString() : null,
     meteringStatus: metering.meteringStatus,
     meteringMessage: metering.meteringMessage,
     stateReasonCode: stateReason.reasonCode,

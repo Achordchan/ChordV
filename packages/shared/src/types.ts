@@ -154,6 +154,10 @@ export interface SubscriptionStatusDto {
   teamId?: string | null;
   teamName?: string | null;
   memberUsedTrafficGb?: number | null;
+  /** 每月流量重置日（1–31）；为空表示总流量不按月重置。旧版后台不返回。 */
+  trafficResetDay?: number | null;
+  /** 下次自动重置已用流量的时间。 */
+  nextTrafficResetAt?: string | null;
   meteringStatus: MeteringStatus;
   meteringMessage?: string | null;
   stateReasonCode?: SessionReasonCode | null;

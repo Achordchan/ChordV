@@ -90,6 +90,11 @@ class ScheduledTrafficResetSubscriptionExpired extends Error {}
 
 export type ScheduledTrafficResetOutcome = "reset" | "superseded" | "skipped_expired";
 
+function readUsedTrafficBytes(row: unknown, fallbackGb: number): bigint {
+  const bytes = (row as { usedTrafficBytes?: unknown }).usedTrafficBytes;
+  return typeof bytes === "bigint" ? bytes : trafficGbNumberToBytes(fallbackGb);
+}
+
 function isSubscriptionExpiredForScheduledReset(row: { state: SubscriptionState; expireAt: Date }, now: Date) {
   return row.state === "expired" || row.expireAt.getTime() <= now.getTime();
 }
@@ -1061,7 +1066,11 @@ export class AdminSubscriptionService {
               usedTrafficGb,
               remainingTrafficGb,
               totalTrafficBytes: trafficGbNumberToBytes(totalTrafficGb),
-              usedTrafficBytes: trafficGbNumberToBytes(usedTrafficGb),
+              // 没有改已用流量时保留锁内读到的精确字节数，不用浮点 GB 反算覆盖。
+              usedTrafficBytes:
+                input.usedTrafficGb === undefined
+                  ? readUsedTrafficBytes(current, usedTrafficGb)
+                  : trafficGbNumberToBytes(usedTrafficGb),
               expireAt,
               state,
               ...resetScheduleUpdate,

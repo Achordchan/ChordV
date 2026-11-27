@@ -146,17 +146,20 @@ export class SubscriptionLinkService {
         );
     if (!subscription) return buildNoticeDocument(SUBSCRIPTION_LINK_NOTICES.no_subscription);
 
+    const nextResetAt = typeof subscription.trafficResetDay === "number" ? subscription.nextTrafficResetAt ?? null : null;
     const usage: SubscriptionLinkUsage =
       subscription.totalTrafficBytes > 0n
         ? {
             usedBytes: subscription.usedTrafficBytes,
             totalBytes: subscription.totalTrafficBytes,
-            expireAt: subscription.expireAt
+            expireAt: subscription.expireAt,
+            nextResetAt
           }
         : {
             usedBytes: trafficGbNumberToBytes(subscription.usedTrafficGb),
             totalBytes: trafficGbNumberToBytes(subscription.totalTrafficGb),
-            expireAt: subscription.expireAt
+            expireAt: subscription.expireAt,
+            nextResetAt
           };
 
     if (membership && membership.team.status !== "active") {

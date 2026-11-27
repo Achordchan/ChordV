@@ -313,6 +313,15 @@ async function main() {
     );
     assert.equal(buildActiveStatus({ usedBytes: 5n, totalBytes: 0n, expireAt: new Date("2027-01-01T00:00:00Z") }), "2027-01-01 到期");
     assert.equal(buildActiveStatus(null), null);
+    assert.equal(
+      buildActiveStatus({ usedBytes: 100n * GIB, totalBytes: 500n * GIB, expireAt: new Date("2027-06-01T00:00:00Z"), nextResetAt: new Date("2026-12-08T16:00:00Z") }),
+      "本月剩余 400.0 GB ｜ 2026-12-09 重置 ｜ 2027-06-01 到期",
+      "设了每月重置日时说明是本月剩余，并给出重置日"
+    );
+    assert.equal(
+      buildLapsedStatus("exhausted", { usedBytes: 500n * GIB, totalBytes: 500n * GIB, expireAt: new Date("2027-06-01T00:00:00Z"), nextResetAt: new Date("2026-12-08T16:00:00Z") }),
+      "⚠️ 本月流量已用完 ｜ 2026-12-09 自动恢复，届时请下拉刷新订阅"
+    );
     assert.equal(formatSubscriptionLinkTraffic(-1n), "0.0 GB");
     assert.equal(formatSubscriptionLinkDate(new Date("2026-12-31T23:59:59Z")), "2027-01-01");
     assert.equal(buildLapsedStatus("expired", usage), "⚠️ 已于 2027-01-01 到期 ｜ 续费后请下拉刷新订阅");
