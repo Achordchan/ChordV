@@ -225,7 +225,8 @@ async function testSchedulerSkipsExpiredAndBacksOffOnFailure() {
       subscription: {
         findMany: async (query: any) => {
           assert.ok(query.where.nextTrafficResetAt.lte instanceof Date, "只取已到点的订阅");
-          return rows;
+          const excluded: string[] = query.where.id?.notIn ?? [];
+          return rows.filter((row) => !excluded.includes(row.id));
         }
       }
     } as any,
@@ -254,6 +255,64 @@ async function testSchedulerSkipsExpiredAndBacksOffOnFailure() {
   assert.ok(calls.includes("reset:failing"), "30 分钟后重试");
 }
 
+async function testSchedulerBackoffDoesNotStarveLaterSubscriptions() {
+  const now = bj("2026-12-01T00:00:20");
+  const rows = Array.from({ length: 40 }, (_, index) => ({
+    id: `sub_${String(index).padStart(2, "0")}`,
+    nextTrafficResetAt: bj("2026-12-01T00:00:00"),
+    expireAt: bj("2027-11-20T00:00:00"),
+    state: "active"
+  }));
+  const failing = new Set(rows.slice(0, 30).map((row) => row.id));
+  const resetDone = new Set<string>();
+  const scheduler = new TrafficResetScheduleService(
+    {
+      subscription: {
+        findMany: async (query: any) => {
+          const excluded: string[] = query.where.id?.notIn ?? [];
+          return rows.filter((row) => !excluded.includes(row.id) && !resetDone.has(row.id)).slice(0, query.take);
+        }
+      }
+    } as any,
+    {
+      skipScheduledTrafficReset: async () => true,
+      runScheduledTrafficReset: async (id: string) => {
+        if (failing.has(id)) throw new Error("结不清");
+        resetDone.add(id);
+        return "reset";
+      }
+    } as any
+  );
+  (scheduler as any).logger = { log: () => undefined, warn: () => undefined };
+  for (let minute = 0; minute < 5; minute += 1) {
+    await scheduler.runDueTrafficResetsAt(new Date(now.getTime() + minute * 60_000));
+  }
+  assert.equal(resetDone.size, 10, "前 30 个反复失败的订阅在退避期间不占名额，后面 10 个都能重置");
+}
+
+async function testSkipRequiresStillExpiredAtUpdate() {
+  const dueAt = bj("2026-12-01T00:00:00");
+  const now = bj("2026-12-01T00:00:20");
+  let where: any = null;
+  const service = createInstance<AdminSubscriptionService>(AdminSubscriptionService.prototype, {
+    prisma: {
+      subscription: {
+        findUnique: async () => ({ trafficResetDay: 1 }),
+        updateMany: async (payload: any) => {
+          where = payload.where;
+          return { count: 0 };
+        }
+      }
+    }
+  });
+  assert.equal(await service.skipScheduledTrafficReset("sub", dueAt, now), false);
+  assert.deepEqual(where, {
+    id: "sub",
+    nextTrafficResetAt: dueAt,
+    OR: [{ state: "expired" }, { expireAt: { lte: now } }]
+  }, "跳过只在更新那一刻仍过期时生效");
+}
+
 async function main() {
   testComputeNextTrafficResetAt();
   testDtoValidation();
@@ -261,6 +320,8 @@ async function main() {
   await testScheduledResetClearsTeamPoolOnceAndAdvances();
   await testScheduledResetKeepsPausedAndSupersedesInsideLock();
   await testSchedulerSkipsExpiredAndBacksOffOnFailure();
+  await testSchedulerBackoffDoesNotStarveLaterSubscriptions();
+  await testSkipRequiresStillExpiredAtUpdate();
   console.log("traffic-reset-schedule regression passed");
 }
 

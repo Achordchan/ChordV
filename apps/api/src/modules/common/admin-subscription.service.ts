@@ -523,7 +523,8 @@ export class AdminSubscriptionService {
 
   /**
    * 订阅已过期时不重置，只把计划推到下一次，免得续期后立刻补一次重置。
-   * 仅在计划仍等于 dueAt 时生效。
+   * 仅在计划仍等于 dueAt、且更新那一刻订阅仍是过期状态时生效（同一条 UPDATE 判定），
+   * 读到过期后管理员又续期的订阅不会被跳过，下一轮按正常重置处理。
    */
   async skipScheduledTrafficReset(subscriptionId: string, dueAt: Date, now: Date = new Date()): Promise<boolean> {
     const current = await this.prisma.subscription.findUnique({
@@ -533,7 +534,11 @@ export class AdminSubscriptionService {
     if (!current) return false;
     const next = isValidTrafficResetDay(current.trafficResetDay) ? computeNextTrafficResetAt(current.trafficResetDay, now) : null;
     const updated = await this.prisma.subscription.updateMany({
-      where: { id: subscriptionId, nextTrafficResetAt: dueAt },
+      where: {
+        id: subscriptionId,
+        nextTrafficResetAt: dueAt,
+        OR: [{ state: "expired" }, { expireAt: { lte: now } }]
+      },
       data: { nextTrafficResetAt: next }
     });
     return updated.count > 0;

@@ -48,8 +48,16 @@ export class TrafficResetScheduleService {
   }
 
   private async runDueTrafficResetsOnce(now: Date) {
+    // 退避中的订阅在查询里就排除，否则一批反复失败的订阅会占满每轮的名额，后面的订阅永远轮不到。
+    for (const [id, retryAt] of this.retryNotBefore) {
+      if (retryAt <= now.getTime()) this.retryNotBefore.delete(id);
+    }
+    const backedOff = Array.from(this.retryNotBefore.keys());
     const due = await this.prisma.subscription.findMany({
-      where: { nextTrafficResetAt: { lte: now } },
+      where: {
+        nextTrafficResetAt: { lte: now },
+        ...(backedOff.length > 0 ? { id: { notIn: backedOff } } : {})
+      },
       select: { id: true, nextTrafficResetAt: true, expireAt: true, state: true },
       orderBy: { nextTrafficResetAt: "asc" },
       take: MAX_RESETS_PER_TICK * 3
@@ -59,8 +67,6 @@ export class TrafficResetScheduleService {
       if (attempted >= MAX_RESETS_PER_TICK) break;
       const dueAt = row.nextTrafficResetAt;
       if (!dueAt) continue;
-      const retryAt = this.retryNotBefore.get(row.id);
-      if (retryAt !== undefined && retryAt > now.getTime()) continue;
 
       if (row.state === "expired" || row.expireAt.getTime() <= now.getTime()) {
         try {
