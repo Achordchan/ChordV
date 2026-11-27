@@ -10,6 +10,7 @@ import {
   IsOptional,
   IsString,
   Matches,
+  ValidateIf,
   Max,
   MaxLength,
   Min,
@@ -72,6 +73,14 @@ export class AgentHeartbeatDto {
   @ValidateNested({ each: true })
   @Type(() => AgentOnlineUserDto)
   onlineUsers?: AgentOnlineUserDto[];
+
+  /** 在线报告的序号，随 onlineUsers 一起发送，同一 Agent 严格递增；服务端据此丢弃迟到的旧报告。 */
+  @ValidateIf((input: AgentHeartbeatDto) => input.onlineUsers !== undefined)
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(Number.MAX_SAFE_INTEGER)
+  onlineSequence?: number;
 }
 
 export class AgentUsageSampleInputDto {

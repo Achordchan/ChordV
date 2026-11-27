@@ -738,6 +738,8 @@ model NodeAgent {
   configRevision      BigInt   @default(0)
   queueDepth          Int      @default(0)
   xrayStatus          String   @default("unknown")
+  // 最近一次采纳的在线报告序号（Agent 心跳的 onlineSequence），用来丢弃迟到的旧报告。
+  onlineReportSequence BigInt  @default(0)
   lastSeenAt          DateTime?
   revokedAt           DateTime?
   createdAt           DateTime @default(now())

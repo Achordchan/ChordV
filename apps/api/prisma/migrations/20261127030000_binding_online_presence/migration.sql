@@ -6,3 +6,7 @@ ADD COLUMN "directOnlineIpCount" INTEGER NOT NULL DEFAULT 0;
 
 -- CreateIndex
 CREATE INDEX "PanelClientBinding_directLastOnlineAt_idx" ON "PanelClientBinding"("directLastOnlineAt");
+
+-- 在线报告按 Agent 的递增序号采纳，迟到的旧报告不覆盖新状态。
+-- AlterTable
+ALTER TABLE "NodeAgent" ADD COLUMN "onlineReportSequence" BIGINT NOT NULL DEFAULT 0;

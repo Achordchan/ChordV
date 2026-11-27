@@ -211,10 +211,19 @@ type Heartbeat struct {
 	// failed read, or no bound inbound — and the server must keep what it had;
 	// an empty list means "observed, nobody online".
 	OnlineUsers *[]OnlineUser `json:"onlineUsers,omitempty"`
+	// OnlineSequence orders online reports: it is sent with every OnlineUsers
+	// and strictly increases for this agent (wall-clock milliseconds, never
+	// repeating or going back within a process), so the server can drop a
+	// delayed report that arrives after a newer one.
+	OnlineSequence int64 `json:"onlineSequence,omitempty"`
 }
 
 // MaxOnlineUsers caps one heartbeat's online report.
 const MaxOnlineUsers = 5000
+
+// MaxOnlineIPCount caps one account's reported source-IP count. The control
+// plane rejects larger values, so the agent clamps rather than lose the beat.
+const MaxOnlineIPCount = 10000
 
 // OnlineUser is one online account, identified by its binding.
 type OnlineUser struct {

@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from "@prisma/client";
+import type { PrismaClient } from "@prisma/client";
 
 /**
  * 订阅链接（第三方客户端）的在线状态。
@@ -17,8 +17,6 @@ export const DIRECT_ONLINE_WINDOW_SECONDS = 90;
 
 export type DirectOnlineReport = { bindingId: string; ipCount: number };
 
-type BindingWriter = Pick<PrismaClient, "panelClientBinding"> | Prisma.TransactionClient;
-
 export function directOnlineCutoff(now: Date) {
   return new Date(now.getTime() - DIRECT_ONLINE_WINDOW_SECONDS * 1000);
 }
@@ -33,32 +31,65 @@ export function normalizeDirectOnline(reports: DirectOnlineReport[]) {
   return counts;
 }
 
-/** 按一次心跳的在线报告更新本节点的绑定。只写属于该节点的绑定。 */
-export async function recordDirectOnline(prisma: BindingWriter, nodeId: string, reports: DirectOnlineReport[], now: Date) {
-  const counts = normalizeDirectOnline(reports);
+export type DirectOnlineObservation = {
+  /** 心跳所属的 NodeAgent 行 id。 */
+  agentRowId: string;
+  nodeId: string;
+  /** Agent 给这次报告的递增序号。 */
+  sequence: number;
+  reports: DirectOnlineReport[];
+};
+
+type PresenceDatabase = Pick<PrismaClient, "$transaction">;
+
+/**
+ * 按一次心跳的在线报告更新本节点的绑定。只写属于该节点的绑定。
+ *
+ * 心跳可能重叠或迟到（Agent 超时重发、请求在服务端排队），所以报告按 Agent 的序号采纳：先在同一事务里把
+ * NodeAgent.onlineReportSequence 条件推进到本次序号，推进不了（已有更新的报告）就整份丢弃。这条条件
+ * UPDATE 持有该 Agent 行的锁直到提交，跨进程也串行；并发的另一份报告等锁后重新判断条件，旧的自然落空。
+ * 写入时间取拿到锁之后的时钟，最近在线时间不会倒退。
+ *
+ * 返回 null 表示这份报告比已采纳的旧，未写入。
+ */
+export async function recordDirectOnline(
+  prisma: PresenceDatabase,
+  observation: DirectOnlineObservation,
+  clock: () => Date = () => new Date()
+) {
+  const counts = normalizeDirectOnline(observation.reports);
   const ids = [...counts.keys()];
-  if (ids.length) {
-    // 先重置本次在线的开始时间（从未在线、或距上次在线已超过窗口），再推进最近在线时间。
-    await prisma.panelClientBinding.updateMany({
-      where: {
-        nodeId,
-        id: { in: ids },
-        OR: [{ directOnlineSince: null }, { directLastOnlineAt: null }, { directLastOnlineAt: { lt: directOnlineCutoff(now) } }]
-      },
-      data: { directOnlineSince: now }
+  const { agentRowId, nodeId } = observation;
+  return prisma.$transaction(async (tx) => {
+    const claimed = await tx.nodeAgent.updateMany({
+      where: { id: agentRowId, nodeId, onlineReportSequence: { lt: BigInt(observation.sequence) } },
+      data: { onlineReportSequence: BigInt(observation.sequence) }
     });
-    const byCount = new Map<number, string[]>();
-    for (const [id, count] of counts) byCount.set(count, [...(byCount.get(count) ?? []), id]);
-    for (const [count, group] of byCount) {
-      await prisma.panelClientBinding.updateMany({
-        where: { nodeId, id: { in: group } },
-        data: { directLastOnlineAt: now, directOnlineIpCount: count }
+    if (claimed.count === 0) return null;
+    const now = clock();
+    if (ids.length) {
+      // 先重置本次在线的开始时间（从未在线、或距上次在线已超过窗口），再推进最近在线时间。
+      await tx.panelClientBinding.updateMany({
+        where: {
+          nodeId,
+          id: { in: ids },
+          OR: [{ directOnlineSince: null }, { directLastOnlineAt: null }, { directLastOnlineAt: { lt: directOnlineCutoff(now) } }]
+        },
+        data: { directOnlineSince: now }
       });
+      const byCount = new Map<number, string[]>();
+      for (const [id, count] of counts) byCount.set(count, [...(byCount.get(count) ?? []), id]);
+      for (const [count, group] of byCount) {
+        await tx.panelClientBinding.updateMany({
+          where: { nodeId, id: { in: group } },
+          data: { directLastOnlineAt: now, directOnlineIpCount: count }
+        });
+      }
     }
-  }
-  await prisma.panelClientBinding.updateMany({
-    where: { nodeId, directOnlineIpCount: { gt: 0 }, ...(ids.length ? { id: { notIn: ids } } : {}) },
-    data: { directOnlineIpCount: 0 }
+    await tx.panelClientBinding.updateMany({
+      where: { nodeId, directOnlineIpCount: { gt: 0 }, ...(ids.length ? { id: { notIn: ids } } : {}) },
+      data: { directOnlineIpCount: 0 }
+    });
+    return ids.length;
   });
-  return ids.length;
 }

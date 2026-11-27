@@ -39,8 +39,27 @@ function fakePrisma(rows: Binding[]) {
     }
     return true;
   };
-  return {
+  const agents = [
+    { id: "agent_1", nodeId: "node_1", onlineReportSequence: 0n },
+    { id: "agent_2", nodeId: "node_2", onlineReportSequence: 0n }
+  ];
+  const client = {
     rows,
+    agents,
+    nodeAgent: {
+      async updateMany({ where, data }: { where: { id: string; nodeId: string; onlineReportSequence: { lt: bigint } }; data: { onlineReportSequence: bigint } }) {
+        let count = 0;
+        for (const agent of agents) {
+          if (agent.id !== where.id || agent.nodeId !== where.nodeId || !(agent.onlineReportSequence < where.onlineReportSequence.lt)) continue;
+          agent.onlineReportSequence = data.onlineReportSequence;
+          count++;
+        }
+        return { count };
+      }
+    },
+    async $transaction<T>(body: (tx: unknown) => Promise<T>) {
+      return body(client);
+    },
     panelClientBinding: {
       async updateMany({ where, data }: { where: Record<string, any>; data: Partial<Binding> }) {
         let count = 0;
@@ -53,6 +72,12 @@ function fakePrisma(rows: Binding[]) {
       }
     }
   };
+  return client;
+}
+
+let sequence = 0;
+function observe(prisma: ReturnType<typeof fakePrisma>, nodeId: string, reports: { bindingId: string; ipCount: number }[], at: Date, seq = ++sequence) {
+  return recordDirectOnline(prisma as never, { agentRowId: nodeId === "node_1" ? "agent_1" : "agent_2", nodeId, sequence: seq, reports }, () => at);
 }
 
 function binding(id: string, nodeId = "node_1", overrides: Partial<Binding> = {}): Binding {
@@ -72,7 +97,7 @@ async function testRecord() {
     binding("leaving", "node_1", { directOnlineSince: ago(600), directLastOnlineAt: ago(15), directOnlineIpCount: 2 }),
     binding("other-node", "node_2", { directOnlineSince: ago(600), directLastOnlineAt: ago(15), directOnlineIpCount: 1 })
   ]);
-  await recordDirectOnline(prisma as never, "node_1", [
+  await observe(prisma, "node_1", [
     { bindingId: "fresh", ipCount: 1 },
     { bindingId: "continuing", ipCount: 2 },
     { bindingId: "returning", ipCount: 1 },
@@ -91,9 +116,26 @@ async function testRecord() {
   assert.equal(byId.get("other-node")!.directLastOnlineAt?.getTime(), ago(15).getTime());
 
   // 空列表＝观察到了、没人在线。
-  await recordDirectOnline(prisma as never, "node_1", [], now);
+  await observe(prisma, "node_1", [], now);
   assert.ok(prisma.rows.filter((row) => row.nodeId === "node_1").every((row) => row.directOnlineIpCount === 0));
   assert.equal(byId.get("other-node")!.directOnlineIpCount, 1);
+}
+
+/** 重叠或迟到的心跳：序号更旧的报告整份丢弃，不清零别人、不让最近在线时间倒退。 */
+async function testOrdering() {
+  const prisma = fakePrisma([binding("a"), binding("b")]);
+  const byId = new Map(prisma.rows.map((row) => [row.id, row]));
+  const later = new Date(now.getTime() + 15_000);
+  assert.equal(await observe(prisma, "node_1", [{ bindingId: "a", ipCount: 1 }, { bindingId: "b", ipCount: 2 }], later, 200), 2);
+  assert.equal(await observe(prisma, "node_1", [{ bindingId: "a", ipCount: 1 }], now, 100), null, "旧序号不采纳");
+  assert.equal(byId.get("b")!.directOnlineIpCount, 2, "迟到的旧报告不会把 b 清零");
+  assert.equal(byId.get("a")!.directLastOnlineAt?.getTime(), later.getTime(), "最近在线时间不倒退");
+  assert.equal(await observe(prisma, "node_1", [{ bindingId: "a", ipCount: 1 }], later, 200), null, "同一序号重放不采纳");
+  assert.equal(prisma.agents[0].onlineReportSequence, 200n);
+  assert.equal(await observe(prisma, "node_1", [{ bindingId: "a", ipCount: 1 }], later, 201), 1);
+  assert.equal(byId.get("b")!.directOnlineIpCount, 0, "更新的报告照常采纳");
+  // Agent 行 id 与节点不匹配（例如已换绑的旧 Agent）不写入。
+  assert.equal(await recordDirectOnline(prisma as never, { agentRowId: "agent_2", nodeId: "node_1", sequence: 999, reports: [] }, () => later), null);
 }
 
 function testHeartbeatDto() {
@@ -101,11 +143,14 @@ function testHeartbeatDto() {
     bootId: "boot", version: "go-0.0.36", configRevision: "7", queueDepth: 0, xrayStatus: "healthy", ...payload
   }), { whitelist: true }).length === 0;
   assert.equal(valid({}), true, "旧版 Agent 不带该字段");
-  assert.equal(valid({ onlineUsers: [] }), true);
-  assert.equal(valid({ onlineUsers: [{ bindingId: "b1", ipCount: 2 }] }), true);
-  assert.equal(valid({ onlineUsers: [{ bindingId: "b1", ipCount: 0 }] }), false);
-  assert.equal(valid({ onlineUsers: [{ bindingId: "", ipCount: 1 }] }), false);
-  assert.equal(valid({ onlineUsers: Array.from({ length: 5001 }, (_, i) => ({ bindingId: `b${i}`, ipCount: 1 })) }), false);
+  assert.equal(valid({ onlineUsers: [], onlineSequence: 1 }), true);
+  assert.equal(valid({ onlineUsers: [] }), false, "带在线报告必须带序号");
+  assert.equal(valid({ onlineUsers: [], onlineSequence: 0 }), false);
+  assert.equal(valid({ onlineUsers: [], onlineSequence: 1.5 }), false);
+  assert.equal(valid({ onlineUsers: [{ bindingId: "b1", ipCount: 2 }], onlineSequence: 1_764_208_800_000 }), true);
+  assert.equal(valid({ onlineUsers: [{ bindingId: "b1", ipCount: 0 }], onlineSequence: 1 }), false);
+  assert.equal(valid({ onlineUsers: [{ bindingId: "", ipCount: 1 }], onlineSequence: 1 }), false);
+  assert.equal(valid({ onlineUsers: Array.from({ length: 5001 }, (_, i) => ({ bindingId: `b${i}`, ipCount: 1 })), onlineSequence: 1 }), false);
 }
 
 function testSnapshot() {
@@ -159,6 +204,7 @@ function testSnapshot() {
 
 async function main() {
   await testRecord();
+  await testOrdering();
   testHeartbeatDto();
   testSnapshot();
   console.log("direct presence regression ok");

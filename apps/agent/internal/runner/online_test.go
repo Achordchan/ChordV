@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Achordchan/ChordV/apps/agent/internal/protocol"
+	"github.com/Achordchan/ChordV/apps/agent/internal/store"
 )
 
 type onlineXray struct {
@@ -20,6 +21,17 @@ func (x *onlineXray) ListenPort(context.Context) (int, error)             { retu
 
 func heartbeatWithOnline(t *testing.T, online map[string]int, readErr error) protocol.Heartbeat {
 	t.Helper()
+	return heartbeatWithOnlineAfter(t, online, readErr, func(t *testing.T, h *harness) {
+		// b2 is disabled, so it is not installed; this agent's own claim is
+		// what proves its lingering connection is still b2's.
+		if err := h.store.RecordProvisioned("b2", "b@example.com", "uuid-b2"); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func heartbeatWithOnlineAfter(t *testing.T, online map[string]int, readErr error, setup func(*testing.T, *harness)) protocol.Heartbeat {
+	t.Helper()
 	h := newHarness(t)
 	h.seed(t, "7", protocol.ModeDirectPrimary,
 		user("b1", "a@example.com", "7", true, "1000"),
@@ -29,6 +41,7 @@ func heartbeatWithOnline(t *testing.T, online map[string]int, readErr error) pro
 	if err := r.sample(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	setup(t, h)
 	h.api.heartbeatAck = protocol.HeartbeatAck{Accepted: true, AckThrough: "0", ConfigRevision: "7"}
 	if err := r.sendHeartbeat(context.Background()); err != nil {
 		t.Fatal(err)
@@ -137,5 +150,110 @@ func TestOnlineTrackingConsistent(t *testing.T) {
 	}
 	if !onlineTrackingConsistent(map[string]int{"a": 1}, []string{"a", "b"}) {
 		t.Fatal("one active account seen online: consistent")
+	}
+}
+
+func installedUUID(t *testing.T, h *harness, email string) string {
+	t.Helper()
+	for _, account := range h.xray.live {
+		if account.Email == email {
+			return account.UUID
+		}
+	}
+	return ""
+}
+
+// Online stats are keyed by email only. A panel account that reuses a managed
+// address (different UUID), or a claim held by another binding, must not be
+// reported as the managed binding being online.
+func TestOnlineRecordsNeedProvenOwnership(t *testing.T) {
+	beat := heartbeatWithOnlineAfter(t, map[string]int{"a@example.com": 1, "b@example.com": 1}, nil, func(t *testing.T, h *harness) {
+		if installedUUID(t, h, "a@example.com") != "uuid-b1" {
+			t.Fatalf("b1 should be installed with its own identity: %+v", h.xray.live)
+		}
+		for index := range h.xray.live {
+			if h.xray.live[index].Email == "a@example.com" {
+				h.xray.live[index].UUID = "panel-uuid"
+			}
+		}
+		if err := h.store.RecordProvisioned("someone-else", "b@example.com", "uuid-b2"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if beat.OnlineUsers == nil || len(*beat.OnlineUsers) != 0 {
+		t.Fatalf("unproven records must not be attributed: %+v", beat.OnlineUsers)
+	}
+}
+
+// A removed account with no claim of ours is not attributed either.
+func TestAnUninstalledAccountWithoutAClaimIsNotReported(t *testing.T) {
+	beat := heartbeatWithOnlineAfter(t, map[string]int{"b@example.com": 1}, nil, func(*testing.T, *harness) {})
+	if beat.OnlineUsers == nil || len(*beat.OnlineUsers) != 0 {
+		t.Fatalf("want empty list, got %+v", beat.OnlineUsers)
+	}
+}
+
+// The control plane rejects an ipCount above its limit, which would drop the
+// whole heartbeat; the agent clamps it instead.
+func TestAnOversizedIPCountIsClamped(t *testing.T) {
+	beat := heartbeatWithOnline(t, map[string]int{"a@example.com": protocol.MaxOnlineIPCount + 5}, nil)
+	if beat.OnlineUsers == nil || len(*beat.OnlineUsers) != 1 || (*beat.OnlineUsers)[0].IPCount != protocol.MaxOnlineIPCount {
+		t.Fatalf("want clamped count, got %+v", beat.OnlineUsers)
+	}
+}
+
+func TestOwnsOnlineRecord(t *testing.T) {
+	mine := onlineCandidate{BindingID: "b1", UUID: "u1"}
+	if !ownsOnlineRecord(mine, "u1", true) || ownsOnlineRecord(mine, "other", true) {
+		t.Fatal("installed accounts are judged by identity")
+	}
+	if ownsOnlineRecord(mine, "", false) {
+		t.Fatal("no claim, no ownership")
+	}
+	withClaim := func(claim store.Claim) onlineCandidate { c := mine; c.Claim = &claim; return c }
+	if !ownsOnlineRecord(withClaim(store.Claim{BindingID: "b1", UUID: "u1"}), "", false) {
+		t.Fatal("own claim with matching identity")
+	}
+	if !ownsOnlineRecord(withClaim(store.Claim{BindingID: "b1", UUID: "u0", NextUUID: "u1"}), "", false) {
+		t.Fatal("rotation in flight still ours")
+	}
+	if ownsOnlineRecord(withClaim(store.Claim{BindingID: "b1", UUID: "u9"}), "", false) {
+		t.Fatal("contradicting identity")
+	}
+	if ownsOnlineRecord(withClaim(store.Claim{BindingID: "b9", UUID: "u1"}), "", false) {
+		t.Fatal("another binding's claim")
+	}
+}
+
+// Every report carries a strictly increasing sequence, even when the clock
+// stands still, so the server can discard a delayed older report.
+func TestOnlineReportsCarryAnIncreasingSequence(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "7", protocol.ModeDirectPrimary, user("b1", "a@example.com", "7", true, "1000"))
+	r := h.build(t)
+	r.deps.Xray = &onlineXray{fakeXray: h.xray, online: map[string]int{"a@example.com": 1}}
+	if err := r.sample(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h.api.heartbeatAck = protocol.HeartbeatAck{Accepted: true, AckThrough: "0", ConfigRevision: "7"}
+	for i := 0; i < 2; i++ {
+		if err := r.sendHeartbeat(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, second := h.api.heartbeats[0], h.api.heartbeats[1]
+	if first.OnlineSequence <= 0 || second.OnlineSequence <= first.OnlineSequence {
+		t.Fatalf("sequences must increase: %d then %d", first.OnlineSequence, second.OnlineSequence)
+	}
+	if first.OnlineSequence < h.now.UnixMilli() {
+		t.Fatalf("sequence should follow the wall clock: %d", first.OnlineSequence)
+	}
+}
+
+// A report that is not sent carries no sequence.
+func TestAnOmittedReportHasNoSequence(t *testing.T) {
+	beat := heartbeatWithOnline(t, nil, errors.New("boom"))
+	if beat.OnlineSequence != 0 {
+		t.Fatalf("want 0, got %d", beat.OnlineSequence)
 	}
 }

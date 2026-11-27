@@ -116,9 +116,14 @@ export class AgentService {
           }
         })
       ]);
-      if (input.onlineUsers) {
+      if (input.onlineUsers && input.onlineSequence) {
         // 在线状态只是展示用，写入失败不能让心跳失败（心跳还承担计量 ack 与节点在线）。
-        await recordDirectOnline(this.prisma, agent.nodeId, input.onlineUsers, now).catch(() => undefined);
+        await recordDirectOnline(this.prisma, {
+          agentRowId: agent.id,
+          nodeId: agent.nodeId,
+          sequence: input.onlineSequence,
+          reports: input.onlineUsers
+        }).catch(() => undefined);
       }
       if (currentAgent.xrayStatus !== input.xrayStatus ||
         (input.xrayStatus === "awaiting_inbound" && (!currentAgent.lastSeenAt || now.getTime() - currentAgent.lastSeenAt.getTime() >= 60_000))) {
