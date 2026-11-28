@@ -1,0 +1,1181 @@
+{
+  "commit": "397a64d",
+  "scope": "Actual original UpdateUserSecurityDto through Nest ValidationPipe(whitelist:true,transform:true); exact original complete updateUserSecurity and related list/response/event/limit helpers, real Prisma6.19.2 and original full model DDL in a private local schema. Lifecycle defer is an explicit captured queue drained after response; event sinks and runtime enforcement are explicit recording adapters. No original Nest HTTP/auth, physical node command, or full runtime eviction claims.",
+  "cases": [
+    {
+      "name": "missing",
+      "input": {},
+      "status": 200,
+      "stored": null,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 3
+        }
+      ]
+    },
+    {
+      "name": "explicit-null",
+      "input": {
+        "maxConcurrentSessionsOverride": null
+      },
+      "status": 200,
+      "stored": null,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 3
+        }
+      ]
+    },
+    {
+      "name": "extras-only",
+      "input": {
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 200,
+      "stored": null,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 3
+        }
+      ]
+    },
+    {
+      "name": "invalid-extra-fields",
+      "input": {
+        "maxConcurrentSessionsOverride": 2,
+        "role": "bogus",
+        "status": "bogus",
+        "password": [],
+        "displayName": null
+      },
+      "status": 200,
+      "stored": 2,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 2
+        }
+      ]
+    },
+    {
+      "name": "0",
+      "input": {
+        "maxConcurrentSessionsOverride": 0,
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 400,
+      "stored": 7,
+      "events": [],
+      "enforcement": []
+    },
+    {
+      "name": "-1",
+      "input": {
+        "maxConcurrentSessionsOverride": -1,
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 400,
+      "stored": 7,
+      "events": [],
+      "enforcement": []
+    },
+    {
+      "name": "false",
+      "input": {
+        "maxConcurrentSessionsOverride": false,
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 400,
+      "stored": 7,
+      "events": [],
+      "enforcement": []
+    },
+    {
+      "name": "true",
+      "input": {
+        "maxConcurrentSessionsOverride": true,
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 200,
+      "stored": 1,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 1
+        }
+      ]
+    },
+    {
+      "name": "1",
+      "input": {
+        "maxConcurrentSessionsOverride": 1,
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 200,
+      "stored": 1,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 1
+        }
+      ]
+    },
+    {
+      "name": "3",
+      "input": {
+        "maxConcurrentSessionsOverride": 3,
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 200,
+      "stored": 3,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 3
+        }
+      ]
+    },
+    {
+      "name": "100",
+      "input": {
+        "maxConcurrentSessionsOverride": 100,
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 200,
+      "stored": 100,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 100
+        }
+      ]
+    },
+    {
+      "name": "101",
+      "input": {
+        "maxConcurrentSessionsOverride": 101,
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 200,
+      "stored": 101,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 101
+        }
+      ]
+    },
+    {
+      "name": "2147483647",
+      "input": {
+        "maxConcurrentSessionsOverride": 2147483647,
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 200,
+      "stored": 2147483647,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 2147483647
+        }
+      ]
+    },
+    {
+      "name": "2147483648",
+      "input": {
+        "maxConcurrentSessionsOverride": 2147483648,
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 503,
+      "stored": 7,
+      "events": [],
+      "enforcement": []
+    },
+    {
+      "name": "1.5",
+      "input": {
+        "maxConcurrentSessionsOverride": 1.5,
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 200,
+      "stored": 1,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 1
+        }
+      ]
+    },
+    {
+      "name": "2.9",
+      "input": {
+        "maxConcurrentSessionsOverride": 2.9,
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 200,
+      "stored": 2,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 2
+        }
+      ]
+    },
+    {
+      "name": "2147483647.9",
+      "input": {
+        "maxConcurrentSessionsOverride": 2147483647.9,
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 200,
+      "stored": 2147483647,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 2147483647
+        }
+      ]
+    },
+    {
+      "name": "\"3\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "3",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 200,
+      "stored": 3,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 3
+        }
+      ]
+    },
+    {
+      "name": "\" 3e0 \"",
+      "input": {
+        "maxConcurrentSessionsOverride": " 3e0 ",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 200,
+      "stored": 3,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 3
+        }
+      ]
+    },
+    {
+      "name": "\"0x10\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "0x10",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 200,
+      "stored": 16,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 16
+        }
+      ]
+    },
+    {
+      "name": "\"0b10\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "0b10",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 200,
+      "stored": 2,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 2
+        }
+      ]
+    },
+    {
+      "name": "\"0o10\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "0o10",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 200,
+      "stored": 8,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 8
+        }
+      ]
+    },
+    {
+      "name": "\"1.5\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "1.5",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 200,
+      "stored": 1,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 1
+        }
+      ]
+    },
+    {
+      "name": "\"2.9\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "2.9",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 200,
+      "stored": 2,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 2
+        }
+      ]
+    },
+    {
+      "name": "\"2147483647\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "2147483647",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 200,
+      "stored": 2147483647,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 2147483647
+        }
+      ]
+    },
+    {
+      "name": "\"2147483648\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "2147483648",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 503,
+      "stored": 7,
+      "events": [],
+      "enforcement": []
+    },
+    {
+      "name": "\"Infinity\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "Infinity",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 400,
+      "stored": 7,
+      "events": [],
+      "enforcement": []
+    },
+    {
+      "name": "\"NaN\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "NaN",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 400,
+      "stored": 7,
+      "events": [],
+      "enforcement": []
+    },
+    {
+      "name": "\"bad\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "bad",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 400,
+      "stored": 7,
+      "events": [],
+      "enforcement": []
+    },
+    {
+      "name": "[]",
+      "input": {
+        "maxConcurrentSessionsOverride": [],
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 400,
+      "stored": 7,
+      "events": [],
+      "enforcement": []
+    },
+    {
+      "name": "[1]",
+      "input": {
+        "maxConcurrentSessionsOverride": [
+          1
+        ],
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 400,
+      "stored": 7,
+      "events": [],
+      "enforcement": []
+    },
+    {
+      "name": "[2]",
+      "input": {
+        "maxConcurrentSessionsOverride": [
+          2
+        ],
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 400,
+      "stored": 7,
+      "events": [],
+      "enforcement": []
+    },
+    {
+      "name": "{}",
+      "input": {
+        "maxConcurrentSessionsOverride": {},
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 400,
+      "stored": 7,
+      "events": [],
+      "enforcement": []
+    },
+    {
+      "name": "\"\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 400,
+      "stored": 7,
+      "events": [],
+      "enforcement": []
+    },
+    {
+      "name": "\" \\t\\r\\n\"",
+      "input": {
+        "maxConcurrentSessionsOverride": " \t\r\n",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 400,
+      "stored": 7,
+      "events": [],
+      "enforcement": []
+    },
+    {
+      "name": "0.9",
+      "input": {
+        "maxConcurrentSessionsOverride": 0.9,
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 400,
+      "stored": 7,
+      "events": [],
+      "enforcement": []
+    },
+    {
+      "name": "\"1_0\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "1_0",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 400,
+      "stored": 7,
+      "events": [],
+      "enforcement": []
+    },
+    {
+      "name": "\"0x1p2\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "0x1p2",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 400,
+      "stored": 7,
+      "events": [],
+      "enforcement": []
+    },
+    {
+      "name": "\"1\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "1",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 400,
+      "stored": 7,
+      "events": [],
+      "enforcement": []
+    },
+    {
+      "name": "\"0x10000000000000000\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "0x10000000000000000",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 503,
+      "stored": 7,
+      "events": [],
+      "enforcement": []
+    },
+    {
+      "name": "\"0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 400,
+      "stored": 7,
+      "events": [],
+      "enforcement": []
+    },
+    {
+      "name": "\"﻿1 \"",
+      "input": {
+        "maxConcurrentSessionsOverride": "﻿1 ",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 200,
+      "stored": 1,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 1
+        }
+      ]
+    },
+    {
+      "name": "\"+1.\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "+1.",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 200,
+      "stored": 1,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 1
+        }
+      ]
+    },
+    {
+      "name": "\".15e2\"",
+      "input": {
+        "maxConcurrentSessionsOverride": ".15e2",
+        "email": "must-ignore@local.test",
+        "displayName": "不能修改名称",
+        "password": "must-ignore-password",
+        "role": "admin",
+        "status": "disabled",
+        "authVersion": 99,
+        "lastSeenAt": null,
+        "unknown": true
+      },
+      "status": 200,
+      "stored": 15,
+      "events": [
+        {
+          "target": "admin",
+          "type": "account_updated",
+          "reasonCode": null
+        },
+        {
+          "target": "current-user",
+          "type": "account_updated",
+          "reasonCode": null
+        }
+      ],
+      "enforcement": [
+        {
+          "limit": 15
+        }
+      ]
+    },
+    {
+      "name": "missing-user-empty",
+      "input": {},
+      "status": 404,
+      "stored": 7,
+      "events": [],
+      "enforcement": [],
+      "missing": true
+    },
+    {
+      "name": "missing-user-valid",
+      "input": {
+        "maxConcurrentSessionsOverride": 2
+      },
+      "status": 404,
+      "stored": 7,
+      "events": [],
+      "enforcement": [],
+      "missing": true
+    },
+    {
+      "name": "missing-user-storage-overflow",
+      "input": {
+        "maxConcurrentSessionsOverride": 2147483648
+      },
+      "status": 404,
+      "stored": 7,
+      "events": [],
+      "enforcement": [],
+      "missing": true
+    },
+    {
+      "name": "missing-user-invalid",
+      "input": {
+        "maxConcurrentSessionsOverride": "bad"
+      },
+      "status": 400,
+      "stored": 7,
+      "events": [],
+      "enforcement": [],
+      "missing": true
+    }
+  ]
+}

@@ -1,9 +1,9 @@
 import type { ReactNode } from "react";
 import { Badge, Button, Modal, Text } from "@mantine/core";
 import { IconArrowRight } from "@tabler/icons-react";
-import appIcon from "../../src-tauri/icons/icon.png";
+import appIcon from "../assets/app-icon.png";
 import type { ClientUpdateCheckResult } from "../api/client";
-import { cleanChangelogItem, compareVersion, formatVersionLabel } from "../lib/updateState";
+import { cleanChangelogItem, compareVersion, formatVersionLabel, type ResolvedUpdatePlatform } from "../lib/updateState";
 import { NoticeRow } from "./NoticeRow";
 import { APP_BUILD_NUMBER, formatVersionWithBuild } from "../lib/buildInfo";
 import styles from "./ClientUpdateModal.module.css";
@@ -16,6 +16,8 @@ type ClientUpdateModalProps = {
   /** 强制更新已下载：自动安装前的剩余秒数；null 表示没有在倒计时。 */
   autoInstallCountdown?: number | null;
   downloadBusy: boolean;
+  installBusy?: boolean;
+  platform?: ResolvedUpdatePlatform;
   /** Download progress panel; rendered between the header and the changelog. */
   progress: ReactNode;
   /** Primary action (download / install); the modal only lays it out. */
@@ -32,21 +34,22 @@ export function ClientUpdateModal(props: ClientUpdateModalProps) {
   const changelog = (update?.changelog ?? []).map(cleanChangelogItem).filter(Boolean);
   const publishedAt = formatPublishedAt(update?.publishedAt ?? null);
   const counting = props.forceRequired && typeof props.autoInstallCountdown === "number";
-  const installHint = update?.deliveryMode === "desktop_full_replace" || props.forceRequired
+  const installHint = props.platform === "macos" ? "安装时将校验并自动替换应用，完成后重新启动。"
+    : update?.deliveryMode === "desktop_full_replace" || props.forceRequired
     ? "下载完成后会自动安装并重启。"
     : "下载完成后点击“安装并重启”即可完成更新。";
   return (
     <Modal
       opened={props.opened}
-      onClose={props.onClose}
+      onClose={props.installBusy ? () => {} : props.onClose}
       centered
       size={460}
       radius="lg"
       title={props.forceRequired ? "需要更新" : "发现新版本"}
       withCloseButton={!props.forceRequired}
-      closeOnClickOutside={!props.forceRequired}
-      closeOnEscape={!props.forceRequired}
-      closeButtonProps={{ "aria-label": "关闭版本更新" }}
+      closeOnClickOutside={!props.forceRequired && !props.installBusy}
+      closeOnEscape={!props.forceRequired && !props.installBusy}
+      closeButtonProps={{ "aria-label": "关闭版本更新", disabled: props.installBusy }}
       classNames={{ title: styles.title, header: styles.header, content: styles.content, body: styles.body }}
     >
       <div className={styles.hero}>
@@ -95,7 +98,7 @@ export function ClientUpdateModal(props: ClientUpdateModalProps) {
         <Text size="xs" c="dimmed" className={styles.hint}>{installHint}</Text>
         <div className={styles.actions}>
           {!props.forceRequired ? (
-            <Button variant="default" disabled={props.downloadBusy} onClick={props.onClose}>稍后再说</Button>
+            <Button variant="default" disabled={props.downloadBusy || props.installBusy} onClick={props.onClose}>稍后再说</Button>
           ) : null}
           {props.primaryAction}
         </div>

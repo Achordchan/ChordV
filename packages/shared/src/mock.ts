@@ -405,8 +405,7 @@ export const mockAdminSnapshot: AdminSnapshotDto = {
     summaries: { nodes: [], subscriptions: [], users: [], teams: [] }
   },
   announcements: mockAdminAnnouncements,
-  policy: mockAdminPolicy,
-  releases: mockAdminReleases
+  policy: mockAdminPolicy
 };
 
 export const mockAuthSession = (email: string): AuthSessionDto => ({

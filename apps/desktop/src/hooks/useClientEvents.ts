@@ -156,7 +156,7 @@ export function useClientEvents(options: UseClientEventsOptions) {
       }
       probeFallbackBusyRef.current = true;
       try {
-        const result = await probeClientServerLatency();
+        const result = await probeClientServerLatency(session.accessToken);
         setServerProbeRef.current(createReachableServerProbeState(result.elapsedMs));
       } catch (probeReason) {
         setServerProbeRef.current(createFailedServerProbeState(readErrorRef.current, probeReason ?? reason));
@@ -176,6 +176,7 @@ export function useClientEvents(options: UseClientEventsOptions) {
         void recordClientDiagnosticLog("client-events-hook", `open elapsed=${meta.elapsedMs ?? "-"}`);
         openedOnceRef.current = true;
         setServerProbeRef.current(createOpenedServerProbeState(meta.elapsedMs));
+        void probeClientServerLatency(session.accessToken).catch(() => undefined);
         void syncConnectedStateRef.current?.(session.accessToken);
         void runUpdateCheckOnOpenRef.current?.();
         void syncOnOpenRef.current?.(session.accessToken);

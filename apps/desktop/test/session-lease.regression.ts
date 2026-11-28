@@ -56,25 +56,15 @@ function testResolveProactiveAccessTokenRefreshDelay() {
 }
 
 
-function testNativeLeaseHeartbeatUsesGrace() {
+function testNativeLeaseHeartbeatOwnership() {
   const appSource = readFileSync(resolve(import.meta.dirname, "../src/App.tsx"), "utf8");
-  assert.match(
-    appSource,
-    /reasonCode === "session_invalid"[\s\S]*?leaseGraceSeconds/,
-    "desktop native lease errors must wait for grace before forcing reconnect"
-  );
-  assert.match(
-    appSource,
-    /heartbeat_failed[\s\S]*?leaseHeartbeatFailedAtRef|!definitiveInvalid[\s\S]*?leaseHeartbeatFailedAtRef/,
-    "transient heartbeat failures should accumulate grace instead of immediate disconnect"
-  );
-  assert.match(
-    appSource,
-    /if \(!leaseHeartbeatFailedAtRef\.current\) {[\s\S]*?leaseHeartbeatFailedAtRef\.current = nowMs;[\s\S]*?return;/,
-    "first transient lease failure should only start the grace window"
-  );
-
-  const clientSource = readFileSync(resolve(import.meta.dirname, "../src/api/client.ts"), "utf8");
+  assert.match(appSource, /classifyNativeLeaseHeartbeat\(event, activeSessionId\)/);
+  assert.match(appSource, /decision === "ignore" \|\| decision === "transient"\) return/,
+    "Native临时失败不得由界面另计宽限或判停，行为用lease-heartbeat回归及完整App浏览器覆盖");
+  const nativeEffect = appSource.slice(appSource.indexOf("void subscribeNativeLeaseHeartbeat"), appSource.indexOf("void subscribeNativeSessionRefreshed"));
+  assert.doesNotMatch(nativeEffect, /leaseHeartbeatFailedAtRef|definitiveInvalid|leaseGraceSeconds/,
+    "旧桌面双重判停状态必须移除");
+  const clientSource = readFileSync(resolve(import.meta.dirname, "../src/api/client-events.ts"), "utf8");
   assert.doesNotMatch(
     clientSource,
     /createClientRuntimeFallbackRefreshEventTypes[\s\S]*?"ticket_updated"/,
@@ -92,7 +82,7 @@ function main() {
   testResolveProtectedAccessReason();
   testBuildProtectedAccessNotice();
   testResolveProactiveAccessTokenRefreshDelay();
-  testNativeLeaseHeartbeatUsesGrace();
+  testNativeLeaseHeartbeatOwnership();
   console.log("desktop session lease regression checks passed");
 }
 

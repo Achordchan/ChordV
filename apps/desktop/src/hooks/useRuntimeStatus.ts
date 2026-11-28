@@ -31,7 +31,7 @@ export function useRuntimeStatus(options: UseRuntimeStatusOptions) {
   const refreshRuntime = useCallback(async (optionsInput?: { includeLogs?: boolean }) => {
     const requestId = runtimeRefreshRequestSeqRef.current + 1;
     runtimeRefreshRequestSeqRef.current = requestId;
-    // Keep logs off by default so the 5s poll does not push large text into React state.
+    // Status events do not need to load potentially large diagnostic logs.
     const includeLogs = optionsInput?.includeLogs ?? false;
 
     try {

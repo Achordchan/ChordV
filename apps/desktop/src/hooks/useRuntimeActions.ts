@@ -50,6 +50,7 @@ import {
   type ConnectionGuidance,
   type GuidanceTone,
   isDialogOnlyGuidance,
+  isSubscriptionBlocked,
   loadConnectFailureRuntimeStatus,
   pickAlternativeNode,
   sameGuidance
@@ -711,7 +712,14 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
     [handleForcedGuidance, options, syncAnnouncementsState, syncSubscriptionState]
   );
 
-  const handleConnect = useCallback(async (connectOptions?: { bypassStatusGate?: boolean; nodeId?: string | null; mode?: ConnectionMode; forceTakeover?: boolean }) => {
+  const canReconnectTo = useCallback((nodeId: string | null) => {
+    const current = latestOptions.current;
+    return Boolean(nodeId && current.session && current.bootstrap && !current.forceUpdateRequired &&
+      !isSubscriptionBlocked(current.bootstrap.subscription) && current.nodesRef.current.some(node => node.id === nodeId) &&
+      current.probeResultsRef.current[nodeId]?.status !== "offline");
+  }, []);
+
+  const handleConnect = useCallback(async (connectOptions?: { bypassStatusGate?: boolean; nodeId?: string | null; mode?: ConnectionMode; forceTakeover?: boolean }): Promise<boolean> => {
     const bypassStatusGate = Boolean(connectOptions?.bypassStatusGate);
     // 仅本次连接有效：由用户在确认框里明确同意，重连、切换节点等路径不会沿用。
     const forceTakeover = connectOptions?.forceTakeover === true;
@@ -724,19 +732,11 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       options.runtime?.node.id ??
       options.desktopStatus.activeNodeId ??
       null;
-    const selectedNode =
-      (preferredNodeId
-        ? options.nodesRef.current.find((node) => node.id === preferredNodeId) ?? null
-        : null) ??
-      options.selectedNode;
-    const statusBlocksConnect =
-      options.desktopStatus.status === "connected" || options.desktopStatus.status === "connecting";
-    // 自动重连时 React 状态可能仍短暂停留在 connected，需绕过状态门闩；其它条件仍校验。
-    const canAttempt =
-      Boolean(selectedNode) &&
-      options.nodesRef.current.length > 0 &&
-      !options.forceUpdateRequired &&
-      (bypassStatusGate || options.canAttemptConnect || !statusBlocksConnect);
+    const selectedNode = options.nodesRef.current.find((node) => node.id === preferredNodeId);
+    // 重连时旧的 connected 状态可能尚未刷新；不能跳过订阅或目标节点限制。
+    const canAttempt = !options.forceUpdateRequired && (bypassStatusGate
+      ? canReconnectTo(preferredNodeId)
+      : options.canAttemptConnect);
 
     if (!options.session || !selectedNode || actionBusy || !canAttempt) {
       debugAndroidConnect("handleConnect:skip", {
@@ -746,25 +746,25 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         canAttemptConnect: options.canAttemptConnect,
         bypassStatusGate
       });
-      return;
+      return false;
     }
-    if (connectInFlight.current) return;
+    if (connectInFlight.current) return false;
     connectInFlight.current = true;
     setActionBusy("connect");
     try {
       const connectionIdentity = options.getCurrentSessionIdentity();
       const isCurrentLogin = () => connectionIdentity !== null && options.getCurrentSessionIdentity() === connectionIdentity;
       try {
-        if (!forceTakeover) await checkRuntimeNetworkConflict();
+        await checkRuntimeNetworkConflict(forceTakeover);
       } catch (reason) {
-        if (!isCurrentLogin()) return;
+        if (!isCurrentLogin()) return false;
         const message = reason instanceof Error ? options.readError(reason.message) : options.readError(String(reason));
         const guidance = deriveGuidanceFromConnectFailure(message, options.fallbackNodeId, options.desktopStatus.platformTarget);
         if (guidance) applyGuidance(guidance, true, false);
         else options.showErrorToast(reason || message, "connect");
-        return;
+        return false;
       }
-      if (!isCurrentLogin()) return;
+      if (!isCurrentLogin()) return false;
       const shouldEnsureRuntimeAssets =
         !options.runtimeAssetsReady ||
         options.runtimeAssets.phase === "idle" ||
@@ -778,18 +778,10 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           forceCheck: options.runtimeAssets.phase === "failed"
         });
         if (!ready) {
-          return;
+          return false;
         }
       }
-      if (!bypassStatusGate && !options.canAttemptConnect) {
-        debugAndroidConnect("handleConnect:blocked", {
-          canConnect: options.canConnect,
-          nodeId: selectedNode.id
-        });
-        return;
-      }
-
-      if (!isCurrentLogin()) return;
+      if (!isCurrentLogin()) return false;
       let config: GeneratedRuntimeConfigDto | null = null;
       let configAccessToken = options.getCurrentAccessToken() ?? options.session.accessToken;
 
@@ -839,7 +831,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
             });
           } else if (isForbiddenApiError(reason)) {
             if (await handleProtectedAccessRevoked(reason)) {
-              return;
+              return false;
             }
             throw reason;
           } else if (!isUnauthorizedApiError(reason)) {
@@ -853,17 +845,28 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           // A completed request from a signed-out account must never start a local connection.
           void disconnectSession(configAccessToken, config.sessionId).catch(() => null);
           await options.refreshRuntime();
-          return;
+          return false;
         }
         debugAndroidConnect("handleConnect:runtime:start", {
           sessionId: config.sessionId,
           nodeId: config.node.id
         });
-        await connectRuntime(config, forceTakeover ? { forceTakeover } : undefined);
+        try {
+          await connectRuntime(config, forceTakeover ? { forceTakeover } : undefined);
+        } catch (reason) {
+          if (!String(reason).includes("mac_update_pending:")) throw reason;
+          // Native refused before touching the kernel or proxy; only release our new lease.
+          await disconnectSession(configAccessToken, config.sessionId).catch(() => null);
+          if (isCurrentLogin()) {
+            options.showErrorToast(reason, "connect");
+            await options.refreshRuntime();
+          }
+          return false;
+        }
         if (!isCurrentLogin()) {
           void disconnectSession(configAccessToken, config.sessionId).catch(() => null);
           await options.refreshRuntime();
-          return;
+          return false;
         }
         debugAndroidConnect("handleConnect:runtime:success", {
           sessionId: config.sessionId,
@@ -874,11 +877,12 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         options.setGuidanceDialog(null);
         options.leaseHeartbeatFailedAtRef.current = null;
         await options.refreshRuntime();
+        return isCurrentLogin();
       } catch (reason) {
         if (!isCurrentLogin()) {
           if (config?.sessionId) void disconnectSession(configAccessToken, config.sessionId).catch(() => null);
           await options.refreshRuntime();
-          return;
+          return false;
         }
         const earlyMessage = reason instanceof Error ? options.readError(reason.message) : options.readError(String(reason));
         const earlyGuidance = deriveGuidanceFromConnectFailure(earlyMessage, options.fallbackNodeId, options.desktopStatus.platformTarget);
@@ -904,7 +908,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           // 连接失败与本机停止失败分别映射：后者必须单独提醒“本机连接没有停下来”。
           options.showErrorToast(reason || earlyMessage, "connect");
           options.showErrorToast(stopReason || "本机连接停止失败", "local_stop");
-          return;
+          return false;
         }
         if (runtimeStatus?.status === "error") {
           options.setDesktopStatus(runtimeStatus);
@@ -928,6 +932,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         } else {
           options.showErrorToast(reason || message, "connect");
         }
+        return false;
       } finally {
         debugAndroidConnect("handleConnect:finish");
       }
@@ -935,7 +940,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       connectInFlight.current = false;
       setActionBusy(null);
     }
-  }, [actionBusy, applyGuidance, debugAndroidConnect, options]);
+  }, [actionBusy, applyGuidance, canReconnectTo, debugAndroidConnect, options]);
 
   const handleDisconnect = useCallback(async () => {
     if (
@@ -951,52 +956,25 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
     await disconnectCurrentRuntime({ notifyServer: true });
   }, [actionBusy, disconnectCurrentRuntime, options]);
 
-  const handleReconnect = useCallback(async () => {
-    if (actionBusy) {
-      return false;
-    }
-    // 先记住当前节点：断开后 runtime 会被清空，不能再从 runtime 取。
-    const preferredNodeId =
-      options.runtime?.node.id ??
-      options.desktopStatus.activeNodeId ??
-      options.selectedNodeId ??
-      options.selectedNode?.id ??
-      null;
-    if (preferredNodeId && preferredNodeId !== options.selectedNodeId) {
-      options.setSelectedNodeId(preferredNodeId);
-    }
+  const handleReconnect = useCallback(async (target?: { nodeId?: string; mode?: ConnectionMode }) => {
+    const nodeId = target?.nodeId ?? options.runtime?.node.id ?? options.desktopStatus.activeNodeId ??
+      options.selectedNodeId ?? options.selectedNode?.id ?? null;
+    const identity = options.getCurrentSessionIdentity();
+    if (actionBusy || connectInFlight.current || disconnectInFlight.current || !identity || !canReconnectTo(nodeId)) return false;
 
-    const wasConnected =
-      options.desktopStatus.status === "connected" ||
-      options.desktopStatus.status === "connecting" ||
-      Boolean(options.desktopStatus.activePid) ||
-      Boolean(options.runtime?.sessionId);
-
-    if (wasConnected) {
+    if (options.desktopStatus.status === "connected" || options.desktopStatus.status === "connecting" ||
+        options.desktopStatus.activePid || options.runtime?.sessionId) {
       options.setConnectionGuidance(null);
       if (!await disconnectCurrentRuntime({ notifyServer: true })) return false;
     }
+    if (latestOptions.current.getCurrentSessionIdentity() !== identity || !canReconnectTo(nodeId)) return false;
+    const connected = await handleConnect({ bypassStatusGate: true, nodeId, mode: target?.mode });
+    if (connected && !target?.nodeId && nodeId !== options.selectedNodeId) options.setSelectedNodeId(nodeId);
+    return connected;
+  }, [actionBusy, canReconnectTo, disconnectCurrentRuntime, handleConnect, options]);
 
-    await handleConnect({ bypassStatusGate: true, nodeId: preferredNodeId });
-    return true;
-  }, [
-    actionBusy,
-    disconnectCurrentRuntime,
-    handleConnect,
-    options
-  ]);
-
-  /** Applies a tray node/mode switch to a live connection by reconnecting with it. */
-  const handleSwitchConnection = useCallback(async (target: { nodeId?: string; mode?: ConnectionMode }) => {
-    if (actionBusy || options.desktopStatus.status !== "connected") {
-      return false;
-    }
-    const nodeId = target.nodeId ?? options.runtime?.node.id ?? options.desktopStatus.activeNodeId ?? options.selectedNodeId ?? null;
-    options.setConnectionGuidance(null);
-    if (!await disconnectCurrentRuntime({ notifyServer: true })) return false;
-    await handleConnect({ bypassStatusGate: true, nodeId, mode: target.mode });
-    return true;
-  }, [actionBusy, disconnectCurrentRuntime, handleConnect, options]);
+  const handleSwitchConnection = useCallback(async (target: { nodeId?: string; mode?: ConnectionMode }) =>
+    options.desktopStatus.status === "connected" && await handleReconnect(target), [handleReconnect, options.desktopStatus.status]);
 
   const handleEmergencyDisconnect = useCallback(async () => {
     if (actionBusy === "disconnect") {

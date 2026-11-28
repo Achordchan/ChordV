@@ -87,8 +87,8 @@ function testPlatformsAndEntries() {
   const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
   const panel = readFileSync(new URL("../src/components/SubscriptionPanel.tsx", import.meta.url), "utf8");
   const center = readFileSync(new URL("../src/components/UpdateCenterModal.tsx", import.meta.url), "utf8");
-  const runtime = readFileSync(new URL("../src/lib/runtime.ts", import.meta.url), "utf8");
-  const native = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  const runtime = readFileSync(new URL("../src/lib/nativeComponents.ts", import.meta.url), "utf8");
+  const native = readFileSync(new URL("../native/installer.go", import.meta.url), "utf8");
   assert.equal(app.match(/onOpenLocalFiles=\{localFilesAvailable \? /g)?.length, 2, "both menus are gated by platform");
   assert.match(app, /onRevealComponent=\{localFilesAvailable \? /);
   assert.match(panel, /检查更新"\}\s*<\/Menu\.Item>\s*\{props\.onOpenLocalFiles \?[\s\S]*?本地文件/, "“本地文件” sits below “检查更新” in the ⋯ menu");
@@ -98,8 +98,10 @@ function testPlatformsAndEntries() {
   assert.match(desktopToolbar, /aria-label="更多操作"[\s\S]*?刷新订阅[\s\S]*?本地文件[\s\S]*?<Menu\.Divider \/>[\s\S]*?color="red"[\s\S]*?退出登录/, "desktop ⋯ menu order: 刷新订阅, 本地文件, divider, 退出登录");
   assert.match(center, /在文件夹中显示/);
   assert.match(runtime, /invoke\("reveal_local_file", \{ kind \}\)/, "the frontend sends a fixed kind, never a path");
-  assert.match(native, /async fn reveal_local_file\(app: AppHandle, kind: local_files::LocalFileKind\)/, "no general-purpose open-any-path command");
-  assert.match(native, /resolve_reveal_target\(&roots\.app_data, &roots\.path_of\(kind\)\)/);
+  assert.match(native, /func \(s \*DesktopService\) revealLocalFile\(ctx context.Context, kind string\)/, "no general-purpose open-any-path command");
+  assert.match(native, /s\.localPaths\(\)\[kind\]/);
+  assert.match(native, /filepath\.EvalSymlinks\(path\)/);
+  assert.match(native, /filepath\.Rel\(root, resolved\)/);
 }
 
 function main() {

@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-11-16",
+  "assets": [
+    {
+      "component": "xray",
+      "version": "v26.11.9",
+      "fileName": "xray-v26.11.9-macos-x64.zip",
+      "sourceUrl": "https://github.com/XTLS/Xray-core/releases/download/v26.11.9/Xray-macos-64.zip",
+      "sha256": "488963e676e06f5e48547f9dd38116aaca8de4234959b4272ae8f284e658dfd0",
+      "sizeBytes": 16509590,
+      "sourceFormat": "zip_entry",
+      "archiveEntryName": "xray",
+      "targets": [
+        {
+          "platform": "macos",
+          "architecture": "x64"
+        }
+      ]
+    },
+    {
+      "component": "xray",
+      "version": "v26.11.9",
+      "fileName": "xray-v26.11.9-macos-arm64.zip",
+      "sourceUrl": "https://github.com/XTLS/Xray-core/releases/download/v26.11.9/Xray-macos-arm64-v8a.zip",
+      "sha256": "233f0c66681cd0726f81a6b2b6ed6a5710869e312047b522e46ed53035bebd26",
+      "sizeBytes": 15319055,
+      "sourceFormat": "zip_entry",
+      "archiveEntryName": "xray",
+      "targets": [
+        {
+          "platform": "macos",
+          "architecture": "arm64"
+        }
+      ]
+    },
+    {
+      "component": "xray",
+      "version": "v26.11.9",
+      "fileName": "xray-v26.11.9-windows-x64.zip",
+      "sourceUrl": "https://github.com/XTLS/Xray-core/releases/download/v26.11.9/Xray-windows-64.zip",
+      "sha256": "1262522266337b824f07beb8e1375786b437683b3890105469088f8e17e0a69d",
+      "sizeBytes": 16697596,
+      "sourceFormat": "zip_entry",
+      "archiveEntryName": "xray.exe",
+      "targets": [
+        {
+          "platform": "windows",
+          "architecture": "x64"
+        }
+      ]
+    },
+    {
+      "component": "xray",
+      "version": "v26.11.9",
+      "fileName": "xray-v26.11.9-windows-arm64.zip",
+      "sourceUrl": "https://github.com/XTLS/Xray-core/releases/download/v26.11.9/Xray-windows-arm64-v8a.zip",
+      "sha256": "9fdd48ff890e54ffdc37f92df9037c940fe4d4f914755b70cc644b97e9678a83",
+      "sizeBytes": 15008516,
+      "sourceFormat": "zip_entry",
+      "archiveEntryName": "xray.exe",
+      "targets": [
+        {
+          "platform": "windows",
+          "architecture": "arm64"
+        }
+      ]
+    },
+    {
+      "component": "geoip",
+      "version": "202611152204",
+      "fileName": "geoip-202611152204.dat",
+      "sourceUrl": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/202611152204/geoip.dat",
+      "sha256": "304ac8a1cbcc8166e4f5a4f32955e4d0fb77a1bd713583e371b30ee27f3659d8",
+      "sizeBytes": 16467275,
+      "sourceFormat": "direct",
+      "targets": [
+        {
+          "platform": "macos",
+          "architecture": "x64"
+        },
+        {
+          "platform": "macos",
+          "architecture": "arm64"
+        },
+        {
+          "platform": "windows",
+          "architecture": "x64"
+        },
+        {
+          "platform": "windows",
+          "architecture": "arm64"
+        }
+      ]
+    },
+    {
+      "component": "geosite",
+      "version": "202611152204",
+      "fileName": "geosite-202611152204.dat",
+      "sourceUrl": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/202611152204/geosite.dat",
+      "sha256": "269f7740e328b592376ea99f2adb12f83d5bc17b024e584c8a7b3706ba5c789d",
+      "sizeBytes": 11476856,
+      "sourceFormat": "direct",
+      "targets": [
+        {
+          "platform": "macos",
+          "architecture": "x64"
+        },
+        {
+          "platform": "macos",
+          "architecture": "arm64"
+        },
+        {
+          "platform": "windows",
+          "architecture": "x64"
+        },
+        {
+          "platform": "windows",
+          "architecture": "arm64"
+        }
+      ]
+    }
+  ]
+}

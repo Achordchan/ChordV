@@ -10,5 +10,6 @@
     "declarationMap": true,
     "noEmit": false
   },
-  "include": ["src", "src/**/*.json"]
+  "include": ["src", "src/**/*.json"],
+  "exclude": ["src/mock.ts"]
 }

@@ -1,0 +1,11 @@
+.feedback { min-width: 0; }
+.copy {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  line-height: 19.5px;
+}
+.copy strong { font-weight: 600; }
+.actions { display: flex; align-items: center; gap: 2px; }

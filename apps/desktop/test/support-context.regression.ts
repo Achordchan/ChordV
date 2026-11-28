@@ -259,10 +259,10 @@ function testWiring() {
   const hook = read("../src/hooks/useSupportPortal.ts");
   assert.match(hook, /launchSupportPortal\(accessToken, context\)/);
   assert.match(hook, /clearRecentErrorCodes\(\)/);
-  const runtime = read("../src/lib/runtime.ts");
+  const runtime = read("../src/lib/nativeShell.ts");
   assert.match(runtime, /invoke<string \| null>\("desktop_os_label"\)/);
-  const permissions = read("../src-tauri/permissions/main-window.toml");
-  assert.match(permissions, /"desktop_os_label"/, "新命令只授权给主窗口");
+  const support = read("../native/support.go");
+  assert.match(support, /Page: mygo.PageOptions\{Untrusted: true/, "外部工单窗口不能调用主窗口的原生服务绑定");
 }
 
 async function main() {

@@ -4,3 +4,4 @@ export * from "./update-limits";
 export * from "./site-address";
 export * from "./windows-updater-key";
 export * from "./support-contact-fields";
+export { isGitHubReleaseRepository } from "./github-repository";

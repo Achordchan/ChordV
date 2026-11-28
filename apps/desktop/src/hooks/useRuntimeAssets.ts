@@ -1,14 +1,15 @@
+import { fetchGitHubRuntimeComponentsPlan, readGitHubReleaseConfiguration } from "../lib/githubReleases";
+import { GitHubReleaseConfigurationError } from "../lib/githubReleaseSource";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  fetchRuntimeComponentsPlan,
-  isUnauthorizedApiError,
-  reportRuntimeComponentFailure
+  recordClientDiagnosticLog
 } from "../api/client";
 import {
   buildGeoPlanRevision,
   clearStoredGeoLastCheckAt,
   clearStoredGeoPlanRevision,
   isGeoPlanCurrent,
+  isRuntimeComponentVerified,
   readStoredGeoLastCheckAt,
   readStoredGeoPlanRevision,
   readStoredGeoVersionLabel,
@@ -43,13 +44,13 @@ import {
   extractRuntimeAssetsErrorCode,
   normalizeRuntimeAssetsProgress,
   resolveRuntimeComponentCandidate,
+  resolveUnconfiguredRuntimeAssets,
   resolveRuntimePlanPlatform,
   stripRuntimeAssetsErrorPrefix
 } from "../lib/runtimeAssetsState";
 import {
   createIdleRuntimeAssetsState,
   type RuntimeAssetsUiState,
-  type RuntimeComponentDownloadCandidate,
   type RuntimeComponentDownloadItem,
   type RuntimeDownloadFailureReason
 } from "../lib/runtimeComponents";
@@ -63,6 +64,7 @@ import {
 import type { ToastInput } from "../lib/toast";
 
 export type RuntimeAssetsCheckSummary = {
+  sourceConfigured?: boolean;
   checked: boolean;
   updated: string[];
   failed: string[];
@@ -97,11 +99,8 @@ type EnsureRuntimeAssetsOptions = {
 
 type UseRuntimeAssetsOptions = {
   appVersion: string;
-  runtimeMirrorPrefix: string;
   platformTarget: RuntimeStatus["platformTarget"];
-  accessToken?: string | null;
   notify?: (notice: ToastInput) => void;
-  onUnauthorized?: () => Promise<unknown> | unknown;
   readError?: (message: string) => string;
 };
 
@@ -174,16 +173,12 @@ async function orderCandidateUrls(urls: string[]) {
 
 async function downloadComponentWithFallback(
   component: RuntimeComponentDownloadItem,
-  preferred: { url: string; source: RuntimeComponentDownloadCandidate["source"] } | null,
   shouldCancel?: () => boolean
 ) {
   const candidateUrls = component.candidates
     .map((candidate) => candidate.url)
     .filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index);
-  // A mirror the user typed in is an explicit choice: try it first, measure the rest.
-  const userMirror = preferred?.source === "client_override" ? preferred.url : null;
-  const ranked = await orderCandidateUrls(candidateUrls.filter((url) => url !== userMirror));
-  const urls = userMirror ? [userMirror, ...ranked] : ranked;
+  const urls = await orderCandidateUrls(candidateUrls);
 
   if (urls.length === 0) {
     throw new Error(`${component.displayName} 没有可用下载地址`);
@@ -196,7 +191,7 @@ async function downloadComponentWithFallback(
       }
       await downloadRuntimeComponent({ component, url, minBytesPerSecond });
     },
-    (reason) => Boolean(shouldCancel?.()) || isRuntimeDownloadCancelled(reason)
+    (reason) => Boolean(shouldCancel?.()) || isRuntimeDownloadCancelled(reason) || extractRuntimeAssetsErrorCode(String(reason)) === "mac_update_pending"
   );
 }
 
@@ -264,7 +259,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
         component: "xray" | "geoip" | "geosite";
         effectiveUrl: string | null;
         platform: "macos" | "windows";
-        architecture: "x64" | "arm64";
+        architecture: "x64" | "arm64" | null;
       },
       ensureOptions: EnsureRuntimeAssetsOptions,
       componentId?: string | null
@@ -277,22 +272,16 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
         totalBytes: null,
         message: null,
         errorCode: failure.code,
-        // 界面只展示错误码对应的客户说明；原始文本随失败报告上报，供客服排查。
+        // 界面只展示错误码对应的客户说明；原始文本只写入本地诊断日志。
         errorMessage: describeRuntimeAssetsFailure(failure.code, failure.message).message,
         blocking: ensureOptions.blockConnection
       });
 
-      void reportRuntimeComponentFailure({
-        accessToken: options.accessToken ?? null,
-        componentId,
-        component: failure.component,
-        platform: failure.platform,
-        architecture: failure.architecture,
-        failureReason: failure.code,
-        message: failure.message,
-        effectiveUrl: failure.effectiveUrl,
-        appVersion: options.appVersion
-      }).catch(() => null);
+      void recordClientDiagnosticLog("runtime-component", JSON.stringify({
+        componentId, component: failure.component, platform: failure.platform,
+        architecture: failure.architecture, failureReason: failure.code,
+        message: failure.message, appVersion: options.appVersion
+      }));
 
       return false;
     },
@@ -333,14 +322,6 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
       if (options.platformTarget === "android" || options.platformTarget === "web") {
         lastSummaryRef.current = emptySummary();
         lastSummaryRef.current.checked = true;
-        return true;
-      }
-      if (
-        !ensureOptions.forceCheck &&
-        runtimeAssets.phase === "ready" &&
-        ensureOptions.source === "connect" &&
-        !shouldCheckGeoUpdate(readStoredGeoLastCheckAt())
-      ) {
         return true;
       }
       if (runtimeAssetsTaskRef.current) {
@@ -412,13 +393,15 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
           }));
         };
 
+        let runtimeArchitecture: "x64" | "arm64" | null = null;
         try {
           const environment = await loadDesktopRuntimeEnvironment().catch(() => null);
-          const platform = environment?.platform ?? resolveRuntimePlanPlatform(options.platformTarget);
-          const architecture = environment?.architecture ?? "arm64";
+          if (!environment) throw new Error("无法读取本机系统和架构，请重新启动客户端后重试。");
+          const platform = environment.platform;
+          const architecture = environment.architecture;
+          runtimeArchitecture = architecture;
 
-          // 先快速确认本地文件是否存在，避免一上来就做大文件 sha256
-                    // 启动/静默巡检：只查本地存在性，不触发 bundle 复制（大文件 sha256 会卡 UI）。
+          // 本地信息包含实际Hash/大小与安装记录的匹配结果；存在不等于可运行。
           // 连接/重试/强制检查时才 ensure 内置组件。
           const needsBundleEnsure =
             !inspectOnly ||
@@ -458,23 +441,34 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
             geosite: localExists[2]
           };
           const localFilesReady = Boolean(
-            localInfos.xray?.exists &&
-              (localInfos.xray.sizeBytes ?? 0) > 0 &&
-              localInfos.geoip?.exists &&
-              (localInfos.geoip.sizeBytes ?? 0) > 0 &&
-              localInfos.geosite?.exists &&
-              (localInfos.geosite.sizeBytes ?? 0) > 0
+            isRuntimeComponentVerified(localInfos.xray) &&
+              isRuntimeComponentVerified(localInfos.geoip) &&
+              isRuntimeComponentVerified(localInfos.geosite)
           );
-          const localReady = Boolean(bundled?.ready || localFilesReady);
+          const localReady = localFilesReady;
+          try {
+            readGitHubReleaseConfiguration();
+          } catch (reason) {
+            if (!(reason instanceof GitHubReleaseConfigurationError)) throw reason;
+            const unavailable = resolveUnconfiguredRuntimeAssets({
+              local: localInfos, blocking: ensureOptions.blockConnection,
+              xrayVersion: localInfos.xray?.versionLabel ?? readStoredXrayInstalledIdentity()?.versionLabel ?? null,
+              geoVersion: readStoredGeoVersionLabel()
+            });
+            summary.sourceConfigured = unavailable.sourceConfigured;
+            summary.current = unavailable.current;
+            summary.xray = unavailable.xray;
+            summary.geo = unavailable.geo;
+            lastSummaryRef.current = summary;
+            setRuntimeAssets(unavailable.state);
+            return unavailable.ready;
+          }
           const finishCancelledRuntimeUpdate = async (component: "xray" | "geoip" | "geosite") => {
             localInfos = await refreshLocalRuntimeInfos();
             const existingComponentsReady = Boolean(
-              localInfos.xray?.exists
-              && (localInfos.xray.sizeBytes ?? 0) > 0
-              && localInfos.geoip?.exists
-              && (localInfos.geoip.sizeBytes ?? 0) > 0
-              && localInfos.geosite?.exists
-              && (localInfos.geosite.sizeBytes ?? 0) > 0
+              isRuntimeComponentVerified(localInfos.xray)
+              && isRuntimeComponentVerified(localInfos.geoip)
+              && isRuntimeComponentVerified(localInfos.geosite)
             );
             if (existingComponentsReady) {
               lastSummaryRef.current = summary;
@@ -502,17 +496,17 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
             localReady &&
             !shouldCheckGeoUpdate(readStoredGeoLastCheckAt())
           ) {
-            summary.xray.localVersion = localInfos.xray?.exists
+            summary.xray.localVersion = isRuntimeComponentVerified(localInfos.xray)
               ? (localInfos.xray?.versionLabel ?? readStoredXrayInstalledIdentity()?.versionLabel
                 ?? resolveXrayVersionLabel({
                   fileName: basenamePath(localInfos.xray.path, "xray"),
                   checksumSha256: localInfos.xray.checksumSha256
                 }))
               : null;
-            summary.geo.localVersion = readStoredGeoVersionLabel()
-              ?? (localInfos.geoip?.exists ? "已安装" : null);
-            summary.xray.current = Boolean(localInfos.xray?.exists);
-            summary.geo.current = Boolean(localInfos.geoip?.exists && localInfos.geosite?.exists);
+            summary.geo.localVersion = isRuntimeComponentVerified(localInfos.geoip) && isRuntimeComponentVerified(localInfos.geosite)
+              ? readStoredGeoVersionLabel() ?? "已安装" : null;
+            summary.xray.current = Boolean(isRuntimeComponentVerified(localInfos.xray));
+            summary.geo.current = Boolean(isRuntimeComponentVerified(localInfos.geoip) && isRuntimeComponentVerified(localInfos.geosite));
             summary.current = summary.xray.current && summary.geo.current;
             summary.xray.message = summary.xray.current ? "本地已就绪" : "本地缺少 Xray";
             summary.geo.message = summary.geo.current ? "本地已就绪" : "本地缺少 GEO 数据";
@@ -530,20 +524,20 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
             showCheckingBanner("正在检查必要核心组件，请稍候。");
           }
 
-          summary.xray.localVersion = localInfos.xray?.exists
+          summary.xray.localVersion = isRuntimeComponentVerified(localInfos.xray)
               ? (localInfos.xray?.versionLabel ?? readStoredXrayInstalledIdentity()?.versionLabel
                 ?? resolveXrayVersionLabel({
                   fileName: basenamePath(localInfos.xray.path, "xray"),
                   checksumSha256: localInfos.xray.checksumSha256
                 }))
               : null;
-          summary.geo.localVersion = readStoredGeoVersionLabel()
-            ?? (localInfos.geoip?.exists ? "已安装" : null);
-          if (!localInfos.xray?.exists) {
+          summary.geo.localVersion = isRuntimeComponentVerified(localInfos.geoip) && isRuntimeComponentVerified(localInfos.geosite)
+            ? readStoredGeoVersionLabel() ?? "已安装" : null;
+          if (!isRuntimeComponentVerified(localInfos.xray)) {
             summary.xray.current = false;
             summary.xray.message = "本地缺少 Xray";
           }
-          if (!localInfos.geoip?.exists || !localInfos.geosite?.exists) {
+          if (!isRuntimeComponentVerified(localInfos.geoip) || !isRuntimeComponentVerified(localInfos.geosite)) {
             summary.geo.current = false;
             summary.geo.message = "本地缺少 GEO 数据";
           }
@@ -554,13 +548,10 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
             ensureOptions.source === "retry" ||
             (ensureOptions.source !== "startup" && shouldCheckGeoUpdate(readStoredGeoLastCheckAt()));
 
-          // Missing local files: fall back to server plan for first install.
+          // Missing local files: use the verified GitHub release plan for first install.
           // 仅检查模式不在这里直接下载，先进入版本检查结果。
           if (!localReady && !inspectOnly) {
-            const plan = await fetchRuntimeComponentsPlan({
-              accessToken: options.accessToken ?? null,
-              clientMirrorPrefix: options.runtimeMirrorPrefix
-            });
+            const plan = await fetchGitHubRuntimeComponentsPlan();
 
             if (!plan || !hasRequiredRuntimeComponents(plan)) {
               return failRuntimeAssets(
@@ -612,7 +603,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
             }
 
             for (const component of pendingComponents) {
-              const candidate = resolveRuntimeComponentCandidate(component, options.runtimeMirrorPrefix);
+              const candidate = resolveRuntimeComponentCandidate(component);
               setRuntimeAssets({
                 phase: "downloading",
                 currentComponent: component.component,
@@ -625,7 +616,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                 blocking: ensureOptions.blockConnection
               });
               try {
-                await downloadComponentWithFallback(component, candidate, () => cancelRequestedRef.current);
+                await downloadComponentWithFallback(component, () => cancelRequestedRef.current);
                 if (component.component === "xray") {
                   localInfos = await refreshLocalRuntimeInfos();
                   writeStoredXrayInstalledIdentity(
@@ -659,32 +650,23 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
               const revision = buildGeoPlanRevision(geoPlanItems);
               if (
                 revision
-                && localInfos.geoip?.exists
-                && (localInfos.geoip.sizeBytes ?? 0) > 0
-                && localInfos.geosite?.exists
-                && (localInfos.geosite.sizeBytes ?? 0) > 0
+                && isRuntimeComponentVerified(localInfos.geoip)
+                && isRuntimeComponentVerified(localInfos.geosite)
               ) {
                 writeStoredGeoPlanRevision(revision, resolveGeoPlanVersionLabel(geoPlanItems));
               }
             }
           }
 
-          // GEO 与 Xray 均只使用服务端客户端组件计划，客户端不再直连第三方更新源。
+          // GEO 与 Xray 使用同一份已校验的 GitHub 发布清单。
           if (shouldRefreshRemote) {
             writeStoredGeoLastCheckAt(Date.now());
 
-            let sharedPlan: Awaited<ReturnType<typeof fetchRuntimeComponentsPlan>> = null;
+            let sharedPlan: Awaited<ReturnType<typeof fetchGitHubRuntimeComponentsPlan>> = null;
             let sharedPlanFailed = false;
             try {
-              sharedPlan = await fetchRuntimeComponentsPlan({
-                accessToken: options.accessToken ?? null,
-                clientMirrorPrefix: options.runtimeMirrorPrefix
-              });
+              sharedPlan = await fetchGitHubRuntimeComponentsPlan();
             } catch (reason) {
-              if (isUnauthorizedApiError(reason)) {
-                await options.onUnauthorized?.();
-                return false;
-              }
               sharedPlanFailed = true;
             }
 
@@ -696,10 +678,8 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
               const remoteVersionLabel = resolveGeoPlanVersionLabel(geoItems);
               const storedGeoVersionLabel = readStoredGeoVersionLabel();
               const localGeoReady = Boolean(
-                localInfos.geoip?.exists
-                && (localInfos.geoip.sizeBytes ?? 0) > 0
-                && localInfos.geosite?.exists
-                && (localInfos.geosite.sizeBytes ?? 0) > 0
+                isRuntimeComponentVerified(localInfos.geoip)
+                && isRuntimeComponentVerified(localInfos.geosite)
               );
 
               if (sharedPlanFailed) {
@@ -749,7 +729,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                 } else {
                   for (const component of geoItems) {
                     silentBackground = false;
-                    const candidate = resolveRuntimeComponentCandidate(component, options.runtimeMirrorPrefix);
+                    const candidate = resolveRuntimeComponentCandidate(component);
                     setRuntimeAssets({
                       phase: "downloading",
                       currentComponent: component.component,
@@ -762,7 +742,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                       blocking: ensureOptions.blockConnection
                     });
                     try {
-                      await downloadComponentWithFallback(component, candidate, () => cancelRequestedRef.current);
+                      await downloadComponentWithFallback(component, () => cancelRequestedRef.current);
                       summary.updated.push(component.displayName);
                     } catch (reason) {
                       if (cancelRequestedRef.current || isRuntimeDownloadCancelled(reason)) {
@@ -789,10 +769,8 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
 
                   localInfos = await refreshLocalRuntimeInfos();
                   const bothReady = Boolean(
-                    localInfos.geoip?.exists
-                    && (localInfos.geoip.sizeBytes ?? 0) > 0
-                    && localInfos.geosite?.exists
-                    && (localInfos.geosite.sizeBytes ?? 0) > 0
+                    isRuntimeComponentVerified(localInfos.geoip)
+                    && isRuntimeComponentVerified(localInfos.geosite)
                   );
                   if (bothReady && summary.failed.length === 0) {
                     writeStoredGeoPlanRevision(remoteRevision, remoteVersionLabel);
@@ -810,26 +788,23 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
               }
             }
 
-            // Xray 同样由服务端客户端组件计划管理。
+            // Xray 同样来自 GitHub 发布清单。
             if (targetSet.has("xray")) {
               try {
                 const plan =
                   sharedPlan ??
-                  (await fetchRuntimeComponentsPlan({
-                    accessToken: options.accessToken ?? null,
-                    clientMirrorPrefix: options.runtimeMirrorPrefix
-                  }));
+                  (await fetchGitHubRuntimeComponentsPlan());
                 const xrayItem = plan?.components.find((item) => item.component === "xray") ?? null;
                 if (xrayItem) {
                   const remoteLabel = resolveXrayVersionLabel(xrayItem);
                   const unresolvedLatestPlan = isUnresolvedGithubLatestXrayPlan(xrayItem);
                   summary.xray.remoteVersion = remoteLabel;
                   const installedIdentity = readStoredXrayInstalledIdentity();
-                  if (!summary.xray.localVersion) {
+                  if (!summary.xray.localVersion && isRuntimeComponentVerified(localInfos.xray)) {
                     summary.xray.localVersion =
                       localInfos.xray?.versionLabel
                       ?? installedIdentity?.versionLabel
-                      ?? (localInfos.xray?.exists
+                      ?? (isRuntimeComponentVerified(localInfos.xray)
                         ? resolveXrayVersionLabel({
                             fileName: basenamePath(localInfos.xray.path, "xray"),
                             checksumSha256: localInfos.xray.checksumSha256
@@ -837,18 +812,19 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                         : null);
                   }
                   const status = await checkRuntimeComponentFile(xrayItem).catch(() => null);
-                  let identityCurrent = isXrayIdentityCurrent(
+                  let identityCurrent = isRuntimeComponentVerified(localInfos.xray) && isXrayIdentityCurrent(
                     installedIdentity,
                     xrayItem,
                     localInfos.xray?.sizeBytes ?? null
                   );
-                  if (unresolvedLatestPlan && localInfos.xray?.exists && status?.ready) {
+                  if (unresolvedLatestPlan && isRuntimeComponentVerified(localInfos.xray) && status?.ready) {
                     identityCurrent = true;
                   }
                   if (
                     !identityCurrent
                     && !installedIdentity
                     && status?.ready
+                    && isRuntimeComponentVerified(localInfos.xray)
                     && localInfos.xray?.versionLabel
                     && remoteLabel
                     && localInfos.xray.versionLabel === remoteLabel
@@ -874,7 +850,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                       : "检测到 Xray 可更新";
                     summary.current = false;
                   } else {
-                    const candidate = resolveRuntimeComponentCandidate(xrayItem, options.runtimeMirrorPrefix);
+                    const candidate = resolveRuntimeComponentCandidate(xrayItem);
                     silentBackground = false;
                     setRuntimeAssets({
                       phase: "downloading",
@@ -888,7 +864,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                       blocking: ensureOptions.blockConnection
                     });
                     try {
-                      await downloadComponentWithFallback(xrayItem, candidate, () => cancelRequestedRef.current);
+                      await downloadComponentWithFallback(xrayItem, () => cancelRequestedRef.current);
                       localInfos = await refreshLocalRuntimeInfos();
                       summary.updated.push(xrayItem.displayName);
                       summary.current = false;
@@ -909,10 +885,10 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                       const message = reason instanceof Error ? reason.message : String(reason);
                       summary.failed.push(xrayItem.displayName);
                       summary.current = false;
-                      summary.xray.current = Boolean(localInfos.xray?.exists);
+                      summary.xray.current = Boolean(isRuntimeComponentVerified(localInfos.xray));
                       summary.xray.available = true;
                       summary.xray.message = "Xray 更新失败";
-                      if (!localInfos.xray?.exists && ensureOptions.blockConnection) {
+                      if (!isRuntimeComponentVerified(localInfos.xray) && ensureOptions.blockConnection) {
                         return failRuntimeAssets(
                           {
                             code: extractRuntimeAssetsErrorCode(message),
@@ -929,22 +905,18 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                     }
                   }
                 } else {
-                  summary.xray.message = localInfos.xray?.exists ? "暂未提供 Xray 内核更新" : "本地缺少 Xray";
-                  summary.xray.current = Boolean(localInfos.xray?.exists);
+                  summary.xray.message = isRuntimeComponentVerified(localInfos.xray) ? "暂未提供 Xray 内核更新" : "本地缺少 Xray";
+                  summary.xray.current = Boolean(isRuntimeComponentVerified(localInfos.xray));
                   summary.xray.available = false;
                 }
               } catch (reason) {
-                if (isUnauthorizedApiError(reason)) {
-                  await options.onUnauthorized?.();
-                  return false;
-                }
                 // non-blocking when local xray already exists
-                if (!localInfos.xray?.exists && ensureOptions.blockConnection) {
+                if (!isRuntimeComponentVerified(localInfos.xray) && ensureOptions.blockConnection) {
                   throw reason;
                 }
-                summary.xray.current = Boolean(localInfos.xray?.exists);
+                summary.xray.current = Boolean(isRuntimeComponentVerified(localInfos.xray));
                 summary.xray.available = false;
-                summary.xray.message = localInfos.xray?.exists ? "Xray 检查失败，继续使用本地文件" : "Xray 检查失败";
+                summary.xray.message = isRuntimeComponentVerified(localInfos.xray) ? "Xray 检查失败，继续使用本地文件" : "Xray 检查失败";
               }
             }
           }
@@ -967,12 +939,9 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
             localInfos = await refreshLocalRuntimeInfos();
           }
           const finalLocalReady = Boolean(
-            localInfos.xray?.exists &&
-              (localInfos.xray.sizeBytes ?? 0) > 0 &&
-              localInfos.geoip?.exists &&
-              (localInfos.geoip.sizeBytes ?? 0) > 0 &&
-              localInfos.geosite?.exists &&
-              (localInfos.geosite.sizeBytes ?? 0) > 0
+            isRuntimeComponentVerified(localInfos.xray) &&
+              isRuntimeComponentVerified(localInfos.geoip) &&
+              isRuntimeComponentVerified(localInfos.geosite)
           );
           if (!finalLocalReady) {
             return failRuntimeAssets(
@@ -1035,11 +1004,6 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
 
           return true;
         } catch (reason) {
-
-          if (isUnauthorizedApiError(reason)) {
-            await options.onUnauthorized?.();
-            return false;
-          }
           const rawMessage = reason instanceof Error ? reason.message : "必要核心组件下载失败";
           const message = stripRuntimeAssetsErrorPrefix((options.readError ?? defaultReadError)(rawMessage));
           return failRuntimeAssets(
@@ -1049,7 +1013,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
               component: runtimeAssets.currentComponent ?? "xray",
               effectiveUrl: null,
               platform: resolveRuntimePlanPlatform(options.platformTarget),
-              architecture: "arm64"
+              architecture: runtimeArchitecture
             },
             ensureOptions
           );

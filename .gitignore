@@ -7,8 +7,12 @@ coverage
 apps/desktop/src-tauri/target
 apps/desktop/src-tauri/target-*
 apps/desktop/src-tauri/gen
+# Preserve legacy local assets after the nested Tauri ignore file is retired.
+/apps/desktop/src-tauri/bin/
+/apps/desktop/src-tauri/target/
+/apps/desktop/src-tauri/target-*/
+/apps/desktop/src-tauri/gen/
 apps/desktop/src-tauri/bin.bak/
-!apps/desktop/src-tauri/Cargo.lock
 apps/desktop/src-tauri/.tauri.*.platform.conf.json
 output/
 storage/
@@ -27,6 +31,7 @@ _deploy/
 .ssh/
 .playwright-cli/
 .data/
+apps/desktop/native/.mygo-build-config/
 
 .tmp-*
 agent-go-dist/
@@ -45,3 +50,16 @@ deploy/**/api-backups/
 deploy/**/api-agent-dist/
 # Public health-approved markers are runtime state, not release source files.
 deploy/**/api-public-state/
+
+# Retired backend checkouts keep private runtime assets, never executable source.
+apps/api/.env*
+apps/api/dist/
+apps/api/node_modules/
+apps/api/prisma/*.db*
+apps/api/prisma/*.sqlite*
+apps/node-agent/**/data/
+apps/node-agent/**/dist/
+apps/node-agent/node_modules/
+apps/node-agent/**/*.db
+apps/node-agent/**/*.db-shm
+apps/node-agent/**/*.db-wal

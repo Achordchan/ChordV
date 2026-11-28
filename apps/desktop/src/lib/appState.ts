@@ -36,6 +36,7 @@ export function primaryButtonLabel(
   if (subscription.state === "exhausted" || subscription.remainingTrafficGb <= 0) return "流量已用尽";
   if (subscription.state === "paused") return "订阅已暂停";
   if (runtimeAssets.phase === "checking" || runtimeAssets.phase === "downloading") return "正在准备组件";
+  if (runtimeAssets.phase === "unconfigured") return "未配置组件来源";
   if (runtimeAssets.phase === "failed") return "重试下载组件";
   if (selectedNodeOffline) return "切换节点后重连";
   if (guidance) return guidance.actionLabel;

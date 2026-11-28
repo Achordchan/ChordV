@@ -1,0 +1,43 @@
+name: Verify Go Server with PostgreSQL
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  database:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: chordv_mygo
+          POSTGRES_PASSWORD: local-ci-only
+          POSTGRES_DB: chordv_mygo_local
+        ports: ["127.0.0.1:5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U chordv_mygo -d chordv_mygo_local"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      CHORDV_MODE: local
+      CHORDV_LOCAL_DATABASE_URL: postgresql://chordv_mygo:local-ci-only@127.0.0.1:5432/chordv_mygo_local?sslmode=disable
+      CHORDV_LOCAL_JWT_SECRET: local-ci-only-jwt-secret-not-for-production-000000
+      CHORDV_LOCAL_AGENT_PEPPER: local-ci-only-agent-pepper-not-for-production-000000
+      CHORDV_LOCAL_DATA_DIR: .data/mygo-server-ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/server/go.mod
+          cache-dependency-path: |
+            apps/server/go.sum
+            apps/agent/go.sum
+      - name: Run server suite against isolated database
+        working-directory: apps/server
+        run: |
+          : "${CHORDV_LOCAL_DATABASE_URL:?database fixture is required}"
+          go test -race -count=1 -timeout=30m ./...
+          go vet ./...
+          go mod verify

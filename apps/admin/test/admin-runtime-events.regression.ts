@@ -11,9 +11,12 @@ function event(type: AdminRuntimeEventDto["type"]): AdminRuntimeEventDto {
 
 assert.equal(shouldRefreshTicketsForAdminEvent(event("ticket_updated")), true);
 assert.equal(shouldRefreshTicketsForAdminEvent(event("subscription_updated")), true);
-assert.equal(shouldRefreshTicketsForAdminEvent(event("version_updated")), false);
-assert.deepEqual(adminEventSections(event("runtime_component_updated")), ["runtimeComponents", "releases"], "组件变更必须同时刷新独立组件页和统一发布中心");
-assert.deepEqual(adminEventSections(event("release_center_updated")), ["releases"]);
+assert.equal(shouldRefreshTicketsForAdminEvent(event("node_access_updated")), false);
 assert.deepEqual(adminEventSections(event("keepalive")), []);
+assert.deepEqual(adminEventSections(event("account_updated")), ["overview", "users", "subscriptions", "teams"]);
+assert.deepEqual(adminEventSections(event("resync")), ["resync"]);
+assert.deepEqual(adminEventSections(event("presence_updated")), [], "在线状态事件仅由共享 presence store 刷新轻量接口");
+assert.deepEqual(adminEventSections(event("subscription_updated")), ["overview", "users", "subscriptions", "teams", "plans", "tickets"]);
+assert.deepEqual(adminEventSections({ type: "release_center_updated", occurredAt: "" } as unknown as AdminRuntimeEventDto), [], "已移除的发布事件不能重新激活旧入口");
 
 console.log("admin runtime event regression checks passed");

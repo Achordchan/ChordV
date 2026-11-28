@@ -1,49 +1,54 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Badge, Button, Loader, Text } from "@mantine/core";
 import type { ClientReleaseHistoryItemDto } from "@chordv/shared";
-import { fetchReleaseHistory, type ReleaseChannel } from "../api/client";
+import type { ReleaseChannel } from "../api/client";
+import { fetchGitHubReleaseHistory } from "../lib/githubReleases";
+import { GITHUB_RELEASE_NOT_CONFIGURED, GitHubReleaseConfigurationError } from "../lib/githubReleaseSource";
 import { cleanChangelogItem, compareVersion, formatVersionLabel } from "../lib/updateState";
 import { APP_BUILD_NUMBER } from "../lib/buildInfo";
 import styles from "./UpdateCenterModal.module.css";
 
 type HistoryState =
   | { status: "loading" }
-  | { status: "ready"; items: ClientReleaseHistoryItemDto[] }
-  | { status: "unsupported" }
+  | { status: "ready"; items: ClientReleaseHistoryItemDto[]; hasMore: boolean }
+  | { status: "unconfigured" }
   | { status: "failed" };
 
 /** Past releases for this platform, newest first, as shown in the update center. */
 export function ReleaseHistory({ channel, appVersion }: { channel: ReleaseChannel; appVersion: string }) {
+  return <ChannelHistory key={channel} channel={channel} appVersion={appVersion} />;
+}
+
+function ChannelHistory({ channel, appVersion }: { channel: ReleaseChannel; appVersion: string }) {
+  const [page, setPage] = useState(1);
   const [state, setState] = useState<HistoryState>({ status: "loading" });
-  const load = useCallback(() => {
+  const [reloadKey, setReloadKey] = useState(0);
+  useEffect(() => {
     let cancelled = false;
     setState({ status: "loading" });
-    fetchReleaseHistory({ channel })
-      .then((items) => { if (!cancelled) setState(items ? { status: "ready", items } : { status: "unsupported" }); })
-      .catch(() => { if (!cancelled) setState({ status: "failed" }); });
+    fetchGitHubReleaseHistory({ channel, page })
+      .then((result) => { if (!cancelled) setState({ status: "ready", ...result }); })
+      .catch((reason) => { if (!cancelled) setState({ status: reason instanceof GitHubReleaseConfigurationError ? "unconfigured" : "failed" }); });
     return () => { cancelled = true; };
-  }, [channel]);
-  useEffect(() => load(), [load]);
+  }, [channel, page, reloadKey]);
 
   if (state.status === "loading") {
     return <div className={styles.historyNotice}><Loader size={16} /><Text size="sm" c="dimmed">正在加载更新日志</Text></div>;
   }
-  if (state.status === "unsupported") {
-    return <Text size="sm" c="dimmed" className={styles.historyNotice}>服务器暂未提供更新日志，请稍后再试。</Text>;
+  if (state.status === "unconfigured") {
+    return <Text size="sm" c="dimmed" className={styles.historyNotice}>{GITHUB_RELEASE_NOT_CONFIGURED}</Text>;
   }
   if (state.status === "failed") {
     return (
       <div className={styles.historyNotice}>
         <Text size="sm" c="dimmed">更新日志暂时加载不出来，请检查网络后重试。</Text>
-        <Button size="compact-sm" variant="light" onClick={() => load()}>重试</Button>
+        {page > 1 && <Button size="compact-sm" variant="subtle" onClick={() => setPage(page - 1)}>上一页</Button>}
+        <Button size="compact-sm" variant="light" onClick={() => setReloadKey((value) => value + 1)}>重试</Button>
       </div>
     );
   }
-  if (state.items.length === 0) {
-    return <Text size="sm" c="dimmed" className={styles.historyNotice}>还没有已发布的版本。</Text>;
-  }
-  return (
-    <ol className={styles.history} aria-label="更新日志">
+  return (<>
+    {!state.items.length ? <Text size="sm" c="dimmed" className={styles.historyNotice}>{page === 1 && !state.hasMore ? "还没有已发布的版本。" : "本页没有此渠道的桌面版本。"}</Text> : <ol className={styles.history} aria-label="更新日志">
       {state.items.map((item) => {
         const changelog = item.changelog.map(cleanChangelogItem).filter(Boolean);
         // With builds on both sides, only the installed build is the current one.
@@ -68,8 +73,12 @@ export function ReleaseHistory({ channel, appVersion }: { channel: ReleaseChanne
           </li>
         );
       })}
-    </ol>
-  );
+    </ol>}
+    {(page > 1 || state.hasMore) && <nav className={styles.footer} aria-label="更新日志分页">
+      {page > 1 && <Button size="compact-sm" variant="light" onClick={() => setPage(page - 1)}>上一页</Button>}
+      {state.hasMore && <Button size="compact-sm" variant="light" onClick={() => setPage(page + 1)}>下一页</Button>}
+    </nav>}
+  </>);
 }
 
 function formatReleaseDate(value: string) {

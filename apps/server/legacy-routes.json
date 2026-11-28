@@ -1,0 +1,1064 @@
+[
+  {
+    "method": "POST",
+    "path": "/api/auth/login",
+    "source": "apps/api/src/modules/auth/auth.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/auth/admin/login",
+    "source": "apps/api/src/modules/auth/auth.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/auth/refresh",
+    "source": "apps/api/src/modules/auth/auth.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/auth/logout",
+    "source": "apps/api/src/modules/auth/auth.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/site-address",
+    "source": "apps/api/src/modules/admin/site-address.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/admin/site-address",
+    "source": "apps/api/src/modules/admin/site-address.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/client/site-address",
+    "source": "apps/api/src/modules/admin/site-address.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/runtime-versions/github-tags",
+    "source": "apps/api/src/modules/admin/runtime-version.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/runtime-versions/:id/history",
+    "source": "apps/api/src/modules/admin/runtime-version.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/admin/runtime-versions/:id",
+    "source": "apps/api/src/modules/admin/runtime-version.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/runtime-versions",
+    "source": "apps/api/src/modules/admin/runtime-version.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/runtime-versions/acquire",
+    "source": "apps/api/src/modules/admin/runtime-version.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/admin/runtime-versions/:id/auto-latest",
+    "source": "apps/api/src/modules/admin/runtime-version.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/runtime-versions/:id/activate",
+    "source": "apps/api/src/modules/admin/runtime-version.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/runtime-versions/slots",
+    "source": "apps/api/src/modules/admin/runtime-version.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/storage",
+    "source": "apps/api/src/modules/admin/storage.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/storage/cleanup",
+    "source": "apps/api/src/modules/admin/storage.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/storage/cleanup/:id/retry",
+    "source": "apps/api/src/modules/admin/storage.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/storage/reuse-release-file",
+    "source": "apps/api/src/modules/admin/storage.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/storage/scan",
+    "source": "apps/api/src/modules/admin/storage.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/snapshot",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/dashboard",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/presence",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/upload-limits",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/events/stream",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/download-mirror/config",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_github_delivery"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/admin/download-mirror/config",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_github_delivery"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/image-bed/config",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/admin/image-bed/config",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/image-bed/files",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/admin/image-bed/files",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/admin/me/security",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/users",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/users",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/admin/users/:userId",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/users/:userId/disconnect",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/admin/users/:userId/security",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/plans",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/plans",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/admin/plans/:planId",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/admin/plans/:planId/security",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/subscriptions",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/subscriptions",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/subscriptions/:subscriptionId/renew",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/subscriptions/:subscriptionId/change-plan",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/admin/subscriptions/:subscriptionId",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/subscriptions/:subscriptionId/convert-to-team",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/subscriptions/:subscriptionId/nodes",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/admin/subscriptions/:subscriptionId/nodes",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/subscriptions/:subscriptionId/reset-traffic",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/teams",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/teams",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/admin/teams/:teamId",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/teams/:teamId/members",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/admin/teams/:teamId/members/:memberId",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/admin/teams/:teamId/members/:memberId",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/teams/:teamId/members/:memberId/kick",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/teams/:teamId/subscriptions",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/teams/:teamId/usage",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/nodes",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/nodes/lease-revocation-jobs",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/nodes/node-command-jobs",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/nodes/node-command-jobs/:jobId/retry",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/nodes/node-command-jobs/:jobId/dismiss",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/nodes/lease-revocation-jobs/:jobId/retry",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/nodes/:nodeId/lease-revocation-jobs/retry",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/admin/nodes/:nodeId",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/nodes/:nodeId/probe",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/nodes/probe-all",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/admin/nodes/:nodeId",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/announcements",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/announcements",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/admin/announcements/:announcementId",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/admin/announcements/:announcementId",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/policies",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/admin/policies",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/tickets",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/tickets/:ticketId",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/tickets/:ticketId/replies",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/tickets/:ticketId/attachments",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/tickets/:ticketId/close",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/tickets/:ticketId/reopen",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/releases/:releaseId/artifacts/import",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/releases",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/runtime-components",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/runtime-components/failures",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/runtime-components",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/runtime-components/upload",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/admin/runtime-components/:componentId",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/runtime-components/:componentId/upload",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/admin/runtime-components/:componentId",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/runtime-components/:componentId/verify",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/releases",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/admin/releases/:releaseId",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/releases/:releaseId/publish",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/releases/:releaseId/promote",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/releases/:releaseId/unpublish",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/admin/releases/:releaseId",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/releases/:releaseId/artifacts",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/releases/:releaseId/artifacts/upload",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/admin/releases/:releaseId/artifacts/:artifactId",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/admin/releases/:releaseId/artifacts/:artifactId",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/releases/:releaseId/artifacts/:artifactId/upload",
+    "source": "apps/api/src/modules/admin/admin.controller.ts",
+    "status": "retired_release_center"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/users/:userId/routing-rules",
+    "source": "apps/api/src/modules/admin/user-routing-rules.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/announcements",
+    "source": "apps/api/src/modules/announcements/announcements.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/agent-install/script.sh",
+    "source": "apps/api/src/modules/agent/agent-install.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/v1/events",
+    "source": "apps/api/src/modules/agent/agent.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/agent/v1/heartbeat",
+    "source": "apps/api/src/modules/agent/agent.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/agent/v1/usage-batches",
+    "source": "apps/api/src/modules/agent/agent.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/v1/whoami",
+    "source": "apps/api/src/modules/agent/agent.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/v1/config",
+    "source": "apps/api/src/modules/agent/agent.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/agent/v1/commands/:commandId/result",
+    "source": "apps/api/src/modules/agent/agent.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/nodes/agent-native",
+    "source": "apps/api/src/modules/agent/agent-admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/nodes/:nodeId/onboarding",
+    "source": "apps/api/src/modules/agent/agent-admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/nodes/:nodeId/onboarding/retry",
+    "source": "apps/api/src/modules/agent/agent-admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/nodes/panel-inbound/parse",
+    "source": "apps/api/src/modules/agent/agent-admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/nodes/:nodeId/agents",
+    "source": "apps/api/src/modules/agent/agent-admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/nodes/:nodeId/inbound-spec",
+    "source": "apps/api/src/modules/agent/agent-admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/nodes/:nodeId/register-token",
+    "source": "apps/api/src/modules/agent/agent-admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/nodes/:nodeId/agents/credentials",
+    "source": "apps/api/src/modules/agent/agent-admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/admin/nodes/:nodeId/agents/:agentId/credentials",
+    "source": "apps/api/src/modules/agent/agent-admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/nodes/:nodeId/agent-commands",
+    "source": "apps/api/src/modules/agent/agent-admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/nodes/:nodeId/agent-commands/:commandId/outcome",
+    "source": "apps/api/src/modules/agent/agent-admin.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent-download/go/:version/:arch",
+    "source": "apps/api/src/modules/agent/agent-download.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/agent/v1/register",
+    "source": "apps/api/src/modules/agent/agent-register.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/system/update-events",
+    "source": "apps/api/src/modules/system/system-update.controller.ts",
+    "status": "retired_server_self_update"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/system/version",
+    "source": "apps/api/src/modules/system/system-update.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/system/check-update",
+    "source": "apps/api/src/modules/system/system-update.controller.ts",
+    "status": "retired_server_self_update"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/system/rollback-versions",
+    "source": "apps/api/src/modules/system/system-update.controller.ts",
+    "status": "retired_server_self_update"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/system/operations",
+    "source": "apps/api/src/modules/system/system-update.controller.ts",
+    "status": "retired_server_self_update"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/system/update-status",
+    "source": "apps/api/src/modules/system/system-update.controller.ts",
+    "status": "retired_server_self_update"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/system/update",
+    "source": "apps/api/src/modules/system/system-update.controller.ts",
+    "status": "retired_server_self_update"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/system/rollback",
+    "source": "apps/api/src/modules/system/system-update.controller.ts",
+    "status": "retired_server_self_update"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/system/restart",
+    "source": "apps/api/src/modules/system/system-update.controller.ts",
+    "status": "retired_server_self_update"
+  },
+  {
+    "method": "GET",
+    "path": "/api/health",
+    "source": "apps/api/src/modules/system/health.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/health/ready",
+    "source": "apps/api/src/modules/system/health.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin/support-integration",
+    "source": "apps/api/src/modules/support/support.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/admin/support-integration",
+    "source": "apps/api/src/modules/support/support.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/support-integration/test",
+    "source": "apps/api/src/modules/support/support.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/client/support/status",
+    "source": "apps/api/src/modules/support/support.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/client/support/launch",
+    "source": "apps/api/src/modules/support/support.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/integrations/achord-connect/webhook",
+    "source": "apps/api/src/modules/support/support.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/client/bootstrap",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/client/subscription",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/client/nodes",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/client/nodes/probe-results",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/client/nodes/probe",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/client/policies",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/client/announcements",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/client/announcements/read",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/client/version",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/client/ping",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/client/update/tauri",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/client/update/check",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/client/releases/history",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/client/routing-rules",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/client/routing-rules",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/client/routing-rules/:ruleId",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/client/routing-rules/:ruleId",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/client/runtime-components/plan",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/client/runtime-components/report-failure",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/client/runtime",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/client/tickets",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/client/tickets/:ticketId",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/client/tickets/:ticketId/read",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/client/tickets",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/client/tickets/:ticketId/replies",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/client/tickets/:ticketId/attachments/upload",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/client/tickets/:ticketId/attachments",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/client/session/connect",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/client/session/heartbeat",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "POST",
+    "path": "/api/client/session/disconnect",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/client/events/stream",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/client/events",
+    "source": "apps/api/src/modules/client/client.controller.ts",
+    "status": "implemented"
+  },
+  {
+    "method": "GET",
+    "path": "/api/downloads/runtime-versions/:versionId",
+    "source": "apps/api/src/modules/client/downloads.controller.ts",
+    "status": "retired_github_delivery"
+  },
+  {
+    "method": "GET",
+    "path": "/api/downloads/releases/:artifactId",
+    "source": "apps/api/src/modules/client/downloads.controller.ts",
+    "status": "retired_github_delivery"
+  },
+  {
+    "method": "GET",
+    "path": "/api/downloads/runtime-components/:componentId",
+    "source": "apps/api/src/modules/client/downloads.controller.ts",
+    "status": "retired_github_delivery"
+  }
+]

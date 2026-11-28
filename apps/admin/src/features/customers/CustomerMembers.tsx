@@ -34,7 +34,7 @@ export function CustomerMembers({ team, actions }: { team: AdminTeamRecordDto; a
       <Button variant="default" leftSection={<IconPlus size={16}/>} onClick={() => actions.onOpenTeamMemberInlineEditor(team.id)}>添加成员</Button></div>
     {actions.teamMemberInlineEditor?.teamId === team.id && <TeamMemberEditorPanel {...actions}/>}
     {error && <Group mt="md"><Text size="sm" c="red">{error}</Text><Button size="compact-xs" variant="default" onClick={() => actions.onLoadTeamUsage(team.id, { force: true })}>重新加载</Button></Group>}
-    <Table.ScrollContainer minWidth={640}><Table verticalSpacing="md" className={styles.memberTable}><Table.Thead><Table.Tr><Table.Th>成员</Table.Th><Table.Th>角色</Table.Th><Table.Th>本期已用</Table.Th><Table.Th>客户端</Table.Th><Table.Th>在线状态</Table.Th><Table.Th>账号状态</Table.Th><Table.Th>操作</Table.Th></Table.Tr></Table.Thead><Table.Tbody>
+    <Table.ScrollContainer minWidth={640}><Table verticalSpacing="md" className={styles.memberTable}><Table.Thead><Table.Tr><Table.Th>成员</Table.Th><Table.Th>角色</Table.Th><Table.Th>累计已用</Table.Th><Table.Th>客户端</Table.Th><Table.Th>在线状态</Table.Th><Table.Th>账号状态</Table.Th><Table.Th>操作</Table.Th></Table.Tr></Table.Thead><Table.Tbody>
       {team.members.map(item => {
         const account = actions.allUsers.find(u => u.id === item.userId);
         const itemUsage = usage.find(u => u.userId === item.userId);
@@ -66,7 +66,8 @@ export function CustomerMembers({ team, actions }: { team: AdminTeamRecordDto; a
             loading={actions.actionBusyKey === `user-status:${member.userId}`} disabled={!user || (actions.actionBusyKey !== null && actions.actionBusyKey !== `user-status:${member.userId}`)}
             onClick={() => actions.onToggleTeamUserStatus(member.userId, user?.status === "active" ? "disabled" : "active", member.displayName)}>{user?.status === "active" ? "禁用账号" : "启用账号"}</Button>
           <Button variant="default" color="orange" leftSection={<IconPlugConnectedX size={16}/>} loading={actions.actionBusyKey === `user-disconnect:${member.userId}`}
-            disabled={actions.actionBusyKey !== null && actions.actionBusyKey !== `user-disconnect:${member.userId}`} onClick={() => actions.onDisconnectUser(member.userId, member.displayName, "team-member")}>断开连接</Button>
+            disabled={actions.actionBusyKey !== null && actions.actionBusyKey !== `user-disconnect:${member.userId}`} onClick={() => outside(() => actions.onOpenKickMemberModal(team.id, member.id, member.displayName))}>断开本团队连接</Button>
+          {team.currentSubscription && <Button variant="default" color="orange" disabled={actions.resetTrafficBusyKey !== null} onClick={() => outside(() => actions.onResetSubscriptionTraffic(team.currentSubscription!.id, `${member.displayName} · ${team.name}`, member.userId))}>重置成员流量</Button>}
         </Group></section>
         <section><Text fw={600} mb="sm">团队关系</Text><Group gap="xs"><Button variant="default" onClick={() => actions.onOpenTeamMemberInlineEditor(team.id, member.id)}>编辑角色</Button>
           {member.role !== "owner" && <Button variant="default" color="red" leftSection={<IconTrash size={16}/>} loading={actions.actionBusyKey === `team-member-delete:${member.id}`}

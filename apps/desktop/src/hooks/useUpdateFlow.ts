@@ -1,20 +1,14 @@
+import { checkGitHubClientUpdate } from "../lib/githubReleases";
+import { GitHubReleaseConfigurationError } from "../lib/githubReleaseSource";
+import { cancelPreparedDesktopUpdate } from "../lib/nativeInstaller";
+import { downloadWithMirrorFallback, rankDownloadUrls, rememberProbeResults, urlsNeedingProbe } from "../lib/downloadMirrorRanking";
+import { probeDownloadCandidates } from "../lib/runtime";
 import { initialUpdateCheckState, reduceUpdateCheckState } from "../lib/updateCheckState";
 import { APP_BUILD_NUMBER } from "../lib/buildInfo";
-import { describeUserError, formatUserError, isCustomerSafeText, shouldRecordDiagnostic, type UserErrorContext, type UserFacingError } from "../lib/userFacingErrors";
-
-/** 被映射 / 隐藏的原始错误写入诊断日志，客服可据此还原真实原因。 */
-function recordUpdateDiagnostic(error: UserFacingError, context: UserErrorContext) {
-  if (shouldRecordDiagnostic(error)) {
-    void recordClientDiagnosticLog("user-error", `[${context}] code=${error.code ?? "-"} detail=${error.detail}`);
-  }
-}
+import { describeUserError, isCustomerSafeText, type UserErrorContext } from "../lib/userFacingErrors";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import type { ClientVersionDto } from "@chordv/shared";
 import {
-  checkClientUpdate,
-  type ClientUpdateArtifact,
   type ClientUpdateCheckResult,
-  isUnauthorizedApiError,
   recordClientDiagnosticLog,
   type ReleaseChannel
 } from "../api/client";
@@ -32,7 +26,6 @@ import {
 import {
   compareVersion,
   createIdleUpdateDownloadState,
-  createLegacyUpdateResult,
   formatVersionLabel,
   inferInstallerFileName,
   normalizeUpdateDownloadProgress,
@@ -64,8 +57,6 @@ import {
 import type { ToastInput } from "../lib/toast";
 
 type RunUpdateCheckOptions = {
-  accessToken?: string | null;
-  bootstrapVersion?: ClientVersionDto | null;
   source: "startup" | "login" | "manual" | "refresh";
   silent?: boolean;
   /** 手动检测默认仅检查；需要下载时再显式关闭 */
@@ -76,6 +67,7 @@ type RunUpdateCheckOptions = {
 };
 
 type RuntimeAssetsCheckSummary = {
+  sourceConfigured?: boolean;
   checked: boolean;
   updated: string[];
   failed: string[];
@@ -99,10 +91,7 @@ type RuntimeAssetsCheckSummary = {
 
 type UseUpdateFlowOptions = {
   appVersion: string;
-  runtimeMirrorPrefix?: string;
   platformTarget: RuntimeStatus["platformTarget"];
-  accessToken?: string | null;
-  bootstrapVersion?: ClientVersionDto | null;
   updateChannel?: ReleaseChannel;
   /** 「自动在后台下载更新」偏好：开启后普通更新会静默下载，完成后只显示“新版本已就绪”标记。 */
   autoDownloadUpdates?: boolean;
@@ -112,7 +101,6 @@ type UseUpdateFlowOptions = {
   forcedUpdateAllowed?: boolean;
   notify?: (notice: ToastInput) => void;
   showError?: (reason: unknown, context?: UserErrorContext) => void;
-  onUnauthorized?: () => Promise<unknown> | unknown;
   isPromptBlocked?: () => boolean;
   checkRuntimeComponents?: (input: {
     source: "startup" | "login" | "manual" | "refresh";
@@ -175,8 +163,6 @@ function mergePendingUpdateCheck(
     return next;
   }
   return {
-    accessToken: next.accessToken ?? current.accessToken,
-    bootstrapVersion: next.bootstrapVersion ?? current.bootstrapVersion,
     source: current.source === "manual" || next.source === "manual" ? "manual" : next.source,
     silent: Boolean(current.silent && next.silent),
     inspectOnly: Boolean(current.inspectOnly && next.inspectOnly),
@@ -198,8 +184,12 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     [options.platformTarget]
   );
   const [updateCheckBusy, setUpdateCheckBusy] = useState(false);
+  const [updateInstallBusy, setUpdateInstallBusy] = useState(false);
+  const updateInstallBusyRef = useRef(false);
   const [updateCheck, dispatchUpdateCheck] = useReducer(reduceUpdateCheckState, initialUpdateCheckState);
   const updateChannel = options.updateChannel ?? "stable";
+  const updateChannelRef = useRef(updateChannel);
+  updateChannelRef.current = updateChannel;
   // A result confirmed for another channel (e.g. a beta build after the user
   // turned beta off, and the recheck failed) must never drive prompts or downloads.
   const updateCheckResult = updateCheck.result?.channel === updateChannel ? updateCheck.result : null;
@@ -207,12 +197,12 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
   const [updateDialogOpened, setUpdateDialogOpened] = useState(false);
   const [updateCenter, setUpdateCenter] = useState<UpdateCenterState>(createIdleUpdateCenterState);
   const [updateDownload, setUpdateDownload] = useState<UpdateDownloadState>(createIdleUpdateDownloadState);
-  const lastKnownUpdateArtifactRef = useRef<ClientUpdateArtifact | null>(null);
   const lastUpdatePromptVersionRef = useRef<string | null>(null);
   const deferredUpdatePromptKeyRef = useRef<string | null>(null);
   const completedDownloadIdentityRef = useRef<string | null>(null);
   const updateCheckBusyRef = useRef(false);
   const pendingUpdateCheckRef = useRef<RunUpdateCheckOptions | null>(null);
+  const latestUpdateCheckRef = useRef<((input: RunUpdateCheckOptions) => Promise<ClientUpdateCheckResult | null>) | null>(null);
   // 后台静默下载：用户没有主动介入时不展示进度、失败只记诊断日志。
   const [backgroundUpdateDownload, setBackgroundUpdateDownload] = useState(false);
   const backgroundDownloadRef = useRef(false);
@@ -279,14 +269,12 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     completedDownloadIdentityRef.current = null;
   }, [updateArtifactIdentity]);
 
-  useEffect(() => {
-    if (updateCheckResult?.artifact) {
-      lastKnownUpdateArtifactRef.current = updateCheckResult.artifact;
-    }
-  }, [updateCheckResult?.artifact]);
-
   const handleUpdateDownload = useCallback(async (request: { silent?: boolean; keepDialogOpen?: boolean } = {}) => {
+    if (updateInstallBusyRef.current) return false;
     const silent = request.silent === true;
+    const installationHint = updatePlatform === "macos"
+      ? "安装时将校验并自动替换应用，完成后重新启动。"
+      : "请按安装器提示完成安装。";
     const resolvedDownloadUrl = resolveUpdateDownloadUrl(effectiveUpdate?.downloadUrl ?? null);
     const originDownloadUrl = resolveUpdateDownloadUrl(effectiveUpdate?.artifact?.originDownloadUrl ?? null);
 
@@ -295,7 +283,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       options.notify?.({
         tone: "warning",
         title: "暂无下载地址",
-        message: "当前版本暂时无法下载，请稍后重试，或前往官网下载最新版本。"
+        message: "当前版本暂无可用安装包，请稍后在更新中心重新检查。"
       });
       return false;
     }
@@ -325,6 +313,11 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       return true;
     }
 
+    if (!updateArtifactIdentity || artifactIdentityRef.current !== updateArtifactIdentity) {
+      if (!silent) options.notify?.({ tone: "warning", title: "可用版本已变化", message: "请重新检查更新后再下载。" });
+      return false;
+    }
+
     if (updateDownload.phase === "preparing" || updateDownload.phase === "downloading" || updateDownload.phase === "verifying") {
       // 用户主动点了下载：接管正在进行的后台下载，之后的进度与失败按正常流程展示。
       if (!silent && backgroundDownloadRef.current) markBackgroundDownload(false);
@@ -336,28 +329,15 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       updateDownload.localPath &&
       completedDownloadIdentityRef.current === updateArtifactIdentity
     ) {
-      try {
-        if (updatePlatform !== "windows") {
-          await openDesktopInstaller(updateDownload.localPath);
-        }
+      setReadyIdentity(updateArtifactIdentity);
+      if (!silent) {
         options.notify?.({
           tone: "success",
           title: "准备安装",
-          message: "本地更新包可用。请点击“安装并重启”完成安装。"
-        });
-        return true;
-      } catch (reason) {
-        setUpdateDownload(createIdleUpdateDownloadState());
-        const failure = describeUserError(reason, { context: "update_install" });
-        recordUpdateDiagnostic(failure, "update_install");
-        options.notify?.({
-          tone: "warning",
-          title: "本地更新包不可用",
-          message: reason instanceof Error
-            ? `${formatUserError(failure)}\n已切换为重新下载安装器。`
-            : "已切换为重新下载安装器。"
+          message: `本地更新包已就绪。${installationHint}`
         });
       }
+      return true;
     }
 
     const preferredFileName =
@@ -384,61 +364,30 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     });
 
     try {
-      let usedFallback = false;
-      let result;
-      const runDownload = (preferredCandidate: "fastest" | "mirror" | "origin") => downloadDesktopInstaller({
-        preferredCandidate,
-        fileName: preferredFileName,
-        expectedVersion: effectiveUpdate.latestVersion,
-        currentVersion: options.appVersion,
-        channel: options.updateChannel ?? "stable",
-        onProgress: (progress) => {
-          setUpdateDownload((current) => normalizeUpdateDownloadProgress(current, progress));
-        }
-      });
-      const announceFallback = (message: string) => setUpdateDownload((current) => ({ ...current, phase: "preparing", message }));
-      // 先测速走最快的 GitHub 加速镜像；失败回到服务器地址，最后才是原始地址。
-      try {
-        result = await runDownload("fastest");
-      } catch {
-        announceFallback("加速镜像下载失败，正在改用服务器下载…");
-        try {
-          result = await runDownload("mirror");
-        } catch (reason) {
-          if (!originDownloadUrl || originDownloadUrl === resolvedDownloadUrl) {
-            throw reason;
-          }
-          usedFallback = true;
-          announceFallback("加速下载失败，正在回退到原始下载地址…");
-          result = await runDownload("origin");
-        }
-      }
+      const artifact = effectiveUpdate.artifact;
+      if (!artifact?.fileHash || !artifact.fileSizeBytes) throw new Error("GitHub 安装包缺少完整性校验信息。");
+      const candidates = artifact.downloadCandidates?.length
+        ? artifact.downloadCandidates
+        : [originDownloadUrl ?? resolvedDownloadUrl];
+      const pendingProbes = urlsNeedingProbe(candidates);
+      if (pendingProbes.length > 1) rememberProbeResults(await probeDownloadCandidates(pendingProbes).catch(() => []));
+      const downloaded: { result: Awaited<ReturnType<typeof downloadDesktopInstaller>> } = { result: null };
+      const usedUrl = await downloadWithMirrorFallback(rankDownloadUrls(candidates), async (url, minBytesPerSecond) => {
+        downloaded.result = await downloadDesktopInstaller({
+          url, sha256: artifact.fileHash!, fileSizeBytes: artifact.fileSizeBytes!, minBytesPerSecond,
+          fileName: preferredFileName, expectedVersion: effectiveUpdate.latestVersion,
+          currentVersion: options.appVersion, channel: options.updateChannel ?? "stable",
+          onProgress: progress => setUpdateDownload(current => normalizeUpdateDownloadProgress(current, progress))
+        });
+        if (!downloaded.result?.localPath) throw new Error("安装器下载失败。");
+      }, reason => /download_cancelled|cancelled|canceled|取消|AbortError/i.test(reason instanceof Error ? reason.message : String(reason)));
+      const usedFallback = usedUrl === originDownloadUrl && candidates[0] !== originDownloadUrl;
+      const result = downloaded.result;
 
       if (!result?.localPath) {
         throw new Error("安装器下载失败");
       }
 
-      setUpdateDownload({
-        phase: "completed",
-        fileName: result.fileName,
-        downloadedBytes: result.totalBytes ?? effectiveUpdate.artifact?.fileSizeBytes ?? 0,
-        totalBytes: result.totalBytes ?? effectiveUpdate.artifact?.fileSizeBytes ?? null,
-        localPath: result.localPath,
-        message: "更新包下载完成，点击下方按钮开始安装。"
-      });
-
-      completedDownloadIdentityRef.current = targetIdentity;
-      if (updatePlatform !== "windows") {
-        // Mac/DMG 与安装器路径：先登记待安装文件，由用户点击“安装并重启”再退出安装。
-        await openDesktopInstaller(result.localPath);
-        setUpdateDownload((current) => ({
-          ...current,
-          phase: "completed",
-          message: usedFallback
-            ? "更新包已下载完成（已回退原始地址）。请点击“安装并重启”。"
-            : "更新包已下载完成。请点击“安装并重启”，应用退出后自动完成替换安装。"
-        }));
-      }
       // 下载期间更新包已变化（例如切换了测试版通道）：旧包不能再拿来安装。
       // 不论是后台下载还是用户接管后的前台下载，都直接丢弃，回到空闲状态重新判断。
       const stillCurrent = artifactIdentityRef.current === targetIdentity;
@@ -456,6 +405,17 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         }
         return false;
       }
+      setUpdateDownload({
+        phase: "completed",
+        fileName: result.fileName,
+        downloadedBytes: result.totalBytes ?? effectiveUpdate.artifact?.fileSizeBytes ?? 0,
+        totalBytes: result.totalBytes ?? effectiveUpdate.artifact?.fileSizeBytes ?? null,
+        localPath: result.localPath,
+        message: usedFallback
+          ? `更新包已下载并校验（已回退原始地址）。${installationHint}`
+          : `更新包已下载并校验。${installationHint}`
+      });
+      completedDownloadIdentityRef.current = targetIdentity;
       setReadyIdentity(targetIdentity);
       if (shownInBackground) {
         // 后台下载完成：不弹窗、不提示，“检查更新”按钮变为“重启更新”。
@@ -466,7 +426,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       options.notify?.({
         tone: "success",
         title: "更新包已就绪",
-        message: "下载完成。点击“安装并重启”后，应用会退出并自动完成安装。"
+        message: `下载完成。${installationHint}`
       });
       return true;
     } catch (reason) {
@@ -513,6 +473,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
 
   useEffect(() => {
     if (silentDownloadInFlightRef.current) return;
+    if (updateInstallBusyRef.current) return;
     if (forcedAutoUpdateCandidate) {
       // 强制更新：不受“自动在后台下载更新”开关影响，直接下载；失败后回到原有的强制更新界面手动重试。
       if (!shouldStartAutoUpdateDownload({
@@ -550,6 +511,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     options.forcedUpdateAllowed,
     silentUpdateCandidate,
     updateArtifactIdentity,
+    updateInstallBusy,
     updateDownload.phase
   ]);
 
@@ -589,12 +551,13 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
 
   useEffect(() => {
     if (!forcedInstallDue || forcedInstallCountdown !== null || !updateArtifactIdentity) return;
-    // 强制更新已下载校验：先把主窗口显示出来（可能在托盘里），再弹出不可取消的倒计时提示，结束后自动安装并重启。
+    if (updateInstallBusyRef.current) return;
+      // 强制更新已下载校验：显示主窗口并提示倒计时，结束后交给平台安装器。
     forcedInstallAttemptedRef.current.add(updateArtifactIdentity);
     void focusDesktopWindow();
     setForcedInstallCountdown(FORCED_INSTALL_COUNTDOWN_SECONDS);
     setUpdateDialogOpened(true);
-  }, [forcedInstallCountdown, forcedInstallDue, updateArtifactIdentity]);
+  }, [forcedInstallCountdown, forcedInstallDue, updateArtifactIdentity, updateInstallBusy]);
 
   const installForcedUpdateNowRef = useRef<() => void>(() => {});
   useEffect(() => {
@@ -624,6 +587,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
   }, []);
 
   const closeUpdateCenter = useCallback(() => {
+    if (updateInstallBusyRef.current) return;
     setUpdateCenter((current) => ({
       ...current,
       opened: false
@@ -632,6 +596,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
 
   const runUpdateCheck = useCallback(
     async (runOptions: RunUpdateCheckOptions) => {
+      if (updateInstallBusyRef.current || updateChannelRef.current !== updateChannel) return null;
       if (updateCheckBusyRef.current) {
         pendingUpdateCheckRef.current = mergePendingUpdateCheck(pendingUpdateCheckRef.current, runOptions);
         return null;
@@ -657,36 +622,19 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
             )
           }));
         }
-        const checkedUpdate = await checkClientUpdate({
+        const result = await checkGitHubClientUpdate({
           currentVersion: options.appVersion,
           platform: updatePlatform,
-          channel: options.updateChannel ?? "stable",
-          artifactType: preferredArtifactType(updatePlatform),
-          clientMirrorPrefix: options.runtimeMirrorPrefix,
-          accessToken: runOptions.accessToken ?? options.accessToken ?? undefined
+          channel: updateChannel,
+          force: runOptions.source === "manual"
         });
-        if (updatePlatform === "windows" && checkedUpdate?.hasUpdate && checkedUpdate.deliveryMode === "desktop_full_replace") {
-          throw new Error("当前版本的更新包暂时不可用，请稍后再试，或前往官网下载最新版本。");
-        }
-        const result =
-          checkedUpdate ??
-          (updatePlatform === "windows"
-            ? null
-            : createLegacyUpdateResult(
-                runOptions.bootstrapVersion ?? options.bootstrapVersion ?? null,
-                updatePlatform,
-                options.appVersion,
-                options.runtimeMirrorPrefix,
-                lastKnownUpdateArtifactRef.current,
-                options.updateChannel ?? "stable"
-              ));
 
-        dispatchUpdateCheck({ type: "confirmed", result });
+        if (updateChannelRef.current !== updateChannel) return null;
 
-        // 如果服务端返回的最新版本就是当前版本，说明当前已是最新，不触发更新提示
+        // 如果 GitHub 发布的最新版本就是当前版本，说明当前已是最新，不触发更新提示
         const effectiveHasUpdate = hasActionableUpdate(result, options.appVersion);
 
-        // 默认：仅手动/更新中心检查核心组件；启动只查软件版本（国内接口快）
+        // 默认：仅手动/更新中心检查核心组件；启动只查 GitHub 软件版本
         const includeRuntime =
           runOptions.includeRuntimeComponents ?? runOptions.source === "manual";
         const inspectOnly =
@@ -708,6 +656,9 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           }
         }
 
+        if (updateChannelRef.current !== updateChannel) return null;
+        dispatchUpdateCheck({ type: "confirmed", result });
+
         const appItem = buildAppUpdateCenterItem({
           appVersion: options.appVersion,
           update: result,
@@ -716,7 +667,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         const xrayItem: UpdateCenterItem = {
           key: "xray",
           label: "Xray",
-          status: runtimeSummary?.xray?.available
+          status: runtimeSummary?.sourceConfigured === false ? "unsupported" : runtimeSummary?.xray?.available
             ? "available"
             : runtimeSummary?.xray
               ? runtimeSummary.xray.current
@@ -733,7 +684,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         const geoItem: UpdateCenterItem = {
           key: "geo",
           label: "GEO 数据",
-          status: runtimeSummary?.geo?.available
+          status: runtimeSummary?.sourceConfigured === false ? "unsupported" : runtimeSummary?.geo?.available
             ? "available"
             : runtimeSummary?.geo
               ? runtimeSummary.geo.current
@@ -774,7 +725,6 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           setUpdateDownload(createIdleUpdateDownloadState());
           deferredUpdatePromptKeyRef.current = null;
           lastUpdatePromptVersionRef.current = null;
-          lastKnownUpdateArtifactRef.current = null;
           // 手动检测走更新中心弹窗，不再用 toast 刷屏
           return result;
         }
@@ -792,7 +742,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           options.autoDownloadUpdates === true &&
           isSilentUpdateCandidate({
             update: result,
-            channel: options.updateChannel ?? "stable",
+            channel: updateChannel,
             appVersion: options.appVersion,
             actionable: effectiveHasUpdate,
             platform: updatePlatform
@@ -820,17 +770,16 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         }
         return result;
       } catch (reason) {
+        if (updateChannelRef.current !== updateChannel) return null;
         dispatchUpdateCheck({ type: "failed" });
+        const failureMessage = reason instanceof GitHubReleaseConfigurationError
+          ? reason.message : "暂时无法获取版本信息，请稍后重试。";
         setUpdateCenter((current) => ({
           ...current, checking: false, updatingKey: null,
-          items: current.items.map((item) => item.status === "checking" || item.status === "updating"
-            ? { ...item, status: "failed", canUpdate: false, message: "暂时无法获取版本信息，请稍后重试。" }
+          items: current.items.map((item) => (item.key === "app" && (item.status === "idle" || item.status === "failed" || item.status === "unsupported")) || item.status === "checking" || item.status === "updating"
+            ? { ...item, status: reason instanceof GitHubReleaseConfigurationError ? "unsupported" : "failed", canUpdate: false, message: failureMessage }
             : item)
         }));
-        if (isUnauthorizedApiError(reason)) {
-          await options.onUnauthorized?.();
-          return null;
-        }
         if (!runOptions.openUpdateCenter && (!runOptions.silent || runOptions.source === "manual")) {
           options.showError?.(reason || "暂时无法检查更新，请稍后重试。", "update_check");
         }
@@ -844,54 +793,38 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         pendingUpdateCheckRef.current = null;
         if (pendingRun) {
           window.setTimeout(() => {
-            void runUpdateCheck(pendingRun);
+            void latestUpdateCheckRef.current?.(pendingRun);
           }, 0);
         }
       }
     },
-    [options, updatePlatform]
+    [options, updateChannel, updatePlatform]
   );
-
-  const previousMirrorPrefix = useRef(options.runtimeMirrorPrefix);
-  useEffect(() => {
-    if (previousMirrorPrefix.current === options.runtimeMirrorPrefix) return;
-    previousMirrorPrefix.current = options.runtimeMirrorPrefix;
-    if (updateDownload.phase !== "failed") return;
-    // A failed installer may still hold a URL resolved through the removed mirror.
-    // Hide its retry action until fresh metadata has supplied the direct route.
-    dispatchUpdateCheck({type:"reset"});
-    setUpdateDownload(createIdleUpdateDownloadState());
-    setUpdateDialogOpened(false);
-    lastKnownUpdateArtifactRef.current = null;
-    void runUpdateCheck({source:"manual",inspectOnly:true,includeRuntimeComponents:false});
-  }, [options.runtimeMirrorPrefix, runUpdateCheck, updateDownload.phase]);
+  latestUpdateCheckRef.current = runUpdateCheck;
 
   const handleManualUpdateCheck = useCallback(async () => {
     return runUpdateCheck({
-      accessToken: options.accessToken,
-      bootstrapVersion: options.bootstrapVersion ?? null,
       source: "manual",
       silent: true,
       inspectOnly: true,
       includeRuntimeComponents: true,
       openUpdateCenter: true
     });
-  }, [options.accessToken, options.bootstrapVersion, runUpdateCheck]);
+  }, [runUpdateCheck]);
 
   const handleUpdateCenterCheckOnly = useCallback(async () => {
     return runUpdateCheck({
-      accessToken: options.accessToken,
-      bootstrapVersion: options.bootstrapVersion ?? null,
       source: "manual",
       silent: true,
       inspectOnly: true,
       includeRuntimeComponents: true,
       openUpdateCenter: true
     });
-  }, [options.accessToken, options.bootstrapVersion, runUpdateCheck]);
+  }, [runUpdateCheck]);
 
   const handleUpdateCenterUpdateOne = useCallback(
     async (key: UpdateCenterItemKey) => {
+      if (updateInstallBusyRef.current) return null;
       setUpdateCenter((current) => ({
         ...current,
         opened: true,
@@ -909,8 +842,6 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       try {
         if (key === "app") {
           const result = await runUpdateCheck({
-            accessToken: options.accessToken,
-            bootstrapVersion: options.bootstrapVersion ?? null,
             source: "manual",
             silent: true,
             inspectOnly: true,
@@ -923,8 +854,6 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           return result;
         }
         return runUpdateCheck({
-          accessToken: options.accessToken,
-          bootstrapVersion: options.bootstrapVersion ?? null,
           source: "manual",
           silent: true,
           inspectOnly: false,
@@ -939,7 +868,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         }));
       }
     },
-    [options.accessToken, options.appVersion, options.bootstrapVersion, runUpdateCheck]
+    [options.appVersion, runUpdateCheck]
   );
 
   const runUpdateCheckAndFocus = useCallback(
@@ -954,25 +883,64 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
   );
 
   const handleQuitForUpdate = useCallback(async () => {
+    if (updateInstallBusyRef.current) return false;
+    if (updateCheckBusyRef.current) {
+      options.showError?.("正在检查更新，请稍后再安装。", "update_install");
+      return false;
+    }
     if (updateDownload.phase !== "completed" || !updateDownload.localPath) {
       options.showError?.("更新包尚未准备就绪，请先完成下载。");
       return false;
     }
+    if (!updateArtifactIdentity || artifactIdentityRef.current !== updateArtifactIdentity ||
+      completedDownloadIdentityRef.current !== updateArtifactIdentity || readyIdentity !== updateArtifactIdentity ||
+      effectiveUpdate?.channel !== updateChannel || updateChannelRef.current !== updateChannel) {
+      options.showError?.("可用版本已变化，请重新检查更新后再安装。", "update_install");
+      return false;
+    }
+    updateInstallBusyRef.current = true;
+    setUpdateInstallBusy(true);
+    let macPreparationStarted = false;
+    let handedOff = false;
     try {
       if (updatePlatform === "windows") {
-        await installWindowsUpdate();
+        const result = await installWindowsUpdate();
+        if (!result?.ok) throw new Error("更新安装没有成功启动，请重试。");
       } else {
-        await openDesktopInstaller(updateDownload.localPath);
-        await quitForUpdate();
+        macPreparationStarted = updatePlatform === "macos";
+        const prepared = await openDesktopInstaller(updateDownload.localPath);
+        if (!prepared?.ok) throw new Error("更新安装没有准备完成，请重试。");
+        if (artifactIdentityRef.current !== updateArtifactIdentity ||
+          completedDownloadIdentityRef.current !== updateArtifactIdentity ||
+          updateChannelRef.current !== updateChannel) {
+          throw new Error("可用版本已变化，请重新检查更新后再安装。");
+        }
+        const result = await quitForUpdate();
+        if (!result?.ok) throw new Error("更新安装没有成功交接，请重试。");
       }
       // Keep the confirmed policy and downloaded package retryable until native handoff succeeds.
+      handedOff = true;
       dispatchUpdateCheck({ type: "reset" });
       return true;
     } catch (reason) {
-      options.showError?.(reason || "更新安装没有成功启动，请重试。", "update_install");
+      let failure = reason;
+      if (macPreparationStarted) {
+        try {
+          const cancelled = await cancelPreparedDesktopUpdate();
+          if (!cancelled?.ok) throw new Error("取消更新准备失败");
+        } catch {
+          failure = new Error("更新准备未能取消，请退出应用后重新打开再试。");
+        }
+      }
+      options.showError?.(failure || "更新安装没有成功启动，请重试。", "update_install");
       return false;
+    } finally {
+      if (!handedOff) {
+        updateInstallBusyRef.current = false;
+        setUpdateInstallBusy(false);
+      }
     }
-  }, [effectiveUpdate, options, updateDownload, updatePlatform]);
+  }, [effectiveUpdate, options, readyIdentity, updateArtifactIdentity, updateChannel, updateDownload, updatePlatform]);
 
   // “立即更新”或倒计时结束：走原有的安装流程；失败时停在强制更新界面由用户手动重试。
   const installForcedUpdateNow = useCallback(() => {
@@ -984,12 +952,22 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
   const consumeUpdateInstallReport = useCallback(async () => {
     try {
       const report = await consumeDesktopUpdateInstallReport();
-      if (!report || report.ok) {
+      if (!report) return null;
+      const recoveryAdvice = "暂时无法新建连接或重新安装更新。请保留更新文件并联系客服。";
+      if (!("ok" in report)) {
+        if (report.state !== "pending_recovery") throw new Error("无法识别更新结果");
+        options.notify?.({ tone: "warning", title: "更新结果待确认", message: recoveryAdvice });
+        return null;
+      }
+      if (report.ok) {
         return null;
       }
       const reportedSummary = report.summary?.trim();
       // 报告原文不可展示时不能推断安装包已打开（例如 Start-Process 本身失败），只给中性的失败说明和可操作的下一步。
-      const summary = reportedSummary && isCustomerSafeText(reportedSummary) ? reportedSummary : "更新没有安装完成。请重新检查更新后再试，或到官网下载安装包手动安装。";
+      const safeSummary = reportedSummary && isCustomerSafeText(reportedSummary) ? reportedSummary : null;
+      const summary = report.recoveryPending === true
+        ? (safeSummary ? `${safeSummary} ${recoveryAdvice}` : recoveryAdvice)
+        : (safeSummary ?? "更新未完成。请在更新中心重新检查版本后再试。");
       options.notify?.({
         tone: "warning",
         title: "更新安装未完全成功",
@@ -1009,6 +987,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
   return {
     updatePlatform,
     updateCheckBusy,
+    updateInstallBusy,
     updateCheckResult,
     updateCheckStatus,
     effectiveUpdate,

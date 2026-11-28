@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "purpose": "linux-native-integration-only",
+  "assets": [
+    {
+      "component": "xray",
+      "architecture": "x64",
+      "version": "v26.11.9",
+      "fileName": "xray-v26.11.9-linux-x64.zip",
+      "sourceUrl": "https://github.com/XTLS/Xray-core/releases/download/v26.11.9/Xray-linux-64.zip",
+      "sha256": "b651f7e1d9966ee2c1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82",
+      "sizeBytes": 16754078,
+      "sourceFormat": "zip_entry",
+      "archiveEntryName": "xray"
+    },
+    {
+      "component": "xray",
+      "architecture": "arm64",
+      "version": "v26.11.9",
+      "fileName": "xray-v26.11.9-linux-arm64.zip",
+      "sourceUrl": "https://github.com/XTLS/Xray-core/releases/download/v26.11.9/Xray-linux-arm64-v8a.zip",
+      "sha256": "64ed6858982a7f5eb85d88b811089063bd4f17561f4c8f44e0f1dc8e6f6430be",
+      "sizeBytes": 15231921,
+      "sourceFormat": "zip_entry",
+      "archiveEntryName": "xray"
+    }
+  ]
+}

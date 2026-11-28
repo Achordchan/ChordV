@@ -1,8 +1,12 @@
+import { AnnouncementConfirmButton } from "./components/AnnouncementConfirmButton";
+import { onNativeFocusChanged } from "./lib/nativeBridge";
+import { subscribeNativeLifecycleNotices, type NativeLifecycleNotice } from "./lib/nativeLifecycle";
+import { NativeLifecycleFeedback } from "./components/NativeLifecycleFeedback";
 import { canApplyNativeSessionRefresh } from "./lib/nativeSessionRefresh";
 import { ClientUpdateProgressPanel } from "./components/ClientUpdateProgressPanel";
 import { ClientUpdateModal } from "./components/ClientUpdateModal";
-import { lazy, Suspense } from "react";
 import { shouldReportNodeAccessRevoked } from "./lib/startupReadiness";
+import { useAppReadiness } from "./hooks/useAppReadiness";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { Button, Checkbox, LoadingOverlay, Stack, Text, ThemeIcon, UnstyledButton } from "@mantine/core";
@@ -14,14 +18,12 @@ import type {
   ConnectionMode,
   GeneratedRuntimeConfigDto,
   NodeSummaryDto,
-  SubscriptionStatusDto
+  SubscriptionStatusDto,
+  SessionReasonCode
 } from "@chordv/shared";
 import {
   getApiErrorRawMessage,
   heartbeatSession,
-  isAccessTokenExpiredApiError,
-  isForbiddenApiError,
-  isUnauthorizedApiError,
   probeClientServerLatency,
   type ReleaseChannel
 } from "./api/client";
@@ -40,16 +42,15 @@ import { RoutingRulesModal } from "./components/RoutingRulesModal";
 import { SubscriptionPanel } from "./components/SubscriptionPanel";
 import { UpdateCenterModal } from "./components/UpdateCenterModal";
 import {
-  appReady,
   focusDesktopWindow,
   hasActivePlatformRuntime,
   loadActiveRuntimeConfig,
   loadDesktopOsLabel,
   revealLocalFile,
   subscribeDesktopShellActions,
+  subscribeRuntimeStatusChanged,
   subscribeNativeLeaseHeartbeat,
   subscribeNativeSessionRefreshed,
-  subscribeNativeExitFailure,
   updateDesktopShellSummary,
   type RuntimeNodeProbeResult,
   type RuntimeStatus
@@ -69,6 +70,7 @@ import {
   ConnectionGuidance,
   deriveGuidanceFromMessage,
   deriveGuidanceFromRuntimeFailure,
+  deriveGuidanceFromRuntimeEvent,
   deriveGuidanceFromRuntimeStatus,
   deriveGuidanceFromSubscription,
   guidanceKey,
@@ -92,10 +94,10 @@ import {
   formatTrayTrafficLine
 } from "./lib/appState";
 import {
-  recoverDesktopSessionAfterUnauthorized,
   resolveProactiveAccessTokenRefreshDelay
 } from "./lib/desktopSessionRecovery";
 import { buildProtectedAccessNotice, resolveProtectedAccessReason } from "./lib/sessionLeaseState";
+import { classifyNativeLeaseHeartbeat, createLeaseHeartbeatObserver, createLeaseHeartbeatRunner, readLeaseHeartbeatTiming } from "./lib/leaseHeartbeat";
 import {
   formatVersionLabel,
   updateActionLabel
@@ -116,7 +118,6 @@ import { describeRequiredUpdate } from "./lib/updateState";
 import { readAutoDownloadPreference, writeAutoDownloadPreference } from "./lib/silentUpdate";
 const REMEMBER_CREDENTIALS_KEY = "chordv_remember_credentials";
 const DESKTOP_CLOSE_HINT_KEY = "chordv_desktop_close_hint_ack";
-const RUNTIME_COMPONENT_MIRROR_PREFIX_KEY = "chordv_runtime_component_mirror_prefix";
 const UPDATE_CHANNEL_KEY = "chordv_update_channel";
 
 declare global {
@@ -130,15 +131,15 @@ declare global {
   }
 }
 
-const DownloadProgressDebug = (import.meta.env.DEV || import.meta.env.VITE_CHORDV_LOCAL_PREVIEW === "1")
-  ? lazy(() => import("./dev/DownloadProgressDebug").then(module => ({ default: module.DownloadProgressDebug }))) : null;
 // 只负责展示的 hook 使用面向客户的错误读取器：原始错误不会直接出现在界面上。
 // 读取器接收完整错误对象（保留 HTTP 状态），被隐藏的原文会写入诊断日志。
+const readLoginError = createLoggedUserErrorReader("login");
 const readAnnouncementError = createLoggedUserErrorReader("announcement");
 const readNodeProbeError = createLoggedUserErrorReader("node_probe");
 const readServerProbeError = createLoggedUserErrorReader("server_probe");
 
 export function App() {
+  const appSurface = useRef<HTMLDivElement | null>(null);
   const [session, setSessionState] = useState<AuthSessionDto | null>(null);
   const [bootstrap, setBootstrap] = useState<ClientBootstrapDto | null>(null);
   const [nodes, setNodes] = useState<NodeSummaryDto[]>([]);
@@ -148,16 +149,22 @@ export function App() {
   const [booting, setBooting] = useState(true);
   const startupInspectionKeyRef = useRef<string | null>(null);
   const { mainLayoutReady, windowTransitioning, prepareStartupLayout, windowLayoutError, windowResizeBusy, retryWindowLayout } = useDesktopWindowLayout(Boolean(session && bootstrap), booting);
+  useAppReadiness({ root: appSurface,
+    ready: !booting && !windowTransitioning && !windowLayoutError && !windowResizeBusy,
+    screen: session && bootstrap ? "main" : "login",
+    onFailure: () => showToast({ id: "app-readiness-failed", tone: "danger", title: "启动确认未完成",
+      message: "本地启动确认失败，请重新打开应用后重试。", autoClose: false })
+  });
   const [authBusy, setAuthBusy] = useState(false);
   const [logoutBusy, setLogoutBusy] = useState(false);
   const [logDrawerOpened, setLogDrawerOpened] = useState(false);
   const [routingRulesOpened, setRoutingRulesOpened] = useState(false);
   const [announcementDrawerOpened, setAnnouncementDrawerOpened] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [nativeLifecycleNotice, setNativeLifecycleNotice] = useState<NativeLifecycleNotice | null>(null);
   const [credentials, setCredentials] = useState({ email: "", password: "" });
   const [rememberPassword, setRememberPassword] = useState(false);
-  const [countdown, setCountdown] = useState(0);
   const [now, setNow] = useState(Date.now());
   const [connectionGuidance, setConnectionGuidance] = useState<ConnectionGuidance | null>(null);
   // 连接指引可能只弹对话框、不弹提示条：出现时把错误编号记入“最近错误”（只有编号和时间），打开工单时附带给客服。
@@ -183,6 +190,8 @@ export function App() {
   const lastForegroundSyncErrorRef = useRef<string | null>(null);
   const lastForegroundSyncAtRef = useRef(0);
   const lastLeaseResumeCheckAtRef = useRef(0);
+  const leaseHeartbeatRunner = useRef(createLeaseHeartbeatRunner());
+  const leaseHeartbeatObserver = useRef(createLeaseHeartbeatObserver(leaseHeartbeatFailedAtRef));
   const runtimeRescueTriggeredRef = useRef(false);
   const runtimeRef = useRef<GeneratedRuntimeConfigDto | null>(null);
   const bootstrapRef = useRef<ClientBootstrapDto | null>(null);
@@ -243,7 +252,7 @@ export function App() {
     patchAnnouncements: (updater) => {
       setBootstrap((current) => (current ? { ...current, announcements: updater(current.announcements) } : current));
     },
-    onUnauthorized: recoverSessionAfterUnauthorized,
+    onUnauthorized: () => recoverSessionAfterUnauthorized(),
     readError: readAnnouncementError,
     notify: showToast
   });
@@ -253,7 +262,7 @@ export function App() {
     useSupportPortal({
       accessToken: session?.accessToken ?? null,
       userId: session?.user.id ?? null,
-      onUnauthorized: recoverSessionAfterUnauthorized,
+      onUnauthorized: () => recoverSessionAfterUnauthorized(),
       notify: showToast,
       showError: (reason) => showErrorToast(reason, "support"),
       collectContext: () =>
@@ -273,19 +282,14 @@ export function App() {
       }) => Promise<import("./hooks/useRuntimeAssets").RuntimeAssetsCheckSummary | null>)
     | null
   >(null);
-  // Only legacy mirror-eligible downloads consume this saved override.
-  const [runtimeMirrorPrefix, setRuntimeMirrorPrefix] = useState(() => {
-    try { return localStorage.getItem(RUNTIME_COMPONENT_MIRROR_PREFIX_KEY) ?? ""; } catch { return ""; }
-  });
-  const clearLegacyDownloadMirror = () => {
-    localStorage.removeItem(RUNTIME_COMPONENT_MIRROR_PREFIX_KEY);
-    setRuntimeMirrorPrefix("");
-    showToast({message:"旧下载镜像已清除，请重新下载。",tone:"success"});
-  };
+  useEffect(() => {
+    try { localStorage.removeItem("chordv_runtime_component_mirror_prefix"); } catch { /* 存储不可用不影响启动。 */ }
+  }, []);
   const [updateChannel, setUpdateChannel] = useState<ReleaseChannel>(() => {
     try { return localStorage.getItem(UPDATE_CHANNEL_KEY) === "beta" ? "beta" : "stable"; } catch { return "stable"; }
   });
   const changeUpdateChannel = (channel: ReleaseChannel) => {
+    if (updateInstallBusy) return;
     try { localStorage.setItem(UPDATE_CHANNEL_KEY, channel); } catch { /* keep the in-memory choice */ }
     setUpdateChannel(channel);
   };
@@ -293,15 +297,13 @@ export function App() {
     try { return readAutoDownloadPreference(localStorage); } catch { return true; }
   });
   const changeAutoDownloadUpdates = (enabled: boolean) => {
+    if (updateInstallBusy) return;
     try { writeAutoDownloadPreference(localStorage, enabled); } catch { /* keep the in-memory choice */ }
     setAutoDownloadUpdates(enabled);
   };
   const updateFlow = useUpdateFlow({
-    runtimeMirrorPrefix,
     appVersion,
     platformTarget: desktopStatus.platformTarget,
-    accessToken: session?.accessToken ?? null,
-    bootstrapVersion: bootstrap?.version ?? null,
     updateChannel,
     autoDownloadUpdates,
     // Only download in the background once the main window is up; the login
@@ -311,7 +313,6 @@ export function App() {
     forcedUpdateAllowed: !booting && !windowTransitioning,
     notify: showToast,
     showError: showErrorToast,
-    onUnauthorized: recoverSessionAfterUnauthorized,
     isPromptBlocked: () =>
       booting || windowTransitioning || runtimeAssetsBusy || announcementDrawerOpened || Boolean(forcedAnnouncement),
     checkRuntimeComponents: async (input) => {
@@ -325,6 +326,7 @@ export function App() {
   const {
     updatePlatform,
     updateCheckBusy,
+    updateInstallBusy,
     updateCheckStatus,
     effectiveUpdate,
     forceUpdateRequired,
@@ -369,18 +371,15 @@ export function App() {
     handleCancelRuntimeAssets,
     handleRetryRuntimeAssets
   } = useRuntimeAssets({
-    runtimeMirrorPrefix,
     appVersion,
     platformTarget: desktopStatus.platformTarget,
-    accessToken: session?.accessToken ?? null,
     notify: showToast,
-    onUnauthorized: recoverSessionAfterUnauthorized,
     readError
   });
   const componentVersionSync = useComponentVersionSync({
-    enabled: !booting && mainLayoutReady && !windowTransitioning && !forceUpdateRequired && (updateCheckStatus === "ready" || updateCheckStatus === "failed"),
+    enabled: !booting && mainLayoutReady && !windowTransitioning && !forceUpdateRequired && !updateInstallBusy && (updateCheckStatus === "ready" || updateCheckStatus === "failed"),
     accessToken: session?.accessToken ?? null, status: desktopStatus, assetsBusy: runtimeAssetsBusy,
-    applicationUpdateBusy: ["preparing", "downloading", "verifying"].includes(updateDownload.phase),
+    applicationUpdateBusy: updateInstallBusy || ["preparing", "downloading", "verifying"].includes(updateDownload.phase),
     ensure: ensureRuntimeAssetsReady, onStatus: setDesktopStatus
   });
   runtimeComponentsCheckRef.current = async (input) => {
@@ -428,7 +427,7 @@ export function App() {
     nowMs: now,
     selectedNodeId: selectedNodeId ?? runtime?.node.id ?? null,
     readError: readNodeProbeError,
-    onUnauthorized: recoverSessionAfterUnauthorized,
+    onUnauthorized: () => recoverSessionAfterUnauthorized(),
     // 用原始错误映射一次：4xx 业务提示（如“拒绝访问该节点”）没有编号，二次映射会被误判为本机权限问题。
     onError: (message, reason) => showErrorToast(reason || message, "node_probe"),
     pickNodeId: (targetNodes, preferredId, results) => pickNode(targetNodes, preferredId, results)?.id ?? null,
@@ -468,7 +467,7 @@ export function App() {
     !selectedNodeOffline &&
     desktopStatus.status !== "connected" &&
     desktopStatus.status !== "connecting";
-  const canConnect = canAttemptConnect && runtimeAssetsReady;
+  const canConnect = canAttemptConnect && (runtimeAssetsReady || runtimeAssets.phase === "failed");
   const setConnectionGuidanceForAuth = setConnectionGuidance as Dispatch<
     SetStateAction<import("./hooks/useAuthBootstrap").ConnectionGuidanceLike | null>
   >;
@@ -481,7 +480,7 @@ export function App() {
     nodes: NodeSummaryDto[]
   ) => import("./hooks/useAuthBootstrap").ConnectionGuidanceLike | null;
   const {
-    bootstrapSession,
+    recoverSessionAfterUnauthorized,
     clearSession,
     handleLogin,
     handleLogout,
@@ -489,6 +488,7 @@ export function App() {
     mergeSubscriptionState,
     restoreStoredSession
   } = useAuthBootstrap({
+    getCurrentSession: () => sessionRef.current,
     invalidateSessionOperations,
     session,
     nodes,
@@ -507,7 +507,8 @@ export function App() {
     setConnectionGuidance: setConnectionGuidanceForAuth,
     setGuidanceDialog: setGuidanceDialogForAuth,
     setMode,
-    setError,
+    setError: setLoginError,
+    readLoginError,
     setCredentials,
     setAuthBusy,
     setRefreshing,
@@ -606,7 +607,6 @@ export function App() {
     runUpdateCheckOnOpen: async () => {
       componentVersionSync.requestSync();
       await runUpdateCheck({
-        bootstrapVersion: bootstrap?.version ?? null,
         source: "refresh",
         silent: true,
         includeRuntimeComponents: false
@@ -620,12 +620,17 @@ export function App() {
   useEffect(() => {
     let disposed=false;
     let unlisten:(()=>void)|undefined;
-    void subscribeNativeExitFailure(message=>{
-      if(!disposed)showToast({id:"native-exit-failure",title:"退出未完成",tone:"danger",autoClose:false,
-        message:`${message}。请稍后再次选择“退出 ChordV”重试。`});
+    void subscribeNativeLifecycleNotices(notice=>{
+      if(!disposed)setNativeLifecycleNotice(notice);
     }).then(cleanup=>{if(disposed)cleanup();else unlisten=cleanup;}).catch(()=>null);
     return ()=>{disposed=true;unlisten?.();};
   }, []);
+
+  useEffect(() => {
+    if (desktopStatus.status === "connected") {
+      setNativeLifecycleNotice(notice => notice?.kind === "runtime-interrupted" ? null : notice);
+    }
+  }, [desktopStatus.status]);
 
   useEffect(() => {
     const refreshDelayMs = resolveProactiveAccessTokenRefreshDelay(session);
@@ -641,7 +646,7 @@ export function App() {
 
   const applyLeaseHeartbeatSuccess = useCallback(
     (lease: Awaited<ReturnType<typeof heartbeatSession>>, sessionId: string) => {
-      leaseHeartbeatFailedAtRef.current = null;
+      if (runtimeRef.current?.sessionId !== sessionId || lease.sessionId !== sessionId || lease.status !== "active") return;
       setConnectionGuidance((current) =>
         current &&
         (current.code === "session_replaced" ||
@@ -678,57 +683,62 @@ export function App() {
     [clearSession]
   );
 
-  const attemptLeaseHeartbeat = useCallback(
-    async (accessToken: string, sessionId: string) => {
-      try {
-        const lease = await heartbeatSession(accessToken, sessionId);
-        applyLeaseHeartbeatSuccess(lease, sessionId);
-        return "ok" as const;
-      } catch (reason) {
-        if (isAccessTokenExpiredApiError(reason)) {
-          const recoveredSession = await recoverSessionAfterUnauthorized();
-          const recoveredAccessToken =
-            recoveredSession && recoveredSession.accessToken !== accessToken
-              ? recoveredSession.accessToken
-              : null;
-          if (!recoveredAccessToken) {
-            return "handled" as const;
-          }
-          const recoveredLease = await heartbeatSession(recoveredAccessToken, sessionId);
-          applyLeaseHeartbeatSuccess(recoveredLease, sessionId);
-          return "ok" as const;
-        }
-        if (isForbiddenApiError(reason)) {
-          if (await handleProtectedLeaseAccessRevoked(reason)) {
-            return "handled" as const;
-          }
-          const guidance =
-            deriveGuidanceFromMessage(
-              reason instanceof Error ? readError(reason.message) : "当前连接已失效，请重新连接",
-              {
-                fallbackNodeId: fallbackNode?.id ?? null
-              }
-            ) ??
-            deriveGuidanceFromMessage("当前连接已失效，请重新连接", {
-              fallbackNodeId: fallbackNode?.id ?? null
-            });
-          if (guidance) {
-            leaseHeartbeatFailedAtRef.current = null;
-            await handleForcedGuidance(guidance);
-            return "handled" as const;
-          }
-        }
-        throw reason;
-      }
-    },
-    [
-      applyLeaseHeartbeatSuccess,
-      fallbackNode?.id,
-      handleForcedGuidance,
-      handleProtectedLeaseAccessRevoked,
-      recoverSessionAfterUnauthorized
-    ]
-  );
+  const handleLeaseTermination = useCallback(async (reasonCode: SessionReasonCode, message: string, nativeOwned = false) => {
+    if (reasonCode === "account_disabled" || reasonCode === "team_access_revoked") {
+      const notice = buildProtectedAccessNotice(reasonCode);
+      await clearSession(true);
+      showToast({ tone: "warning", ...notice });
+      return;
+    }
+    const guidance = deriveGuidanceFromRuntimeEvent({ type: "session_revoked", occurredAt: new Date().toISOString(),
+      reasonCode, reasonMessage: message }, fallbackNode?.id ?? null) ??
+      deriveGuidanceFromRuntimeEvent({ type: "session_revoked", occurredAt: new Date().toISOString(), reasonCode: "session_invalid" }, fallbackNode?.id ?? null)!;
+    // Desktop stops in Native; the UI must not race its cleanup or hide a failed restore.
+    if (nativeOwned) applyGuidance(guidance, true, true);
+    else await handleForcedGuidance(guidance);
+  }, [applyGuidance, clearSession, fallbackNode?.id, handleForcedGuidance]);
+
+  const attemptLeaseHeartbeat = useCallback(async (accessToken: string, sessionId: string) => {
+    const generation = sessionGenerationRef.current, epoch = getRuntimeSyncEpoch();
+    const userId = sessionRef.current?.user.id;
+    const isCurrent = () => Boolean(userId && sessionRef.current?.user.id === userId &&
+      sessionGenerationRef.current === generation && getRuntimeSyncEpoch() === epoch &&
+      !isRuntimeStopping() && runtimeRef.current?.sessionId === sessionId);
+    if (!isCurrent()) return;
+    const scope = JSON.stringify([generation, userId, epoch, sessionId]);
+    let graceMs: number;
+    try { graceMs = readLeaseHeartbeatTiming(runtimeRef.current!).graceMs; }
+    catch {
+      await handleLeaseTermination("session_invalid", "租约心跳参数无效，请重新连接。");
+      return;
+    }
+    const outcome = await leaseHeartbeatRunner.current.run({ scope, accessToken, sessionId, isCurrent,
+      request: heartbeatSession, recover: recoverSessionAfterUnauthorized });
+    if (!isCurrent()) return;
+    const decision = leaseHeartbeatObserver.current.observe(scope, outcome, graceMs);
+    if (decision === "ignore") return;
+    if (outcome.kind === "active") { applyLeaseHeartbeatSuccess(outcome.lease, sessionId); return; }
+    if (outcome.kind === "terminal") { await handleLeaseTermination(outcome.reasonCode, outcome.message); return; }
+    if (outcome.kind === "auth_invalid") {
+      await clearSession(true);
+      showToast({ tone: "warning", title: "登录已失效", message: "当前登录已失效，请重新登录。" });
+      return;
+    }
+    if (outcome.kind === "forbidden") {
+      if (await handleProtectedLeaseAccessRevoked(outcome.reason)) return;
+      if (!isCurrent()) return;
+      const guidance = deriveGuidanceFromMessage(getApiErrorRawMessage(outcome.reason), { fallbackNodeId: fallbackNode?.id ?? null });
+      if (guidance) await handleForcedGuidance(guidance);
+      else await handleLeaseTermination("session_invalid", "当前连接已失效，请重新连接。");
+      return;
+    }
+    if (decision === "grace_exceeded") {
+      await handleLeaseTermination("session_invalid", "连接会话持续无法续期，请检查网络后重新连接。");
+    }
+  }, [applyLeaseHeartbeatSuccess, clearSession, fallbackNode?.id, getRuntimeSyncEpoch, handleForcedGuidance,
+    handleLeaseTermination, handleProtectedLeaseAccessRevoked, isRuntimeStopping, recoverSessionAfterUnauthorized]);
+  const attemptLeaseHeartbeatRef = useRef(attemptLeaseHeartbeat);
+  attemptLeaseHeartbeatRef.current = attemptLeaseHeartbeat;
 
   useEffect(() => {
     runtimeRef.current = runtime;
@@ -800,7 +810,7 @@ export function App() {
         checkedAt: current.checkedAt,
         errorMessage: null
       }));
-      const result = await probeClientServerLatency();
+      const result = await probeClientServerLatency(sessionRef.current?.accessToken);
       setServerProbe({
         status: "healthy",
         elapsedMs: result.elapsedMs,
@@ -853,17 +863,16 @@ export function App() {
       if (!sessionRef.current || !nextMode || nextMode === mode || actionBusy) {
         return;
       }
-      setMode(nextMode);
-      await handleSwitchConnection({ mode: nextMode });
+      if (desktopStatus.status !== "connected" || await handleSwitchConnection({ mode: nextMode })) setMode(nextMode);
     };
     trayNodeActionRef.current = async (nodeId) => {
       if (!sessionRef.current || actionBusy || !nodes.some((node) => node.id === nodeId)) {
         return;
       }
-      handleSelectNode(nodeId);
-      if ((runtime?.node.id ?? desktopStatus.activeNodeId) !== nodeId) {
-        await handleSwitchConnection({ nodeId });
+      if (desktopStatus.status === "connected" && (runtime?.node.id ?? desktopStatus.activeNodeId) !== nodeId) {
+        if (!await handleSwitchConnection({ nodeId })) return;
       }
+      handleSelectNode(nodeId);
     };
   });
 
@@ -921,23 +930,30 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void subscribeRuntimeStatusChanged(() => {
+      if (!disposed) void refreshRuntime({ includeLogs: false });
+    }).then((cleanup) => {
+      if (disposed) cleanup();
+      else stop = cleanup;
+    });
     void initializeApp();
-
-    // 启动动画/首屏交互优先；运行态轮询延后，避免与启动 IPC 叠压。
-    let runtimeTimer: number | null = null;
-    const startRuntimePolling = window.setTimeout(() => {
-      runtimeTimer = window.setInterval(() => {
-        void refreshRuntime({ includeLogs: false });
-      }, 5000);
-    }, 5000);
-
-    return () => {
-      window.clearTimeout(startRuntimePolling);
-      if (runtimeTimer !== null) {
-        window.clearInterval(runtimeTimer);
-      }
-    };
+    return () => { disposed = true; stop?.(); };
   }, []);
+
+  const sessionRestoreStarted = useRef(false);
+  useEffect(() => {
+    if (booting || windowTransitioning || sessionRestoreStarted.current) return;
+    sessionRestoreStarted.current = true;
+    void restoreStoredSession().then(async restored => {
+      if (restored?.accessToken && sessionRef.current?.accessToken === restored.accessToken && runtimeRef.current?.sessionId) {
+        await syncForegroundState(restored.accessToken);
+      }
+    }).catch(() => {
+      showToast({ tone: "warning", title: "登录状态未恢复", message: "本地界面已就绪，请重新登录。" });
+    });
+  }, [booting, windowTransitioning, restoreStoredSession, syncForegroundState]);
 
   const openRuntimeLogs = () => {
     setLogDrawerOpened(true);
@@ -959,8 +975,7 @@ export function App() {
   }, [session]);
 
   useEffect(() => {
-    const needsClock = countdown > 0 || probeCooldownLeft > 0;
-    if (!needsClock) {
+    if (probeCooldownLeft <= 0) {
       return;
     }
     const clockTimer = window.setInterval(() => {
@@ -969,27 +984,7 @@ export function App() {
     return () => {
       window.clearInterval(clockTimer);
     };
-  }, [countdown, probeCooldownLeft]);
-
-  useEffect(() => {
-    if (!forcedAnnouncement) {
-      setCountdown(0);
-      return;
-    }
-    setCountdown(forcedAnnouncement.displayMode === "modal_countdown" ? forcedAnnouncement.countdownSeconds : 0);
-  }, [forcedAnnouncement]);
-
-  useEffect(() => {
-    if (!forcedAnnouncement || forcedAnnouncement.displayMode !== "modal_countdown" || countdown <= 0) {
-      return;
-    }
-
-    const timer = window.setTimeout(() => {
-      setCountdown((current) => current - 1);
-    }, 1000);
-
-    return () => window.clearTimeout(timer);
-  }, [forcedAnnouncement, countdown]);
+  }, [probeCooldownLeft]);
 
   useEffect(() => {
     if (desktopStatus.platformTarget === "android" || desktopStatus.platformTarget === "web") {
@@ -1161,74 +1156,33 @@ export function App() {
       if (disposed || isRuntimeStopping() || !event.sessionId) {
         return;
       }
-      if (event.status === "ok") {
-        leaseHeartbeatFailedAtRef.current = null;
-        if (event.leaseExpiresAt) {
-          const nextLeaseExpiresAt = event.leaseExpiresAt;
-          setRuntime((current) =>
-            current && current.sessionId === event.sessionId
-              ? { ...current, leaseExpiresAt: nextLeaseExpiresAt }
-              : current
-          );
-        }
-        return;
-      }
-
       const activeSessionId = runtimeRef.current?.sessionId ?? desktopStatus.activeSessionId;
-      if (!activeSessionId || activeSessionId !== event.sessionId) {
+      const decision = classifyNativeLeaseHeartbeat(event, activeSessionId);
+      if (decision === "ignore" || decision === "transient") return;
+      if (decision === "active") {
+        setRuntime(current => current?.sessionId === event.sessionId
+          ? { ...current, leaseExpiresAt: event.leaseExpiresAt! } : current);
         return;
       }
-
       if (event.reasonCode === "auth_invalid") {
-        const epoch = getRuntimeSyncEpoch();
+        const epoch = getRuntimeSyncEpoch(), generation = sessionGenerationRef.current;
         void (async () => {
           const recoveredSession = await recoverSessionAfterUnauthorized();
-          if (disposed || isRuntimeStopping() || getRuntimeSyncEpoch() !== epoch) return;
-          if (recoveredSession) {
-            leaseHeartbeatFailedAtRef.current = null;
-            return;
+          if (disposed || isRuntimeStopping() || getRuntimeSyncEpoch() !== epoch || sessionGenerationRef.current !== generation ||
+              (runtimeRef.current && runtimeRef.current.sessionId !== event.sessionId)) return;
+          if (!recoveredSession) {
+            await clearSession(true);
+            showToast({ tone: "warning", title: "登录已失效", message: "当前登录已失效，请重新登录。" });
+          } else {
+            await handleLeaseTermination("session_invalid", "原连接已停止，请重新连接。", true);
           }
-          await clearSession(true);
-          showToast({
-            tone: "warning",
-            title: "登录已失效",
-            message: "当前登录态无法继续续租连接，请重新登录。"
-          });
-        })();
+        })().catch(showErrorToast);
         return;
       }
-
-      // 403/404 属于明确失效；网络抖动/5xx 等 heartbeat_failed 必须先走宽限，避免闲置一会儿就弹“连接已失效”。
-      const definitiveInvalid =
-        event.reasonCode === "session_invalid" ||
-        event.reasonCode === "session_expired" ||
-        event.reasonCode === "session_replaced";
-      if (!definitiveInvalid) {
-        const graceSeconds = Math.max(30, runtimeRef.current?.leaseGraceSeconds ?? 300);
-        const nowMs = Date.now();
-        if (!leaseHeartbeatFailedAtRef.current) {
-          leaseHeartbeatFailedAtRef.current = nowMs;
-          return;
-        }
-        if (nowMs - leaseHeartbeatFailedAtRef.current < graceSeconds * 1000) {
-          return;
-        }
-      }
-
-      const guidance =
-        deriveGuidanceFromMessage(event.message ?? "", {
-          fallbackNodeId: fallbackNode?.id ?? null
-        }) ??
-        ({
-          code: "session_invalid" as const,
-          tone: "warning" as const,
-          title: "连接已失效",
-          message: "当前连接已失效，请重新连接。",
-          actionLabel: "重新连接",
-          recommendedNodeId: fallbackNode?.id ?? null
-        });
-      leaseHeartbeatFailedAtRef.current = null;
-      void handleForcedGuidance(guidance);
+      const reasonCode = event.reasonCode === "heartbeat_grace_exceeded" ? "session_invalid" : event.reasonCode;
+      // Unknown native reasons still show a reconnect notice, but only on explicit terminal.
+      void handleLeaseTermination(reasonCode as SessionReasonCode || "session_invalid", event.message ?? "当前连接已失效，请重新连接。", true)
+        .catch(showErrorToast);
     })
       .then((cleanup) => {
         if (disposed) {
@@ -1264,7 +1218,7 @@ export function App() {
     desktopStatus.activeSessionId,
     desktopStatus.platformTarget,
     fallbackNode?.id,
-    handleForcedGuidance,
+    handleLeaseTermination,
     recoverSessionAfterUnauthorized,
     setSession
   ]);
@@ -1290,146 +1244,51 @@ export function App() {
   ]);
 
   useEffect(() => {
-    if (!session || !runtime || desktopStatus.status !== "connected") {
-      leaseHeartbeatFailedAtRef.current = null;
+    if (!session || !runtime || desktopStatus.status !== "connected" ||
+        (desktopStatus.platformTarget !== "android" && desktopStatus.platformTarget !== "web")) return;
+    let disposed = false, timer: number | undefined;
+    let unlistenWindowFocus: (() => void) | undefined;
+    let intervalMs: number;
+    try { intervalMs = readLeaseHeartbeatTiming(runtime).intervalMs; }
+    catch {
+      void handleLeaseTermination("session_invalid", "租约心跳参数无效，请重新连接。").catch(showErrorToast);
       return;
     }
-    if (desktopStatus.platformTarget !== "android" && desktopStatus.platformTarget !== "web") {
-      leaseHeartbeatFailedAtRef.current = null;
-      return;
-    }
-
+    const epoch = getRuntimeSyncEpoch(), generation = sessionGenerationRef.current;
+    const isCurrent = () => !disposed && !isRuntimeStopping() && getRuntimeSyncEpoch() === epoch &&
+      sessionGenerationRef.current === generation && runtimeRef.current?.sessionId === runtime.sessionId;
     const tick = async () => {
-      try {
-        const result = await attemptLeaseHeartbeat(session.accessToken, runtime.sessionId);
-        if (result === "handled") {
-          return;
-        }
-      } catch (reason) {
-        const message = reason instanceof Error ? readError(reason.message) : "当前连接已失效，请重新连接";
-        const immediateGuidance = deriveGuidanceFromMessage(message, {
-          fallbackNodeId: fallbackNode?.id ?? null
-        });
-        if (immediateGuidance) {
-          leaseHeartbeatFailedAtRef.current = null;
-          await handleForcedGuidance(immediateGuidance);
-          return;
-        }
-        const nowMs = Date.now();
-        if (!leaseHeartbeatFailedAtRef.current) {
-          leaseHeartbeatFailedAtRef.current = nowMs;
-          return;
-        }
-        if (nowMs - leaseHeartbeatFailedAtRef.current >= runtime.leaseGraceSeconds * 1000) {
-          await handleForcedGuidance({
-            code: "session_invalid",
-            tone: "warning",
-            title: "连接已失效",
-            message: "当前连接已失效，请重新连接。",
-            actionLabel: "重新连接"
-          });
-          leaseHeartbeatFailedAtRef.current = null;
-        }
-      }
+      if (!isCurrent()) return;
+      const activeSession = sessionRef.current;
+      if (activeSession) await attemptLeaseHeartbeatRef.current(activeSession.accessToken, runtime.sessionId);
     };
-
-    const intervalMs = Math.max(5, runtime.leaseHeartbeatIntervalSeconds) * 1000;
-    const timer = window.setInterval(() => {
-      void tick();
-    }, intervalMs);
-    void tick();
-
-    return () => {
-      window.clearInterval(timer);
+    // HTTP renewals are required for non-native runtimes. Schedule only after completion;
+    // focus/resume uses the same per-lease flight, never another overlapping request.
+    const schedule = async () => {
+      try { await tick(); } catch (reason) { if (isCurrent()) showErrorToast(reason); }
+      if (isCurrent()) timer = window.setTimeout(() => { void schedule(); }, intervalMs);
     };
-  }, [
-    attemptLeaseHeartbeat,
-    desktopStatus.status,
-    runtime?.sessionId,
-    runtime?.leaseHeartbeatIntervalSeconds,
-    runtime?.leaseGraceSeconds,
-    session?.accessToken,
-    fallbackNode?.id
-  ]);
-
-  useEffect(() => {
-    if (!session || !runtime || desktopStatus.status !== "connected") {
-      return;
-    }
-    if (desktopStatus.platformTarget !== "android" && desktopStatus.platformTarget !== "web") {
-      return;
-    }
-
-    let disposed = false;
-    let unlistenWindowFocus: (() => void) | null = null;
-
     const syncLeaseOnResume = () => {
-      if (disposed || document.visibilityState === "hidden" || booting || authBusy || logoutBusy || refreshing || actionBusy) {
-        return;
-      }
+      if (!isCurrent() || document.visibilityState === "hidden") return;
       const nowMs = Date.now();
-      if (nowMs - lastLeaseResumeCheckAtRef.current < 3000) {
-        return;
-      }
+      if (nowMs - lastLeaseResumeCheckAtRef.current < 3000) return;
       lastLeaseResumeCheckAtRef.current = nowMs;
-
-      void (async () => {
-        const activeSession = sessionRef.current;
-        const activeRuntime = runtimeRef.current;
-        if (!activeSession?.accessToken || !activeRuntime || desktopStatus.status !== "connected") {
-          return;
-        }
-        try {
-          await attemptLeaseHeartbeat(activeSession.accessToken, activeRuntime.sessionId);
-        } catch (reason) {
-          const guidance = deriveGuidanceFromMessage(
-            reason instanceof Error ? readError(reason.message) : "当前连接已失效，请重新连接",
-            {
-              fallbackNodeId: fallbackNode?.id ?? null
-            }
-          );
-          if (guidance) {
-            leaseHeartbeatFailedAtRef.current = null;
-            await handleForcedGuidance(guidance);
-          }
-        }
-      })();
+      void tick().catch(reason => { if (isCurrent()) showErrorToast(reason); });
     };
-
+    timer = window.setTimeout(() => { void schedule(); }, 0);
     document.addEventListener("visibilitychange", syncLeaseOnResume);
     window.addEventListener("focus", syncLeaseOnResume);
-
-    void import("@tauri-apps/api/window")
-      .then(({ getCurrentWindow }) => getCurrentWindow().onFocusChanged(({ payload }) => {
-        if (payload) {
-          syncLeaseOnResume();
-        }
-      }))
-      .then((unlisten) => {
-        unlistenWindowFocus = unlisten;
-      })
-      .catch(() => null);
-
+    void onNativeFocusChanged(active => { if (active) syncLeaseOnResume(); })
+      .then(cleanup => { if (disposed) cleanup(); else unlistenWindowFocus = cleanup; }).catch(() => null);
     return () => {
       disposed = true;
+      window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", syncLeaseOnResume);
       window.removeEventListener("focus", syncLeaseOnResume);
       unlistenWindowFocus?.();
     };
-  }, [
-    actionBusy,
-    attemptLeaseHeartbeat,
-    authBusy,
-    booting,
-    desktopStatus.platformTarget,
-    desktopStatus.status,
-    fallbackNode?.id,
-    handleForcedGuidance,
-    logoutBusy,
-    refreshing,
-    runtime?.sessionId,
-    session?.accessToken
-  ]);
+  }, [desktopStatus.status, desktopStatus.platformTarget, runtime?.sessionId, runtime?.leaseHeartbeatIntervalSeconds,
+      runtime?.leaseGraceSeconds, session?.user.id, sessionGenerationRef.current, getRuntimeSyncEpoch, isRuntimeStopping]);
 
   useEffect(() => {
     if (booting || !session || actionBusy || desktopStatus.status !== "connected" || !bootstrap?.subscription) {
@@ -1602,7 +1461,6 @@ export function App() {
   }, [booting, bootstrap, desktopStatus.platformTarget, ensureRuntimeAssetsReady, session]);
 
   async function initializeApp() {
-    let restoredAccessToken: string | undefined;
     try {
       const rememberedCredentials = loadRememberedCredentials();
       if (rememberedCredentials) {
@@ -1615,23 +1473,18 @@ export function App() {
       if (localRuntime?.sessionId) {
         setRuntime(localRuntime);
       }
-      const restoredSession = await restoreStoredSession();
-      restoredAccessToken = restoredSession?.accessToken;
-      if (restoredSession?.accessToken && localRuntime?.sessionId) {
-        await syncForegroundState(restoredSession.accessToken).catch(() => null);
-      }
+    } catch {
+      showToast({ tone: "warning", title: "本地状态未完整恢复", message: "请在界面中检查本机运行状态后重试。" });
     } finally {
-      await prepareStartupLayout(Boolean(restoredAccessToken)).catch(() => null);
+      await prepareStartupLayout(false).catch(() => null);
       // Commit the correctly sized page before showing/focusing the native window.
       flushSync(() => setBooting(false));
-      await appReady().catch(() => null);
       void focusDesktopWindow();
       window.setTimeout(() => {
         void consumeUpdateInstallReport();
       }, 200);
       window.setTimeout(() => {
         void runUpdateCheck({
-          accessToken: restoredAccessToken,
           source: "startup",
           silent: true,
           includeRuntimeComponents: false
@@ -1640,14 +1493,6 @@ export function App() {
     }
   }
 
-  async function recoverSessionAfterUnauthorized() {
-    return recoverDesktopSessionAfterUnauthorized({
-      taskRef: unauthorizedRecoveryTaskRef,
-      currentSession: sessionRef.current,
-      bootstrapSession: (nextSession) => bootstrapSession(nextSession, false, true, false),
-      clearSession
-    });
-  }
 
   function handleNodeProbeGuidance(
     guidance: import("./hooks/useNodeProbe").NodeProbeGuidance,
@@ -1658,13 +1503,6 @@ export function App() {
 
   function openAnnouncementDrawer() {
     setAnnouncementDrawerOpened(true);
-  }
-
-  async function acknowledgeAnnouncement() {
-    const acknowledged = await syncAcknowledgeAnnouncement(forcedAnnouncement ?? undefined);
-    if (acknowledged) {
-      setCountdown(0);
-    }
   }
 
   async function acknowledgeCloseHint() {
@@ -1707,13 +1545,12 @@ export function App() {
     ) : null;
 
   return (
-    <div className={appClassName}>
+    <div ref={appSurface} className={appClassName}>
       {macTitleBar ? (
-        <div className="app-titlebar" data-tauri-drag-region>
+        <div className="app-titlebar">
           <span className="app-titlebar__title">ChordV v{appVersion.replace(/^v/i, "")}</span>
         </div>
       ) : null}
-      {DownloadProgressDebug ? <Suspense fallback={null}><DownloadProgressDebug realDownloadVisible={(runtimeAssets.phase !== "idle" && runtimeAssets.phase !== "ready") || updateDownload.phase !== "idle"}/></Suspense> : null}
       <LoadingOverlay visible={booting} zIndex={200} overlayProps={{ color: "#fff", backgroundOpacity: 1 }} />
       {bootstrap && !windowTransitioning ? (
         <MeteringFloatingBanner
@@ -1721,11 +1558,11 @@ export function App() {
           message={bootstrap.subscription.meteringMessage ?? null}
         />
       ) : null}
-      {!windowTransitioning && ((runtimeAssets.phase !== "idle" && runtimeAssets.phase !== "ready") || (updateDownload.phase !== "idle" && !updateDialogOpened && !backgroundUpdateDownload)) ? (
+      {!windowTransitioning && ((mainLayoutReady && session && bootstrap && runtimeAssets.phase !== "idle" && runtimeAssets.phase !== "ready" && runtimeAssets.phase !== "unconfigured") || (updateDownload.phase !== "idle" && !updateDialogOpened && !backgroundUpdateDownload)) ? (
         <div className="desktop-runtime-overlay" data-metering-notice={bootstrap?.subscription.meteringStatus === "degraded" && Boolean(bootstrap.subscription.meteringMessage) || undefined}>
           <div className="desktop-runtime-overlay__inner">
-            <RuntimeAssetsBanner onResetLegacyMirror={runtimeMirrorPrefix ? clearLegacyDownloadMirror : null} state={runtimeAssets} onRetry={handleRetryRuntimeAssets} onCancel={handleCancelRuntimeAssets}/>
-            {!updateDialogOpened && !backgroundUpdateDownload ? <ClientUpdateProgressPanel onResetLegacyMirror={runtimeMirrorPrefix ? clearLegacyDownloadMirror : null} state={updateDownload} version={effectiveUpdate?.latestVersion} onRetry={()=>void handleUpdateDownload()} onInstall={()=>void handleQuitForUpdate()}/> : null}
+            {mainLayoutReady && session && bootstrap ? <RuntimeAssetsBanner state={runtimeAssets} disabled={updateInstallBusy} onRetry={handleRetryRuntimeAssets} onCancel={handleCancelRuntimeAssets}/> : null}
+            {!updateDialogOpened && !backgroundUpdateDownload ? <ClientUpdateProgressPanel state={updateDownload} installBusy={updateInstallBusy} version={effectiveUpdate?.latestVersion} onRetry={()=>void handleUpdateDownload()} onInstall={()=>void handleQuitForUpdate()}/> : null}
           </div>
         </div>
       ) : null}
@@ -1736,7 +1573,8 @@ export function App() {
           password={credentials.password}
           rememberPassword={rememberPassword}
           loading={authBusy || windowTransitioning || Boolean(session && bootstrap)}
-          error={null}
+          error={loginError}
+          lifecycleFeedback={nativeLifecycleNotice ? { notice: nativeLifecycleNotice, onDismiss: () => setNativeLifecycleNotice(null) } : undefined}
           windowLayoutError={windowLayoutError}
           windowResizeBusy={windowResizeBusy}
           onRetryWindowLayout={retryWindowLayout}
@@ -1747,8 +1585,8 @@ export function App() {
               ? `当前运行状态：${runtimeDisplayError}`
               : "登录态缺失时，你仍然可以先停止本地内核，确保代理和网络恢复正常。"
           }
-          onEmailChange={(value) => setCredentials((current) => ({ ...current, email: value }))}
-          onPasswordChange={(value) => setCredentials((current) => ({ ...current, password: value }))}
+          onEmailChange={(value) => { setLoginError(null); setCredentials((current) => ({ ...current, email: value })); }}
+          onPasswordChange={(value) => { setLoginError(null); setCredentials((current) => ({ ...current, password: value })); }}
           onRememberPasswordChange={(checked) => {
             setRememberPassword(checked);
             if (!checked) {
@@ -1760,7 +1598,10 @@ export function App() {
         />
       ) : mobileHomeMode ? (
         <div className="desktop-main desktop-main--mobile-home">
-          {forceUpdateNotice ? <div className="desktop-mobile-home__notice">{forceUpdateNotice}</div> : null}
+          {forceUpdateNotice || nativeLifecycleNotice ? <Stack gap="xs" className="desktop-mobile-home__notice">
+            {nativeLifecycleNotice ? <NativeLifecycleFeedback notice={nativeLifecycleNotice} onDismiss={() => setNativeLifecycleNotice(null)} /> : null}
+            {forceUpdateNotice}
+          </Stack> : null}
 
           <div className="desktop-mobile-home__screen">
             {mobileTab === "home" ? (
@@ -1769,8 +1610,8 @@ export function App() {
                   modes={bootstrap.policies.modes}
                   mode={mode}
                   canConnect={canConnect}
-                  modeLocked={modeLocked}
-                  primaryBusy={actionBusy !== null}
+                  modeLocked={modeLocked || updateInstallBusy}
+                  primaryBusy={actionBusy !== null || updateInstallBusy}
                   busyAction={actionBusy}
                   primaryLabel={primaryButtonLabel(
                     desktopStatus.status,
@@ -1785,7 +1626,7 @@ export function App() {
                   error={runtimeDisplayError}
                   runtimeAssetsPhase={runtimeAssets.phase}
                   onModeChange={setMode}
-                  onPrimaryAction={() => void handlePrimaryAction()}
+                  onPrimaryAction={() => { if (!updateInstallBusy) void handlePrimaryAction(); }}
                   onOpenRoutingRules={() => setRoutingRulesOpened(true)}
                   onOpenLogs={openRuntimeLogs}
                 />
@@ -1793,6 +1634,7 @@ export function App() {
             ) : mobileTab === "nodes" ? (
               <div className="desktop-mobile-home__stack">
                 <NodeListPanel
+                  subscriptionActive={bootstrap.subscription.state === "active"}
                   nodes={nodes}
                   selectedNodeId={selectedNodeId}
                   probeResults={probeResults}
@@ -1817,7 +1659,7 @@ export function App() {
                   supportUnreadCount={supportUnreadCount}
                   supportOpening={supportOpening}
                   refreshing={refreshing}
-                  updateBusy={updateCheckBusy}
+                  updateBusy={updateCheckBusy || updateInstallBusy}
               updateStatusDescription={updateStatusDescription}
                   hasUpdate={effectiveUpdateActionable}
                   forceUpdate={forceUpdateRequired && effectiveUpdateActionable}
@@ -1883,7 +1725,7 @@ export function App() {
           </div>
         </div>
       ) : (
-        <div className="desktop-main">
+        <div className={`desktop-main${nativeLifecycleNotice ? " desktop-main--lifecycle-feedback" : ""}`}>
           <Stack gap="sm">
             <SubscriptionPanel
               bootstrap={bootstrap}
@@ -1891,7 +1733,7 @@ export function App() {
               supportUnreadCount={supportUnreadCount}
               supportOpening={supportOpening}
               refreshing={refreshing}
-              updateBusy={updateCheckBusy}
+              updateBusy={updateCheckBusy || updateInstallBusy}
               updateStatusDescription={updateStatusDescription}
               hasUpdate={effectiveUpdateActionable}
               forceUpdate={forceUpdateRequired && effectiveUpdateActionable}
@@ -1909,8 +1751,11 @@ export function App() {
             />
           </Stack>
 
+          {nativeLifecycleNotice ? <NativeLifecycleFeedback notice={nativeLifecycleNotice} onDismiss={() => setNativeLifecycleNotice(null)} /> : null}
+
           <div className="desktop-content">
             <NodeListPanel
+              subscriptionActive={bootstrap.subscription.state === "active"}
               nodes={nodes}
               selectedNodeId={selectedNodeId}
               probeResults={probeResults}
@@ -1924,8 +1769,8 @@ export function App() {
               modes={bootstrap.policies.modes}
               mode={mode}
               canConnect={canConnect}
-              modeLocked={modeLocked}
-              primaryBusy={actionBusy !== null}
+              modeLocked={modeLocked || updateInstallBusy}
+              primaryBusy={actionBusy !== null || updateInstallBusy}
               busyAction={actionBusy}
               primaryLabel={primaryButtonLabel(
                 desktopStatus.status,
@@ -1940,7 +1785,7 @@ export function App() {
               error={runtimeDisplayError}
               runtimeAssetsPhase={runtimeAssets.phase}
               onModeChange={setMode}
-              onPrimaryAction={() => void handlePrimaryAction()}
+              onPrimaryAction={() => { if (!updateInstallBusy) void handlePrimaryAction(); }}
               onOpenRoutingRules={() => setRoutingRulesOpened(true)}
               onOpenLogs={openRuntimeLogs}
             />
@@ -2013,6 +1858,7 @@ export function App() {
         syncDeferred={componentVersionSync.deferred}
         syncError={componentVersionSync.syncError}
         busy={updateCheckBusy || runtimeAssetsBusy || updateCenter.checking || Boolean(updateCenter.updatingKey)}
+        installBusy={updateInstallBusy}
         onClose={closeUpdateCenter}
         betaChannel={updateChannel === "beta"}
         onBetaChannelChange={(enabled) => changeUpdateChannel(enabled ? "beta" : "stable")}
@@ -2037,32 +1883,35 @@ export function App() {
       <ClientUpdateModal
         opened={updateDialogOpened && effectiveUpdate !== null && !windowTransitioning}
         update={effectiveUpdate}
+        platform={updatePlatform}
+        installBusy={updateInstallBusy}
         appVersion={appVersion}
         forceRequired={forceUpdateRequired}
         autoInstallCountdown={forcedInstallCountdown}
         downloadBusy={updateDownload.phase === "preparing" || updateDownload.phase === "downloading" || updateDownload.phase === "verifying"}
         onClose={() => {
-          if (!forceUpdateRequired) {
+          if (!forceUpdateRequired && !updateInstallBusy) {
             setUpdateDialogOpened(false);
           }
         }}
         progress={updateDownload.phase === "idle" ? null : (
-          <ClientUpdateProgressPanel onResetLegacyMirror={runtimeMirrorPrefix ? clearLegacyDownloadMirror : null} state={updateDownload} version={effectiveUpdate?.latestVersion} onRetry={()=>void handleUpdateDownload()} onInstall={forcedInstallCountdown !== null ? installForcedUpdateNow : ()=>void handleQuitForUpdate()}/>
+          <ClientUpdateProgressPanel state={updateDownload} installBusy={updateInstallBusy} version={effectiveUpdate?.latestVersion} onRetry={()=>void handleUpdateDownload()} onInstall={forcedInstallCountdown !== null ? installForcedUpdateNow : ()=>void handleQuitForUpdate()}/>
         )}
         primaryAction={effectiveUpdate?.downloadUrl ? (
           updateDownload.phase === "completed" ? (
             forcedInstallCountdown !== null ? (
-              <Button color="orange" data-autofocus onClick={installForcedUpdateNow}>
+              <Button color="orange" data-autofocus loading={updateInstallBusy} disabled={updateInstallBusy} onClick={installForcedUpdateNow}>
                 立即更新（{forcedInstallCountdown} 秒）
               </Button>
             ) : (
-              <Button color="green" data-autofocus onClick={() => void handleQuitForUpdate()}>
+              <Button color="green" data-autofocus loading={updateInstallBusy} disabled={updateInstallBusy} onClick={() => void handleQuitForUpdate()}>
                 安装并重启
               </Button>
             )
           ) : (
             <Button
               data-autofocus
+              disabled={updateInstallBusy}
               loading={updateDownload.phase === "preparing" || updateDownload.phase === "downloading" || updateDownload.phase === "verifying"}
               onClick={() => void handleUpdateDownload()}
             >
@@ -2081,13 +1930,11 @@ export function App() {
         title={forcedAnnouncement?.title ?? ""}
         size={460}
         actions={
-          <Button
-            data-autofocus
-            disabled={forcedAnnouncement?.displayMode === "modal_countdown" && countdown > 0}
-            onClick={acknowledgeAnnouncement}
-          >
-            {forcedAnnouncement?.displayMode === "modal_countdown" && countdown > 0 ? `请等待 ${countdown}s` : "我知道了"}
-          </Button>
+          forcedAnnouncement && <AnnouncementConfirmButton
+            key={`${forcedAnnouncement.id}:${forcedAnnouncement.displayMode}:${forcedAnnouncement.countdownSeconds}`}
+            seconds={forcedAnnouncement.displayMode === "modal_countdown" ? forcedAnnouncement.countdownSeconds : 0}
+            onConfirm={() => void syncAcknowledgeAnnouncement(forcedAnnouncement)}
+          />
         }
       >
         <DialogText>{forcedAnnouncement?.body}</DialogText>

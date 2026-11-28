@@ -1,0 +1,51 @@
+name: Dedicated Windows Installer Runtime Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      input_directory:
+        description: "预置真实旧NSIS及其公开.sig、当前完整QA内容包与inputs.json的目录"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+concurrency:
+  group: dedicated-windows-installer-runtime
+  cancel-in-progress: false
+
+jobs:
+  runtime:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, Windows, X64, chordv-installer-disposable]
+    environment: windows-installer-disposable
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CHORDV_QA_INPUT_DIRECTORY: ${{ inputs.input_directory }}
+      CHORDV_QA_EXPECTED_SID: ${{ vars.WINDOWS_QA_ACCOUNT_SID }}
+      CHORDV_QA_LEASE_ID: ${{ vars.WINDOWS_QA_LEASE_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Parse scripts and compile read-only observer without running installers
+        run: ./scripts/windows/qa/Test-AcceptanceSyntax.ps1
+      - name: Validate disposable user and run actual installer observations
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:CHORDV_QA_EXPECTED_SID -or $env:CHORDV_QA_LEASE_ID -notmatch '^[a-f0-9]{32}$') { throw 'Protected environment must bind a dedicated temporary account SID and lease ID' }
+          $report = Join-Path $env:USERPROFILE "ChordV-Installer-QA\$env:CHORDV_QA_LEASE_ID"
+          "CHORDV_QA_REPORT_DIRECTORY=$report" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          ./scripts/windows/qa/Invoke-ChordVInstallerAcceptance.ps1 -InputDirectory $env:CHORDV_QA_INPUT_DIRECTORY -ExpectedUserSid $env:CHORDV_QA_EXPECTED_SID -LeaseId $env:CHORDV_QA_LEASE_ID
+      - name: Preserve observations, never publish or unlock releases
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dedicated-windows-installer-observations
+          path: ${{ env.CHORDV_QA_REPORT_DIRECTORY }}
+          if-no-files-found: warn
+          retention-days: 7

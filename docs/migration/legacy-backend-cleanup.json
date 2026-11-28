@@ -1,0 +1,1390 @@
+{
+  "date": "2026-11-17",
+  "method": "git ls-files allowlist; per-file HEAD diff and stat checks; individual unlink; no git index modification",
+  "counts": {
+    "apps/api": 212,
+    "apps/node-agent": 40,
+    "deploy/backend": 7,
+    "scripts": 15
+  },
+  "totalTrackedRemoved": 274,
+  "protectedIgnoredFiles": 95,
+  "skipped": [],
+  "files": [
+    {
+      "path": "apps/api/package.json",
+      "sha256": "5b20bd055eca1eaf589569a997651b8538f0c36b6974119bf51628be08f19474",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260717000000_init/migration.sql",
+      "sha256": "2ff21f58453ab9a01e76bc3aabe805bdf52e9011b38ff0a783295e1064aa349d",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260717120000_support_ticket_pending_attachment/migration.sql",
+      "sha256": "5109a94ba6e16805e9f5aa186a31e61307986428cc3b97213b8487c577e6a35e",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260726000000_node_agent_control_plane/migration.sql",
+      "sha256": "94ebf57c9f61ebb579409dd28200a0b79e3272d89468d176d2fdb401fddfd29f",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260904000000_system_update_operations/migration.sql",
+      "sha256": "29292d3daf8b1066587922c6b03c154ab664c98d307fd84d8281790281562f46",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260907000000_system_update_progress/migration.sql",
+      "sha256": "7fe25e89d30302cb06a2983fff28f6f58e98ea145be3990210d4000b99949db6",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260907100000_agent_register_tokens/migration.sql",
+      "sha256": "5f80f9c9398e9b146a204c03ffc3a969de8d8bdc9d4fd79163ad7f3dd10091a9",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260907200000_agent_ensure_inbound_command/migration.sql",
+      "sha256": "03037d132e2216e29d10c50af9a886cfdfbd12a3c6b23b6d451170dbd0d6591f",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260908000000_node_inbound_applied_revision/migration.sql",
+      "sha256": "1690d4c01f0819f6e4e4acde1b8dff1ce6e7f53ddebca3c467b1b551f985cb61",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260908100000_retire_xui_panel/migration.sql",
+      "sha256": "80f6279a5d8d9e06c7ef662f835d1ea91224d1cf0877480cd5024c135225ef50",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260908110000_node_command_job_binding_targets/migration.sql",
+      "sha256": "9f614086f6f9b86b063cc4b098b5d582c6d40756294070b30cf303d5f48c005f",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260908120000_node_command_job_resolved_at/migration.sql",
+      "sha256": "d5ae3f6a4d137bfbe53ede3499f54ee36f3dfd70c1db3981b94df92e2264721f",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260909030000_index_binding_command_resolution/migration.sql",
+      "sha256": "2ce66f65e048ed1cafafb47af304eff8614aceadc8893f317acaf91891f8f579",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260910090000_agent_onboarding_spec/migration.sql",
+      "sha256": "c68dc8b94c71e4c703713836072b76a8218cf4c817869649e2297c1088478971",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260911180000_runtime_component_versions/migration.sql",
+      "sha256": "71141c949063a6d4f91d85416bcf3547d19d0a6b42d8ed013401a64a07aa295d",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260911190000_component_notification_outbox/migration.sql",
+      "sha256": "73135d8993845de22d7de9e48cef9c356611a21a4efb5b6f9227574e55ad9016",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260915030000_client_node_probes/migration.sql",
+      "sha256": "9d8033459c2115f91c7e8dfdf14dbd2ee03e49fe71aa87fdb1be1beea96382c0",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260915140000_file_management/migration.sql",
+      "sha256": "bd29fa1619c382177e4a54e5728c2182e6c783965ed54b50436365fdaf20b255",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260915160000_shared_storage_catalog/migration.sql",
+      "sha256": "84ca5b86eb845c79f78673894267ab6cae5550eee37e8cbcd3bb558258caa419",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260915163000_file_reference_indexes/migration.sql",
+      "sha256": "d6fcc91b2d2183f775f33a4fedf18fdb1d7b46205e7a561c1841d131ce30b333",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260915170000_cleanup_job_revision/migration.sql",
+      "sha256": "134a5f1965a346908ab624ef3fc80a1aa1c4896285224f48d5bf62284c0ee4ed",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260916030000_windows_updater_signature/migration.sql",
+      "sha256": "24e4d607a1a6a492b3c755292feaf64bfda2971ad66cc96865d11352968bf6c2",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260926090000_release_beta_channel/migration.sql",
+      "sha256": "2c58c11e2abb2f6e3ba8563b105e90de25e75de19d41074ecb8bf0522626c6c2",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260927090000_user_client_versions/migration.sql",
+      "sha256": "76d0e7bb5f263c0219e8b0231c17529f41c6093f95432f14143ae01d6aef95e6",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260927120000_client_presence/migration.sql",
+      "sha256": "33422e0f88e6096047d1c2bea1db3c8a8bc5f1274c1cf05b520e9c67dab77092",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260927120100_lease_heartbeat_index/migration.sql",
+      "sha256": "718e57c93e21fa3d3df1e5b88f2aa90533660a60ebb34be51e44012cdaf511b1",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260928120000_client_presence_ping/migration.sql",
+      "sha256": "f86ba791a31a8477ccb883a3d2c10175e5d0a072f8a2c10ca5a951725c5f7a67",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/20260928150000_achord_connect_support/migration.sql",
+      "sha256": "51c1af6662fe03e01db56b0289913a218ba76dda2086f3a0660b11f69ab0be2b",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/migrations/migration_lock.toml",
+      "sha256": "1db17a8d051aa136110736752c5e1f8b7ed92b6ea8e803112fbbe2497047c210",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/prisma/schema.init.prisma",
+      "sha256": "65d0ce6c40955a82ede84a779c4869f999edacc5495bbda072c818e72857ea7f",
+      "action": "archive-non-runtime-schema",
+      "destination": "docs/migration/legacy-schema/schema.init.prisma.snapshot"
+    },
+    {
+      "path": "apps/api/prisma/schema.prisma",
+      "sha256": "3c368f9edfd2ab99ad50e8fb101bbf862fba11853fde4af2f75cc3be4a00e0f2",
+      "action": "archive-non-runtime-schema",
+      "destination": "docs/migration/legacy-schema/schema.prisma.snapshot"
+    },
+    {
+      "path": "apps/api/prisma/seed.ts",
+      "sha256": "40c71a32f1ba3cc9f81125b1f4546da7690161c7bd918a365205816befd3c71b",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/scripts/verify-windows-updater-signature.ts",
+      "sha256": "f9af10b0e786c9469e9b1f4efb8ec72283dfe03634347f03a0f28bc9f3632a2c",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/app.module.ts",
+      "sha256": "405f826adfef676684cf9904a5d091e65c13b8564bcf8cb3e2b7efa78ee1a9f9",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/cors.ts",
+      "sha256": "a2974ce6926bd453c0647b554c80ee0562ec666d2cdbd2ed9f1f42c887a79611",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/https-enforcement.ts",
+      "sha256": "ded5b102ccf3cb1def115674351ebd66a8cbf8b86b4de9043bc54f97303d8d77",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/logging-exception.filter.ts",
+      "sha256": "eebf6f1fbbd2716aa71d204457e4eaa9e5dcdbe0bff2093a1af3f1098b4f40d3",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/main.ts",
+      "sha256": "729b08004db3eac29969bdc75e94375c10122bff78526d854a7c3ab468ee1992",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/admin/admin.controller.ts",
+      "sha256": "aa1a49b483475255aa44679dfd1040c0a6c51ec02dd39a3ee7b778887c667e7a",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/admin/admin.dto.ts",
+      "sha256": "55c348b51a2e583f4f63e702883220cd6d838c48754739cec4864dd6caea8662",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/admin/admin.module.ts",
+      "sha256": "9af33f42d439312f4b41993b4eaf2baa756b757c2b05417abadd52368442130b",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/admin/import-release-artifact.dto.ts",
+      "sha256": "76fe4cfec55d8e2a7b35f0a17c05309014dfe3077e4b194e72774f7b6be17cf1",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/admin/runtime-version.controller.ts",
+      "sha256": "1f49883aa876c7e5ef7470ddc90394a2fdb4741c4927d3e0d98385122cb65626",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/admin/site-address.controller.ts",
+      "sha256": "8895aeb6560592cf352ab96d29a0acc28b1e6db96c136da23c4d1b19c38dcfa8",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/admin/storage.controller.ts",
+      "sha256": "dc10ca4ff784e1539432439afdc983aa9a932478740f9e47707f82a763a175b7",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/admin/user-routing-rules.controller.ts",
+      "sha256": "cf7a137dd770d8d14e84840a735735e2f41f1b140fa7c57b0b2bd337be511e85",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/agent/agent-admin.controller.ts",
+      "sha256": "a365169ef28edbd51198c502cf71923e8bfd1f7f9b6ab933aa13e6e33fa8c51a",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/agent/agent-auth.guard.ts",
+      "sha256": "90e9590da52cbcc0cc989a132d08d032c39b4c39c2ec5db5a7769bd800fc19f8",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/agent/agent-direct-metering.ts",
+      "sha256": "28904671527301d6e1345b9db76fc4eb7a9cc48e142d20855a93bcca882279dc",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/agent/agent-download.controller.ts",
+      "sha256": "a7ef65e92152fd6feb114f7550fd55dc6dbbfc2e2e3f0faed0606d63f84d3466",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/agent/agent-events.service.ts",
+      "sha256": "8b1588a8da0783c832250b362e127aa89284cfb5336420973d628c3f4058e7d1",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/agent/agent-go-release.ts",
+      "sha256": "0a521170c33453a4c84c117f05737da754d2e316e5b0782d2e2f1c79dcf0086a",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/agent/agent-inbound.ts",
+      "sha256": "d00a3baa94157f5c3281d90674d73d3c7c2267b1cf5bc36de14aba2bf703fdc0",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/agent/agent-install.controller.ts",
+      "sha256": "5d7c8c50c38e7aaefe1037583e340b41fa3aa4a172350f77f9e66b86bc3d15af",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/agent/agent-register.controller.ts",
+      "sha256": "179aca18d91b9e228be871fc0fea6b3491e51b98a3435dfbfa47710fe1a14793",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/agent/agent-register.service.ts",
+      "sha256": "a84de132a8d0a9182cd6cb301b29b4a2a582f72a32d60c15e1fbeb83a94cf05c",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/agent/agent.controller.ts",
+      "sha256": "aee4ce78a708bdbafa722c799b09dc482c55fc3a5355c5973e18d6c39f77c714",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/agent/agent.dto.ts",
+      "sha256": "00243ab9eea97df91e6a4b0f936dc4a907b94394d90b2e8519362780279016bb",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/agent/agent.module.ts",
+      "sha256": "a9cffcc7ca23f5630a5160f25927e8751d1ba4fcce8fa83ce88059466acc2093",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/agent/agent.service.ts",
+      "sha256": "6b7e40806e9f2523b9740cd6c1c722199e270c8b5937b3ffa94ced07c56ed388",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/agent/panel-inbound.ts",
+      "sha256": "63a50a1f02ce5643527c71ff98db78168f3b080a6e87e20fdc0d09f2849df16a",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/announcements/announcements.controller.ts",
+      "sha256": "dc45f8f0e202e151ee8c41fa76a287d7345a6527e6f2422f1c4b0966fbfaa598",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/announcements/announcements.module.ts",
+      "sha256": "81a3015d2a702aaa26b02aa62392ebce88902a4a3ebac21bc91978beb1981352",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/auth/auth-cookie.ts",
+      "sha256": "24140b7415e5b48c580f91505550ff5a6f3484c032fee39a0fed45d775c7cb03",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/auth/auth.controller.ts",
+      "sha256": "eb968a03ffc80e0d05b1ce14eacd0a275c39beb709e3e502501707987b5f5375",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/auth/auth.module.ts",
+      "sha256": "8d81a7a6d605f791e9012e81457458cf0fca64edda8eb35c08b3ebf570c2278e",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/auth/auth.service.ts",
+      "sha256": "a7b128fcd57d19c46f40c9d518e21e586af3569c4973e97f951293ce257fa506",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/client/client.controller.ts",
+      "sha256": "d9dab9777e53ed8929fe4e5491cb75312a23cddb576791c7202310c6dd7f572d",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/client/client.module.ts",
+      "sha256": "8d2ff0ed1f8b5dfe5b6a8dc557daf508fccdcdc5645464f5f4d365350fc9294d",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/client/client.service.ts",
+      "sha256": "e79a0d3ef24210341c31e47ae2b811ca404d658cb68a43069c44fd5ea199b164",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/client/downloads.controller.ts",
+      "sha256": "3a1dfd760d7ed8e75b2b663ba653e60f61131675c2906e9d2fa2e916ecc66f37",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/client/report-node-probes.dto.ts",
+      "sha256": "871e41129db636b3584be1c28b356ce6771a34e3343a97d7894ff0d3fe22f82b",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/admin-auth.guard.ts",
+      "sha256": "68a9d77e3a18eaab019e188c360050ea764004c201e325e7c39be4b9a3e38f4b",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/admin-node.service.ts",
+      "sha256": "a3e7070f2a921c690d22d42717ad58966455bbaf09d04324b5188d41afb7d40e",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/admin-runtime-events.service.ts",
+      "sha256": "07f11d198f4f3a4eb3fd75828b846996401a116ae8519a5cf2b7507c9d5d4129",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/admin-subscription.service.ts",
+      "sha256": "4fef21bbf51aa512c0395dd2b27a65900826e1e125c052b0686b511f2756aa53",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/announcement-policy.service.ts",
+      "sha256": "734f376317e6c0cfeb4b794a9ea4bd770604637ac0000dd2fa636aeeb9519ca0",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/auth-session.service.ts",
+      "sha256": "c76e35e1212c0c03da655040f4c9efb6fdac48ef0f728795c25d08a6c51964bb",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/client-access.service.ts",
+      "sha256": "d5260dda2dc885bb8492b84a1fad8acacabe2cdc0633675998c0971d789ac2c5",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/client-auth.guard.ts",
+      "sha256": "274686efc36d458db83dc2f84a955ff8c0e78f273f373baae8013f85b7dcda61",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/client-events.publisher.ts",
+      "sha256": "7ecf40442aeae12c9401c9fe95e082be1a07ac8b4eee500168684ba20041639e",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/client-presence.service.ts",
+      "sha256": "42e6cc202a0a9a5884ab6e57feee6243b7e64c8ce6a9367f2856d5b87c5d2214",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/client-routing-rule.service.ts",
+      "sha256": "08cc76e76f998ddc8278565e5629de2892b3744a5bcaaf9b09d3459d6a076b78",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/client-runtime-events.service.ts",
+      "sha256": "62afbd76564d8c77920267c33c84f0e0b0b7a3a70c623d13d8d377fbcba5a05d",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/client-ticket.service.ts",
+      "sha256": "60d6402924e307626cf7fb19f3e39112ceda2ca714c4674ac1b1f14483a60436",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/client-version-report.service.ts",
+      "sha256": "de6c0b934ad54fa5f1a37a3e2c6e325e623e20a4b50f38d034d990fb3a49b0c5",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/dev-data-bootstrap.service.ts",
+      "sha256": "856bcbbac208f8909829544fee07b36059a40ca273207847c2917e11f6c331d6",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/dev-data.module.ts",
+      "sha256": "a4da202841473c5a088cd76217710fdff1f6035a3396eed10311ba1372869adb",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/dev-data.service.ts",
+      "sha256": "ec2936c13e9153550ddef5fb7dcec9328a1129dd5b078cb947618f1db0a549de",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/dev-data.utils.ts",
+      "sha256": "0cd9283e27246828588d2bf1fbd84437c7646935b58ff57f0134c8849f341034",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/download-mirror.service.ts",
+      "sha256": "46baee94259c119d1cdb5c541d54bbb8b1a50236604f422187dde33ced7f9a97",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/file-maintenance.service.ts",
+      "sha256": "f9df7d8c2953da00d669553938979e5191354d5f4a7ececd3b50561523f546ff",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/github-latest-release.ts",
+      "sha256": "d9335175fb445a21fa3c0c47f4475852bb0ea3536431e7f0debc7fe6906e7c98",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/github-mirror.ts",
+      "sha256": "9a6ea96e553f278be1b9b754fae78c88ddfed545184664c0e0a5b3edd9c60631",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/image-bed.service.ts",
+      "sha256": "1207e7293d48cfe041d50d2698410e4dd149530b4c03786db1b759b547a8d31c",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/lease-revocation-job.utils.ts",
+      "sha256": "9156a16019762d623bfbe808cc12edef6261086a1f9b248fe4be0648decbe85d",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/legacy-support-tickets.guard.ts",
+      "sha256": "5395ac925af1131d537344fd35b98f6d25256ebbecb3358d2438c5a1f35f63d0",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/member-traffic-usage.ts",
+      "sha256": "3aa2a6b4ffc499be7cba347fb9783bf711ac9089134b90f77be15a34206432dd",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/metering-incident.service.ts",
+      "sha256": "00c3be27943c9df800f30e159e0667eb42bfb067e13d6096254a5032f7284777",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/metering-retention.service.ts",
+      "sha256": "ba8a3744ec88c7963aaea0595c3c4858f061530d52441812798c568ef9312b66",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/metering.constants.ts",
+      "sha256": "4997c4015466ee5842be42a6682039ffadc9ca6d9c93bec7903344bce603b0bc",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/node-command-job.utils.ts",
+      "sha256": "a540f35be9c5465e522934ecbc6de11e2e7790eedd12c6d883512e4841ab6e84",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/node-control-mode.ts",
+      "sha256": "cf181709f18fa784e4948ac6219d646d3aff4c087d76ae08b6753dc72650f487",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/node-import.utils.ts",
+      "sha256": "e5d487568a6c555bd7829b35abde9968208976b9332a6ab7e9e472e74478e2e9",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/node-onboarding-policy.ts",
+      "sha256": "eef7ba80b98f65c13402f230b2b874f7c04195bcaddc28d71e3511c66ae41e3e",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/prisma-error.utils.ts",
+      "sha256": "efe7ab783bc867aa7584e161c301cc9d9f3f757a2489d16cb5195feb54e450d8",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/prisma-schema-probe.ts",
+      "sha256": "46e4d0bb1dc59c3ad7a53e2be219770e611177ddf96dff026cf95a6b8037c385",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/prisma.module.ts",
+      "sha256": "a2f8ade45c3aa0c5cedf59ac46ac220840454bbf6371b1a94c0411f619c57701",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/prisma.service.ts",
+      "sha256": "b2c68092a06bc4097cb6415bfb2165a10651e0df65e0dd37608f28995a705cda",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/release-artifact-import.ts",
+      "sha256": "bb9d0762a091cff599ac4bd4d94ee41d9400cb40f882137d5b6a3cd4c765c800",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/release-center.service.ts",
+      "sha256": "e4e5b2b18a3e1be70f8f674b4b4053844502a8201e3d0236d8eb4b45ceefe533",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/release-center.utils.ts",
+      "sha256": "63ad11d1cfdd4cd2ccd2d138b6845482c5aa1e73974301c4e0a52eae9ba5c957",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/remote-url.utils.ts",
+      "sha256": "ac90edfa1913d8f68b9197d2e4cfecb070e1ae50decf33521e82fc1064e346ad",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/runtime-components.service.ts",
+      "sha256": "3ceb503df2d9e65234c81d4390e387d5164d9fd41f522e61b4b0d2de1b28cfa7",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/runtime-session.service.ts",
+      "sha256": "3636850920a052bd756eabb668e9b41085907c859fcd6b1402c70c47523d20bc",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/runtime-session.utils.ts",
+      "sha256": "02c92603fbab338f0d7c5d9345a9dec68b05f2b12b56aa0dbe3a9e8288b5a0d3",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/runtime-version-files.ts",
+      "sha256": "6aee86efe9606e896770cf1563df3d69eb486c69f229f0fcb449704d00175dd0",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/runtime-version.service.ts",
+      "sha256": "fb8391101ab3bcc3534692a4379f6527aaa3e25801df088bc98c649246b00b1f",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/site-address.context.ts",
+      "sha256": "cba9a7ee6f1569c4fa570565930a8bb200018a813e66acdb19b68892648c440a",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/site-address.service.ts",
+      "sha256": "53a7d1bc3b8ee107fb56fc4c78b1f01864b03431b4584c0f1ce77e3bc35109ac",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/storage-catalog.service.ts",
+      "sha256": "9d3e13eabca54038b8f58bd6e7e92715f81879ab099458056a414fd9777694b0",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/storage-files.ts",
+      "sha256": "b61d7544580385619f35888a7085d27f7d0413f084c468c2535ece43e377ab72",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/subscription.utils.ts",
+      "sha256": "9275f87e637bdd2800e4ff871fae6f18d00cf336b450163d45452813e3564ac5",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/system-update.constants.ts",
+      "sha256": "7031d24b248df5d982dfab1cb6f5668bec9858ac2c1dbed69a740725fbcac71c",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/system-update.service.ts",
+      "sha256": "16df96897763df545b05a8711acbc80668d4a8063cc59b9d18651e547eea96ad",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/ticket.utils.ts",
+      "sha256": "db5801699ca9c3e5286b16e50b37f8edcba18353ae7d822aa59afa86f29d4382",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/traffic-bytes.utils.ts",
+      "sha256": "7f29e44bf3da8a263f5eb9609548fa7fc353ff14305c2409673428c6e29e77f0",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/updater-signature.ts",
+      "sha256": "285116fdab0a2f9eaf34d7f485c8e20dfe9e587e7335b2d1d50d9041f2c56da2",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/upload-file.utils.ts",
+      "sha256": "fec50244a6b2c2594655d97876ff5c96e0ef163aeb883e88d7d00b067dc7bbd0",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/upload-limits.ts",
+      "sha256": "b9ea0d8f73dd592d29ee00761a2715a5c361492c61f0b3938a62029fef705b8b",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/uploaded-temp-file-cleanup.interceptor.ts",
+      "sha256": "121d5abf9d3e5e8d32d431c2a836c5f2ab519346ec79937e4658425092e5ea03",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/common/usage-lock.utils.ts",
+      "sha256": "6b843e5098c4fc568f9d6e989c2aa4f235f978e506cad1f8a70e0fe90af8e9b6",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/support/achord-connect.ts",
+      "sha256": "854cb133d0787d3b0890a878da085aaff2d54362f1839a6aef02f14d793d2044",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/support/support-contact-context.service.ts",
+      "sha256": "58154e81c1cc9902464a50bbfb8b586fe7a28c761576d80282e9b9546e68bc0b",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/support/support-contact-context.ts",
+      "sha256": "d95b8f20d16f88e81c45e991f089bc14b0ae9901700130b91af7524016cbce09",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/support/support-integration.service.ts",
+      "sha256": "d2a00c38ee8cedefdf31358a6bdd808300a17d61ddb0ac7bbc92c65a89a3933f",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/support/support-integration.settings.ts",
+      "sha256": "94f6af31c433b1565f4137c29977c19308e960f471da51f606837c6b41eae6fd",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/support/support.controller.ts",
+      "sha256": "65e42b9d42d418a353c8422ba55c0f625f49fc0d22cd0d4e5c27a51f85b14a4e",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/support/support.module.ts",
+      "sha256": "5de8237a2df607bbd3c8661643e1d84e9fba56165f8eb9e4f9e87ddb378f50be",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/system/health.controller.ts",
+      "sha256": "2018fcd753307917be670ae723b4e2132b1336d18e60afd6c261523b723c0d61",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/system/system-update-stream.service.ts",
+      "sha256": "90c27786b759b55fd46a03719c123626b11edec68e1e87d9a11ebebbcb5dc869",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/system/system-update.controller.ts",
+      "sha256": "348275106db224731b5f0fc2f5467f53ec2654115781082587ec7023ddf79db8",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/modules/system/system.module.ts",
+      "sha256": "ee4bde0f1fe9933e045474798612253ff3596192772aa8a443caad5590d9838f",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/promotion-admission.ts",
+      "sha256": "f948956b151d5f4e68d222bad6107663eb39a47a3967fe3194d3fcb48e485821",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/trust-proxy.ts",
+      "sha256": "4cb0422815a06fada03c7ae2dd80370b5de66e86e6007e3e3e2fc2499fa368ab",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/src/work-lifecycle.ts",
+      "sha256": "95252f8d6678d0539e4e02f99fdc20e5d1b1d90b1e79e206e8f56a4b0f086a96",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/achord-connect-support.regression.ts",
+      "sha256": "6f73a1a43f98e1376c5dd132b85458e7d4ba63bca44aeb8e4f9f20e0e782e1ce",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/admin-controller.routes.regression.ts",
+      "sha256": "946a6c8b4d3be83b86d23a6707ba0b99f081057a411fa909ee8f9956e390ba52",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/admin-critical-routes.regression.ts",
+      "sha256": "e92143645ed9e57a917dcea8fc4cccddc417c779c7e5f87f58caa59ffa65c45f",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/agent-api.regression.ts",
+      "sha256": "4f7958f302d2043d6059a9fdb6cc67841f76a5366b893f73c2baa43c27b0ab4a",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/agent-inbound.regression.ts",
+      "sha256": "fac1a2cdac09363f1171964abea26d49b7688d1b50cb574aa19c0e5429a8c1fc",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/agent-install-staging.regression.ts",
+      "sha256": "4d489643188a0a46ca064a30ca9c422b3ce8385fdc5e2690081ffd52ad4dc240",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/agent-onboarding-postgres.regression.ts",
+      "sha256": "8e830fb98af39fbd551c96a8140f468a66e29bc9be57e69dfcbc38bff035dcae",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/agent-onboarding-safety.regression.ts",
+      "sha256": "36677856f6e523240d50eb529705a38cb3a81059c6344824b9140bffb502a942",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/agent-register.regression.ts",
+      "sha256": "e260a43d1cd405ece3b6fa3f100e61842c27af64f53e07dd2c5de7826037e7c4",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/agent-reliability.regression.ts",
+      "sha256": "e7ac2fb48ffba11bfd1dc23c8b2bdf4a571c651aa5a0caa6b8314cc8976c3318",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/agent-two-stage.regression.ts",
+      "sha256": "b234b460a32a44bd762b00d23ee251d9e6f7d32882511ffcc6623d2108bde835",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/client-node-probes.regression.ts",
+      "sha256": "3100534e92a42c32b7464251fcb8136d2f2d411e03eb03f00735bf6d76401052",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/client-presence.regression.ts",
+      "sha256": "81aad099192b0a79f3afdbd95ed13bf302d84dda5251b5bd0238936b140e32cb",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/client-routing-rules.regression.ts",
+      "sha256": "d95d9e0ddc281429b4d5f0f02f353f070fc3101122ae005af6121205899eb2af",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/client-ticket-attachment-hardening.regression.ts",
+      "sha256": "4a37c6c0cdd1c3102d846aefc311a4edea3e8933d9c18b4bcdf27c21cc417f84",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/client-version-report.regression.ts",
+      "sha256": "24a250138e0c08098215d4e93ce85ed58766f006db434e4383a83abd87b4ed72",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/component-notification.regression.ts",
+      "sha256": "352b9fc90f4f64addcc69bdfe5a4406ba25024452b13a01e28af907418cfd56c",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/component-release-safety.regression.ts",
+      "sha256": "d0e1ee5b9d44a1cd45eed79e3cc794171db1cc45706d19a1c4760596f69292ba",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/deploy-secret-preflight.regression.ts",
+      "sha256": "06678455a8f743a1f3978d76021bb9ae23c66f9a5dbbe666ecf85bf2e29baa77",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/dev-data.service.regression.ts",
+      "sha256": "1e324624526b18eb823b8a27ffbd0e132f3696aad0c54817f0ea89a1effadf0e",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/direct-metering-migration.regression.ts",
+      "sha256": "a4f54a33664cd6238d87840602dd22cb720224b9babdfe29b39c00eefaf04075",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/file-management.integration.ts",
+      "sha256": "4559c084560d348e659e7985b8b7e1749e1dfec62e5618dc6ab5497ed12c7c55",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/fixtures/go-install-host.sh",
+      "sha256": "34a5fd33b39453b7e31d0fbb8421e10741dfe4695deb73031de8baedc1f841c4",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/fixtures/go-onboarding-live-host.sh",
+      "sha256": "1189eea1740780b133a1a558b378ed443217dd30821d6f2c732260bb394d4600",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/fixtures/go-onboarding-live.cjs",
+      "sha256": "fc6e046356f536cbcf2d81e780c79cacd7f99b960f0aebf4a4d0ce7577d7b227",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/fixtures/tauri-signature.json",
+      "sha256": "b3456e68ad151e2a57274231e281f4be523b495c46dc1e281b352488af36425f",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/github-latest-release.regression.ts",
+      "sha256": "2e9580d8ebdc4ea3afcb3057a21fa7071bd14454bb0c91fa471b9a73005ccf7e",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/github-mirror.regression.ts",
+      "sha256": "fa6f78dbca1c76a23981e2473c27cf1adcc4b4366b1e718e90fafb5258d012f0",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/image-bed-error-fidelity.regression.ts",
+      "sha256": "888b9b6b845e49cdd275f5075b47e78a31ef7f454d7195e0c8047d796dae7356",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/member-traffic-usage.regression.ts",
+      "sha256": "4cc2d5a7f9dd86ede5d8dbf51c9a8f354a93c0c38fc996789bd36478154582f5",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/metering-offline-banner.regression.ts",
+      "sha256": "76448ed9d896d131dd659d9d91b14c76cf4c99f26d61d30474b9a76123f23ff0",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/metering-retention.regression.ts",
+      "sha256": "bc98e878458a161f5e34d63303843bbbe8c10b0d0afb4254fe8301d13c955c34",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/offline-node-delete.regression.ts",
+      "sha256": "9eadf877265d47cca5a776057876f04459960a7410af939c2514ac0054e68bda",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/panel-inbound.regression.ts",
+      "sha256": "1862da95f10c9a9e64a9cd512300386027633784f424afb936769ed4ca840e89",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/prisma-migrate-baseline.regression.ts",
+      "sha256": "3e39ba1581e6b4b794052aa4fcd9de47f157b37d697bb110cd397692ec04f8dc",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/prisma-schema-probe.regression.ts",
+      "sha256": "dd2f89a8b354a6fbe69961ac5f98cfd9d7a57614ac18cf7097e699ae478c5ac1",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/promotion-admission.regression.ts",
+      "sha256": "65f96d2a5e064791d1531ee59e263d1ed40d6fc84fe5900fb071b04b7e413ba2",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/prune-release-node-modules.regression.ts",
+      "sha256": "8eb9b099cab0190f8c48f460097a23c00472ea613d0d56b1263f18772fdafe11",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/release-artifact-import-service.regression.ts",
+      "sha256": "b04cd28dc8fa44d9fc8953a4237f120170753a8ccf22d2b17959cf6ea5ec9b4e",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/release-artifact-import.regression.ts",
+      "sha256": "70709b58e656f9595d6003e7daa681d6b1207d513380d0dcc1a21eb9304a4c88",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/release-beta-channel.regression.ts",
+      "sha256": "86b67f5d22e8c625c4c86015f4988a4c630339c262bac760a574e6d6cf35ad55",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/release-dependency-hydration.regression.ts",
+      "sha256": "fd4afbe229c8671b564cef465a85af2468b9e8f52d9c327e8b6e15e3d4618cd1",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/release-semver.regression.ts",
+      "sha256": "78cc2bde91b7d6a424ed6e71748e1a0ce6ce48aa9a49b7ed0e1f32bedc452146",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/runtime-components.service.regression.ts",
+      "sha256": "780c9cf4aec94941aa8b42b93590ad5e27cc71ecbcc6e3f7f1fbb3ee9faf5603",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/runtime-release-contract.regression.ts",
+      "sha256": "8a6ec51845318c1ef8467423ff65fb0af1939d1b5bd2b48d1e6cf83c8dc127a1",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/runtime-session.regression.ts",
+      "sha256": "5636d6a87446151e5b1cd628ca7bdc3b1160887e22ddd89677be248f91feb90e",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/runtime-version.regression.ts",
+      "sha256": "76c89357011d5e5997b892f043ad5bb62212ff00dd0deac103e03b7579b3b4d3",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/serve-updater-fixture.ts",
+      "sha256": "633ff9fb3ec218f7ce7415cfd2d2836f22131f6e23529c609825e410ab0e760e",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/site-address.regression.ts",
+      "sha256": "1b7e479432090fc0f973823048ae487f3f823d94f518adef611277d672f5ce57",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/storage-routes.regression.ts",
+      "sha256": "b77080ab4f9a7547c718d72ee6c52caa59e4c06466bb4179a2d851b0a5560e9f",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/supervisor-wait.ts",
+      "sha256": "956ffcaca7a20d07fac810b085ee32a9a01e0e953bd6405bf1766615d04a64db",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/support-contact-context.regression.ts",
+      "sha256": "df6c7038ccce4d93cad80fea6e0722e3fc38141a2b6ffd83f506b2b76446cf42",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/system-update-deployment.regression.ts",
+      "sha256": "51b2497c959f49a30b3f709cff6149dc063f880902adcfb0886c1670a3ee6b83",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/system-update-journal-recovery.regression.ts",
+      "sha256": "6e4cfa4f62bfda9a26e23e7079151ecddea865bf3ec0ba988e9eff08aa5c9bbd",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/system-update-mirror-opt-out.regression.ts",
+      "sha256": "e72f8810b7e98c8ef296d5aeaafec2776ef0c13d6642cabf4990fab060790ebb",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/system-update-progress.regression.ts",
+      "sha256": "5fb1f9520d7c51d6de076c8f8f657b7c0dac819dd5078fc77c387f36f7124560",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/system-update-release-policy.regression.ts",
+      "sha256": "4a3f4f22cce9418614f3780f4de0584512a7f41e01a6b3dd66a9c120d105639d",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/system-update-shutdown.regression.ts",
+      "sha256": "7ec21eeb187553a8f4c707f5997742755ceff92b0019d5e30e70dc1aea282998",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/system-update-snapshot-security.regression.ts",
+      "sha256": "de0aa1e4904b026dcc6233332446702488fcfa227ca432195e1d7cc515344480",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/system-update-stream.regression.ts",
+      "sha256": "952772e9a6ae74ef23c207b3bb12ca325e76f4ff99f8a7f00d5450493c4a04c3",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/system-update-supervisor.regression.ts",
+      "sha256": "cb75a9b3cf999f6c88d1d0886c526db3b1abc577c41247096c9367c9ec8fd5ea",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/system-update-webroot.regression.sh",
+      "sha256": "4d88e0d434151eb8e2575ce0b5f0fbe502a0e8e6b0b73a540e2d226aedc224b2",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/system-update.regression.ts",
+      "sha256": "d9283676c3e4e04d8f8943b92a45b566f209bc5ff8df7af7b778277e4be96baf",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/team-owner-membership.regression.ts",
+      "sha256": "70304d06c6638d147428ee5e971b4ef7f53c580174c57da3ee35f9c83ba5ffc0",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/test/windows-updater.regression.ts",
+      "sha256": "d8a472dfce5762182fc2a7477882b94c8e45bbd76e0f7cccd52fa1c0456d3677",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/api/tsconfig.json",
+      "sha256": "620bc62a1a3d6aea13be5aaabd0599ec6441cc7eb5ddd6359d133aab36045448",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/.env.example",
+      "sha256": "44b436a9538f6f6468f4e854cfc531a2bbc4cd84c15b271eb60f852886bb3a93",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/.gitignore",
+      "sha256": "4d25fa8948e8de6aa99e843171eebc2d5d14e76528b6cff8682cdba76216e886",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/README.md",
+      "sha256": "30282c18b768a240f22af63dfbdf2535723a82b4686d188ae7d1b24a55bc48bd",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/deploy/build-release.sh",
+      "sha256": "9fae87c48ef1c624ad63208dbed1ad026fd29706879d7e6125d9fd91df446457",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/deploy/chordv-node-agent.service",
+      "sha256": "d9ddb56a044824577ccfc99a4fd2975ebca6dc4d0b606998f992825e74c91565",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/deploy/health-check.sh",
+      "sha256": "f9ffee881edd91228241c213b752e2fa0f1a241128ac85fe561b57132fae60c8",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/deploy/install-systemd.sh",
+      "sha256": "479f05c269068478a0ec6e994135479dd7b9b949dcbe52fc5961c498dfd66e65",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/deploy/package-release.sh",
+      "sha256": "4a29ca4140561a5be84298ba6d0cbaf1e85062dcffb7ff58f8a1b19fc8e80d68",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/deploy/xray-api.fragment.json",
+      "sha256": "0deaefdbd2da118adacc0a97ee2665a3cf3a0b443ecd581599f528b679516c1b",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/deploy/xray-base.json",
+      "sha256": "c22a14fea273ed06f5f5fdc371a3b595ee6b4f1c5e0d711c1b89b96a15a6c335",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/package.json",
+      "sha256": "c88112d0f1ef7f4cb7f47995ead40a49e89a2210467ef2148450be5ec3a228fa",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/src/agent-version.ts",
+      "sha256": "6ba1548c2f7c5a1100aa62e556299aa65b3b7e09e60a2f3b19105a53784ea7dc",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/src/api-client.ts",
+      "sha256": "e06d3c2d064f35066d96c59f9609961cac771326a4d8ddc69ff269611e2a70f0",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/src/command-processor.ts",
+      "sha256": "9306e0ab16f2cff9a2aaa0835fe4da8523744b84102c332ee02632b86076efd2",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/src/config.ts",
+      "sha256": "e96cede2db519cf81024a1f9838560be2d2cc33e58a21239f696555291ee604c",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/src/credentials.ts",
+      "sha256": "83b28bd24914a26fa0435b7adab0260777f17a813eedec2e28d85bb93467c052",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/src/durable-write.ts",
+      "sha256": "eb275c1b6992fc56eadaa805b1b57c38d0d8f12070cb3e3e6a391e18a6ed8de5",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/src/main.ts",
+      "sha256": "98b34cbe080e5aec171bad68932fdabdf118964ca95568258689d1c358591642",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/src/public-address.ts",
+      "sha256": "0c73d9f59a46379c560bfd806d315184b1a5a56324cc9b6d9d28e62b8f304259",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/src/runner.ts",
+      "sha256": "05aafa065e041708fc352858413f8e836f9fdaf73cf48efac7a13be849c63344",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/src/store.ts",
+      "sha256": "54ce00d212e18ffeccefaaa88de748a7ecb9ec61b30594dc1fe9302045a80b1f",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/src/types.ts",
+      "sha256": "386d2b190ec1bcabc67d2d15b23915b96f3a638d802b422e1dc3662854700c96",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/src/xray-adapter.ts",
+      "sha256": "ad74f961798532e2d8df1f8eaf949439c6a92ba443deddc69c2bd0cf2c82d498",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/src/xray-apply.ts",
+      "sha256": "dc6bb978f791f0f48cdb406f761952bfd250726cf3247422e3ea8160945f6c20",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/src/xray-inbound.ts",
+      "sha256": "ff18d52e867b81a5c9f91198781977439797383e9a44ea2f5f3a4aed64496eb5",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/test/agent-version.test.ts",
+      "sha256": "85ca724b416773bb9e4124467d0e147a4e5a087b32baff936a39f57c537ad4e5",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/test/api-contract.test.ts",
+      "sha256": "ddc9d3bd66ea6987080a580d70c0e024286a1cd33a0a043d9ef7f128a57d1d19",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/test/boot-baseline.test.ts",
+      "sha256": "eba4cd12c2fae430cc90d8c1821b6b7415bfbf737e57376ec7ae8f84e7661237",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/test/command-processor.test.ts",
+      "sha256": "93aefbf932c2807fdba295df1610b6b84e02515c960f02865834774e969b6360",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/test/config.test.ts",
+      "sha256": "5882e4b13e0147a7971223d3e997c274ee80d2d2962b94b06380f2eb87f46493",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/test/credentials.test.ts",
+      "sha256": "3786600f58dd770ea64aaa439ca6141ec724961b346dbb006f331644567accfb",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/test/deploy.test.ts",
+      "sha256": "4e7f0f2b36ca796d053ff29a813dcda7d02955fac63b9e91fe84cde0faec7c11",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/test/health-readonly.test.ts",
+      "sha256": "343373761d8eeb58e761382b21d69b24c77c32aa041c3d99863bef08f1a8382b",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/test/package-release.test.ts",
+      "sha256": "14396f2671846e8a927c5fc7c9fa59dfcb5290b0c2286dfaf6059497f812f884",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/test/runner.test.ts",
+      "sha256": "2f0b8e674f0d0ae1ac03f5f8ae0c753809902d3a3660d98ee89a4dfc4b89a9c8",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/test/store.test.ts",
+      "sha256": "c4c8885b55ebe4bdda7ab74323951c2ae891b95b6af84a8f8a2df023e316793c",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/test/xray-adapter.test.ts",
+      "sha256": "ee45b321907afa800b50128428ee785119ef9ba2a774e39a2581a5e379c39275",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/test/xray-apply.test.ts",
+      "sha256": "870043af3b0d97aeccaf2bf655bcbdb65b94ef3b5187ccb38994e587cf7281f0",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/test/xray-inbound.test.ts",
+      "sha256": "a6784474e4bbd6bc6da952dcd3b86424cf8738b4d050617cccc81ca24c0ed2cc",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "apps/node-agent/tsconfig.json",
+      "sha256": "7dfd7a59b8ca0283ac3417267cede2c242fb7843f3c8b9663714f9b2fe947ecf",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "deploy/backend/Dockerfile.admin",
+      "sha256": "7372a964fcfc2b7884e197f3c2a85f79dfce840d68b861455eba71708140033c",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "deploy/backend/Dockerfile.api",
+      "sha256": "23cb620cd12e25025f0bb41cbcda7c06dfbe9870e02e8fd3ed80ce4870ac73f4",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "deploy/backend/admin-entrypoint.sh",
+      "sha256": "8d0eba1caeaf6b68afbd516aa9679acae77995ed00174c78ef0ae456700015a5",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "deploy/backend/admin.nginx.conf",
+      "sha256": "dff41986505f856b7039e732ce05596ab42713017017f776d08fdced19c1530a",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "deploy/backend/docker-compose.yml",
+      "sha256": "564829da5f933c64891fd12b0eb3903a9ac2af11160aef4ba6c471806f6d0966",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "deploy/backend/entrypoint.sh",
+      "sha256": "f207069cf03116e1a056bdcaa921c2be4778412549710f303caecdf25343338a",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "deploy/backend/openresty.v.baymaxgroup.com.conf",
+      "sha256": "3d5ab492ef52984b18c63e75c474cec8716671271048f2082325597196e801aa",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "scripts/backend-release-resume.mjs",
+      "sha256": "756551bbc6bfea0ba5f2363ea531f39368ded5d6066c3176e453f8ac486a08e3",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "scripts/backend-release-resume.test.mjs",
+      "sha256": "85d1678af040dfdb1bee52ce87935e24c648e144b9a825d5e39e987026787e98",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "scripts/deploy-baota.sh",
+      "sha256": "d79c4f63e9d6ecdf503631c8e76e231c5aacd8d156bbb5a30539ea789f14696e",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "scripts/install-agent-token-pepper.py",
+      "sha256": "3847a3210a19b85ed082ec66a7c90dcdc09b6ac6b336c7bbf114407344221534",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "scripts/install-panel-password-key.py",
+      "sha256": "f84da32d7d415b135362bb4fcb3aa5e6a2520d52293700bcd1b167e7fbbc8594",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "scripts/local-node-agent-dev.mjs",
+      "sha256": "42cbf07206dd1b7d512531ed2af609f4c6bf79297abc1e43445f31985a5eda7e",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "scripts/local-runtime-bootstrap.sh",
+      "sha256": "3c70952892a2358eb5fb2ea8498c424593a0cf0091b148b0fca553791b8421f5",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "scripts/prepare-backend-bundle.mjs",
+      "sha256": "bf01519262549751e1c1182da178e40f8a16c4ea7a9faf49a566c7c7b2b9463c",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "scripts/prepare-release-storage.mjs",
+      "sha256": "ef3e1019495c8c2e8011a86d9534790c362ca6ed5be1d7fcbc7892cd78467806",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "scripts/prisma-migrate-with-baseline.mjs",
+      "sha256": "03d2d388513222b3cbcc8b268e97301eca6518a8fe0cd0825d4cf67ee3c6e67e",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "scripts/prune-release-node-modules.mjs",
+      "sha256": "0ee3170700be14fcedac2ae3ac15c24401895b3f8fed400b4b14b1b96bbf6628",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "scripts/test-file-management.py",
+      "sha256": "0c36e10140bf3c3a04e2f2e6639b7eabc6437163594c843fe5712753359945f4",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "scripts/verify-api-release.mjs",
+      "sha256": "afb73a9d360e51fe539ea1caac481449d2b406f883847df16f5561711ef20c80",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "scripts/verify-backend-release.mjs",
+      "sha256": "130c00561601adaac28bf58afd5d9fb20cacd16d87f4d7fb5383f6b9565c5132",
+      "action": "retire-tracked-source"
+    },
+    {
+      "path": "scripts/verify-backend-release.test.mjs",
+      "sha256": "5fe72c16e6401888467969b1fbd0fbc3c0d96582893bcf13d22bea8199c6e80c",
+      "action": "retire-tracked-source"
+    }
+  ],
+  "sourceCommit": "397a64de9cc345049f886e64cc19f46d887f8304",
+  "gitIndexTouched": false,
+  "archiveChecksumsVerified": true
+}

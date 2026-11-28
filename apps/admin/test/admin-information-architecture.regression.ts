@@ -14,12 +14,8 @@ const plansPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/
 const subscriptionsPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/SubscriptionsPage.tsx"), "utf8");
 const nodesPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/NodesPage.tsx"), "utf8");
 const announcementsPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/AnnouncementsPage.tsx"), "utf8");
-const releasesPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/ReleasesPage.tsx"), "utf8");
 const imageBedPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/ImageBedPage.tsx"), "utf8");
 const policiesPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/PoliciesPage.tsx"), "utf8");
-const runtimeComponentsPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/RuntimeComponentsPage.tsx"), "utf8");
-const runtimeComponentsPanelSource = readFileSync(resolve(import.meta.dirname, "../src/features/runtime-components/RuntimeComponentsPanel.tsx"), "utf8");
-const runtimeComponentEditorSource = readFileSync(resolve(import.meta.dirname, "../src/features/runtime-components/RuntimeComponentEditorModal.tsx"), "utf8");
 const stylesSource = readFileSync(resolve(import.meta.dirname, "../src/styles.css"), "utf8");
 
 function readFilesRecursively(dir: string): string[] {
@@ -58,7 +54,7 @@ function findActionIconsMissingAccessibleNames() {
 }
 
 function testSidebarKeepsGroupedInformationArchitecture() {
-  for (const title of ["工作台", "用户与订阅", "节点与任务", "客服与公告", "应用发布", "系统"]) {
+  for (const title of ["工作台", "用户与订阅", "节点与任务", "客服与公告", "系统"]) {
     assert.match(appSource, new RegExp(`title: "${title}"`), `sidebar group ${title} should exist`);
   }
 
@@ -125,7 +121,10 @@ function testUsersPageKeepsAccountAndTeamEntrypoints() {
   assert.match(usersPageSource, /if \(!active\) return/);
   assert.doesNotMatch(usersPageSource, /example\.com|INITIAL_CUSTOMERS|原型模式/);
   assert.match(usersPageSource, /member.role !== "owner"/);
-  assert.match(usersPageSource, /onDisconnectUser\(member.userId, member.displayName, "team-member"\)/);
+  assert.match(usersPageSource, /onOpenKickMemberModal\(team.id, member.id, member.displayName\)/);
+  assert.doesNotMatch(usersPageSource, /onDisconnectUser\(member.userId/);
+  assert.match(usersPageSource, /onOpenConvertToTeamModal\(customer.subscription\)/);
+  assert.match(usersPageSource, /onResetSubscriptionTraffic\(team.currentSubscription!.id,.*member.userId\)/);
   assert.match(usersPageSource, /onDisconnectUser\(customer.user!.id, customer.name, "personal"\)/);
   assert.match(usersPageSource, /<CustomerActivity/);
   assert.match(appSource, /teamUsageByTeamId=\{teamUsageByTeamId\}/);
@@ -152,12 +151,14 @@ function testPlansAndAnnouncementsExposePageIntent() {
 for(const action of ["onOpenPlanDrawer"]) assert.ok(plansPageSource.includes(action)); for(const action of ["onOpenAnnouncementDrawer","onDeleteAnnouncement","actionBusyKey"]) assert.ok(announcementsPageSource.includes(action)); assert.match(plansPageSource,/aria-label="套餐规则"/); assert.match(announcementsPageSource,/aria-label="公告列表"/);
 }
 
-function testReleaseAndImageBedPagesExposePageIntent() {
-for(const action of ["openCreateRelease","loadReleases","publishRelease","withdrawRelease"]) assert.ok(releasesPageSource.includes(action)); for(const action of ["handleSave","handleDelete","loadFiles","onBusyChange","confirmation.dialog"]) assert.ok(imageBedPageSource.includes(action));
+function testGitHubPublishingAndImageBedPagesExposePageIntent() {
+  assert.doesNotMatch(appSource, /label: "发布中心"|UnifiedReleaseCenter/);
+  assert.match(appSource, /<GitHubVersion/);
+  for (const action of ["handleSave", "handleDelete", "loadFiles", "onBusyChange", "confirmation.dialog"]) assert.ok(imageBedPageSource.includes(action));
 }
 
-function testPoliciesAndRuntimeComponentsUseCurrentNavigationNames() {
-assert.match(policiesPageSource,/onSave/); assert.match(runtimeComponentsPanelSource,/RuntimeComponentSlotCard/); assert.match(runtimeComponentsPanelSource,/全局下载镜像已迁移至系统设置/); assert.match(runtimeComponentsPanelSource,/复制下载地址/); assert.match(runtimeComponentEditorSource,/高级选项/);
+function testPoliciesKeepBusinessControls() {
+  assert.match(policiesPageSource, /onSave/);
 }
 
 function testNodesPageKeepsNodeAndSyncTaskActions() {
@@ -185,8 +186,8 @@ testOverviewPrioritizesActionableWork();
 testUsersPageKeepsAccountAndTeamEntrypoints();
 testSubscriptionsPageKeepsSubscriptionActions();
 testPlansAndAnnouncementsExposePageIntent();
-testReleaseAndImageBedPagesExposePageIntent();
-testPoliciesAndRuntimeComponentsUseCurrentNavigationNames();
+testGitHubPublishingAndImageBedPagesExposePageIntent();
+testPoliciesKeepBusinessControls();
 testNodesPageKeepsNodeAndSyncTaskActions();
 testProductionCopyUsesSyncTaskNaming();
 testIconOnlyActionsHaveAccessibleNames();

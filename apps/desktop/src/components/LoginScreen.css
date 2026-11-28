@@ -7,6 +7,7 @@
 .auth-screen__brand-title { margin: 0; font-size: 28px; font-weight: 650; line-height: 1.2; color: #142333; }
 .auth-screen__panel { min-width: 0; min-height: 0; overflow: auto; padding: 28px 34px; display: flex; }
 .auth-screen__panel-inner { width: 100%; max-width: 340px; display: flex; flex-direction: column; gap: 18px; margin: auto; }
+.auth-screen__panel-inner--lifecycle-feedback { gap: 10px; }
 .auth-screen__panel-title { margin: 0 0 4px; font-size: 24px; font-weight: 650; line-height: 1.25; color: #15202e; }
 .auth-screen__form { display: flex; flex-direction: column; gap: 16px; }
 .auth-screen__field { display: flex; flex-direction: column; gap: 7px; }

@@ -10,7 +10,7 @@ export function readError(reason: unknown, fallback: string) {
     // Structured API messages are the actionable explanation, including every
     // validation item. Only normalize generic HTTP status text, not its details.
     const detail = stripHttpStatusPrefix(backendMessage);
-    const generic = /^(Bad Request|Unauthorized|Forbidden|Not Found|Conflict|Service Unavailable|Bad Gateway|Gateway Timeout|Internal Server Error)$/i.test(detail.trim());
+    const generic = /^(HTTP\s*\d{3}|Bad Request|Unauthorized|Forbidden|Not Found|Conflict|Service Unavailable|Bad Gateway|Gateway Timeout|Internal Server Error)$/i.test(detail.trim());
     return appendRequestId(generic ? normalizeAdminErrorMessage(backendMessage, fallback) : detail, requestId);
   }
   if (reason.name === "AbortError" || reason.message === "signal is aborted without reason" || /请求超时/i.test(reason.message)) {

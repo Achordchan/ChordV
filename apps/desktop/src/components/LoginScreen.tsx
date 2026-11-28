@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button, Checkbox, PasswordInput, Text, TextInput } from "@mantine/core";
 import { IconLock, IconMail, IconSend } from "@tabler/icons-react";
 import { openExternalUrl } from "../lib/runtime";
 import { SUPPORT_CONTACT_EMAIL as SUPPORT_EMAIL } from "../lib/supportPortal";
-import appIcon from "../../src-tauri/icons/icon.png";
+import appIcon from "../assets/app-icon.png";
 import { AppDialog, DialogText } from "./AppDialog";
+import { NativeLifecycleFeedback, type NativeLifecycleFeedbackProps } from "./NativeLifecycleFeedback";
 import "./LoginScreen.css";
 
 type LoginScreenProps = {
@@ -13,6 +14,7 @@ type LoginScreenProps = {
   rememberPassword: boolean;
   loading: boolean;
   error: string | null;
+  lifecycleFeedback?: Omit<NativeLifecycleFeedbackProps, "login">;
   windowLayoutError?: string | null;
   windowResizeBusy?: boolean;
   onRetryWindowLayout?: () => void;
@@ -28,19 +30,40 @@ type LoginScreenProps = {
 
 export function LoginScreen(props: LoginScreenProps) {
   const [helpOpened, setHelpOpened] = useState(false);
+  const [emailOpening, setEmailOpening] = useState(false);
+  const [emailOpenError, setEmailOpenError] = useState<string | null>(null);
+  const helpEpoch = useRef(0);
 
-  const openSupportEmail = () => {
-    const subject = encodeURIComponent("ChordV 账号密码协助");
-    const body = encodeURIComponent(
-      [
-        "你好，我需要协助处理 ChordV 账号密码问题。",
-        "",
-        `登录邮箱：${props.email.trim() || "请填写你的登录邮箱"}`,
-        "问题类型：忘记密码 / 修改密码 / 登录失败",
-        "补充说明："
-      ].join("\n")
-    );
-    void openExternalUrl(`mailto:${SUPPORT_EMAIL}?subject=${subject}&body=${body}`);
+  function changeHelpOpened(opened: boolean) {
+    helpEpoch.current++;
+    setEmailOpenError(null);
+    setEmailOpening(false);
+    setHelpOpened(opened);
+  }
+
+  const openSupportEmail = async () => {
+    if (emailOpening) return;
+    const epoch = helpEpoch.current;
+    setEmailOpening(true);
+    setEmailOpenError(null);
+    try {
+      const subject = encodeURIComponent("ChordV 账号密码协助");
+      const body = encodeURIComponent(
+        [
+          "你好，我需要协助处理 ChordV 账号密码问题。",
+          "",
+          `登录邮箱：${props.email.trim() || "请填写你的登录邮箱"}`,
+          "问题类型：忘记密码 / 修改密码 / 登录失败",
+          "补充说明："
+        ].join("\n")
+      );
+      const result = await openExternalUrl(`mailto:${SUPPORT_EMAIL}?subject=${subject}&body=${body}`);
+      if (!result.ok) throw new Error("邮件应用未打开");
+    } catch {
+      if (helpEpoch.current === epoch) setEmailOpenError("未能打开邮件应用，请检查系统默认邮件应用，或手动发送邮件至下方地址。");
+    } finally {
+      if (helpEpoch.current === epoch) setEmailOpening(false);
+    }
   };
 
   return (
@@ -52,7 +75,7 @@ export function LoginScreen(props: LoginScreenProps) {
         </section>
 
         <div className="auth-screen__panel">
-          <form className="auth-screen__panel-inner" onSubmit={(event) => {
+          <form className={`auth-screen__panel-inner${props.lifecycleFeedback ? " auth-screen__panel-inner--lifecycle-feedback" : ""}`} onSubmit={(event) => {
             event.preventDefault();
             if (!props.loading) props.onSubmit();
           }}>
@@ -115,12 +138,14 @@ export function LoginScreen(props: LoginScreenProps) {
                   label: "auth-screen__remember-label"
                 }}
               />
-              <button type="button" className="auth-screen__helper-action" onClick={() => setHelpOpened(true)}>
+              <button type="button" className="auth-screen__helper-action" onClick={() => changeHelpOpened(true)}>
                 账号帮助
               </button>
             </div>
 
             {props.error ? <div className="auth-screen__error" role="alert">{props.error}</div> : null}
+
+            {props.lifecycleFeedback ? <NativeLifecycleFeedback {...props.lifecycleFeedback} login /> : null}
 
             {props.emergencyRuntimeActive ? (
               <div className="auth-screen__runtime-alert">
@@ -158,19 +183,20 @@ export function LoginScreen(props: LoginScreenProps) {
 
       <AppDialog
         opened={helpOpened}
-        onClose={() => setHelpOpened(false)}
+        onClose={() => changeHelpOpened(false)}
         title="账号帮助"
         closeLabel="关闭账号帮助"
         size={440}
         actions={
           <>
-            <Button variant="default" onClick={() => setHelpOpened(false)}>关闭</Button>
-            <Button leftSection={<IconSend size={15} />} onClick={openSupportEmail}>发送邮件</Button>
+            <Button variant="default" onClick={() => changeHelpOpened(false)}>关闭</Button>
+            <Button leftSection={<IconSend size={15} />} loading={emailOpening} onClick={() => void openSupportEmail()}>发送邮件</Button>
           </>
         }
       >
         <Text size="sm" fw={600} mb={4}>忘记密码或无法登录</Text>
         <DialogText muted>请发送登录邮箱和购买或团队信息，由管理员核对后协助重置密码。已登录用户也可通过工单申请修改密码。</DialogText>
+        {emailOpenError ? <Text size="sm" c="red" role="alert" mt="sm">{emailOpenError}</Text> : null}
         <div className="auth-help__contact">
           <Text size="xs" c="dimmed">联系邮箱</Text>
           <Text size="sm" className="auth-help__email">{SUPPORT_EMAIL}</Text>

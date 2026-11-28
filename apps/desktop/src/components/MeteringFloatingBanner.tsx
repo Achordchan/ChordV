@@ -1,4 +1,3 @@
-import { createPortal } from "react-dom";
 import { NoticeRow } from "./NoticeRow";
 
 type MeteringFloatingBannerProps = {
@@ -11,7 +10,8 @@ export function MeteringFloatingBanner(props: MeteringFloatingBannerProps) {
     return null;
   }
 
-  return createPortal(
+  // 保留在应用 DOM 中，使移动端定位规则能匹配平台祖先。
+  return (
     <div className="metering-floating-banner" aria-live="polite">
       <NoticeRow tone="warning" className="metering-floating-banner__panel">
         <span className="metering-floating-banner__text">
@@ -19,7 +19,6 @@ export function MeteringFloatingBanner(props: MeteringFloatingBannerProps) {
           {props.message}
         </span>
       </NoticeRow>
-    </div>,
-    document.body
+    </div>
   );
 }

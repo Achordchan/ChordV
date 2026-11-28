@@ -56,12 +56,13 @@ function testGeoCurrentRequiresBackendRevisionAndLocalFiles() {
   const items = [makeItem("geoip"), makeItem("geosite")];
   const revision = buildGeoPlanRevision(items);
   const local = {
-    geoip: { kind: "geoip" as const, exists: true, path: "C:/geoip.dat", sizeBytes: 100, checksumSha256: null, versionLabel: null },
-    geosite: { kind: "geosite" as const, exists: true, path: "C:/geosite.dat", sizeBytes: 200, checksumSha256: null, versionLabel: null }
+    geoip: { kind: "geoip" as const, exists: true, verified: true, path: "C:/geoip.dat", sizeBytes: 100, checksumSha256: "a".repeat(64), versionLabel: null },
+    geosite: { kind: "geosite" as const, exists: true, verified: true, path: "C:/geosite.dat", sizeBytes: 200, checksumSha256: "b".repeat(64), versionLabel: null }
   };
   assert.equal(isGeoPlanCurrent(local, items, revision), true);
   assert.equal(isGeoPlanCurrent(local, items, "旧后台版本"), false);
   assert.equal(isGeoPlanCurrent({ ...local, geosite: null }, items, revision), false);
+  assert.equal(isGeoPlanCurrent({ ...local, geosite: { ...local.geosite, verified: false } }, items, revision), false, "相同远端revision缓存不能掩盖本地记录校验失败");
 }
 
 function testGeoVersionLabels() {

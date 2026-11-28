@@ -1,54 +1,108 @@
-name: Verify Desktop Native
+name: Verify MyGo Desktop
 
 on:
   pull_request:
     paths:
+      - "packages/release-protocol/**"
       - "apps/desktop/**"
-      - "apps/api/src/modules/common/updater-signature.ts"
-      - "apps/api/src/modules/common/release-center*"
-      - "apps/api/src/modules/client/client.controller.ts"
-      - "apps/api/test/windows-updater.regression.ts"
       - "packages/shared/**"
+      - "scripts/mygo-*"
+      - ".github/scripts/**"
+      - ".github/runtime-components.lock.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/verify-desktop-native.yml"
-  # 合并到 main 后再跑一次：既验证合并结果，也为后续 PR 预热 Rust 编译缓存（PR 只能读取 main 的缓存）。
+      - ".github/workflows/verify-ui.yml"
+      - "tests/e2e/fixtures/windows-legacy/**"
+      - "tests/e2e/runtime-ui-*"
+      - "apps/server/internal/api/client.go"
+      - "start-app.sh"
+      - ".github/workflows/release-desktop.yml"
   push:
     branches: [main]
     paths:
-      - "apps/desktop/src-tauri/**"
-      - "apps/desktop/scripts/**"
-      - "apps/desktop/package.json"
+      - "packages/release-protocol/**"
+      - "apps/desktop/**"
+      - "packages/shared/**"
+      - "scripts/mygo-*"
+      - ".github/scripts/**"
+      - ".github/runtime-components.lock.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/verify-desktop-native.yml"
+      - ".github/workflows/verify-ui.yml"
+      - "tests/e2e/fixtures/windows-legacy/**"
+      - "tests/e2e/runtime-ui-*"
+      - "apps/server/internal/api/client.go"
+      - "start-app.sh"
+      - ".github/workflows/release-desktop.yml"
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
-
 concurrency:
-  group: desktop-native-${{ github.ref }}
+  group: desktop-native-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  desktop-ui:
+    uses: ./.github/workflows/verify-ui.yml
+  linux-dconf:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/desktop/native/go.mod
+          cache-dependency-path: apps/desktop/native/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Install isolated session tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libglib2.0-bin dconf-gsettings-backend dconf-service dbus-daemon dbus-bin gsettings-desktop-schemas glib-networking gcc pkg-config libglib2.0-dev unzip
+      - name: Prepare verified official Linux test assets and system GIO consumer
+        run: |
+          node scripts/mygo-linux-runtime-fixtures.mjs --arch x64 --output "$RUNNER_TEMP/chordv-linux-runtime"
+          gcc -Wall -Wextra -Werror apps/desktop/native/testdata/gnome_proxy_probe.c -o "$RUNNER_TEMP/chordv-linux-runtime/gio-probe" $(pkg-config --cflags --libs gio-2.0)
+      - name: Verify genuine Xray traffic, default GIO discovery and independent watchdog
+        working-directory: apps/desktop/native
+        env:
+          CHORDV_TEST_ISOLATED_DCONF: "1"
+          CHORDV_TEST_GNOME_SCHEMA_DIR: /usr/share/glib-2.0/schemas
+          CHORDV_TEST_XRAY_DIR: ${{ runner.temp }}/chordv-linux-runtime/assets
+          CHORDV_TEST_GIO_PROBE: ${{ runner.temp }}/chordv-linux-runtime/gio-probe
+        run: |
+          test -x "$CHORDV_TEST_XRAY_DIR/xray"
+          test -x "$CHORDV_TEST_GIO_PROBE"
+          set -o pipefail
+          go test -race -count=1 -run '^TestLinuxDconf|^TestLinuxGNOME|^TestGNOME' -json ./... | tee "$RUNNER_TEMP/chordv-linux-runtime/tests.jsonl"
+          node ../../../scripts/mygo-linux-runtime-fixtures.mjs --verify-test-log "$RUNNER_TEMP/chordv-linux-runtime/tests.jsonl"
+          go vet ./...
   verify:
-    name: Native checks (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    env:
-      # Exercise build-numbered installer names and same-version reinstall like releases do.
-      CHORDV_BUILD_NUMBER: ${{ github.run_number }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, windows-2022]
+        include:
+          - runner: macos-15
+            platform: macos
+            architecture: arm64
+            goarch: arm64
+          - runner: macos-15-intel
+            platform: macos
+            architecture: x64
+            goarch: amd64
+          - runner: windows-2022
+            platform: windows
+            architecture: x64
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v4
-        with:
-          # 需要合并提交的第一个父提交，用来判断本次 PR 改了哪些文件。
-          fetch-depth: 2
       - uses: pnpm/action-setup@v4
         with:
           version: 9.15.3
@@ -56,92 +110,93 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-      - uses: dtolnay/rust-toolchain@stable
-      # 缓存 Rust 依赖的编译结果（debug 测试与 release 安装包两套），避免每次从零编译。
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v5
         with:
-          workspaces: apps/desktop/src-tauri -> target
-      - name: Detect installer-relevant changes
-        id: changes
+          go-version-file: apps/desktop/native/go.mod
+          cache-dependency-path: apps/desktop/native/go.sum
+      - run: pnpm install --frozen-lockfile
+      - name: Verify shared release binding protocol
+        working-directory: packages/release-protocol
+        run: go test -race ./... && go vet ./...
+      - name: Verify macOS recovery signing and test gate without release credentials
+        if: matrix.platform == 'macos'
         run: |
-          # 只改前端界面的 PR 不影响安装器与升级机制，跳过打包和真实安装升级测试；
-          # 正式发版（release-desktop.yml）在发布前总会完整跑一次升级测试。
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "installer=true" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          changed="$(git diff --name-only HEAD^1 HEAD)"
-          echo "$changed"
-          if echo "$changed" | grep -Eq '^(apps/desktop/src-tauri/|apps/desktop/scripts/|apps/desktop/config/|apps/desktop/test/windows-|apps/desktop/package\.json$|apps/api/scripts/verify-windows-updater-signature\.ts$|apps/api/src/modules/common/updater-signature\.ts$|pnpm-lock\.yaml$|\.github/workflows/verify-desktop-native\.yml$)'; then
-            echo "installer=true" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          log="$RUNNER_TEMP/mac-recovery-signing.tap"
+          node --test --test-reporter=tap scripts/mygo-macos-recovery-signing.test.mjs scripts/mygo-verify-mac-recovery-log.test.mjs | tee "$log"
+          test "$(grep '^# skipped ' "$log")" = '# skipped 0'
+      - name: Generate bridge and verify native code
+        working-directory: apps/desktop/native
+        run: |
+          set -euo pipefail
+          go tool mygo generate
+          if [ '${{ matrix.platform }}' = macos ]; then
+            log="$RUNNER_TEMP/mac-native-recovery.jsonl"
+            go test -race -count=1 -timeout=30m -json ./... | tee "$log"
+            node ../../../scripts/mygo-verify-mac-recovery-log.mjs "$log"
           else
-            echo "installer=false" >> "$GITHUB_OUTPUT"
-            echo "No installer-relevant changes; skipping Windows packaging and upgrade test."
+            go test -race ./...
           fi
-      - name: Check Windows shortcut fixture before compilation
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: ./apps/desktop/test/windows-shortcut-fixture.ps1
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Build frontend for native context
+          go vet ./...
+          go mod verify
+      - name: Check React frontend without old Rust/Node service
         run: |
           pnpm --filter @chordv/shared build
-          pnpm --filter @chordv/api db:generate
-          pnpm --filter @chordv/desktop build
-      - name: Compile and test native platform code
-        if: runner.os != 'Windows'
-        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --locked
-      - name: Compile and test Windows native code with application manifest
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: ./apps/desktop/test/run-windows-native-tests.ps1
-      - name: Diagnose Windows loader failures
-        if: failure() && runner.os == 'Windows'
-        shell: powershell
-        run: ./apps/desktop/test/diagnose-windows-loader.ps1
-      - name: Check main-thread and runtime lock interaction
-        run: node apps/desktop/test/runtime-shell-threading.regression.mjs
-      - name: Verify session and failure-state behavior
-        run: |
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/native-session-refresh.regression.ts
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/runtime-status-failure.regression.ts
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/connection-race.regression.ts
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/logout-responsiveness.regression.ts
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/notification-races.regression.ts
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/toast.regression.ts
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/runtime-action-failure.regression.ts
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/exit-cleanup-notice.regression.ts
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/user-facing-errors.regression.ts
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/local-files.regression.ts
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/presence-keepalive.regression.ts
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/support-portal.regression.ts
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/support-context.regression.ts
-      - name: Verify updater API and signatures
-        run: |
-          pnpm --filter @chordv/api db:generate
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/api/tsconfig.json apps/api/test/windows-updater.regression.ts
-          node apps/desktop/test/update-handoff.regression.mjs
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/external-update-link.regression.ts
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/silent-update-download.regression.ts
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/windows-update-protocol.regression.ts
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/desktop/tsconfig.json apps/desktop/test/windows-full-update-path.regression.ts
-      - name: Build isolated Windows installer for upgrade test
-        if: runner.os == 'Windows' && steps.changes.outputs.installer == 'true' && !github.event.pull_request.draft && !contains(github.event.pull_request.labels.*.name, 'skip-desktop-packaging')
+          pnpm --filter @chordv/desktop check
+      - name: Build isolated local MyGo installer
         env:
-          CHORDV_API_BASE_URL: https://v.achord.cn
-          VITE_API_BASE_URL: https://127.0.0.1:9
+          CHORDV_BUILD_NUMBER: ${{ github.run_number }}
+        run: node scripts/mygo-desktop.mjs --build-only --platform '${{ matrix.platform }}' --arch '${{ matrix.architecture }}'
+      - name: Start the verified Windows x64 payload in read-only build-info mode
+        if: matrix.platform == 'windows' && matrix.architecture == 'x64'
+        env:
+          CHORDV_BUILD_NUMBER: ${{ github.run_number }}
+        run: node .github/scripts/windows-local-build-smoke.mjs
+      - name: Prepare matching macOS runtime fixtures
+        if: matrix.platform == 'macos'
+        run: node scripts/mygo-mac-runtime-fixtures.mjs "$RUNNER_TEMP/mac-runtime" '${{ matrix.architecture }}'
+      - name: Verify isolated desktop runtime assets without a Tauri checkout
+        if: matrix.platform == 'macos'
         run: |
-          test_key="$RUNNER_TEMP/chordv-ci-updater.key"
-          pnpm --filter @chordv/desktop exec tauri signer generate --ci --password '' --write-keys "$test_key" > /dev/null
-          export TAURI_SIGNING_PRIVATE_KEY="$(cat "$test_key")"
-          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=''
-          TEST_UPDATER_KEY="$test_key.pub" node -e 'const fs=require("fs");const p="apps/desktop/src-tauri/tauri.conf.json";const c=JSON.parse(fs.readFileSync(p));c.plugins.updater.pubkey=fs.readFileSync(process.env.TEST_UPDATER_KEY,"utf8").trim();fs.writeFileSync(p,JSON.stringify(c));'
-          pnpm --filter @chordv/desktop exec node scripts/build-tauri-platform.mjs windows --target x86_64-pc-windows-msvc
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/api/tsconfig.json apps/api/scripts/verify-windows-updater-signature.ts
-      - name: Exercise real legacy Windows installation upgrade
-        if: runner.os == 'Windows' && steps.changes.outputs.installer == 'true' && !github.event.pull_request.draft && !contains(github.event.pull_request.labels.*.name, 'skip-desktop-packaging')
-        shell: powershell
+          runtime_dir=$(cd "$RUNNER_TEMP/mac-runtime" && pwd -P)
+          CHORDV_TEST_XRAY_DIR="$runtime_dir" node --test tests/e2e/runtime-ui-isolation.test.mjs
+      - name: Exercise packaged macOS update and isolated real Xray connections
+        if: matrix.platform == 'macos'
+        working-directory: apps/desktop/native
+        env:
+          EXPECTED_GOARCH: ${{ matrix.goarch }}
+          CHORDV_TEST_XRAY_DIR: ${{ runner.temp }}/mac-runtime
+          CHORDV_TEST_FULL_GUI_APP: ${{ github.workspace }}/output/mygo/darwin-${{ matrix.goarch }}/ChordV MyGo Local.app
         run: |
-          $version = (Get-Content apps/desktop/config/platform-versions.json | ConvertFrom-Json).windows
-          $installer = (Get-ChildItem output/release/windows -Filter "ChordV_${version}*_x64-setup.exe" | Select-Object -First 1).FullName
-          ./apps/desktop/test/windows-nsis-upgrade.ps1 -Installer $installer -ExpectedVersion $version
+          set -euo pipefail
+          test "$(go env GOARCH)" = "$EXPECTED_GOARCH"
+          case "$EXPECTED_GOARCH:$(uname -m)" in arm64:arm64|amd64:x86_64) ;; *) exit 1 ;; esac
+          test "$(sysctl -in sysctl.proc_translated)" != 1
+          test -d "$CHORDV_TEST_FULL_GUI_APP"
+          images=( "$(dirname "$CHORDV_TEST_FULL_GUI_APP")"/*.dmg )
+          test "${#images[@]}" -eq 1
+          test -f "${images[0]}"
+          export CHORDV_TEST_FULL_GUI_DMG="${images[0]}"
+          node --test ../../../.github/scripts/desktop-build-info.test.mjs
+          log="$RUNNER_TEMP/mac-packaged-update.jsonl"
+          go test -race -tags=e2e -count=1 -timeout=10m -run '^(TestMacLockedXrayRealityHTTPAndSOCKSLifecycle|TestMacUpdate(PackagedChordVGUIReadyWithoutNetwork|Schema2PackagedGUIAndPhaseTampering))$' -json . | tee "$log"
+          python3 - "$log" <<'PYTHON'
+          import json, sys
+          package = "github.com/Achordchan/ChordV/apps/desktop/native"
+          parent = "TestMacUpdateSchema2PackagedGUIAndPhaseTampering"
+          required = {"TestMacLockedXrayRealityHTTPAndSOCKSLifecycle", "TestMacUpdatePackagedChordVGUIReadyWithoutNetwork", parent,
+                      *(parent + "/" + phase for phase in ("healthy", "prepared-raw-signature", "armed-git-history"))}
+          with open(sys.argv[1], encoding="utf-8") as log:
+              events = [row for line in log if (row := json.loads(line)).get("Package") == package]
+          passed = {row.get("Test") for row in events if row["Action"] == "pass"}
+          if any(row["Action"] in ("skip", "fail") for row in events) or None not in passed or required - passed:
+              sys.exit(f"Packaged macOS update tests incomplete; missing passes: {sorted(required - passed)}")
+          PYTHON
+      - name: Cross-compile other desktop architectures
+        if: matrix.runner != 'macos-15-intel'
+        working-directory: apps/desktop/native
+        run: |
+          for target in darwin/amd64 darwin/arm64 windows/amd64 windows/arm64 linux/amd64 linux/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -o "$RUNNER_TEMP/chordv-${os}-${arch}" .
+          done

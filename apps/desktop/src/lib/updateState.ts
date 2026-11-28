@@ -1,5 +1,5 @@
-import type { ClientVersionDto, PlatformTarget } from "@chordv/shared";
-import type { ClientUpdateArtifact, ClientUpdateCheckResult, ReleaseArtifactType, ReleaseChannel } from "../api/client";
+import type { PlatformTarget } from "@chordv/shared";
+import type { ClientUpdateCheckResult, ReleaseArtifactType } from "../api/client";
 import { detectRuntimePlatform, type DesktopUpdateDownloadProgress, type RuntimeStatus } from "./runtime";
 import { describeUserError } from "./userFacingErrors";
 
@@ -33,84 +33,8 @@ export function describeUpdateDownloadFailure(state: UpdateDownloadState): { mes
 
 export type ResolvedUpdatePlatform = Extract<PlatformTarget, "macos" | "windows" | "android">;
 
-type ParsedSemver = {
-  major: number;
-  minor: number;
-  patch: number;
-  prerelease: string[];
-};
-
-export function parseSemver(version: string): ParsedSemver | null {
-  const match = version.trim().match(
-    /^v?(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)(?:-(?<prerelease>[0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/
-  );
-  if (!match?.groups) {
-    return null;
-  }
-  return {
-    major: Number(match.groups.major),
-    minor: Number(match.groups.minor),
-    patch: Number(match.groups.patch),
-    prerelease: match.groups.prerelease ? match.groups.prerelease.split(".") : []
-  };
-}
-
-export function compareVersion(left: string, right: string) {
-  const leftSemver = parseSemver(left);
-  const rightSemver = parseSemver(right);
-
-  if (!leftSemver || !rightSemver) {
-    return left.localeCompare(right);
-  }
-
-  for (const key of ["major", "minor", "patch"] as const) {
-    if (leftSemver[key] > rightSemver[key]) {
-      return 1;
-    }
-    if (leftSemver[key] < rightSemver[key]) {
-      return -1;
-    }
-  }
-
-  if (leftSemver.prerelease.length === 0 && rightSemver.prerelease.length > 0) {
-    return 1;
-  }
-  if (leftSemver.prerelease.length > 0 && rightSemver.prerelease.length === 0) {
-    return -1;
-  }
-
-  const length = Math.max(leftSemver.prerelease.length, rightSemver.prerelease.length);
-  for (let index = 0; index < length; index += 1) {
-    const leftPart = leftSemver.prerelease[index];
-    const rightPart = rightSemver.prerelease[index];
-    if (leftPart === undefined) {
-      return -1;
-    }
-    if (rightPart === undefined) {
-      return 1;
-    }
-    if (leftPart === rightPart) {
-      continue;
-    }
-    const leftNumber = Number(leftPart);
-    const rightNumber = Number(rightPart);
-    const leftNumeric = Number.isFinite(leftNumber) && leftPart.trim() !== "";
-    const rightNumeric = Number.isFinite(rightNumber) && rightPart.trim() !== "";
-
-    if (leftNumeric && rightNumeric) {
-      return leftNumber > rightNumber ? 1 : -1;
-    }
-    if (leftNumeric) {
-      return -1;
-    }
-    if (rightNumeric) {
-      return 1;
-    }
-    return leftPart.localeCompare(rightPart);
-  }
-
-  return 0;
-}
+export { parseSemver, compareVersion } from "./releaseVersion";
+import { compareVersion } from "./releaseVersion";
 
 export function resolveUpdatePlatform(platformTarget: RuntimeStatus["platformTarget"]): ResolvedUpdatePlatform {
   if (platformTarget === "web") {
@@ -159,30 +83,10 @@ export function resolveUpdateDownloadUrl(downloadUrl: string | null) {
   if (!downloadUrl) {
     return null;
   }
-  if (/^https?:\/\//i.test(downloadUrl)) {
-    return downloadUrl;
-  }
-  return new URL(downloadUrl, import.meta.env.VITE_API_BASE_URL ?? "https://v.achord.cn").toString();
-}
-
-export function normalizeMirrorPrefix(mirrorPrefix?: string | null) {
-  const normalized = mirrorPrefix?.trim();
-  return normalized ? normalized : null;
-}
-
-export function applyUpdateMirrorPrefix(originUrl: string, mirrorPrefix?: string | null) {
-  const normalizedPrefix = normalizeMirrorPrefix(mirrorPrefix);
-  if (!normalizedPrefix) {
-    return originUrl;
-  }
-  if (normalizedPrefix.includes("{url}")) {
-    return normalizedPrefix.replaceAll("{url}", originUrl);
-  }
-  return `${normalizedPrefix}${originUrl}`;
-}
-
-export function trimTrailingSlash(value: string) {
-  return value.replace(/\/+$/, "");
+  try {
+    const url = new URL(downloadUrl);
+    return url.protocol === "https:" && !url.username && !url.password ? url.toString() : null;
+  } catch { return null; }
 }
 
 export function inferInstallerFileName(downloadUrl: string, fileType: string) {
@@ -212,71 +116,6 @@ function inferInstallerFileNameByType(fileType: string) {
     return "ChordV.ipa";
   }
   return "ChordV.dmg";
-}
-
-export function createLegacyUpdateResult(
-  version: ClientVersionDto | null,
-  platformTarget: ResolvedUpdatePlatform,
-  currentVersion: string,
-  clientMirrorPrefix?: string | null,
-  fallbackArtifact?: ClientUpdateArtifact | null,
-  channel: ReleaseChannel = "stable"
-): ClientUpdateCheckResult | null {
-  if (!version) {
-    return null;
-  }
-  if (platformTarget === "windows") {
-    return null;
-  }
-
-  const hasUpdate =
-    compareVersion(version.currentVersion, currentVersion) > 0 ||
-    compareVersion(version.minimumVersion, currentVersion) > 0 ||
-    version.forceUpgrade;
-
-  if (!hasUpdate) {
-    return null;
-  }
-
-  const originDownloadUrl = resolveUpdateDownloadUrl(version.downloadUrl ?? null);
-  const downloadUrl = originDownloadUrl ? applyUpdateMirrorPrefix(originDownloadUrl, clientMirrorPrefix) : null;
-  const fileType = preferredArtifactType(platformTarget);
-  const compatibleFallbackArtifact =
-    fallbackArtifact &&
-    fallbackArtifact.fileType === fileType &&
-    (fallbackArtifact.originDownloadUrl === originDownloadUrl || fallbackArtifact.downloadUrl === downloadUrl)
-      ? fallbackArtifact
-      : null;
-
-  return {
-    platform: platformTarget,
-    channel,
-    currentVersion,
-    latestVersion: version.currentVersion,
-    minimumVersion: version.minimumVersion,
-    hasUpdate: true,
-    forceUpgrade: version.forceUpgrade || compareVersion(version.minimumVersion, currentVersion) > 0,
-    title: `发现新版本 ${formatVersionLabel(version.currentVersion)}`,
-    changelog: version.changelog,
-    publishedAt: null,
-    deliveryMode: platformTarget === "android" ? "apk_download" : "desktop_installer_download",
-    downloadUrl,
-    artifact: downloadUrl
-      ? {
-          fileType,
-          downloadUrl,
-          originDownloadUrl,
-          defaultMirrorPrefix:
-            normalizeMirrorPrefix(clientMirrorPrefix) ?? compatibleFallbackArtifact?.defaultMirrorPrefix ?? null,
-          allowClientMirror: compatibleFallbackArtifact?.allowClientMirror ?? true,
-          fileName: compatibleFallbackArtifact?.fileName ?? inferInstallerFileName(downloadUrl, fileType),
-          fileSizeBytes: compatibleFallbackArtifact?.fileSizeBytes ?? null,
-          fileHash: compatibleFallbackArtifact?.fileHash ?? null,
-          isPrimary: true,
-          isFullPackage: true
-        }
-      : null
-  };
 }
 
 export function updateActionLabel(update: ClientUpdateCheckResult, downloadState?: UpdateDownloadState) {

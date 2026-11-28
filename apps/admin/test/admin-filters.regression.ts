@@ -5,6 +5,10 @@ function backendError(statusCode: number, message: string) {
   return new Error(JSON.stringify({ statusCode, message }));
 }
 
+assert.equal(readError(new Error(JSON.stringify({statusCode:500,status:500,message:"HTTP 500",requestId:"storage-request-proof"})),"扫描失败"),
+  "后台服务异常，请稍后重试；如果连续出现，请查看服务器日志。\n请求编号：storage-request-proof");
+assert.equal(readError(backendError(503,"HTTP 503"),"扫描失败"),"后台或外部服务暂不可用，请稍后重试。");
+
 function testReadErrorPreservesImageBedProviderHttpError() {
   const message = readError(
     backendError(502, "图床上传失败（HTTP 401）：Token *** is invalid"),

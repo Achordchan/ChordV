@@ -9,11 +9,17 @@ export const GEO_INSTALLED_VERSION_LABEL_STORAGE_KEY = "chordv.geo.installedVers
 export type RuntimeComponentLocalInfo = {
   kind: "xray" | "geoip" | "geosite";
   exists: boolean;
+  /** Actual local SHA/size match the installation record; not release-signature proof. */
+  verified: boolean;
   path: string | null;
   sizeBytes: number | null;
   checksumSha256: string | null;
   versionLabel: string | null;
 };
+
+export function isRuntimeComponentVerified(info: RuntimeComponentLocalInfo | null | undefined): info is RuntimeComponentLocalInfo {
+  return info?.exists === true && info.verified === true && typeof info.sizeBytes === "number" && Number.isFinite(info.sizeBytes) && info.sizeBytes > 0;
+}
 
 export function shouldCheckGeoUpdate(lastCheckAtMs: number | null, nowMs = Date.now()) {
   if (!lastCheckAtMs || !Number.isFinite(lastCheckAtMs) || lastCheckAtMs <= 0) {
@@ -122,9 +128,7 @@ export function isGeoPlanCurrent(
   return Boolean(
     remoteRevision
     && installedRevision === remoteRevision
-    && localInfos.geoip?.exists
-    && (localInfos.geoip.sizeBytes ?? 0) > 0
-    && localInfos.geosite?.exists
-    && (localInfos.geosite.sizeBytes ?? 0) > 0
+    && isRuntimeComponentVerified(localInfos.geoip)
+    && isRuntimeComponentVerified(localInfos.geosite)
   );
 }

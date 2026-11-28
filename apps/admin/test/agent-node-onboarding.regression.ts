@@ -127,9 +127,9 @@ lateRead.resolve(completedStatus); await closed.flush();
 assert.equal(closed.mutations.length, beforeLateRead, 'a closed SSE session cannot publish a late status');
 console.log('onboarding SSE state regressions passed (registration is not validation, exact outcome, coalescing, close)');
 
-// Reconnect contract: the real server's initial events pass through the real
-// client SSE parser into the onboarding watcher, even after losing replay data.
-const { AdminRuntimeEventsService } = await import('../../api/src/modules/common/admin-runtime-events.service');
+// Exercise the actual frontend parser and watcher using explicit SSE wire
+// fixtures for Go fullSyncEvents. Real Go HTTP replay/resync is covered by
+// apps/server/internal/api/events_test.go, not a retired Nest service instance.
 const clientSource = readFileSync(resolve(import.meta.dirname, '../src/api/client.ts'), 'utf8');
 const clientTree = ts.createSourceFile('client.ts', clientSource, ts.ScriptTarget.Latest, true);
 const parser = clientTree.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === 'parseAdminEventStreamBuffer');
@@ -140,12 +140,27 @@ const reconnect = fixture();
 let statusAfterRead: unknown = { node: registeredNode, spec: {}, command: { status: 'pending', targetRevision: '1' } };
 let deliverToWatcher!: (event: unknown) => void;
 let serverSubscription: { unsubscribe(): void } | undefined;
+let transportGeneration = 0;
+const parsedCursors: string[] = [];
 const transport = () => {
-  // A fresh instance has no replay cache, as after a backend restart.
-  const server = new AdminRuntimeEventsService({} as never);
-  serverSubscription = server.stream({ validate: async () => undefined, lastEventId: 'lost-instance-id' }).subscribe(message => {
-    parseStream(`event: ${message.type}\ndata: ${message.data}\n\n`, (_id: unknown, event: unknown) => deliverToWatcher(event));
-  });
+  const generation = ++transportGeneration;
+  let open = true;
+  serverSubscription = { unsubscribe: () => { open = false; } };
+  const wire = [
+    "retry: 3000\n\n",
+    `id: go-restarted-${generation}:1\ndata: ${JSON.stringify({ type: "resync", reason: "connected", occurredAt: "2026-11-17T00:00:00.000Z" })}\n\n`,
+    `id: go-restarted-${generation}:2\ndata: ${JSON.stringify({ type: "node_access_updated", occurredAt: "2026-11-17T00:00:00.000Z" })}\n\n`
+  ].join("").replaceAll("\n", "\r\n");
+  const deliver = (id: string | null, event: unknown) => {
+    if (!open) return;
+    if (id) parsedCursors.push(id);
+    deliverToWatcher(event);
+  };
+  const boundary = wire.indexOf("node_access_updated") + 5;
+  const first = parseStream(wire.slice(0, boundary), deliver);
+  assert.ok(first.remaining.length > 0, "partial Go SSE data must remain buffered");
+  const last = parseStream(first.remaining + wire.slice(boundary), deliver);
+  assert.equal(last.remaining, "", "complete CRLF frames must drain the parser buffer");
 };
 const reconnectEpoch = { current: 0 };
 Object.assign(reconnect.scope, {
@@ -169,4 +184,5 @@ try {
   assert.ok(reconnect.mutations.slice(beforeReconnect).some(([key, value]) => key === 'setStage' && value === 'ready'),
     'a reconnect initial event must refresh completion without a later node event or replay cache');
 } finally { serverSubscription?.unsubscribe(); }
-console.log('onboarding reconnect passed (real server opening event -> client SSE parser -> watcher snapshot)');
+assert.ok(parsedCursors.includes("go-restarted-2:2"), "opening cursor must survive CRLF/chunk parsing after reconnect");
+console.log('onboarding reconnect passed (Go wire contract -> actual client parser -> watcher snapshot; Go HTTP covered separately)');

@@ -35,6 +35,9 @@ export type UsersPageProps = {
   onOpenRenewDrawer: (subscriptionId: string) => void;
   onOpenChangePlanDrawer: (subscriptionId: string) => void;
   onOpenAdjustDrawer: (subscriptionId: string) => void;
+  onOpenConvertToTeamModal: (subscription: AdminSubscriptionRecordDto) => void;
+  hasAvailableTeamTransferTarget: boolean;
+  onOpenKickMemberModal: (teamId: string, memberId: string, memberName: string) => void;
   onOpenNodeAccessEditor: (subscriptionId: string, ownerLabel: string) => void;
   onResetSubscriptionTraffic: (subscriptionId: string, ownerLabel: string, userId?: string) => void;
   resetTrafficBusyKey: string | null;

@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import type { AdminNodeRecordDto } from "@chordv/shared";
-import { compactNodeStatus } from "../src/utils/node-status";
+import { compactNodeStatus, nodeAttention } from "../src/utils/node-status";
 
 const adminRoot = join(fileURLToPath(new URL(".", import.meta.url)), "..");
 
@@ -37,19 +37,20 @@ function node(overrides: Partial<AdminNodeRecordDto>): AdminNodeRecordDto {
   return {
     isActive: true,
     probeStatus: "healthy",
-    controlStatus: "online",
+    controlStatus: "healthy",
+    agent: {status:"online",xrayStatus:"healthy"},
     ...overrides
   } as unknown as AdminNodeRecordDto;
 }
 
 assert.deepEqual(compactNodeStatus(node({})), { color: "green", label: "Agent 在线" });
 assert.deepEqual(
-  compactNodeStatus(node({ controlStatus: "offline", probeStatus: "healthy" })),
+  compactNodeStatus(node({ agent: {status:"offline",xrayStatus:"healthy"} as AdminNodeRecordDto["agent"], probeStatus: "healthy" })),
   { color: "red", label: "Agent 离线" },
   "Agent 离线时不得显示为健康探测"
 );
 assert.deepEqual(
-  compactNodeStatus(node({ controlStatus: "degraded", probeStatus: "healthy" })),
+  compactNodeStatus(node({ agent: {status:"degraded",xrayStatus:"healthy"} as AdminNodeRecordDto["agent"], probeStatus: "healthy" })),
   { color: "yellow", label: "Agent 异常" },
   "Agent 异常时不得显示为健康探测"
 );
@@ -60,26 +61,25 @@ assert.deepEqual(
 );
 assert.deepEqual(compactNodeStatus(node({ isActive: false })), { color: "gray", label: "已禁用" });
 assert.deepEqual(
-  compactNodeStatus(node({ controlStatus: undefined })),
+  compactNodeStatus(node({ agent: null })),
   { color: "gray", label: "Agent 等待心跳" },
   "从未上报的节点按等待心跳展示"
 );
 
 const tree = ts.createSourceFile("OverviewPage.tsx", overviewPage, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-let attention = "", count = "";
+let count = "";
 function visit(n: ts.Node) {
-  if (ts.isFunctionDeclaration(n) && n.name?.text === "nodeAttention") attention = n.getText(tree);
   if (ts.isVariableDeclaration(n) && n.name.getText(tree) === "queueCount") count = n.initializer!.getText(tree);
   ts.forEachChild(n, visit);
 }
 visit(tree);
-assert.ok(attention && count);
-const classify = new Function(ts.transpileModule(attention, {compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText + ";return nodeAttention;")();
+assert.ok(count);
+const classify = nodeAttention;
 assert.equal(classify(node({})), 2);
 assert.equal(classify(node({probeStatus:"offline"})), 0);
-assert.equal(classify(node({controlStatus:"offline"})), 0);
+assert.equal(classify(node({agent:{status:"offline",xrayStatus:"healthy"} as AdminNodeRecordDto["agent"]})), 0);
 assert.equal(classify(node({isActive:false,controlStatus:"offline"})), 3);
-assert.equal(classify(node({controlStatus:undefined})), 1);
+assert.equal(classify(node({agent:null})), 1);
 const queue = new Function("snapshot", "sumNodeCommandSummaries", "return " + count);
 const snapshot = {leaseRevocationJobs:["pending","running","failed","completed","cancelled"].map(status=>({status})), nodeCommandQueue:{summaries:{nodes:[{key:"a",total:5},{key:"b",total:7}]}}};
 assert.equal(queue(snapshot,sumNodeCommandSummaries),15,"只统计可处理撤销任务，并使用节点命令精确聚合");

@@ -116,7 +116,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
         showToast({
           tone: "warning",
           title: "稍后手动重连",
-          message: "规则已保存，当前有其他操作进行中，请稍后手动重新连接。"
+          message: "规则已保存，本次重连未完成，请稍后手动重连。"
         });
       }
     } catch (reason) {

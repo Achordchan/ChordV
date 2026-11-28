@@ -1,36 +1,16 @@
-import { requestResponse } from "./base";
 import type {
   AdminSupportTicketDetailDto as SharedAdminSupportTicketDetailDto,
   AdminSupportTicketSummaryDto as SharedAdminSupportTicketSummaryDto,
   AdminImageBedConfigDto,
   AdminImageBedFileListDto,
   AdminUploadLimitsDto,
-  AdminReleaseArtifactDto as SharedAdminReleaseArtifactDto,
-  AdminDownloadMirrorConfigDto as SharedAdminDownloadMirrorConfigDto,
-  UpdateAdminDownloadMirrorConfigInputDto as SharedUpdateAdminDownloadMirrorConfigInputDto,
-  AdminRuntimeComponentFailureReportDto as SharedAdminRuntimeComponentFailureReportDto,
-  AdminRuntimeComponentRecordDto as SharedAdminRuntimeComponentRecordDto,
-  AdminRuntimeComponentValidationDto as SharedAdminRuntimeComponentValidationDto,
-  AdminReleaseRecordDto as SharedAdminReleaseRecordDto,
-  CreateReleaseArtifactInputDto,
-  CreateReleaseInputDto,
   DeleteAdminImageBedFileResultDto,
-  CreateRuntimeComponentInputDto,
   ReplyClientSupportTicketInputDto,
-  ReleaseArtifactType,
-  ReleaseStatus,
-  RuntimeComponentArchitecture,
-  RuntimeComponentKind,
-  RuntimeComponentSource,
   SupportTicketStatus,
-  UpdateDeliveryMode,
   UpdateAdminImageBedConfigInputDto,
-  UploadedSupportTicketAttachmentInputDto,
-  UpdateReleaseArtifactInputDto,
-  UpdateReleaseInputDto,
-  UpdateRuntimeComponentInputDto
+  UploadedSupportTicketAttachmentInputDto
 } from "@chordv/shared";
-import { API_BASE, clearStoredAdminSession, getStoredAdminAccessToken, refreshAdminAccessToken, request } from "./base";
+import { API_BASE, captureAdminSession, clearStoredAdminSession, getStoredAdminAccessToken, refreshAdminAccessToken, request } from "./base";
 
 const IMAGE_BED_MANAGE_TIMEOUT_MS = 60 * 1000;
 const IMAGE_BED_CONFIG_TIMEOUT_MS = 8 * 1000;
@@ -41,7 +21,6 @@ const IMAGE_BED_MANAGE_TIMEOUT_MESSAGE = "图床管理请求仍在处理，请�
 const TICKET_ATTACHMENT_TIMEOUT_MS = 90 * 1000;
 const ADMIN_READ_TIMEOUT_MS = 60 * 1000;
 const ADMIN_ACTION_TIMEOUT_MS = 60 * 1000;
-const LONG_ADMIN_ACTION_TIMEOUT_MS = 10 * 60 * 1000;
 const ADMIN_EVENT_STREAM_STALE_MS = 60 * 1000;
 
 export * from "./announcements";
@@ -53,74 +32,18 @@ export * from "./subscriptions";
 export * from "./support-integration";
 export * from "./teams";
 export * from "./users";
-
-export type AdminReleasePlatform = "macos" | "windows" | "android" | "ios";
-export type AdminReleaseChannel = "stable" | "beta";
-export type AdminReleaseStatus = ReleaseStatus;
-export type AdminReleaseArtifactType = ReleaseArtifactType;
-export type AdminRuntimeComponentArchitecture = RuntimeComponentArchitecture;
-export type AdminRuntimeComponentKind = RuntimeComponentKind;
-export type AdminRuntimeComponentSource = RuntimeComponentSource;
-export type AdminReleaseArtifactRecordDto = {
-  sourceUrl?: string | null;
-  id: string;
-  source: "uploaded" | "external";
-  type: AdminReleaseArtifactType;
-  deliveryMode: UpdateDeliveryMode;
-  downloadUrl: string;
-  originDownloadUrl?: string | null;
-  finalUrlPreview?: string | null;
-  defaultMirrorPrefix?: string | null;
-  allowClientMirror: boolean;
-  fileName?: string | null;
-  fileSizeBytes?: string | null;
-  fileHash?: string | null;
-  /** Read by the server from the CI file name (…_build42…); null when absent. */
-  buildNumber?: number | null;
-  isPrimary: boolean;
-  isFullPackage: boolean;
-  createdAt?: string | null;
-  updatedAt?: string | null;
-};
-
-export type AdminReleaseRecordDto = {
-  id: string;
-  platform: AdminReleasePlatform;
-  channel: AdminReleaseChannel;
-  status: AdminReleaseStatus;
-  version: string;
-  minimumVersion: string;
-  forceUpgrade: boolean;
-  title: string;
-  changelog: string[];
-  deliveryMode: UpdateDeliveryMode;
-  publishedAt?: string | null;
-  createdAt?: string | null;
-  updatedAt?: string | null;
-  artifacts: AdminReleaseArtifactRecordDto[];
-};
-
-export type AdminRuntimeComponentRecordDto = SharedAdminRuntimeComponentRecordDto;
-export type AdminDownloadMirrorConfigDto = SharedAdminDownloadMirrorConfigDto;
-export type UpdateAdminDownloadMirrorConfigInputDto = SharedUpdateAdminDownloadMirrorConfigInputDto;
-export type AdminRuntimeComponentValidationDto = SharedAdminRuntimeComponentValidationDto;
-export type AdminRuntimeComponentFailureReportDto = SharedAdminRuntimeComponentFailureReportDto;
 export type AdminSupportTicketSummaryDto = SharedAdminSupportTicketSummaryDto;
 export type AdminSupportTicketDetailDto = SharedAdminSupportTicketDetailDto;
 export type { AdminUploadLimitsDto };
-export type CreateAdminReleaseArtifactInputDto = Omit<CreateReleaseArtifactInputDto, "defaultMirrorPrefix" | "allowClientMirror">;
-export type UpdateAdminReleaseArtifactInputDto = Omit<UpdateReleaseArtifactInputDto, "defaultMirrorPrefix" | "allowClientMirror">;
 export type ReplyAdminSupportTicketInputDto = ReplyClientSupportTicketInputDto;
 export type AdminRuntimeEventDto = {
   type:
     | "keepalive"
+    | "resync"
     | "ticket_updated"
     | "subscription_updated"
     | "node_access_updated"
-    | "runtime_component_updated"
-    | "release_center_updated"
     | "image_bed_updated"
-    | "version_updated"
     | "account_updated"
     | "announcement_updated"
     | "announcement_read_state_updated"
@@ -128,6 +51,7 @@ export type AdminRuntimeEventDto = {
     | "sync_queue_updated"
     | "presence_updated";
   occurredAt: string;
+  reason?: "connected" | "replay_gap";
   ticketId?: string | null;
   ticketStatus?: SupportTicketStatus | null;
   announcementId?: string | null;
@@ -135,364 +59,13 @@ export type AdminRuntimeEventDto = {
   subscriptionState?: string | null;
   nodeId?: string | null;
   state?: string | null;
-  platform?: AdminReleasePlatform | null;
-  channel?: AdminReleaseChannel | null;
-  latestVersion?: string | null;
-};
-
-export type CreateAdminReleaseInputDto = {
-  platform: AdminReleasePlatform;
-  channel?: AdminReleaseChannel;
-  status: Extract<AdminReleaseStatus, "draft" | "published">;
-  version: string;
-  minimumVersion?: string;
-  forceUpgrade?: boolean;
-  title?: string;
-  changelog: string[];
-  initialArtifact?: CreateAdminReleaseArtifactInputDto | null;
-};
-
-export type UpdateAdminReleaseInputDto = {
-  channel?: AdminReleaseChannel;
-  title?: string;
-  changelog?: string[];
-  minimumVersion?: string;
-  forceUpgrade?: boolean;
-  status?: Extract<AdminReleaseStatus, "draft" | "published">;
-  publishedAt?: string | null;
-};
-
-export type UploadAdminReleaseArtifactInputDto = {
-  updaterSignature?: string | null;
-  source?: "uploaded";
-  type: AdminReleaseArtifactType;
-  deliveryMode?: UpdateDeliveryMode;
-  fileName?: string | null;
-  isPrimary?: boolean;
-};
-export type CreateAdminRuntimeComponentInputDto = CreateRuntimeComponentInputDto;
-export type UpdateAdminRuntimeComponentInputDto = UpdateRuntimeComponentInputDto;
-export type UploadAdminRuntimeComponentInputDto = {
-  platform: AdminReleasePlatform;
-  architecture: AdminRuntimeComponentArchitecture;
-  kind: AdminRuntimeComponentKind;
-  fileName?: string | null;
-  expectedHash?: string | null;
-  enabled?: boolean;
-};
-
-export type FetchAdminReleasesFilters = {
-  platform?: AdminReleasePlatform;
-  status?: AdminReleaseStatus;
+  platform?: "macos" | "windows" | "android" | "ios" | null;
+  channel?: "stable" | "beta" | null;
 };
 
 export async function fetchAdminUploadLimits() {
   return request<AdminUploadLimitsDto>("/admin/upload-limits", {
     timeoutMs: ADMIN_READ_TIMEOUT_MS
-  });
-}
-
-function buildReleaseQuery(filters?: FetchAdminReleasesFilters) {
-  if (!filters) return "";
-  const params = new URLSearchParams();
-  if (filters.platform) params.set("platform", filters.platform);
-  if (filters.status) params.set("status", filters.status);
-  const query = params.toString();
-  return query ? `?${query}` : "";
-}
-
-function inferDeliveryMode(artifacts: SharedAdminReleaseArtifactDto[]): UpdateDeliveryMode {
-  const primary = artifacts.find((item) => item.isPrimary) ?? artifacts[0];
-  return primary?.deliveryMode ?? "none";
-}
-
-function mapArtifact(record: SharedAdminReleaseArtifactDto): AdminReleaseArtifactRecordDto {
-  return {
-    id: record.id,
-    sourceUrl: record.sourceUrl ?? null,
-    source: record.source,
-    type: record.type,
-    deliveryMode: record.deliveryMode,
-    downloadUrl: record.downloadUrl,
-    originDownloadUrl: record.originDownloadUrl ?? record.downloadUrl,
-    finalUrlPreview: record.finalUrlPreview ?? record.downloadUrl,
-    defaultMirrorPrefix: record.defaultMirrorPrefix ?? null,
-    allowClientMirror: record.allowClientMirror ?? false,
-    fileName: record.fileName ?? null,
-    fileSizeBytes: record.fileSizeBytes ?? null,
-    fileHash: record.fileHash ?? null,
-    buildNumber: record.buildNumber ?? null,
-    isPrimary: record.isPrimary,
-    isFullPackage: record.isFullPackage,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt
-  };
-}
-
-function mapRelease(record: SharedAdminReleaseRecordDto): AdminReleaseRecordDto {
-  const artifacts = record.artifacts.map(mapArtifact);
-  return {
-    id: record.id,
-    platform: record.platform,
-    channel: record.channel === "beta" ? "beta" : "stable",
-    status: record.status,
-    version: record.version,
-    minimumVersion: record.minimumVersion,
-    forceUpgrade: record.forceUpgrade,
-    title: record.displayTitle,
-    changelog: record.changelog,
-    deliveryMode: inferDeliveryMode(record.artifacts),
-    publishedAt: record.publishedAt ?? null,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
-    artifacts
-  };
-}
-
-export async function fetchAdminReleases(filters?: FetchAdminReleasesFilters) {
-  const records = await request<SharedAdminReleaseRecordDto[]>(`/admin/releases${buildReleaseQuery(filters)}`, {
-    timeoutMs: ADMIN_READ_TIMEOUT_MS
-  });
-  return records.map(mapRelease);
-}
-
-export async function createAdminRelease(input: CreateAdminReleaseInputDto) {
-  const version = input.version.trim();
-  const title = input.title?.trim();
-  const minimumVersion = input.minimumVersion?.trim();
-  const payload: CreateReleaseInputDto = {
-    platform: input.platform,
-    channel: input.channel ?? "stable",
-    version,
-    ...(input.title !== undefined ? { displayTitle: title } : {}),
-    changelog: input.changelog,
-    ...(minimumVersion ? { minimumVersion } : {}),
-    ...(input.forceUpgrade !== undefined ? { forceUpgrade: input.forceUpgrade } : {}),
-    status: input.status,
-    initialArtifact: input.initialArtifact ?? undefined
-  };
-  const record = await request<SharedAdminReleaseRecordDto>("/admin/releases", {
-    method: "POST",
-    body: JSON.stringify(payload),
-    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
-  });
-  return mapRelease(record);
-}
-
-export async function updateAdminRelease(releaseId: string, input: UpdateAdminReleaseInputDto) {
-  const title = input.title?.trim();
-  const minimumVersion = input.minimumVersion?.trim();
-  const payload: UpdateReleaseInputDto = {
-    ...(input.channel !== undefined ? { channel: input.channel } : {}),
-    ...(input.title !== undefined ? { displayTitle: title } : {}),
-    ...(input.changelog !== undefined ? { changelog: input.changelog } : {}),
-    ...(minimumVersion !== undefined ? { minimumVersion } : {}),
-    ...(input.forceUpgrade !== undefined ? { forceUpgrade: input.forceUpgrade } : {}),
-    ...(input.status !== undefined ? { status: input.status } : {}),
-    ...(input.publishedAt !== undefined ? { publishedAt: input.publishedAt } : {})
-  };
-  const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
-    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
-  });
-  return mapRelease(record);
-}
-
-export async function publishAdminRelease(releaseId: string) {
-  const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/publish`, {
-    method: "POST",
-    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
-  });
-  return mapRelease(record);
-}
-
-export async function promoteAdminRelease(releaseId: string) {
-  const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/promote`, {
-    method: "POST",
-    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
-  });
-  return mapRelease(record);
-}
-
-export async function unpublishAdminRelease(releaseId: string) {
-  const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/unpublish`, {
-    method: "POST",
-    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
-  });
-  return mapRelease(record);
-}
-
-export async function deleteAdminRelease(releaseId: string) {
-  return request<{ ok: boolean; releaseId: string }>(`/admin/releases/${releaseId}`, {
-    method: "DELETE",
-    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
-  });
-}
-
-export async function createAdminReleaseArtifact(releaseId: string, input: CreateAdminReleaseArtifactInputDto) {
-  const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/artifacts`, {
-    method: "POST",
-    body: JSON.stringify(input),
-    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
-  });
-  return mapRelease(record);
-}
-
-export async function updateAdminReleaseArtifact(
-  releaseId: string,
-  artifactId: string,
-  input: UpdateAdminReleaseArtifactInputDto
-) {
-  const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/artifacts/${artifactId}`, {
-    method: "PATCH",
-    body: JSON.stringify(input),
-    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
-  });
-  return mapRelease(record);
-}
-
-export async function deleteAdminReleaseArtifact(releaseId: string, artifactId: string) {
-  const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/artifacts/${artifactId}`, {
-    method: "DELETE",
-    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
-  });
-  return mapRelease(record);
-}
-
-export async function uploadAdminReleaseArtifact(
-  releaseId: string,
-  input: UploadAdminReleaseArtifactInputDto,
-  file: File
-) {
-  const body = new FormData();
-  body.set("type", input.type);
-  if ("updaterSignature" in input && input.updaterSignature) body.set("updaterSignature", input.updaterSignature);
-  if (input.source) body.set("source", input.source);
-  if (input.deliveryMode) body.set("deliveryMode", input.deliveryMode);
-  if (input.fileName) body.set("fileName", input.fileName);
-  if (input.isPrimary !== undefined) body.set("isPrimary", String(input.isPrimary));
-  body.set("file", file);
-  const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/artifacts/upload`, {
-    method: "POST",
-    body,
-    timeoutMs: LONG_ADMIN_ACTION_TIMEOUT_MS
-  });
-  return mapRelease(record);
-}
-
-export async function replaceAdminReleaseArtifactUpload(
-  releaseId: string,
-  artifactId: string,
-  input: UploadAdminReleaseArtifactInputDto,
-  file: File
-) {
-  const body = new FormData();
-  body.set("type", input.type);
-  if ("updaterSignature" in input && input.updaterSignature) body.set("updaterSignature", input.updaterSignature);
-  if (input.source) body.set("source", input.source);
-  if (input.deliveryMode) body.set("deliveryMode", input.deliveryMode);
-  if (input.fileName) body.set("fileName", input.fileName);
-  if (input.isPrimary !== undefined) body.set("isPrimary", String(input.isPrimary));
-  body.set("file", file);
-  const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/artifacts/${artifactId}/upload`, {
-    method: "POST",
-    body,
-    timeoutMs: LONG_ADMIN_ACTION_TIMEOUT_MS
-  });
-  return mapRelease(record);
-}
-
-
-export async function fetchAdminDownloadMirrorConfig() {
-  return request<SharedAdminDownloadMirrorConfigDto>("/admin/download-mirror/config", {
-    method: "GET"
-  });
-}
-
-export async function updateAdminDownloadMirrorConfig(input: SharedUpdateAdminDownloadMirrorConfigInputDto) {
-  return request<SharedAdminDownloadMirrorConfigDto>("/admin/download-mirror/config", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input)
-  });
-}
-
-export async function fetchAdminRuntimeComponents() {
-  return request<SharedAdminRuntimeComponentRecordDto[]>("/admin/runtime-components", {
-    timeoutMs: ADMIN_READ_TIMEOUT_MS
-  });
-}
-
-export async function fetchAdminRuntimeComponentFailures(limit = 50) {
-  return request<SharedAdminRuntimeComponentFailureReportDto[]>(`/admin/runtime-components/failures?limit=${limit}`, {
-    timeoutMs: ADMIN_READ_TIMEOUT_MS
-  });
-}
-
-export async function createAdminRuntimeComponent(input: CreateAdminRuntimeComponentInputDto) {
-  return request<SharedAdminRuntimeComponentRecordDto>("/admin/runtime-components", {
-    method: "POST",
-    body: JSON.stringify(input),
-    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
-  });
-}
-
-export async function uploadAdminRuntimeComponent(input: UploadAdminRuntimeComponentInputDto, file: File) {
-  const body = new FormData();
-  body.set("platform", input.platform);
-  body.set("architecture", input.architecture);
-  body.set("kind", input.kind);
-  if (input.fileName) body.set("fileName", input.fileName);
-  if (input.expectedHash) body.set("expectedHash", input.expectedHash);
-  if (input.enabled !== undefined) body.set("enabled", String(input.enabled));
-  body.set("file", file);
-  return request<SharedAdminRuntimeComponentRecordDto>("/admin/runtime-components/upload", {
-    method: "POST",
-    body,
-    timeoutMs: LONG_ADMIN_ACTION_TIMEOUT_MS
-  });
-}
-
-export async function updateAdminRuntimeComponent(componentId: string, input: UpdateAdminRuntimeComponentInputDto) {
-  return request<SharedAdminRuntimeComponentRecordDto>(`/admin/runtime-components/${componentId}`, {
-    method: "PATCH",
-    body: JSON.stringify(input),
-    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
-  });
-}
-
-export async function replaceAdminRuntimeComponentUpload(
-  componentId: string,
-  input: UploadAdminRuntimeComponentInputDto,
-  file: File
-) {
-  const body = new FormData();
-  body.set("platform", input.platform);
-  body.set("architecture", input.architecture);
-  body.set("kind", input.kind);
-  if (input.fileName) body.set("fileName", input.fileName);
-  if (input.expectedHash) body.set("expectedHash", input.expectedHash);
-  if (input.enabled !== undefined) body.set("enabled", String(input.enabled));
-  body.set("file", file);
-  return request<SharedAdminRuntimeComponentRecordDto>(`/admin/runtime-components/${componentId}/upload`, {
-    method: "POST",
-    body,
-    timeoutMs: LONG_ADMIN_ACTION_TIMEOUT_MS
-  });
-}
-
-export async function deleteAdminRuntimeComponent(componentId: string) {
-  return request<{ id: string; deleted: true }>(`/admin/runtime-components/${componentId}`, {
-    method: "DELETE",
-    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
-  });
-}
-
-export async function verifyAdminRuntimeComponent(componentId: string) {
-  return request<SharedAdminRuntimeComponentValidationDto>(`/admin/runtime-components/${componentId}/verify`, {
-    method: "POST",
-    timeoutMs: LONG_ADMIN_ACTION_TIMEOUT_MS
   });
 }
 
@@ -632,10 +205,14 @@ function connectAdminRuntimeEvents(onEvent: (event: AdminRuntimeEventDto) => voi
   let controller: AbortController | null = null;
   let lastEventId: string | null = null;
 
-  const scheduleReconnect = (delayMs = 3000) => {
-    if (stopped || reconnectTimer) {
+  let retryDelay = 3000;
+  let usedImmediateAuthRetry = false;
+  const scheduleReconnect = (immediate = false) => {
+    if (stopped || reconnectTimer !== null) {
       return;
     }
+    const delayMs = immediate ? 0 : Math.min(30_000, retryDelay + Math.floor(Math.random() * 501));
+    if (!immediate) retryDelay = Math.min(30_000, retryDelay * 2);
     reconnectTimer = window.setTimeout(() => {
       reconnectTimer = null;
       void connect();
@@ -646,7 +223,10 @@ function connectAdminRuntimeEvents(onEvent: (event: AdminRuntimeEventDto) => voi
     if (stopped) {
       return;
     }
+    const assertCurrent = captureAdminSession();
     controller = new AbortController();
+    let openedAt: number | null = null;
+    let receivedEvent = false;
     try {
       const headers: Record<string, string> = {};
       const token = getStoredAdminAccessToken();
@@ -663,10 +243,15 @@ function connectAdminRuntimeEvents(onEvent: (event: AdminRuntimeEventDto) => voi
         headers,
         signal: controller.signal
       });
+      if (stopped) return;
+      assertCurrent();
       if (response.status === 401 || response.status === 403) {
         const refreshedAccessToken = await refreshAdminAccessToken();
+        if (stopped) return;
+        assertCurrent();
         if (refreshedAccessToken) {
-          scheduleReconnect(0);
+          scheduleReconnect(!usedImmediateAuthRetry);
+          usedImmediateAuthRetry = true;
           return;
         }
         clearStoredAdminSession({ notify: true });
@@ -678,6 +263,7 @@ function connectAdminRuntimeEvents(onEvent: (event: AdminRuntimeEventDto) => voi
         throw new Error(`Admin event stream failed: HTTP ${response.status}`);
       }
 
+      openedAt = Date.now();
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -690,12 +276,15 @@ function connectAdminRuntimeEvents(onEvent: (event: AdminRuntimeEventDto) => voi
       try {
         while (!stopped) {
           const { done, value } = await reader.read();
+          if (stopped) return;
+          assertCurrent();
           if (done) {
             break;
           }
           lastChunkAt = Date.now();
           buffer += decoder.decode(value, { stream: true });
           const parsed = parseAdminEventStreamBuffer(buffer, (eventId, event) => {
+            receivedEvent = true;
             if (eventId) {
               lastEventId = eventId;
             }
@@ -712,6 +301,11 @@ function connectAdminRuntimeEvents(onEvent: (event: AdminRuntimeEventDto) => voi
         console.warn(error);
       }
     } finally {
+      if (receivedEvent && openedAt !== null && Date.now() - openedAt >= ADMIN_EVENT_STREAM_STALE_MS) {
+        retryDelay = 3000;
+        usedImmediateAuthRetry = false;
+      }
+      controller?.abort();
       controller = null;
       scheduleReconnect();
     }
@@ -804,38 +398,4 @@ export async function reopenAdminSupportTicket(ticketId: string) {
     method: "POST",
     timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
-}
-
-
-export type ArtifactImportProgress = { stage: "downloading" | "saving"; downloadedBytes: number; totalBytes: number | null };
-export async function importAdminReleaseArtifact(releaseId: string, input: { sourceUrl: string; artifactId?: string; isPrimary?: boolean }, onProgress: (value: ArtifactImportProgress) => void) {
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), LONG_ADMIN_ACTION_TIMEOUT_MS);
-  try {
-    const response = await requestResponse(`/admin/releases/${encodeURIComponent(releaseId)}/artifacts/import`, {
-      method: "POST", body: JSON.stringify(input), signal: controller.signal
-    });
-    if (!response.body) throw new Error("网络请求中断，保存状态不确定，请刷新发布中心确认安装包状态。");
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) throw new Error("网络请求中断，保存状态不确定，请刷新发布中心确认安装包状态。");
-        buffer += decoder.decode(value, { stream: true });
-        if (buffer.length > 2 * 1024 * 1024) throw new Error("获取响应超出限制，保存状态不确定，请刷新确认安装包状态。");
-        let boundary: number;
-        while ((boundary = buffer.indexOf("\n\n")) !== -1) {
-          const frame = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 2);
-          const data = frame.split("\n").filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
-          if (!data) continue;
-          const event = JSON.parse(data);
-          if (event.type === "progress") onProgress(event);
-          if (event.type === "error") throw new Error(event.message || "安装包获取失败。");
-          if (event.type === "complete") return mapRelease(event.record);
-        }
-      }
-    } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
-  } finally { window.clearTimeout(timer); }
 }

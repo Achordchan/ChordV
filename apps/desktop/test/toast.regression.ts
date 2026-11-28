@@ -126,6 +126,7 @@ assert.equal(TOAST_LIMIT, 3, "at most three stacked toasts in the 820×560 windo
 
 assert.match(read("src/hooks/useRuntimeActions.ts"), /tone: guidance\.tone,/, "guidance tones map one-to-one");
 assert.match(read("src/hooks/useUpdateFlow.ts"), /tone: result\.forceUpgrade \? "danger" : "info"/);
-assert.match(read("src/App.tsx"), /showToast\(\{message:"旧下载镜像已清除，请重新下载。",tone:"success"\}\)/, "teal maps to success");
+assert.match(read("src/App.tsx"), /notify:\s*showToast/, "app hooks keep the single semantic notification entry");
+assert.doesNotMatch(read("src/App.tsx"), /旧下载镜像已清除，请重新下载。/, "retired custom-mirror actions must not return as toast-only UI");
 
 console.log("toast tones, error code line, deduplication and single showToast entry passed");

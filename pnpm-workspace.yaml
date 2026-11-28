@@ -1,4 +1,5 @@
 packages:
-  - apps/*
+  - apps/admin
+  - apps/desktop
   - packages/*
 

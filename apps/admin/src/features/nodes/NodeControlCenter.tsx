@@ -3,6 +3,7 @@ import { Button, Group, Modal, Stack, Text } from "@mantine/core";
 import type { AdminNodeRecordDto } from "@chordv/shared";
 import { formatDateTimeWithYear } from "../../utils/admin-format";
 import { translateAgentStatus, translateXrayStatus } from "../../utils/admin-translate";
+import { nodeAgentStatus, nodeXrayStatus } from "../../utils/node-status";
 import { PanelInboundSection } from "./PanelInboundSection";
 import { InboundDeploySection } from "./InboundDeploySection";
 import styles from "./NodesWorkspace.module.css";
@@ -21,9 +22,9 @@ export function NodeControlDetails({ node, onNodeRecordChanged, onResume, onEdit
   const pending = node.registrationStatus === "pending_register" || (node.registrationStatus === "agent_ready" && node.inboundAppliedRevision === "0");
   const lastSeen = node.agentLastSeenAt ?? agent?.lastSeenAt;
   const values = [
-    ["Agent 状态", translateAgentStatus(node.controlStatus ?? agent?.status)],
+    ["Agent 状态", translateAgentStatus(nodeAgentStatus(node))],
     ["Agent 版本", agent?.version?.trim() || "未上报"],
-    ["Xray 状态", translateXrayStatus(agent?.xrayStatus)],
+    ["Xray 状态", translateXrayStatus(nodeXrayStatus(node))],
     ["批次确认", agent ? `${agent.lastAckSequence} / ${agent.lastSequence}` : "暂无数据"],
     ["待确认批次", agent ? `${agent.queueDepth}` : "暂无数据"],
     ["配置版本（当前 / 目标）", `${agent?.configRevision ?? "0"} / ${node.agentConfigRevision ?? "0"}`],

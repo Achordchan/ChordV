@@ -28,24 +28,13 @@ TypeScript 版之后，`-go` 后缀也不再指代任何东西。
 3. B1 下 agent 不再写任何 Xray 配置文件，`xray-apply.ts`（agent 里最大的单文件）
    连同 root 助手脚本、systemd path 单元、conf.d 布局一并消失。
 
-## 当前进度
+## 安装包来源与接入状态
 
-> **2026-09-10 交接更正：Go 库和面板校验已合并，但产品的一键接入未完成。**
-> 后台仍生成旧安装命令，Go 分发/自动探测/安装衔接缺失；暂停新版发布，先补齐闭环。
-> 详见 [一键接入交接](HANDOFF-ONE-CLICK.md)。手工路径不是用户要求的交付结果。
+本地 MyGo 重构版的管理后台在创建 Agent 节点后生成安装命令。命令向当前 Go API 的 `/api/agent-install/script.sh` 提交注册令牌；API 按本次服务端构建提供相应架构的 Go Agent，不从 GitHub 临时下载 `latest`，也不需要节点安装 Node.js。缺少可验证的分发资产时，接口返回 503，不消费注册令牌。
 
-| 分期 | 内容 | 状态 |
-| --- | --- | --- |
-| P1-a | 协议类型、配置、凭据、持久化写、API 客户端（含 SSE） | 已完成 |
-| P1-b1 | sqlite 状态库（用户、计量批次、命令幂等） | 已完成 |
-| P1-b2 | 命令处理器 + Xray 适配器边界 | 已完成 |
-| P1-b3 | 主循环、入口 `cmd/chordv-agent/main.go` | 已完成 |
-| P2-a | 真实 Xray gRPC 适配器、只读 tag 校验、隔离实测 | 已完成 |
-| P2-b | 后台 vless 导入、只读校验已合并；一键接入仍缺失 | 未完整交付 |
+正式版本的唯一发布源是 GitHub Releases。Linux x64、arm64 Agent 随服务端归档交付；服务端只读取自身可执行文件旁的 `agent-dist/`。安装脚本接口是已发布文件的下载入口，不是另一个发布中心。构建、验签和完整归档切换见[服务端构建说明](../server/README.md#构建)。
 
-**已实现面板导入与只读校验，尚未进行生产灰度。** 接入步骤、手工安装路径、
-版本和计量验收见 [PANEL-ONBOARDING.md](PANEL-ONBOARDING.md)。启动先只读校验目标 VLESS tag 与 StatsService，
-失败时不注册、不初始化状态库。占位适配器和 `AGENT_ALLOW_NO_XRAY` 已删除。
+本地已验证真实归档供给、Go API 与 Agent 注册、传输和计量，范围见[隔离验收说明](../../tests/e2e/README.md)。这些结果不代表已升级生产节点；实际 systemd、目标面板版本与公网连通仍需分别验收。面板入站的预检、参数核对和激活条件见[面板接入说明](PANEL-ONBOARDING.md)。
 
 ## 与控制面的关系
 

@@ -7,7 +7,7 @@ import ts from "typescript";
 const source = readFileSync(new URL("../src/hooks/useAuthBootstrap.ts", import.meta.url), "utf8");
 const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
 const exports: any = {};
-vm.runInNewContext(code, { exports, require: (id: string) => id === "react" ? { useCallback: (fn: unknown) => fn } : {} });
+vm.runInNewContext(code, { exports, require: (id: string) => id === "react" ? { useCallback: (fn: unknown) => fn, useRef: (current: unknown) => ({ current }), useEffect: () => {} } : {} });
 const events: string[] = [];
 let finishRemote!: () => void;
 const remote = new Promise<void>(resolve => { finishRemote = resolve; });

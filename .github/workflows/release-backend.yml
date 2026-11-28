@@ -1,319 +1,186 @@
-name: Release Backend System
-
-# Builds the "backend system" (apps/api + apps/admin as one unit), publishes a
-# relocatable release tarball to a `backend-v*` GitHub Release, and updates the
-# manifest that running instances read to detect + self-apply updates.
-#
-# This REPLACES the retired Deploy Baota pipeline. It does NOT touch the server:
-# instances pull the release themselves via the in-app "检查更新 / 一键更新" flow
-# (see docs/prd/backend-self-update.md). The desktop release flow is unaffected.
+name: Release Go Server
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "后台系统版本号（必须与仓库根 SYSTEM_VERSION 一致），不带 v，例如 0.0.2"
+        description: "服务端版本，必须与 SYSTEM_VERSION 一致"
         required: true
         type: string
       changelog:
-        description: "更新日志（每行一条），可留空"
-        required: false
+        description: "更新说明，每行一条"
+        required: true
         type: string
-      resume_existing:
-        description: "显式恢复已发布版本：校验相同提交及全部原始资产，仅补发稳定清单，不重建或覆盖资产"
-        required: false
-        default: false
-        type: boolean
-      prerelease:
-        description: "标记为预发布（不更新 latest 清单）"
-        required: false
-        default: false
-        type: boolean
-      slim_artifact:
-        description: "瘦身包：不打包 node_modules。仅当所有部署都已运行含 hydrateRuntimeDependencies 的版本时才可开启，旧安装端拿到瘦身包会装出没有依赖的目录并触发回滚"
-        required: false
-        default: false
-        type: boolean
-
-concurrency:
-  group: chordv-backend-release
-  cancel-in-progress: false
 
 permissions:
   contents: read
+concurrency:
+  group: chordv-server-release
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG_BINDING: signed-manifest-tree
+  VITE_GITHUB_RELEASE_REPOSITORY: ${{ vars.CHORDV_RELEASE_REPOSITORY }}
+  VITE_GITHUB_RELEASE_PUBLIC_KEY: ${{ vars.CHORDV_RELEASE_PUBLIC_KEY }}
+  CHORDV_BUILD_NUMBER: ${{ github.run_number }}
+  RELEASE_KIND: server
 
 jobs:
-  release:
-    name: Build & publish backend release
+  agent-tests:
+    uses: ./.github/workflows/agent-go.yml
+  admin-ui:
+    uses: ./.github/workflows/verify-ui.yml
+    with:
+      admin: true
+  server-tests:
+    uses: ./.github/workflows/verify-server-database.yml
+  build:
+    needs: [server-tests, admin-ui, agent-tests]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # Create a release and push backend-manifest; no other scopes.
+    outputs:
+      version: ${{ steps.configuration.outputs.version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [x64, arm64]
     env:
-      PRERELEASE: ${{ github.event.inputs.prerelease || 'false' }}
-      RESUME_EXISTING: ${{ github.event.inputs.resume_existing || 'false' }}
-      # Guard before building/creating without exposing the private key to those steps.
-      SIGNING_EXPECTED: ${{ secrets.CHORDV_MANIFEST_SIGNING_KEY != '' }}
-    defaults:
-      run:
-        shell: bash
+      VERSION: ${{ inputs.version }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Resolve & verify version
-        id: version
-        env:
-          RAW_VERSION: ${{ github.event.inputs.version }}
-        run: |
-          version="${RAW_VERSION#v}"
-          # Match the backend's STRICT_SEMVER_PATTERN exactly (normalizeVersion):
-          # no leading zeros; prerelease/build are non-empty dot-separated identifiers
-          # (so 1.2.3.foo, 01.2.3, and 1.2.3-beta..1 are all rejected here too, rather
-          # than force-publishing a manifest every running instance would reject).
-          semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+)(\.([0-9A-Za-z-]+))*)?(\+([0-9A-Za-z-]+)(\.([0-9A-Za-z-]+))*)?$'
-          if [[ ! "$version" =~ $semver ]]; then
-            echo "Invalid version (must be strict SemVer): ${RAW_VERSION}" >&2; exit 1
-          fi
-          # Match MAX_VERSION_LENGTH in apps/api/src/modules/common/release-center.utils.ts:
-          # the version is embedded verbatim in artifact filenames and release-directory
-          # names, so anything longer can exceed the 255-byte filename limit downstream.
-          if (( ${#version} > 64 )); then
-            echo "Invalid version (longer than 64 characters): ${RAW_VERSION}" >&2; exit 1
-          fi
-          file_version="$(tr -d ' \t\r\n' < SYSTEM_VERSION)"
-          if [[ "$version" != "$file_version" ]]; then
-            echo "Version input ($version) does not match SYSTEM_VERSION ($file_version). Bump SYSTEM_VERSION first." >&2
-            exit 1
-          fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "tag=backend-v${version}" >> "$GITHUB_OUTPUT"
-
-      - name: Setup release tooling
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: ".nvmrc"
-
-      - name: Select fresh build or explicit immutable resume
-        id: publication
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: node scripts/backend-release-resume.mjs prepare
-
-      - name: Test release resume guard
-        run: node --test scripts/backend-release-resume.test.mjs
-
-      - name: Setup pnpm
-        if: steps.publication.outputs.mode == 'build'
-        uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
         with:
           version: 9.15.3
-
-      - name: Setup Node
-        if: steps.publication.outputs.mode == 'build'
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version-file: ".nvmrc"
+          node-version-file: .nvmrc
           cache: pnpm
-
-      - name: Install dependencies
-        if: steps.publication.outputs.mode == 'build'
-        # test:api also runs @chordv/node-agent's own suite (tsx + better-sqlite3
-        # live in ITS node_modules), so its filter must be installed too.
-        run: pnpm install --filter @chordv/api... --filter @chordv/admin... --filter @chordv/node-agent... --frozen-lockfile
-
-      # pnpm's filtered install runs @prisma/client's postinstall from the store,
-      # where no schema is findable — so the client stays an UNGENERATED stub:
-      # imports resolve, but runtime sentinels like Prisma.DbNull are undefined and
-      # PrismaClient refuses to instantiate. Generate before the tests, not only in
-      # the build step below.
-      - name: Generate Prisma client
-        if: steps.publication.outputs.mode == 'build'
-        run: pnpm --filter @chordv/api db:generate
-
-      - name: Setup Go for bundled node agent
-        if: steps.publication.outputs.mode == 'build'
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
-          go-version-file: apps/agent/go.mod
-          cache-dependency-path: apps/agent/go.sum
-
-      - name: Verify parallel release gate
-        if: steps.publication.outputs.mode == 'build'
-        run: node --test scripts/verify-backend-release.test.mjs
-
-      - name: Run API and Go verification in parallel
-        if: steps.publication.outputs.mode == 'build'
-        run: node scripts/verify-backend-release.mjs
-
-      - name: Build backend system (shared + api + admin)
-        if: steps.publication.outputs.mode == 'build'
+          go-version-file: apps/server/go.mod
+          cache-dependency-path: |
+            apps/server/go.sum
+            apps/agent/go.sum
+      - name: Verify explicit version and publication configuration
+        id: configuration
         run: |
-          pnpm --filter @chordv/shared build
-          pnpm --filter @chordv/api db:generate
-          pnpm --filter @chordv/api build
-          pnpm --filter @chordv/admin build
+          node --input-type=module <<'JS'
+          import { checkedVersion, checkedRepository } from './.github/scripts/release-artifacts.mjs';
+          import { releasePublicKey } from './.github/scripts/release-public-key.mjs';
+          import { appendFileSync, readFileSync } from 'node:fs';
+          const version = checkedVersion(process.env.VERSION);
+          checkedRepository(process.env.VITE_GITHUB_RELEASE_REPOSITORY);
+          if (readFileSync('SYSTEM_VERSION', 'utf8').trim() !== version) throw new Error('SYSTEM_VERSION mismatch');
+          releasePublicKey(process.env.VITE_GITHUB_RELEASE_PUBLIC_KEY);
+          appendFileSync(process.env.GITHUB_ENV, `VERSION=${version}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
+          JS
+      - run: pnpm install --frozen-lockfile
+      - name: Verify release packaging and actual binary metadata without publishing
+        run: node --test .github/scripts/*.test.mjs
+      - name: Verify shared release binding protocol
+        working-directory: packages/release-protocol
+        run: go test -race ./... && go vet ./...
+      - name: Build relocatable Go binary and management frontend
+        run: node scripts/mygo-build-backend.mjs --release --platform linux --arch '${{ matrix.architecture }}'
+      - name: Stage actual server archive and metadata
+        run: node .github/scripts/release-artifacts.mjs stage-server linux '${{ matrix.architecture }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-linux-${{ matrix.architecture }}
+          path: release-assets/*
+          if-no-files-found: error
 
-      - name: Assemble relocatable release tree
-        if: steps.publication.outputs.mode == 'build'
+  verify-archives:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      staged_digest: ${{ steps.digest.outputs.value }}
+    services:
+      postgres:
+        image: postgres:16
         env:
-          VERSION: ${{ steps.version.outputs.version }}
-          SLIM: ${{ github.event.inputs.slim_artifact }}
-        run: |
-          set -euo pipefail
-          mkdir -p dist-release
-          # Paths every artifact carries. pnpm-lock.yaml is what lets a slim
-          # artifact's installer prove the dependency graph is unchanged before
-          # borrowing the running release's trees.
-          COMMON="SYSTEM_VERSION
-          package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json
-          scripts/prisma-migrate-with-baseline.mjs
-          scripts/install-go-agent.sh agent-go-dist
-          packages/shared/package.json packages/shared/dist
-          apps/api/package.json apps/api/dist apps/api/prisma
-          apps/admin/dist"
-          if [ "$SLIM" = "true" ]; then
-            # Build output only. The installer hard-links node_modules from the
-            # release it is currently running and regenerates the Prisma client
-            # (see hydrateRuntimeDependencies in system-update.service.ts).
-            #
-            # DEFAULT OFF ON PURPOSE: installers older than that change extract and
-            # promote an archive verbatim. Handed a slim one they would run a tree
-            # with no node_modules, fail the health gate and roll back — leaving the
-            # deployment unable to update remotely at all. Only turn this on once
-            # EVERY deployment reports a version that hydrates.
-            echo "Packaging SLIM artifact; dependencies are borrowed at install time."
-            tar -czf "dist-release/chordv-backend-${VERSION}.tar.gz" $COMMON
-          else
-            echo "Packaging FAT artifact (bundled node_modules) for installer compatibility."
-            rm -rf apps/admin/node_modules apps/admin/src apps/api/src packages/shared/src
-            node scripts/prune-release-node-modules.mjs
-            tar -czf "dist-release/chordv-backend-${VERSION}.tar.gz" $COMMON \
-              node_modules packages/shared/node_modules apps/api/node_modules
-          fi
-          cd dist-release
-          sha256sum "chordv-backend-${VERSION}.tar.gz" > checksums.txt
-          echo "SHA256:"; cat checksums.txt
-          echo "Artifact size: $(du -h "chordv-backend-${VERSION}.tar.gz" | cut -f1)"
-          echo "Entry count: $(tar -tzf "chordv-backend-${VERSION}.tar.gz" | wc -l)"
-
-      - name: Generate manifest.json
-        if: steps.publication.outputs.mode == 'build'
+          POSTGRES_USER: chordv_local
+          POSTGRES_PASSWORD: local-ci-only
+          POSTGRES_DB: chordv_mygo_local
+        ports: ["127.0.0.1:5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U chordv_local -d chordv_mygo_local"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/server/go.mod
+          cache-dependency-path: apps/server/go.sum
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: server-linux-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify actual staged archives and Agent downloads before signing
         env:
-          VERSION: ${{ steps.version.outputs.version }}
-          TAG: ${{ steps.version.outputs.tag }}
-          REPO: ${{ github.repository }}
-          CHANGELOG: ${{ github.event.inputs.changelog }}
-        run: |
-          set -euo pipefail
-          cd dist-release
-          artifact="chordv-backend-${VERSION}.tar.gz"
-          SHA="$(cut -d' ' -f1 checksums.txt)" \
-          SIZE="$(stat -c%s "$artifact")" \
-          URL="https://github.com/${REPO}/releases/download/${TAG}/${artifact}" \
-          PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-          node -e '
-            const changelog = (process.env.CHANGELOG || "")
-              .split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
-            const manifest = {
-              version: process.env.VERSION,
-              channel: process.env.PRERELEASE === "true" ? "prerelease" : "stable",
-              tag: process.env.TAG,
-              publishedAt: process.env.PUBLISHED_AT,
-              htmlUrl: `https://github.com/${process.env.REPO}/releases/tag/${process.env.TAG}`,
-              changelog,
-              artifact: { url: process.env.URL, sha256: process.env.SHA, sizeBytes: Number(process.env.SIZE) }
-            };
-            require("fs").writeFileSync("manifest.json", JSON.stringify(manifest, null, 2));
-          '
-          echo "manifest.json:"; cat manifest.json
-
-      - name: Sign manifest (ed25519, if signing key configured)
-        if: steps.publication.outputs.mode == 'build'
+          CHORDV_LOCAL_DATABASE_URL: postgresql://chordv_local:local-ci-only@127.0.0.1:5432/chordv_mygo_local?sslmode=disable
+        run: node scripts/mygo-agent-distribution-e2e.mjs --staged
+      - name: Verify release recovery with the actual archives over loopback
         env:
-          SIGNING_KEY: ${{ secrets.CHORDV_MANIFEST_SIGNING_KEY }}
+          CHORDV_TEST_SERVER_RELEASE_DIR: release-assets
+        run: node --test .github/scripts/server-release-recovery.test.mjs
+      - name: Record exact tested release inputs
+        id: digest
+        working-directory: release-assets
         run: |
           set -euo pipefail
-          cd dist-release
-          if [ -z "${SIGNING_KEY:-}" ]; then
-            echo "No CHORDV_MANIFEST_SIGNING_KEY secret; skipping signature."
-            echo "Instances without a pinned public key will fetch the manifest DIRECT-ONLY"
-            echo "(no accelerate mirror). For China/mirror deployments, configure signing."
-            exit 0
-          fi
-          printf '%s' "$SIGNING_KEY" > /tmp/manifest_key.pem
-          # Detached ed25519 signature over the EXACT manifest.json bytes.
-          node -e '
-            const crypto = require("crypto"), fs = require("fs");
-            const key = crypto.createPrivateKey(fs.readFileSync("/tmp/manifest_key.pem"));
-            const sig = crypto.sign(null, fs.readFileSync("manifest.json"), key);
-            fs.writeFileSync("manifest.json.sig", sig.toString("base64"));
-          '
-          rm -f /tmp/manifest_key.pem
-          echo "Signed manifest.json -> manifest.json.sig"
+          digest=$(sha256sum -- * | sha256sum | cut -d' ' -f1)
+          echo "value=$digest" >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub Release (never update or clobber existing assets)
-        if: steps.publication.outputs.mode == 'build'
+  publish:
+    needs: [build, verify-archives]
+    runs-on: ubuntu-latest
+    environment: github-release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/server/go.mod
+          cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: server-linux-*
+          path: release-assets
+          merge-multiple: true
+      - name: Require the same files tested by the archive gate
+        working-directory: release-assets
         env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
-          TAG: ${{ steps.version.outputs.tag }}
-          RESUME_EXISTING: 'false'
+          EXPECTED: ${{ needs.verify-archives.outputs.staged_digest }}
         run: |
           set -euo pipefail
-          # Recheck after the build. gh release create fails on a concurrent release
-          # creation; unlike an upsert action it never deletes/replaces old assets.
-          node scripts/backend-release-resume.mjs prepare
-          args=(--repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA"
-            --title "ChordV Backend ${TAG}" --generate-notes)
-          if [[ "$PRERELEASE" == 'true' ]]; then args+=(--prerelease); fi
-          assets=("dist-release/chordv-backend-${VERSION}.tar.gz"
-            dist-release/checksums.txt dist-release/manifest.json)
-          if [[ -f dist-release/manifest.json.sig ]]; then assets+=(dist-release/manifest.json.sig); fi
-          gh release create "$TAG" "${assets[@]}" "${args[@]}"
-
-      - name: Download and verify immutable published bytes (fresh or resume)
+          [[ "$EXPECTED" =~ ^[0-9a-f]{64}$ ]]
+          test "$(sha256sum -- * | sha256sum | cut -d' ' -f1)" = "$EXPECTED"
+      - name: Sign server manifest with actual server archives
         env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
-          SIGNING_KEY: ${{ secrets.CHORDV_MANIFEST_SIGNING_KEY }}
-        run: node scripts/backend-release-resume.mjs verify
-
-      - name: Guard stable feed monotonicity
-        id: stable
-        if: ${{ github.event.inputs.prerelease != 'true' }}
+          VERSION: ${{ needs.build.outputs.version }}
+          CHANGELOG: ${{ inputs.changelog }}
+          CHORDV_RELEASE_SIGNING_KEY: ${{ secrets.CHORDV_RELEASE_SIGNING_KEY }}
+        run: node .github/scripts/release-artifacts.mjs manifest
+      - name: Create exact signed recovery bundle
+        id: recovery
+        run: node .github/scripts/release-recovery-bundle.mjs
+      - name: Persist exact signed recovery bundle before publishing
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.recovery.outputs.bundle_path }}
+          if-no-files-found: error
+          compression-level: 0
+      - name: Publish server GitHub Release only
         env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: node scripts/backend-release-resume.mjs stable
-
-      - name: Publish manifest to stable raw branch
-        if: ${{ github.event.inputs.prerelease != 'true' && steps.stable.outputs.mode == 'publish' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-          STABLE_SHA: ${{ steps.stable.outputs.sha }}
-        run: |
-          set -euo pipefail
-          # A dedicated orphan-ish branch serves a stable raw URL that instances
-          # poll: https://raw.githubusercontent.com/<repo>/backend-manifest/latest.json
-          # (kept separate from main history; ghfast-proxyable). The manifest and
-          # optional signature always use verified Release bytes, including on retry.
-          # Workflow-wide concurrency serializes fresh releases and explicit resumes.
-          tmp="$(mktemp -d)"
-          cp published-release/manifest.json "$tmp/latest.json"
-          if [[ -f published-release/manifest.json.sig ]]; then
-            cp published-release/manifest.json.sig "$tmp/latest.json.sig"
-          fi
-          cd "$tmp"
-          git init -q
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -q -b backend-manifest
-          git add -A
-          git commit -q -m "backend manifest ${TAG}"
-          # Empty expected SHA means the branch must still be absent. Any external
-          # writer since the monotonicity check makes this push fail, never overwrite.
-          git push -q --force-with-lease="refs/heads/backend-manifest:${STABLE_SHA}" \
-            "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" backend-manifest
-          echo "Manifest published to backend-manifest branch."
+          CHORDV_RELEASE_REPOSITORY: ${{ vars.CHORDV_RELEASE_REPOSITORY }}
+          CHORDV_RELEASE_TOKEN: ${{ secrets.CHORDV_RELEASE_TOKEN }}
+        run: node .github/scripts/publish-github-release.mjs

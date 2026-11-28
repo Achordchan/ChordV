@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
@@ -14,7 +14,7 @@ function testDesktopRoutingRuleEntryAndApi() {
   const app = read(join(desktopRoot, "src", "App.tsx"));
   const controlPanel = read(join(desktopRoot, "src", "components", "ControlPanel.tsx"));
   const modal = read(join(desktopRoot, "src", "components", "RoutingRulesModal.tsx"));
-  const api = read(join(desktopRoot, "src", "api", "client.ts"));
+  const api = read(join(desktopRoot, "src", "api", "connection.ts"));
 
   assert.match(app, /<RoutingRulesModal[\s\S]*accessToken=\{session\.accessToken\}/);
   assert.match(app, /mode=\{mode\}/);
@@ -32,66 +32,45 @@ function testDesktopRoutingRuleEntryAndApi() {
   assert.doesNotMatch(controlPanel, /<Group wrap="nowrap" align="stretch">[\s\S]*onOpenRoutingRules/);
 }
 
-function testRustRoutingRuleInjectionOrder() {
-  const rust = read(join(desktopRoot, "src-tauri", "src", "lib.rs"));
-  const customRulesIndex = rust.indexOf("custom_routing_rules: Vec<ClientRoutingRuleDto>");
-  const routingCallIndex = rust.indexOf("routing_rules(config.mode.as_str(), &config.features, &config.custom_routing_rules)");
-  const collectIndex = rust.indexOf(".filter(|rule| rule.enabled");
-  const privateRuleIndex = rust.indexOf("\"ip\": [\"geoip:private\"]");
-
-  assert.notEqual(customRulesIndex, -1);
-  assert.notEqual(routingCallIndex, -1);
-  assert.ok(collectIndex > -1 && privateRuleIndex > collectIndex, "custom rules must be inserted before built-in rules");
-  assert.match(rust, /format!\("domain:\{value\}"\)/);
-  assert.match(rust, /format!\("keyword:\{value\}"\)/);
-  assert.match(rust, /fn test_routing_rule/);
-  assert.match(rust, /query_geosite_routing/);
-  assert.match(rust, /"access": log_path\.to_string_lossy\(\)\.to_string\(\)/);
-  assert.doesNotMatch(rust, /test_routing_rule_egress/);
-  assert.doesNotMatch(rust, /parse_routing_egress_log/);
-}
-
-function testWindowsInstallerCleansStaleRuntime() {
-  const config = read(join(desktopRoot, "src-tauri", "tauri.conf.json"));
-  const hook = read(join(desktopRoot, "src-tauri", "windows", "chordv-installer-hooks.nsh"));
-
-  assert.match(config, /"installerHooks": "windows\/chordv-installer-hooks\.nsh"/);
-  assert.match(hook, /NSIS_HOOK_PREINSTALL/);
-  assert.match(hook, /CheckIfAppIsRunning/);
-  assert.match(hook, /CreateMutexW/);
-  assert.doesNotMatch(hook, /Get-Process|Stop-Process|powershell/i);
-  const updater = read(join(desktopRoot, "src-tauri", "src", "windows_update.rs"));
-  assert.ok(updater.indexOf("shutdown_runtime_state(app)?") < updater.indexOf("pending.update.install"));
+function testGoRoutingRuleInjectionOrder() {
+  const native = read(join(desktopRoot, "native", "runtime_config.go"));
+  const diagnostics = read(join(desktopRoot, "native", "routing_diagnostics.go"));
+  assert.ok(native.indexOf("range config.CustomRoutingRules") < native.indexOf('"geoip:private"'), "custom rules precede built-in rules");
+  assert.match(native, /rule\.MatchType \+ ":" \+ strings\.TrimSpace\(rule\.Value\)/);
+  assert.match(native, /!rule\.Enabled/);
+  assert.match(native, /"access": logPath/);
+  assert.match(diagnostics, /func \(s \*DesktopService\) testRoutingRule/);
+  assert.match(diagnostics, /queryGeosite/);
+  assert.doesNotMatch(diagnostics, /test_routing_rule_egress|parse_routing_egress_log/);
+  const realTests = read(join(desktopRoot, "native", "runtime_test.go"));
+  assert.match(realTests, /TestRuntimeConfigPreservesOrderedRulesAndRealityFields/);
 }
 
 function testDesktopInstallersShipWithoutRuntimeComponents() {
   const packageJson = read(join(desktopRoot, "package.json"));
-  const buildScript = read(join(desktopRoot, "scripts", "build-tauri-platform.mjs"));
-  const checkScript = read(join(desktopRoot, "scripts", "check-macos-bundle.mjs"));
-  const hook = read(join(desktopRoot, "src-tauri", "windows", "chordv-installer-hooks.nsh"));
+  const buildScript = read(join(repoRoot, "scripts", "mygo-desktop.mjs"));
   const runtimeAssets = read(join(desktopRoot, "src", "hooks", "useRuntimeAssets.ts"));
-
-  assert.match(packageJson, /"check:macos-bundle": "node \.\/scripts\/check-macos-bundle\.mjs"/);
+  const components = read(join(desktopRoot, "native", "components.go"));
+  assert.doesNotMatch(packageJson, /tauri:|@tauri-apps/);
+  assert.match(buildScript, /const buildArgs = \["tool", "mygo", "build"/);
+  assert.match(buildScript, /await run\("go", buildArgs(?:,|\))/);
   assert.doesNotMatch(buildScript, /setup-xray|bin\/xray|bin\/geo(ip|site)\.dat/);
-  assert.match(checkScript, /Runtime component must not be bundled/);
-  // Legacy install-dir seeds are removed on upgrade so uninstall can delete the folder.
-  assert.match(hook, /NSIS_HOOK_POSTINSTALL[\s\S]*ChordVRemoveLegacyBundledRuntime[\s\S]*NSIS_HOOK_POSTUNINSTALL[\s\S]*ChordVRemoveLegacyBundledRuntime/);
-  // Without seeds, a startup inspection with missing files must not mark ready,
-  // otherwise connect skips the blocking download.
+  const resources = readdirSync(join(desktopRoot, "native", "resources"), { recursive: true }).map(String);
+  assert.ok(resources.every(file => !/(?:^|[\\/])(?:xray(?:\.exe)?|geoip\.dat|geosite\.dat)$/i.test(file)), "installers must not embed runtime components");
+  assert.match(components, /"copiedComponents": \[\]string\{\}/);
+  assert.match(runtimeAssets, /fetchGitHubRuntimeComponentsPlan/);
   assert.match(runtimeAssets, /if \(inspectOnly\) \{[\s\S]{0,400}if \(!localReady\) \{\s*markPendingInstall\(\);\s*return true;/);
 }
 
 function testSharedRuntimeDtoCarriesRules() {
   const sharedTypes = read(join(repoRoot, "packages", "shared", "src", "types.ts"));
-  const sharedMock = read(join(repoRoot, "packages", "shared", "src", "mock.ts"));
-
+  const sharedIndex = read(join(repoRoot, "packages", "shared", "src", "index.ts"));
   assert.match(sharedTypes, /interface ClientRoutingRuleDto/);
   assert.match(sharedTypes, /customRoutingRules: ClientRoutingRuleDto\[\]/);
-  assert.match(sharedMock, /customRoutingRules: \[\]/);
+  assert.doesNotMatch(sharedIndex, /export.*mock/, "production shared package must not export fake business data");
 }
 
 testDesktopRoutingRuleEntryAndApi();
-testRustRoutingRuleInjectionOrder();
-testWindowsInstallerCleansStaleRuntime();
+testGoRoutingRuleInjectionOrder();
 testDesktopInstallersShipWithoutRuntimeComponents();
 testSharedRuntimeDtoCarriesRules();

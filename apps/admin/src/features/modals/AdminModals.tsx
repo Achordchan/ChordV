@@ -40,17 +40,17 @@ export function KickMemberModal(props: {
   onConfirm: () => void;
 }) {
   return (
-    <Modal opened={props.opened} onClose={props.onClose} title="断开本 Team 连接" centered>
+    <Modal opened={props.opened} onClose={() => {if(!props.submitting)props.onClose();}} title="断开本 Team 连接" centered closeOnClickOutside={!props.submitting} closeOnEscape={!props.submitting} withCloseButton={!props.submitting}>
       <Stack>
-        <Text>该操作只断开该成员在当前 Team 订阅下的连接；不会移出团队，也不会影响个人订阅或其他 Team。</Text>
+        <Text>{props.disableAccount ? "该操作会禁用整个账号，断开该账号在所有订阅和团队下的连接；成员仍保留在当前团队中。" : "该操作只断开该成员在当前 Team 订阅下的连接；不会移出团队，也不会影响个人订阅或其他 Team。"}</Text>
         <Text fw={600}>{props.memberName}</Text>
-        <Checkbox checked={props.disableAccount} onChange={(event) => props.onDisableAccountChange(event.currentTarget.checked)} label="同时禁用这个账号" />
+        <Checkbox checked={props.disableAccount} disabled={props.submitting} onChange={(event) => props.onDisableAccountChange(event.currentTarget.checked)} label="同时禁用这个账号" />
         <Group justify="flex-end">
           <Button variant="default" onClick={props.onClose} disabled={props.submitting}>
             取消
           </Button>
-          <Button color="red" onClick={props.onConfirm} loading={props.submitting}>
-            确认断开本 Team 连接
+          <Button color="red" onClick={props.onConfirm} loading={props.submitting} disabled={props.submitting}>
+            {props.disableAccount ? "禁用账号并断开所有连接" : "确认断开本 Team 连接"}
           </Button>
         </Group>
       </Stack>

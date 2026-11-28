@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
 import { ActionIcon, Badge, Button, Group, Loader, Modal, Switch, Text, Tooltip, UnstyledButton } from "@mantine/core";
 import { IconAlertCircle, IconArrowLeft, IconArrowRight, IconChevronRight, IconCircleCheckFilled, IconClock, IconFolderOpen } from "@tabler/icons-react";
-import appIcon from "../../src-tauri/icons/icon.png";
+import appIcon from "../assets/app-icon.png";
 import type { UpdateCenterItem, UpdateCenterItemKey, UpdateCenterState } from "../lib/updateCenter";
 import { APP_BUILD_NUMBER, formatVersionWithBuild } from "../lib/buildInfo";
+import { readGitHubReleaseConfiguration } from "../lib/githubReleases";
+import { normalizeReleaseRepository } from "../lib/githubReleaseManifest";
+import { openExternalUrl } from "../lib/nativeShell";
 import { ReleaseHistory } from "./ReleaseHistory";
 import styles from "./UpdateCenterModal.module.css";
 
@@ -11,6 +14,7 @@ type UpdateCenterModalProps = {
   state: UpdateCenterState;
   appVersion: string;
   busy: boolean;
+  installBusy?: boolean;
   runtimeBusy: boolean;
   runtimeInUse: boolean;
   syncDeferred: boolean;
@@ -29,8 +33,27 @@ type UpdateCenterModalProps = {
   onRevealComponent?: (key: "xray" | "geo") => void;
 };
 
+function ReleasePageAction() {
+  const [failed, setFailed] = useState(false);
+  let repository: string;
+  try { repository = normalizeReleaseRepository(readGitHubReleaseConfiguration().repository); }
+  catch { return null; }
+  return <>
+    <Button size="compact-xs" variant="subtle" onClick={async () => {
+      try { setFailed(!(await openExternalUrl(`https://github.com/${repository}/releases`)).ok); }
+      catch { setFailed(true); }
+    }}>打开 GitHub 发布页</Button>
+    {failed && <Text size="xs" c="red" role="alert">未能打开发布页，请检查默认浏览器设置。</Text>}
+  </>;
+}
+
 export function UpdateCenterModal(props: UpdateCenterModalProps) {
+  const busy = props.busy || props.installBusy;
   const app = props.state.items.find((item) => item.key === "app");
+  const checkSummary = props.state.checking ? "正在检查…"
+    : props.state.lastCheckedAt ? `上次成功检查版本：${new Date(props.state.lastCheckedAt).toLocaleString("zh-CN", { hour12: false })}`
+    : app?.status === "unsupported" ? app.message
+    : app?.status === "failed" ? "本次检查失败" : "尚未检查";
   const runtimeItems = props.state.items.filter((item) => item.key !== "app");
   const runtimeChecking = props.runtimeBusy || props.state.checking;
   // Only states the user can act on or should wait for get a line of explanation.
@@ -49,17 +72,20 @@ export function UpdateCenterModal(props: UpdateCenterModalProps) {
   return (
     <Modal
       opened={props.state.opened}
-      onClose={props.onClose}
+      onClose={props.installBusy ? () => {} : props.onClose}
+      closeOnClickOutside={!props.installBusy}
+      closeOnEscape={!props.installBusy}
       centered
-      closeButtonProps={{ "aria-label": "关闭更新中心" }}
+      closeButtonProps={{ "aria-label": "关闭更新中心", disabled: props.installBusy }}
       title={title}
       size={500}
       radius="lg"
-      classNames={{ title: styles.title, header: styles.header, body: styles.body }}
+      classNames={{ content: styles.content, title: styles.title, header: styles.header, body: styles.body }}
     >
       {view === "history" ? (
         <ReleaseHistory channel={props.betaChannel ? "beta" : "stable"} appVersion={props.appVersion} />
       ) : (<>
+      <div className={styles.overview}>
       <div className={styles.client}>
         <img src={appIcon} alt="ChordV" className={styles.logo} />
         <div className={styles.clientInfo}>
@@ -73,16 +99,17 @@ export function UpdateCenterModal(props: UpdateCenterModalProps) {
           <UnstyledButton className={styles.historyLink} onClick={() => setView("history")}>
             查看更新日志<IconChevronRight size={14} aria-hidden="true" />
           </UnstyledButton>
+          {app?.status === "failed" && !busy && !props.state.checking && !props.appReady && <ReleasePageAction />}
         </div>
         {props.appReady && props.onInstallApp
-          ? <Button size="xs" color="teal" onClick={props.onInstallApp}>立即安装</Button>
-          : app?.canUpdate && <Button size="xs" disabled={props.busy} onClick={() => props.onUpdateOne("app")}>查看更新</Button>}
+          ? <Button size="xs" color="teal" disabled={busy} loading={props.installBusy} onClick={props.onInstallApp}>立即安装</Button>
+          : app?.canUpdate && <Button size="xs" disabled={busy} onClick={() => props.onUpdateOne("app")}>查看更新</Button>}
       </div>
 
       <Switch
         className={styles.channel}
         checked={props.betaChannel}
-        disabled={props.busy}
+        disabled={busy}
         onChange={(event) => props.onBetaChannelChange(event.currentTarget.checked)}
         label="接收测试版更新"
         description={props.betaChannel
@@ -93,6 +120,7 @@ export function UpdateCenterModal(props: UpdateCenterModalProps) {
       <Switch
         className={styles.channel}
         checked={props.autoDownload}
+        disabled={props.installBusy}
         onChange={(event) => props.onAutoDownloadChange(event.currentTarget.checked)}
         label="自动在后台下载更新"
         description={props.autoDownload
@@ -130,32 +158,31 @@ export function UpdateCenterModal(props: UpdateCenterModalProps) {
                     {runtimeChecking ? <Group gap={6} wrap="nowrap"><Loader size={14} /><Text size="sm" c="dimmed">{props.state.checking ? "正在检查" : "正在同步"}</Text></Group>
                       : <RuntimeVersion item={item} waiting={waiting} />}
                     {actionable && !runtimeChecking && !waiting && (
-                      <Button size="compact-sm" variant="light" disabled={props.busy || props.runtimeInUse} onClick={() => props.onUpdateOne(item.key)}>
+                      <Button size="compact-sm" variant="light" disabled={busy || props.runtimeInUse} onClick={() => props.onUpdateOne(item.key)}>
                         {item.status === "failed" ? "重试" : "同步"}
                       </Button>
                     )}
                   </Group>
                 </div>
-                {item.status === "failed" && item.message && !runtimeChecking
-                  ? <Text size="xs" c="red" className={styles.rowMessage}>{item.message}</Text> : null}
+                {(item.status === "failed" || item.status === "unsupported") && item.message && !runtimeChecking
+                  ? <Text size="xs" c={item.status === "failed" ? "red" : "dimmed"} className={styles.rowMessage}>{item.message}</Text> : null}
               </div>
             );
           })}
         </div>
       </section>
+      </div>
 
       <div className={styles.footer}>
-        <Text size="xs" c="dimmed">{props.state.lastCheckedAt
-          ? `上次检查：${new Date(props.state.lastCheckedAt).toLocaleString("zh-CN", { hour12: false })}`
-          : "尚未检查"}</Text>
-        <Button size="sm" loading={props.state.checking} disabled={props.busy} onClick={props.onCheckOnly}>检查更新</Button>
+        <Text size="xs" c="dimmed">{checkSummary}</Text>
+        <Button size="sm" loading={props.state.checking} disabled={busy} onClick={props.onCheckOnly}>检查更新</Button>
       </div>
       </>)}
     </Modal>
   );
 }
 
-/** Current version, plus a check when it matches the version the backend distributes. */
+/** Current version, plus a check when it matches the GitHub release. */
 function RuntimeVersion({ item, waiting }: { item: UpdateCenterItem; waiting: boolean }) {
   const local = item.localVersion?.trim() || null;
   const remote = item.remoteVersion?.trim() || null;
@@ -166,7 +193,7 @@ function RuntimeVersion({ item, waiting }: { item: UpdateCenterItem; waiting: bo
     return (
       <Group gap={6} wrap="nowrap" className={styles.version}>
         <Text size="sm" className={styles.versionText}>{local ?? remote ?? "已安装"}</Text>
-        <IconCircleCheckFilled size={16} className={styles.versionOk} aria-label="与后台版本一致" />
+        <IconCircleCheckFilled size={16} className={styles.versionOk} aria-label="与 GitHub 发布版本一致" />
       </Group>
     );
   }
@@ -187,7 +214,7 @@ function RuntimeVersion({ item, waiting }: { item: UpdateCenterItem; waiting: bo
       </Group>
     );
   }
-  return <Text size="sm" c="dimmed">{item.status === "unsupported" ? "暂不可用" : "尚未检查"}</Text>;
+  return <Text size="sm" c="dimmed">{item.status === "unsupported" ? item.message.includes("未配置") ? "未配置来源" : "暂不可用" : "尚未检查"}</Text>;
 }
 
 function ItemStatus({ item }: { item: UpdateCenterItem }) {

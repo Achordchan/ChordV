@@ -7,16 +7,16 @@ import styles from "./DownloadProgressPanel.module.css";
 type Props = {
   label: string; title: string; amount: string; percent: number | null;
   completed?: boolean; failed?: boolean; waiting?: boolean;
+  disabled?: boolean;
   details: string[];
   /** 失败时的稳定错误码，以「错误编号 + 复制」的次要形式展示在详情里。 */
   errorCode?: string | null;
-  onResetLegacyMirror?: (() => void) | null;
   onCancel?: (() => void) | null;
-  action?: { label: string; onClick: () => void } | null;
+  action?: { label: string; onClick: () => void; loading?: boolean } | null;
 };
 
 /** Shared presentation for every application-managed download. */
-export function DownloadProgressPanel({label,title,amount,percent,completed,failed,waiting,details,errorCode,onCancel,action,onResetLegacyMirror}: Props) {
+export function DownloadProgressPanel({label,title,amount,percent,completed,failed,waiting,disabled,details,errorCode,onCancel,action}: Props) {
   const percentLabel = percent === null ? null : percent >= 100 ? 100 : Math.min(99, Math.round(percent));
   const [expanded, setExpanded] = useState(false);
   const detailsId = useId();
@@ -33,14 +33,13 @@ export function DownloadProgressPanel({label,title,amount,percent,completed,fail
       <div className={styles.actions}>
         <Button variant="transparent" color="gray.6" size="compact-xs" className={styles.detailButton} aria-expanded={expanded} aria-controls={detailsId} onClick={()=>setExpanded(value=>!value)}
           leftSection={<IconChevronDown size={15} className={expanded ? styles.expandedIcon : undefined}/>}>详情</Button>
-        {onCancel ? <Button variant="transparent" color="dark.7" size="compact-xs" className={styles.actionButton} onClick={onCancel}>取消</Button> : null}
-        {action ? <Button variant="transparent" color="cyan.8" size="compact-xs" className={styles.actionButton} onClick={action.onClick}>{action.label}</Button> : null}
+        {onCancel ? <Button variant="transparent" color="dark.7" size="compact-xs" className={styles.actionButton} disabled={disabled} onClick={onCancel}>取消</Button> : null}
+        {action ? <Button variant="transparent" color="cyan.8" size="compact-xs" className={styles.actionButton} disabled={disabled} loading={action.loading} onClick={action.onClick}>{action.label}</Button> : null}
       </div>
     </div>
     {expanded ? <div id={detailsId} className={styles.details}>
       {details.map((line,index)=><p key={index}>{line}</p>)}
       {errorCode ? <p><ErrorCodeHint code={errorCode}/></p> : null}
-      {failed && onResetLegacyMirror ? <Button size="compact-xs" variant="subtle" onClick={onResetLegacyMirror}>清除旧下载镜像</Button> : null}
     </div> : null}
   </section>;
 }

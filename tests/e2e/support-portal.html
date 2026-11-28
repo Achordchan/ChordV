@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>本地工单联调</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f5f6f8; color: #20252d; font: 15px/1.6 system-ui, sans-serif; }
+    main { max-width: 720px; margin: 40px auto; padding: 28px; background: white; border: 1px solid #dce0e5; border-radius: 8px; }
+    h1 { margin: 0 0 14px; font-size: 22px; }
+    p { margin: 8px 0; overflow-wrap: anywhere; }
+    section { margin-top: 24px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 18px; }
+    button { padding: 9px 14px; border: 1px solid #c5cbd3; border-radius: 5px; background: white; color: inherit; font: inherit; cursor: pointer; }
+    button:disabled { opacity: .5; cursor: default; }
+    [hidden] { display: none; }
+    @media (max-width: 760px) { main { margin: 16px; padding: 20px; } }
+  </style>
+  <script src="/portal.js" defer></script>
+</head>
+<body>
+  <main>
+    <h1>本地工单联调</h1>
+    <p id="status" role="status">正在验证一次性打开凭证…</p>
+    <section id="portal" hidden>
+      <p>当前联系人：<strong id="contact"></strong></p>
+      <p>未读工单：<strong id="unread">0</strong></p>
+      <div class="actions">
+        <button id="unread-seven" type="button">设置 7 条未读</button>
+        <button id="unread-zero" type="button">全部已读</button>
+        <button id="delay-next-launch" type="button">下次打开延迟 3 秒</button>
+        <button id="expire-session" type="button">结束工单会话</button>
+        <button id="close-window" type="button">关闭工单窗口</button>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

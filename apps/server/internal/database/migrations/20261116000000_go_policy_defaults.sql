@@ -1,0 +1,1 @@
+INSERT INTO "PolicyProfile" (id,"defaultMode",modes,"ruleVersion","ruleUpdatedAt","dnsProfile","blockAds","chinaDirect","aiServicesProxy","currentVersion","minimumVersion","forceUpgrade",changelog,"updatedAt") VALUES('default','rule',ARRAY['rule','global','direct'],'local-v1',now(),'default',true,true,true,'0.0.0','0.0.0',false,ARRAY[]::text[],now()) ON CONFLICT(id) DO NOTHING;

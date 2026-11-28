@@ -33,8 +33,10 @@ export function SyncTasksModal(props: {
   const commands = scoped ? detail?.queue?.jobs ?? [] : props.nodeCommandQueue.jobs;
   const loading = scoped && !detail?.queue && !detail?.failed;
   const failed = scoped && Boolean(detail?.failed);
-  const commandTotal = sumNodeCommandSummaries((scoped ? detail?.queue : props.nodeCommandQueue)?.summaries, "nodes");
-  const empty = !loading && !failed && leases.length === 0 && commands.length === 0 && commandTotal === 0;
+  // Detail summaries remain global, even when jobs are server-filtered.
+  const commandTotal = scoped ? null : sumNodeCommandSummaries(props.nodeCommandQueue.summaries, "nodes");
+  const hasMoreCommands = commandTotal !== null && commandTotal > commands.length;
+  const empty = !loading && !failed && leases.length === 0 && commands.length === 0 && !hasMoreCommands;
   return <Modal opened={props.opened} onClose={props.onClose} centered size={empty ? 480 : 720} title="同步任务" classNames={{content: dialogStyles.content, header: dialogStyles.header, title: dialogStyles.title, body: dialogStyles.body}}>
     <Stack className={styles.body} gap="lg">
       {filtered ? <Group justify="space-between"><Text size="sm" c="dimmed">{props.filter?.title ?? "当前对象"}</Text>{props.onShowAll ? <Button variant="subtle" color="teal.9" size="compact-sm" onClick={props.onShowAll}>查看全部</Button> : null}</Group> : null}
@@ -48,10 +50,10 @@ export function SyncTasksModal(props: {
             </details>{retryable ? <Button size="xs" variant="light" color="teal.9" loading={props.leaseRetryBusyKey === `lease-job:${job.id}`} disabled={props.leaseRetryBusyKey !== null && props.leaseRetryBusyKey !== `lease-job:${job.id}`} onClick={() => props.onRetryLeaseJob(job.id)}>重试</Button> : null}</Group>
           </li>;
         })}</ul></section> : null}
-        {loading || failed || commands.length > 0 || commandTotal > 0 ? <section><Text className={styles.heading}>节点命令</Text>
+        {loading || failed || commands.length > 0 || hasMoreCommands ? <section><Text className={styles.heading}>节点命令</Text>
           {failed ? <Text size="sm" c="red" role="alert">节点命令加载失败。{commands.length ? "以下保留上次结果，可能已过期。" : "请关闭后重新打开任务列表。"}</Text> : null}
           {loading ? <DataSkeleton rows={3}/> : null}
-          {commandTotal > commands.length ? <Text size="xs" c="dimmed">仅展示最近 {commands.length} 条命令，仍有其他待处理命令。</Text> : null}
+          {hasMoreCommands ? <Text size="xs" c="dimmed">仅展示最近 {commands.length} 条命令，仍有其他待处理命令。</Text> : null}
           <ul className={styles.list}>{commands.map(job => {
             const retryKey = `command-retry:${job.id}`;
             const dismissKey = `command-dismiss:${job.id}`;

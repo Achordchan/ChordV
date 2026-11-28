@@ -3,3 +3,11 @@
 .notification :global(.mantine-Notification-title) { font-size: 14px; font-weight: 600; color: #30432f; margin-bottom: 7px; }
 .notification :global(.mantine-Notification-description) { font-size: 13px; line-height: 1.7; color: #626e5d; white-space: pre-wrap; overflow-wrap: anywhere; max-height: min(45dvh, 380px); overflow-y: auto; user-select: text; }
 .notification :global(.mantine-Notification-closeButton) { color: #87927f; margin-top: 0; }
+.modalWithFeedback { display: flex; flex-direction: column; }
+.modalWithFeedback > :global(.mantine-Modal-header), .modalWithFeedback > :global(.mantine-Drawer-header) { flex-shrink: 0; }
+.modalWithFeedback > :global(.mantine-Modal-body), .modalWithFeedback > :global(.mantine-Drawer-body) { min-height: 0; flex: 1 1 auto; overflow-y: auto; }
+.inlineHost { flex: 0 0 auto; max-height: min(28dvh, 240px); overflow-y: auto; }
+.floatingRoot { max-height: calc(100dvh - 2 * var(--mantine-spacing-md)); overflow-y: auto; }
+.inlineRoot { position: static; width: 100%; max-width: none; transform: none; }
+.inlineRoot .notification { margin: 0 16px 12px; }
+.inlineRoot .notification :global(.mantine-Notification-description) { max-height: min(16dvh, 150px); }

@@ -1,10 +1,10 @@
-import { readStoredGeoVersionLabel } from "./geoUpdate";
+import { isRuntimeComponentVerified, readStoredGeoVersionLabel } from "./geoUpdate";
 import { getRuntimeComponentLocalInfo } from "./runtime";
 import type { SupportComponentsInfo } from "./supportContext";
 
 /**
- * 打开工单时读取本机组件情况：三个组件文件是否都在、Xray 版本、规则库版本。
- * 只用到版本标签和“是否存在”，不读取也不上报文件路径。网页预览、安卓端没有这些组件，返回 null。
+ * 打开工单时读取本机安装校验结果与版本标签，不上报文件路径。
+ * 网页预览、安卓端没有这些组件，返回 null；本地校验不代表发行签名证明。
  */
 export async function loadSupportComponentsInfo(): Promise<SupportComponentsInfo | null> {
   const [xray, geoip, geosite] = await Promise.all([
@@ -22,10 +22,10 @@ export async function loadSupportComponentsInfo(): Promise<SupportComponentsInfo
     geoVersion = null;
   }
   const known = [xray, geoip, geosite].every((item) => item !== null);
-  const complete = [xray, geoip, geosite].every((item) => Boolean(item?.exists && (item.sizeBytes ?? 0) > 0));
+  const complete = [xray, geoip, geosite].every(isRuntimeComponentVerified);
   return {
-    xrayVersion: xray?.exists ? xray.versionLabel : null,
-    geoVersion,
+    xrayVersion: isRuntimeComponentVerified(xray) ? xray.versionLabel : null,
+    geoVersion: isRuntimeComponentVerified(geoip) && isRuntimeComponentVerified(geosite) ? geoVersion : null,
     complete: complete ? true : known ? false : null
   };
 }

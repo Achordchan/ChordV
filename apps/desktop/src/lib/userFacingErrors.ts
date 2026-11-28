@@ -206,9 +206,14 @@ export const USER_ERROR_CATALOG: Record<string, CatalogEntry> = {
   },
 
   // 客户端更新
+  mac_update_pending: {
+    title: "应用更新尚未完成",
+    message: "请等待更新完成后再试。如果重启应用后仍出现此提示，请联系客服并提供错误编号。",
+    action: null
+  },
   update_signature_invalid: {
     title: "更新包校验未通过",
-    message: "为保证安全，未通过签名校验的更新包不会被安装。请重新下载，或前往官网下载最新版本。",
+    message: "更新包未通过签名校验，未安装。请在更新中心重新检查并下载。",
     action: "重新下载"
   },
   update_checksum_mismatch: {
@@ -218,12 +223,12 @@ export const USER_ERROR_CATALOG: Record<string, CatalogEntry> = {
   },
   update_artifact_invalid: {
     title: "更新包暂不可用",
-    message: `当前版本的更新包暂时不可用，请稍后再试，或前往官网下载最新版本。${CONTACT_SUPPORT}`,
+    message: `当前版本的更新包暂不可用，请稍后在更新中心重试。${CONTACT_SUPPORT}`,
     action: "稍后重试"
   },
   update_install_failed: {
     title: "安装未能启动",
-    message: "更新安装没有成功启动，请重试；如仍失败，请前往官网下载最新安装包。",
+    message: "安装程序未能启动，请重试安装。若仍失败，请在更新中心重新检查版本。",
     action: "重试安装"
   },
 
@@ -321,7 +326,7 @@ const CONTEXT_FALLBACK: Record<UserErrorContext, CatalogEntry & { code: string |
   update_install: {
     code: "update_install_failed",
     title: "安装未能启动",
-    message: "更新安装没有成功启动，请重试；如仍失败，请前往官网下载最新安装包。",
+    message: "安装程序未能启动，请重试安装。若仍失败，请在更新中心重新检查版本。",
     action: "重试安装"
   },
   support: {
@@ -358,6 +363,7 @@ const CONTEXT_FALLBACK: Record<UserErrorContext, CatalogEntry & { code: string |
 
 /** 桌面运行时会在错误文本里带出的机器码（与 connectionGuidance.extractRuntimeReasonCode 共享）。 */
 export const RUNTIME_REASON_CODES = [
+  "mac_update_pending",
   "vpn_permission_denied",
   "vpn_permission_lost",
   "vpn_interface_establish_failed",

@@ -14,10 +14,6 @@
       "import": "./dist/update-limits.mjs",
       "require": "./dist/update-limits.cjs",
       "default": "./dist/update-limits.mjs"
-    },
-    "./mock": {
-      "types": "./dist/mock.d.ts",
-      "default": "./dist/mock.js"
     }
   },
   "scripts": {

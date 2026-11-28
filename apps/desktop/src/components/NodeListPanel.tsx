@@ -7,6 +7,7 @@ import { CountryFlag } from "./CountryFlag";
 
 type NodeListPanelProps = {
   nodes: NodeSummaryDto[];
+  subscriptionActive?: boolean;
   selectedNodeId: string | null;
   probeResults: Record<string, RuntimeNodeProbeResult>;
   probeBusy: boolean;
@@ -126,6 +127,7 @@ export function NodeListPanel(props: NodeListPanelProps) {
             <Stack gap="xs" align="center">
               <IconBolt size={18} />
               <Text fw={600}>暂无可用节点</Text>
+              {props.subscriptionActive && <Text size="sm" c="dimmed" ta="center">请联系客服确认节点分配。</Text>}
             </Stack>
           </div>
         ) : (

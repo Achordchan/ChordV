@@ -1,10 +1,7 @@
 name: Agent (Go)
 
-# Checks for apps/agent, the Go port of the node agent (docs/prd/
-# node-inband-coexist-go-agent.md §5.1). It is a separate module from the pnpm
-# workspace, so nothing in the existing pipelines covers it.
-
 on:
+  workflow_call:
   push:
     branches: [main]
     paths:
@@ -15,8 +12,11 @@ on:
       - "apps/agent/**"
       - ".github/workflows/agent-go.yml"
 
+permissions:
+  contents: read
+
 concurrency:
-  group: agent-go-${{ github.ref }}
+  group: agent-go-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 defaults:

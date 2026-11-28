@@ -1,13 +1,12 @@
 import type {
   AuthSessionDto,
   ClientBootstrapDto,
-  ClientVersionDto,
   ConnectionMode,
   GeneratedRuntimeConfigDto,
   NodeSummaryDto,
   SubscriptionStatusDto
 } from "@chordv/shared";
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import {
   fetchBootstrap as fetchBootstrapRequest,
@@ -30,8 +29,7 @@ import {
 } from "../lib/runtime";
 import {
   type UnauthorizedRecoveryTaskRef,
-  recoverDesktopSessionAfterUnauthorized,
-  refreshDesktopSessionWithFallback
+  recoverDesktopSessionAfterUnauthorized
 } from "../lib/desktopSessionRecovery";
 import { buildProtectedAccessNotice, resolveProtectedAccessReason } from "../lib/sessionLeaseState";
 import type { UserErrorContext } from "../lib/userFacingErrors";
@@ -52,7 +50,6 @@ export type UpdateCheckSource = "startup" | "login" | "manual" | "refresh";
 
 export type RunUpdateCheckInput = {
   accessToken?: string;
-  bootstrapVersion?: ClientVersionDto | null;
   source: UpdateCheckSource;
   silent?: boolean;
   inspectOnly?: boolean;
@@ -70,6 +67,7 @@ type SetState<T> = Dispatch<SetStateAction<T>>;
 
 export type UseAuthBootstrapOptions = {
   session: AuthSessionDto | null;
+  getCurrentSession?: () => AuthSessionDto | null;
   nodes: NodeSummaryDto[];
   credentials: CredentialsState;
   rememberPassword: boolean;
@@ -88,6 +86,7 @@ export type UseAuthBootstrapOptions = {
   setGuidanceDialog: SetState<ConnectionGuidanceLike | null>;
   setMode: SetState<ConnectionMode>;
   setError: SetState<string | null>;
+  readLoginError: (reason: unknown) => string;
   setCredentials: SetState<CredentialsState>;
   setAuthBusy: SetState<boolean>;
   setRefreshing: SetState<boolean>;
@@ -124,8 +123,21 @@ export type UseAuthBootstrapOptions = {
 };
 
 export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
+  const authOperationEpoch = useRef(0);
+  const latestSession = useRef(options.session);
+  latestSession.current = options.session;
+  const sessionWrite = useRef<Promise<unknown>>(Promise.resolve());
+  useEffect(() => () => { authOperationEpoch.current++; }, []);
+  const writeSession = useCallback((operation: () => Promise<unknown>, current: () => boolean = () => true) => {
+    const task = sessionWrite.current.catch(() => undefined).then(async () => {
+      if (current()) await operation();
+    });
+    sessionWrite.current = task;
+    return task;
+  }, []);
   const {
     session,
+    getCurrentSession = () => latestSession.current,
     nodes,
     credentials,
     rememberPassword,
@@ -144,6 +156,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
     setGuidanceDialog,
     setMode,
     setError,
+    readLoginError,
     setCredentials,
     setAuthBusy,
     setRefreshing,
@@ -173,11 +186,16 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
 
   const clearSession = useCallback(
     async (stopRuntime = true) => {
+      const epoch = ++authOperationEpoch.current;
+      const current = () => authOperationEpoch.current === epoch;
+      setCredentials((current) => current.password ? { ...current, password: "" } : current);
       invalidateSessionOperations?.();
       if (stopRuntime) {
         await forceStopLocalRuntime();
       }
-      await clearStoredSession();
+      if (!current()) return;
+      await writeSession(clearStoredSession, current);
+      if (!current()) return;
       setSession(null);
       setBootstrap(null);
       setNodes([]);
@@ -194,13 +212,15 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
       forceStopLocalRuntime,
       setBootstrap,
       setConnectionGuidance,
+      setCredentials,
       setGuidanceDialog,
       setMode,
       setNodes,
       setProbeResults,
       setRuntime,
       setSelectedNodeId,
-      setSession
+      setSession,
+      writeSession
     ]
   );
 
@@ -209,13 +229,16 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
       nextSession: AuthSessionDto,
       allowRefresh: boolean,
       preserveMode: boolean,
-      autoProbe: boolean
+      autoProbe: boolean,
+      isCurrent: () => boolean = () => true
     ) => {
+      if (!isCurrent()) return false;
       try {
         const [nextBootstrap, nextNodes] = await Promise.all([
           fetchBootstrap(nextSession.accessToken),
           fetchNodes(nextSession.accessToken)
         ]);
+        if (!isCurrent()) return false;
 
         setSession(nextSession);
         setBootstrap(nextBootstrap);
@@ -231,9 +254,6 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
           setMode(resolveDefaultMode(nextBootstrap));
         }
         setError(null);
-        if (nextNodes.length === 0) {
-          showErrorToast("当前订阅暂未分配可用节点，请联系客服处理。", "session");
-        }
 
         const preferred = pickNode(nextNodes, null);
         setSelectedNodeId(preferred?.id ?? null);
@@ -242,7 +262,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
           try {
             await runProbe(nextNodes, true, nextSession.accessToken);
           } catch (reason) {
-            showErrorToast(reason || "节点测速没有完成，请稍后重试。", "node_probe");
+            if (isCurrent()) showErrorToast(reason || "节点测速没有完成，请稍后重试。", "node_probe");
           }
         } else if (nextNodes.length > 0) {
           setProbeResults((current) =>
@@ -254,11 +274,11 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
           setProbeResults({});
         }
 
+        if (!isCurrent()) return false;
         if (!allowRefresh) {
           try {
             await runUpdateCheck({
               accessToken: nextSession.accessToken,
-              bootstrapVersion: nextBootstrap.version,
               source: "login",
               silent: true,
               includeRuntimeComponents: false
@@ -270,21 +290,25 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
 
         return true;
       } catch (reason) {
+        if (!isCurrent()) return false;
         if (allowRefresh && nextSession.refreshToken && isAccessTokenExpiredApiError(reason)) {
           try {
             const refreshed = await recoverDesktopSessionAfterUnauthorized({
               taskRef: unauthorizedRecoveryTaskRef,
               currentSession: nextSession,
+              isCurrent,
+              scope: JSON.stringify([authOperationEpoch.current, nextSession.user.id]),
               bootstrapSession: (refreshedSession) =>
-                bootstrapSession(refreshedSession, false, preserveMode, autoProbe),
-              clearSession,
+                bootstrapSession(refreshedSession, false, preserveMode, autoProbe, isCurrent),
+              clearSession: async stop => { if (isCurrent()) await clearSession(stop); },
               refreshSession,
               refreshSessionNative: refreshStoredSessionNative,
-              saveStoredSession,
+              saveStoredSession: next => writeSession(() => saveStoredSession(next), isCurrent),
               loadStoredSession
             });
-            return Boolean(refreshed);
+            return isCurrent() && Boolean(refreshed);
           } catch (refreshReason) {
+            if (!isCurrent()) return false;
             if (isUnauthorizedApiError(refreshReason)) {
               await clearSession(true);
               showErrorToast("登录状态已失效，请重新登录。", "session");
@@ -306,7 +330,8 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
             }
             if (session) {
               setSession(nextSession);
-              await saveStoredSession(nextSession).catch(() => null);
+              await writeSession(() => saveStoredSession(nextSession), isCurrent).catch(() => null);
+              if (!isCurrent()) return false;
               showErrorToast("账号信息暂时无法同步，已保留当前登录状态，请稍后刷新。", "session");
               return true;
             }
@@ -350,7 +375,8 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
 
         if (session) {
           setSession(nextSession);
-          await saveStoredSession(nextSession).catch(() => null);
+          await writeSession(() => saveStoredSession(nextSession), isCurrent).catch(() => null);
+          if (!isCurrent()) return false;
           showErrorToast(reason || "账号信息暂时无法同步，已保留当前登录状态，请稍后刷新。", "session");
           return true;
         }
@@ -378,6 +404,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
       runUpdateCheck,
       buildProtectedAccessNotice,
       saveStoredSession,
+      writeSession,
       setBootstrap,
       setConnectionGuidance,
       setError,
@@ -391,28 +418,54 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
     ]
   );
 
+  const recoverSessionAfterUnauthorized = useCallback(async () => {
+    const epoch = authOperationEpoch.current;
+    const currentSession = getCurrentSession();
+    const current = () => authOperationEpoch.current === epoch &&
+      getCurrentSession()?.user.id === currentSession?.user.id;
+    return recoverDesktopSessionAfterUnauthorized({
+      taskRef: unauthorizedRecoveryTaskRef,
+      currentSession,
+      isCurrent: current,
+      scope: JSON.stringify([epoch, currentSession?.user.id]),
+      bootstrapSession: next => bootstrapSession(next, false, true, false, current),
+      clearSession: async stop => { if (current()) await clearSession(stop); },
+      refreshSession,
+      refreshSessionNative: refreshStoredSessionNative,
+      saveStoredSession: next => writeSession(() => saveStoredSession(next), current),
+      loadStoredSession
+    });
+  }, [bootstrapSession, clearSession, getCurrentSession, loadStoredSession, refreshSession,
+    refreshStoredSessionNative, saveStoredSession, unauthorizedRecoveryTaskRef, writeSession]);
+
   const handleLogin = useCallback(async () => {
     if (authBusy) {
       return;
     }
 
+    const epoch = ++authOperationEpoch.current;
+    const current = () => authOperationEpoch.current === epoch;
+
     try {
       setAuthBusy(true);
+      setError(null);
       const normalizedEmail = credentials.email.trim();
       const nextSession = await login(normalizedEmail, credentials.password);
-      await saveStoredSession(nextSession);
+      if (!current()) return;
+      await writeSession(() => saveStoredSession(nextSession), current);
+      if (!current()) return;
       if (rememberPassword) {
         saveRememberedCredentials(normalizedEmail, credentials.password);
       } else {
         clearRememberedCredentials();
       }
       setCredentials((current) => ({ ...current, email: normalizedEmail }));
-      const ok = await bootstrapSession(nextSession, false, false, true);
-      if (!ok) {
-        await clearStoredSession().catch(() => null);
+      const ok = await bootstrapSession(nextSession, false, false, true, current);
+      if (!ok && current()) {
+        await writeSession(clearStoredSession, current).catch(() => null);
       }
     } catch (reason) {
-      showErrorToast(reason || "登录未成功，请稍后重试。", "login");
+      if (current()) setError(readLoginError(reason || "登录未成功，请稍后重试。"));
     } finally {
       setAuthBusy(false);
     }
@@ -423,28 +476,36 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
     credentials.email,
     credentials.password,
     login,
-    readError,
+    readLoginError,
+    setError,
     rememberPassword,
     saveRememberedCredentials,
     saveStoredSession,
+    writeSession,
     setAuthBusy,
-    setCredentials,
-    showErrorToast
+    setCredentials
   ]);
 
   const handleRefresh = useCallback(async () => {
-    if (!session || refreshing) {
+    const currentSession = getCurrentSession();
+    if (!currentSession || refreshing) {
       return;
     }
+    const epoch = authOperationEpoch.current;
+    const current = () => authOperationEpoch.current === epoch &&
+      getCurrentSession()?.user.id === currentSession.user.id;
 
     try {
       setRefreshing(true);
       await refreshRuntime();
-      const ok = await bootstrapSession(session, true, modeLocked, false);
+      if (!current()) return;
+      const ok = await bootstrapSession(currentSession, true, modeLocked, false, current);
+      if (!current()) return;
       if (!ok) {
         await forceStopLocalRuntime();
       }
     } catch (reason) {
+      if (!current()) return;
       showErrorToast(reason || "刷新失败", "refresh");
       // 本机停止失败单独提醒，不与刷新失败合并成一条。
       try { await forceStopLocalRuntime(); }
@@ -455,11 +516,11 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
   }, [
     bootstrapSession,
     forceStopLocalRuntime,
+    getCurrentSession,
     modeLocked,
     readError,
     refreshing,
     refreshRuntime,
-    session,
     setRefreshing,
     showErrorToast
   ]);
@@ -469,7 +530,10 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
       return;
     }
 
+    authOperationEpoch.current++;
+
     try {
+      setCredentials((current) => current.password ? { ...current, password: "" } : current);
       setLogoutBusy(true);
       invalidateSessionOperations?.();
       const accessToken = session?.accessToken ?? null;
@@ -484,9 +548,6 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
         void logoutSession(accessToken ?? session.accessToken, session.refreshToken).catch(() => null);
       }
       await clearSession(false);
-      if (!rememberPassword) {
-        setCredentials((current) => ({ ...current, password: "" }));
-      }
     } catch (reason) {
       showErrorToast(reason || "退出失败，请重试。", "logout");
     } finally {
@@ -498,7 +559,6 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
     forceStopLocalRuntime,
     logoutBusy,
     logoutSession,
-    rememberPassword,
     session,
     setCredentials,
     setLogoutBusy,
@@ -521,18 +581,22 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
   );
 
   const restoreStoredSession = useCallback(async () => {
+    if (authOperationEpoch.current !== 0) return null;
+    const current = () => authOperationEpoch.current === 0;
     const storedSession = await loadStoredSession();
-    if (!storedSession) {
+    if (!storedSession || !current()) {
       return null;
     }
-    const ok = await bootstrapSession(storedSession, true, false, true);
-    if (!ok) {
+    const ok = await bootstrapSession(storedSession, true, false, true, current);
+    if (!ok || !current()) {
       return null;
     }
-    return (await loadStoredSession().catch(() => null)) ?? storedSession;
+    const latest = (await loadStoredSession().catch(() => null)) ?? storedSession;
+    return current() ? latest : null;
   }, [bootstrapSession, loadStoredSession]);
 
   return {
+    recoverSessionAfterUnauthorized,
     bootstrapSession,
     clearSession,
     handleLogin,

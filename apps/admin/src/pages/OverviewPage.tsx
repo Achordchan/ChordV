@@ -4,7 +4,8 @@ import { IconArrowRight, IconChevronRight } from "@tabler/icons-react";
 import { CountryFlag } from "../components/CountryFlag";
 import { sumNodeCommandSummaries } from "../utils/node-command-summary";
 import { CLIENT_VERSION_ACTIVE_DAYS, summarizeClientVersions } from "../utils/client-versions";
-import { translateAgentStatus, translateProbeStatus, translateSubscriptionState } from "../utils/admin-translate";
+import { translateProbeStatus, translateSubscriptionState } from "../utils/admin-translate";
+import { compactNodeStatus, nodeAttention } from "../utils/node-status";
 import { OnlineUsersPanel } from "../features/presence/OnlineUsersPanel";
 import styles from "../features/dashboard/Dashboard.module.css";
 
@@ -17,14 +18,6 @@ type OverviewPageProps = {
   onOpenTickets: () => void;
   onOpenSyncQueue: () => void;
 };
-
-function nodeAttention(node: AdminNodeRecordDto) {
-  if (node.isActive === false) return 3;
-  const agent = node.controlStatus ?? node.agent?.status;
-  if (["offline", "degraded"].includes(node.probeStatus) || ["offline", "degraded"].includes(agent ?? "")) return 0;
-  if (node.probeStatus !== "healthy" || !["online", "active"].includes(agent ?? "")) return 1;
-  return 2;
-}
 
 export function OverviewPage(props: OverviewPageProps) {
   const { snapshot } = props;
@@ -64,7 +57,7 @@ export function OverviewPage(props: OverviewPageProps) {
         </Table></Table.ScrollContainer>
       </section>
       <section className={styles.nodes}><div className={styles.sectionHeading}><h2>节点状态</h2><button onClick={props.onOpenNodes}>查看全部<IconChevronRight size={16}/></button></div><Text size="sm" c="dimmed" mb="md">优先显示异常及状态待确认的节点</Text>
-        {nodeList.map(node=><button key={node.id} className={styles.node} onClick={props.onOpenNodes}><CountryFlag code={node.countryCode}/><div><strong>{node.name}</strong><span>{node.isActive===false?"已停用":`Agent ${translateAgentStatus(node.controlStatus ?? node.agent?.status)}`}</span></div><span className={styles.probe} data-alert={["offline","degraded"].includes(node.probeStatus)}>{node.probeStatus==="healthy"&&node.probeLatencyMs!=null?`TCP ${node.probeLatencyMs} ms`:`TCP ${translateProbeStatus(node.probeStatus)}`}</span></button>)}
+        {nodeList.map(node=><button key={node.id} className={styles.node} onClick={props.onOpenNodes}><CountryFlag code={node.countryCode}/><div><strong>{node.name}</strong><span>{compactNodeStatus(node).label}</span></div><span className={styles.probe} data-alert={["offline","degraded"].includes(node.probeStatus)}>{node.probeStatus==="healthy"&&node.probeLatencyMs!=null?`TCP ${node.probeLatencyMs} ms`:`TCP ${translateProbeStatus(node.probeStatus)}`}</span></button>)}
         {!nodeList.length?<Text className={styles.empty}>尚未添加节点</Text>:null}
       </section>
     </div>

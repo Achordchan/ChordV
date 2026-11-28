@@ -1,0 +1,281 @@
+{
+  "commit": "397a64d",
+  "clock": "2026-11-18T00:00:00.000Z",
+  "results": [
+    {
+      "name": "no-leases",
+      "leases": [],
+      "incidents": [
+        {
+          "reason": "NODE_USER_SAMPLE_MISSING"
+        }
+      ],
+      "output": {
+        "meteringStatus": "ok",
+        "meteringMessage": null
+      }
+    },
+    {
+      "name": "expired-lease",
+      "leases": [
+        {
+          "expired": true
+        }
+      ],
+      "incidents": [
+        {
+          "reason": "NODE_USER_SAMPLE_MISSING"
+        }
+      ],
+      "output": {
+        "meteringStatus": "ok",
+        "meteringMessage": null
+      }
+    },
+    {
+      "name": "other-user-only",
+      "leases": [
+        {
+          "other": true
+        }
+      ],
+      "incidents": [
+        {
+          "reason": "NODE_USER_SAMPLE_MISSING"
+        }
+      ],
+      "output": {
+        "meteringStatus": "ok",
+        "meteringMessage": null
+      }
+    },
+    {
+      "name": "inactive-node",
+      "node": {
+        "isActive": false
+      },
+      "leases": [
+        {}
+      ],
+      "incidents": [
+        {
+          "reason": "NODE_USER_SAMPLE_MISSING"
+        }
+      ],
+      "output": {
+        "meteringStatus": "ok",
+        "meteringMessage": null
+      }
+    },
+    {
+      "name": "offline-node",
+      "node": {
+        "controlStatus": "offline"
+      },
+      "leases": [
+        {}
+      ],
+      "incidents": [
+        {
+          "reason": "NODE_USER_SAMPLE_MISSING"
+        }
+      ],
+      "output": {
+        "meteringStatus": "ok",
+        "meteringMessage": null
+      }
+    },
+    {
+      "name": "no-incidents",
+      "leases": [
+        {}
+      ],
+      "incidents": [],
+      "output": {
+        "meteringStatus": "ok",
+        "meteringMessage": null
+      }
+    },
+    {
+      "name": "other-node-incidents",
+      "leases": [
+        {}
+      ],
+      "incidents": [
+        {
+          "node": "B",
+          "reason": "NODE_USER_SAMPLE_MISSING"
+        }
+      ],
+      "output": {
+        "meteringStatus": "ok",
+        "meteringMessage": null
+      }
+    },
+    {
+      "name": "resolved-only",
+      "leases": [
+        {}
+      ],
+      "incidents": [
+        {
+          "reason": "NODE_USER_SAMPLE_MISSING",
+          "status": "resolved"
+        }
+      ],
+      "output": {
+        "meteringStatus": "ok",
+        "meteringMessage": null
+      }
+    },
+    {
+      "name": "mapping-message",
+      "leases": [
+        {}
+      ],
+      "incidents": [
+        {
+          "reason": "NODE_USER_SAMPLE_MISSING"
+        }
+      ],
+      "output": {
+        "meteringStatus": "degraded",
+        "meteringMessage": "流量统计正在校准，请稍后查看"
+      }
+    },
+    {
+      "name": "unavailable-within-grace",
+      "leases": [
+        {}
+      ],
+      "incidents": [
+        {
+          "reason": "NODE_METERING_UNAVAILABLE",
+          "age": 60
+        }
+      ],
+      "output": {
+        "meteringStatus": "ok",
+        "meteringMessage": null
+      }
+    },
+    {
+      "name": "unavailable-after-grace",
+      "leases": [
+        {}
+      ],
+      "incidents": [
+        {
+          "reason": "NODE_METERING_UNAVAILABLE",
+          "age": 120
+        }
+      ],
+      "output": {
+        "meteringStatus": "degraded",
+        "meteringMessage": "计量同步延迟，后台正在重试，请稍后查看"
+      }
+    },
+    {
+      "name": "unavailable-created-recent",
+      "leases": [
+        {}
+      ],
+      "incidents": [
+        {
+          "reason": "NODE_METERING_UNAVAILABLE",
+          "age": 120,
+          "createdAge": 60
+        }
+      ],
+      "output": {
+        "meteringStatus": "ok",
+        "meteringMessage": null
+      }
+    },
+    {
+      "name": "unavailable-opened-recent",
+      "leases": [
+        {}
+      ],
+      "incidents": [
+        {
+          "reason": "NODE_METERING_UNAVAILABLE",
+          "age": 60,
+          "createdAge": 120
+        }
+      ],
+      "output": {
+        "meteringStatus": "ok",
+        "meteringMessage": null
+      }
+    },
+    {
+      "name": "non-unavailable-priority",
+      "leases": [
+        {}
+      ],
+      "incidents": [
+        {
+          "reason": "NODE_METERING_UNAVAILABLE",
+          "age": 120
+        },
+        {
+          "reason": "NODE_USER_SAMPLE_MISSING",
+          "age": 240
+        }
+      ],
+      "output": {
+        "meteringStatus": "degraded",
+        "meteringMessage": "流量统计正在校准，请稍后查看"
+      }
+    },
+    {
+      "name": "latest-current-user-node",
+      "leases": [
+        {
+          "node": "B",
+          "age": 60
+        },
+        {
+          "node": "A",
+          "age": 1
+        }
+      ],
+      "incidents": [
+        {
+          "node": "B",
+          "reason": "NODE_USER_SAMPLE_MISSING"
+        }
+      ],
+      "output": {
+        "meteringStatus": "ok",
+        "meteringMessage": null
+      }
+    },
+    {
+      "name": "other-user-newer-ignored",
+      "leases": [
+        {
+          "node": "A",
+          "age": 60
+        },
+        {
+          "node": "B",
+          "age": 1,
+          "other": true
+        }
+      ],
+      "incidents": [
+        {
+          "node": "B",
+          "reason": "NODE_USER_SAMPLE_MISSING"
+        }
+      ],
+      "output": {
+        "meteringStatus": "ok",
+        "meteringMessage": null
+      }
+    }
+  ],
+  "scope": "Exact original state/retention/webhook methods, actual original-model DDL in a private PostgreSQL schema and Prisma6.19.2; unrelated FKs omitted, clock/logger/scheduling are explicit adapters. No original Nest HTTP or public writes."
+}

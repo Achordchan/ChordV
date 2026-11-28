@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { ConnectionMode, GeneratedRuntimeConfigDto } from "@chordv/shared";
 import { IconChartBar, IconPlugConnected, IconRoute, IconShieldCheckered } from "@tabler/icons-react";
 import type { RuntimeStatus } from "../lib/runtime";
+import type { RuntimeAssetsUiState } from "../lib/runtimeComponents";
 import { NoticeRow } from "./NoticeRow";
 import {
   PRIMARY_FILL_COMPLETE_MS,
@@ -26,7 +27,7 @@ type ControlPanelProps = {
   desktopStatus: RuntimeStatus;
   runtime: GeneratedRuntimeConfigDto | null;
   error: string | null;
-  runtimeAssetsPhase: "idle" | "checking" | "downloading" | "completed" | "ready" | "failed";
+  runtimeAssetsPhase: RuntimeAssetsUiState["phase"];
   onModeChange: (mode: ConnectionMode) => void;
   onPrimaryAction: () => void;
   onOpenRoutingRules: () => void;
@@ -49,6 +50,7 @@ export function ControlPanel(props: ControlPanelProps) {
           : fillPhase === "completing"
             ? "已连接"
             : props.primaryLabel;
+  const activeRuntime = props.desktopStatus.status === "connected" && hasRunningKernel(props.desktopStatus) ? props.runtime : null;
   const renderPrimaryButton = (size: "md" | "xl") => (
     <Button
       size={size}
@@ -65,7 +67,6 @@ export function ControlPanel(props: ControlPanelProps) {
       disabled={
         !filling &&
         !props.canConnect &&
-        props.runtimeAssetsPhase !== "failed" &&
         props.desktopStatus.status !== "connected" &&
         props.desktopStatus.status !== "error"
       }
@@ -118,7 +119,7 @@ export function ControlPanel(props: ControlPanelProps) {
 
           {renderPrimaryButton("xl")}
 
-          <LocalProxyPorts runtime={props.runtime} />
+          <LocalProxyPorts runtime={activeRuntime} />
 
           {props.error ? (
             <NoticeRow tone="danger" role="alert" className="control-error">
@@ -182,7 +183,7 @@ export function ControlPanel(props: ControlPanelProps) {
 
           {renderPrimaryButton("md")}
 
-          <LocalProxyPorts runtime={props.runtime} />
+          <LocalProxyPorts runtime={activeRuntime} />
 
           {props.error ? (
             <NoticeRow tone="danger" role="alert" className="control-error">
@@ -247,23 +248,27 @@ function usePrimaryFillPhase(status: string, busyAction: PrimaryBusyAction): Pri
   return phase;
 }
 
+function hasRunningKernel(status: RuntimeStatus) {
+  const alive = (Number.isInteger(status.activePid) && (status.activePid ?? 0) > 0)
+    || (status.platformTarget === "android" && status.vpnActive === true);
+  return alive && ["starting", "connecting", "connected", "disconnecting", "error"].includes(status.status);
+}
+
 function readRuntimeInstallLabel(
   desktopStatus: RuntimeStatus,
   runtimeAssetsPhase: ControlPanelProps["runtimeAssetsPhase"]
 ) {
+  if (hasRunningKernel(desktopStatus)) return "内核已启动";
+  if (desktopStatus.status === "error") return "内核已停止";
+  if (runtimeAssetsPhase === "ready" || runtimeAssetsPhase === "completed") return "内核已安装";
+  if (runtimeAssetsPhase === "unconfigured") return "组件未安装";
   if (runtimeAssetsPhase === "checking" || runtimeAssetsPhase === "downloading") {
     return "内核准备中";
   }
   if (runtimeAssetsPhase === "failed") {
     return "内核准备失败";
   }
-  if (!desktopStatus.xrayBinaryPath) {
-    return "内核待准备";
-  }
-  if (desktopStatus.status === "idle") {
-    return "内核已安装";
-  }
-  return "内核已启动";
+  return "内核待准备";
 }
 
 function StatusSurface(props: { status: string; nodeName: string; compact?: boolean }) {

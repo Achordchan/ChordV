@@ -2,12 +2,14 @@
 
 > 历史工具：用于旧版 xui/shadow/direct 双轨迁移对账。R3（PR #17）已退役 3X-UI 主链路，下面的 shadow 准入输出不代表当前 Agent 原生节点已通过上线验收。当前迁移计划见 `docs/prd/node-revision-agent-native.md` 第 3 节；本目录保留用于离线历史证据核对。
 
+从仓库根目录运行下面的独立 `tsx` 命令，不依赖已退役的 API 工作区。
+
 本目录只处理脱敏后的本地 JSON，不连接 ChordV、3X-UI、Xray 或生产服务器，也不读取账号、Cookie、Reality 私钥和 Agent 令牌。
 
 ## 三方用户核对
 
 ```powershell
-corepack pnpm --filter @chordv/api exec tsx ../../scripts/agent-migration/cli.ts reconcile `
+corepack pnpm exec tsx scripts/agent-migration/cli.ts reconcile `
   --bindings .\bindings.json --xui .\xui-users.json --xray .\xray-users.json
 ```
 
@@ -16,7 +18,7 @@ corepack pnpm --filter @chordv/api exec tsx ../../scripts/agent-migration/cli.ts
 ## Shadow 流量差异
 
 ```powershell
-corepack pnpm --filter @chordv/api exec tsx ../../scripts/agent-migration/cli.ts shadow `
+corepack pnpm exec tsx scripts/agent-migration/cli.ts shadow `
   --xui .\xui-delta.json --direct .\direct-delta.json `
   --absolute-bytes 1048576 --relative-percent 0.1
 ```
@@ -26,7 +28,7 @@ corepack pnpm --filter @chordv/api exec tsx ../../scripts/agent-migration/cli.ts
 ## 重启感知 Shadow 对账
 
 ```powershell
-corepack pnpm --filter @chordv/api exec tsx ../../scripts/agent-migration/cli.ts shadow-series `
+corepack pnpm exec tsx scripts/agent-migration/cli.ts shadow-series `
   --xui .\xui-samples.json --direct .\direct-samples.json `
   --absolute-bytes 1048576 --relative-percent 0.1 `
   --minimum-steady-windows 1

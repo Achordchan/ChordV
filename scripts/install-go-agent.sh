@@ -222,17 +222,26 @@ systemctl start "$SERVICE" 9>&-
 # Starting a process is not registration success. A bounded local health probe
 # waits for persisted credentials and state; all remote status uses SSE.
 printf '%s\n' '等待首次注册和本地状态落盘…'
+running_release_pid() {
+  local pid
+  systemctl is-active --quiet "$SERVICE" || return 1
+  pid=$(systemctl show -p MainPID --value "$SERVICE") || return 1
+  [[ $pid =~ ^[1-9][0-9]*$ && $pid != 1 && /proc/$pid/exe -ef "$RELEASE/chordv-agent" ]] || return 1
+  printf '%s' "$pid"
+}
 HEALTHY=0
 for attempt in {1..20}; do
-  if runuser -u chordv-agent -- env -i \
+  if started_pid=$(running_release_pid) && runuser -u chordv-agent -- env -i \
     CHORDV_API_BASE_URL="$API_BASE" AGENT_DATABASE_PATH="$STATE_DIR/agent.db" \
     AGENT_CREDENTIALS_PATH="$STATE_DIR/credentials.json" \
     XRAY_API_ADDRESS="$DISCOVERED_API" XRAY_INBOUND_TAG="$DISCOVERED_TAG" AGENT_WAIT_FOR_INBOUND="$WAIT_FOR_INBOUND" \
     "$INSTALL_DIR/current/chordv-agent" --health \
-    > "$STAGE/health.json" 2>/dev/null; then HEALTHY=1; break; fi
+    > "$STAGE/health.json" 2>/dev/null && finished_pid=$(running_release_pid) && [[ $started_pid == "$finished_pid" ]]; then
+    HEALTHY=1; break
+  fi
   sleep 3
 done
-[[ $HEALTHY == 1 ]] || fail '首次注册未完成，请运行 journalctl -u chordv-node-agent -n 50 查看原因后重试'
+[[ $HEALTHY == 1 ]] || fail '当前版本服务或注册状态未确认，请运行 journalctl -u chordv-node-agent -n 50 查看原因后重试'
 COMMITTED=1
 if [[ $WAIT_FOR_INBOUND == true ]]; then
   printf '%s\n' 'Go agent 安装完成，环境检查通过。请回到后台继续添加节点入站。'

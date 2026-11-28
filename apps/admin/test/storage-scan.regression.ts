@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
+import { formatStorageBytes } from "../src/utils/admin-format";
+
+for (const [bytes, label] of [[0, "0 B"], [37, "37 B"], [1023, "1023 B"], [1024, "1.0 KB"], [1536, "1.5 KB"], [2 ** 20, "1.0 MB"], [2 ** 30, "1.00 GB"]] as const) {
+  assert.equal(formatStorageBytes(bytes), label);
+}
 
 const source=readFileSync(new URL("../src/features/storage/storage-api.ts",import.meta.url),"utf8")
   .replace(/^import .*;\n/,"").replace(/\bexport /g,"");

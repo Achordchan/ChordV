@@ -1,0 +1,16 @@
+{
+  "name": "ChordV MyGo Local",
+  "slug": "chordv-mygo-local",
+  "identifier": "app.chordv.mygo.local",
+  "version": "1.1.12",
+  "main": ".",
+  "devUrl": "http://127.0.0.1:5173",
+  "devCommand": "corepack pnpm --dir .. dev -- --host 127.0.0.1",
+  "buildCommand": "corepack pnpm --dir .. build",
+  "frontendDist": "../dist",
+  "bindings": "../src/lib/mygo.ts",
+  "out": "../../../output/mygo",
+  "macos": { "minimumSystemVersion": "13.0", "signingIdentity": "-" },
+  "windows": { "installDirName": "ChordV-MyGo-Local" },
+  "linux": { "formats": [] }
+}

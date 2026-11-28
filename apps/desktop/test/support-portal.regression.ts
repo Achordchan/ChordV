@@ -44,28 +44,34 @@ type FakeNative = {
   handlers: Record<string, (args: any) => unknown>;
 };
 
-/** 用假的 Tauri IPC 驱动真实的 API 客户端和原生适配层（不打开任何窗口）。 */
+/** 用测试用 MyGo IPC 驱动真实的 API 客户端和原生适配层（不打开任何窗口）。 */
 async function withNative<T>(userAgent: string, native: FakeNative, run: () => Promise<T>, extra: Record<string, unknown> = {}) {
   const original = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const originalMyGo = Object.getOwnPropertyDescriptor(globalThis, "mygo");
   const testWindow = {
     navigator: { userAgent },
-    __TAURI_INTERNALS__: {
-      invoke: async (command: string, args: unknown) => {
+    mygo: {
+      platform: /windows/i.test(userAgent) ? "windows" : "macos",
+      call: async (method: string, command: string, args: unknown) => {
+        assert.equal(method, "DesktopService.Invoke");
         native.calls.push([command, args]);
         const handler = native.handlers[command];
         if (!handler) throw new Error(`unexpected command ${command}`);
         return handler(args);
       },
-      transformCallback: () => 0
+      on: () => () => {}
     },
     ...extra
   };
   Object.defineProperty(globalThis, "window", { configurable: true, value: testWindow });
+  Object.defineProperty(globalThis, "mygo", { configurable: true, value: testWindow.mygo });
   try {
     return await run();
   } finally {
     if (original) Object.defineProperty(globalThis, "window", original);
     else Reflect.deleteProperty(globalThis, "window");
+    if (originalMyGo) Object.defineProperty(globalThis, "mygo", originalMyGo);
+    else Reflect.deleteProperty(globalThis, "mygo");
   }
 }
 
@@ -489,7 +495,7 @@ async function testNativeAdaptersRouteByPlatform() {
     assert.equal(await target.focusExisting(), false);
     await target.open({ launchUrl: LAUNCH.launchUrl, supportOrigin: LAUNCH.supportOrigin });
     target.dispose();
-  }, { __TAURI_INTERNALS__: undefined, open: (url: string) => { opens.push(url); return popup; } });
+  }, { mygo: undefined, open: (url: string) => { opens.push(url); return popup; } });
   assert.deepEqual(visited, [LAUNCH.launchUrl]);
   assert.equal(popup.closed, false, "dispose after a successful open keeps the portal");
 
@@ -497,7 +503,7 @@ async function testNativeAdaptersRouteByPlatform() {
   const unused = { closed: false, close: () => { unused.closed = true; } };
   await withNative("Browser", { calls: [], handlers: {} }, async () => {
     createSupportWindowTarget().dispose();
-  }, { __TAURI_INTERNALS__: undefined, open: () => unused });
+  }, { mygo: undefined, open: () => unused });
   assert.equal(unused.closed, true);
 
   // 安卓端：不预留弹窗，拿到地址后交给原生层用系统默认应用打开，且不调用原生工单命令。
@@ -515,7 +521,7 @@ async function testNativeAdaptersRouteByPlatform() {
   const failures: Array<[string, FakeNative, Record<string, unknown>]> = [
     ["Linux; Android 14", { calls: [], handlers: { open_external_url: () => { throw "没有找到可以打开链接的应用 act_secret"; } } }, {}],
     ["Linux; Android 14", { calls: [], handlers: { open_external_url: () => ({ ok: false }) } }, {}],
-    ["Browser", { calls: [], handlers: {} }, { __TAURI_INTERNALS__: undefined, open: () => null }]
+    ["Browser", { calls: [], handlers: {} }, { mygo: undefined, open: () => null }]
   ];
   for (const [userAgent, native, extra] of failures) {
     await withNative(userAgent, native, async () => {
@@ -883,12 +889,14 @@ function testAppWiring() {
   for (const path of ["../src/hooks/useSupportPortal.ts", "../src/lib/supportPortal.ts"]) {
     assert.doesNotMatch(read(path), /recordClientDiagnosticLog|console\./, `${path} never logs the launch url`);
   }
-  // 旧工单中心已移除：生产后台没有新工单接口时禁止发布客户端。
+  // 接口兼容通过本地 Go 契约验证；构建不能访问线上后台探测。
   const release = read("../../../.github/workflows/release-desktop.yml");
-  assert.match(release, /Require new support endpoints on production backend/);
-  assert.match(release, /for path in client\/support\/status client\/support\/launch; do/);
-  assert.match(release, /401\|403\) ;;\s*\*\) echo "生产后台的/);
-  const runtime = read("../src/lib/runtime.ts");
+  assert.match(release, /Build MyGo installer/);
+  assert.doesNotMatch(release, /for path in client\/support\/status client\/support\/launch; do/);
+  const routes = read("../../server/internal/api/client.go");
+  assert.match(routes, /\/api\/client\/support\/status/);
+  assert.match(routes, /\/api\/client\/support\/launch/);
+  const runtime = read("../src/lib/nativeSupport.ts");
   const openBody = runtime.match(/export function createSupportWindowTarget[\s\S]*?\n\}/)?.[0] ?? "";
   assert.ok(openBody, "createSupportWindowTarget exists");
   assert.doesNotMatch(openBody, /recordClientDiagnosticLog|console\.|\$\{input\.launchUrl\}/);

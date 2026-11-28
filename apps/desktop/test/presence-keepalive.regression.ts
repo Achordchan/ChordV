@@ -75,18 +75,21 @@ function testWiring() {
   assert.match(hook, /startPresenceNudges\(\{ windowTarget: window, documentTarget: document, nudge: nudgeClientPresence \}\)/, "登录期间接入补报");
   assert.match(hook, /\}, \[session\?\.accessToken, nudgeClientPresence\]\);/, "随登录态开始、退出登录时清理");
 
-  const client = read("src/api/client.ts");
-  const nudge = client.slice(client.indexOf("export async function nudgeClientPresence"), client.indexOf("function normalizeHeaders"));
+  const client = read("src/api/native-commands.ts");
+  const nudge = client.slice(client.indexOf("export async function nudgeClientPresence"), client.length);
   assert.match(nudge, /invoke\("nudge_client_presence"\)/);
   assert.match(nudge, /catch \{/, "原生补报失败不影响客户端");
-  assert.doesNotMatch(client, /events\/stream\?presence=ping/, "网页兜底连接不声明定期上报（不在网页里定期上报）");
+  assert.doesNotMatch(read("src/api/client-events.ts"), /events\/stream\?presence=ping/, "网页兜底连接不声明定期上报（不在网页里定期上报）");
 
-  const lib = read("src-tauri/src/lib.rs");
-  assert.match(lib, /let url = presence_keepalive::event_stream_url\(&api_base_url\(\)\);/, "原生推送连接带上声明");
-  const opened = lib.indexOf("emit_client_event_stream_opened(&app, &stream_id);\n    // 连接建立后开始定期上报在线");
-  assert.ok(opened > 0, "连接建立后才开始上报");
-  assert.match(lib.slice(opened, opened + 800), /let _presence = presence_keepalive::spawn_presence_keepalive\(/, "上报任务与推送连接同生共死（函数返回即停止）");
-  assert.match(lib, /nudge_client_presence,\n/, "注册补报命令");
+  const lib = read("native/api.go");
+  assert.match(lib, /s\.apiURL\("\/client\/events\/stream\?presence=ping"\)/, "原生推送连接带上在线上报声明");
+  const opened = lib.indexOf('s.publish("chordv://client-runtime-event-open"');
+  assert.ok(opened > 0, "建立连接并确认SSE响应后才开始上报");
+  const lifecycle = lib.slice(opened, opened + 650);
+  assert.match(lifecycle, /presenceCtx, cancel := context.WithCancel\(ctx\)/);
+  assert.match(lifecycle, /defer cancel\(\)/, "推送连接返回时停止在线上报");
+  assert.match(lifecycle, /go s\.presenceLoop\(presenceCtx, input.AccessToken\)/);
+  assert.match(read("native/service.go"), /case "nudge_client_presence":/, "原生桥接注册补报命令");
 }
 
 async function main() {

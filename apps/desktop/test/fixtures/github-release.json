@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "version": "2.0.0",
+  "tag": "v2.0.0",
+  "channel": "stable",
+  "build": 42,
+  "minimumVersion": "1.1.0",
+  "forceUpgrade": false,
+  "title": "ChordV 2.0.0",
+  "changelog": [
+    "测试夹具，仅用于发布协议验证"
+  ],
+  "publishedAt": "2026-11-16T00:00:00Z",
+  "installers": [
+    {
+      "platform": "macos",
+      "architecture": "arm64",
+      "fileName": "ChordV_2.0.0_macos_arm64.dmg",
+      "sha256": "839ff4acea992b9d1722036072c64d2bdef855afc4b886de89108436e9431c29",
+      "sizeBytes": 1234
+    },
+    {
+      "platform": "windows",
+      "architecture": "x64",
+      "fileName": "ChordV_2.0.0_windows_x64_setup.exe",
+      "sha256": "839ff4acea992b9d1722036072c64d2bdef855afc4b886de89108436e9431c29",
+      "sizeBytes": 2345
+    }
+  ],
+  "runtimeComponents": [
+    {
+      "component": "xray",
+      "platform": "macos",
+      "architecture": "arm64",
+      "version": "26.3.27",
+      "fileName": "Xray-macos-arm64.zip",
+      "sha256": "839ff4acea992b9d1722036072c64d2bdef855afc4b886de89108436e9431c29",
+      "sizeBytes": 3456,
+      "sourceFormat": "zip_entry",
+      "archiveEntryName": "xray"
+    },
+    {
+      "component": "geoip",
+      "platform": "macos",
+      "architecture": "arm64",
+      "version": "20261116",
+      "fileName": "geoip.dat",
+      "sha256": "839ff4acea992b9d1722036072c64d2bdef855afc4b886de89108436e9431c29",
+      "sizeBytes": 3456,
+      "sourceFormat": "direct"
+    },
+    {
+      "component": "geosite",
+      "platform": "macos",
+      "architecture": "arm64",
+      "version": "20261116",
+      "fileName": "geosite.dat",
+      "sha256": "839ff4acea992b9d1722036072c64d2bdef855afc4b886de89108436e9431c29",
+      "sizeBytes": 3456,
+      "sourceFormat": "direct"
+    }
+  ]
+}

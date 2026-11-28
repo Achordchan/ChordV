@@ -1,0 +1,44 @@
+name: Verify UI
+
+on:
+  workflow_call:
+    inputs:
+      admin:
+        description: Run the management UI suite instead of the desktop UI suite
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: actions/setup-go@v5
+        if: ${{ !inputs.admin }}
+        with:
+          go-version-file: apps/desktop/native/go.mod
+          cache-dependency-path: apps/desktop/native/go.sum
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @chordv/shared build
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Cache Go dependencies for the offline installer contract test
+        if: ${{ !inputs.admin }}
+        working-directory: apps/desktop/native
+        run: go mod download all
+      - if: ${{ !inputs.admin }}
+        run: node scripts/mygo-verify.mjs --desktop-ui
+      - if: inputs.admin
+        run: |
+          pnpm --filter @chordv/admin check
+          node scripts/mygo-verify.mjs --admin-ui

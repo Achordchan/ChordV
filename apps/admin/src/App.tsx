@@ -4,6 +4,7 @@ import { useActionConfirmation } from "./features/modals/useActionConfirmation";
 import settingsDialogStyles from "./features/editors/EditorDialog.module.css";
 import { AccountSecurityModal } from "./features/system-settings/AccountSecurityModal";
 import { SystemSettingsPage } from "./pages/SystemSettingsPage";
+import { TeamTrafficResetModal } from "./features/customers/TeamTrafficResetModal";
 import { renewalBase, renewalDate } from "./features/editors/renewal-date";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
@@ -63,7 +64,6 @@ import { resolveCountryCode } from "@chordv/shared";
 import {
   IconBell,
   IconBolt,
-  IconCloudDownload,
   IconCpu,
   IconChevronDown,
   IconLayoutDashboard,
@@ -140,7 +140,7 @@ import { ADMIN_SESSION_EXPIRED_EVENT, isAdminSessionExpiredMessage } from "./api
 import { AdminLoginPanel } from "./components/AdminLoginPanel";
 import { AdminDrawerForm, type DrawerType } from "./features/editors/AdminDrawerForm";
 import { DeleteNodeModal, KickMemberModal, NodeAccessEditorModal, TeamUsageDetailModal } from "./features/modals/AdminModals";
-import { SystemUpdateBadge } from "./features/system-update/SystemUpdateBadge";
+import { GitHubVersion } from "./components/GitHubVersion";
 import { AnnouncementsPage } from "./pages/AnnouncementsPage";
 import { CustomerSubscriptionsPage } from "./pages/CustomerSubscriptionsPage";
 import { ImageBedPage } from "./pages/ImageBedPage";
@@ -152,7 +152,6 @@ import { sumNodeCommandSummaries } from "./utils/node-command-summary";
 import { OverviewPage } from "./pages/OverviewPage";
 import { PlansPage } from "./pages/PlansPage";
 import { PoliciesPage } from "./pages/PoliciesPage";
-import { UnifiedReleaseCenter } from "./features/releases/UnifiedReleaseCenter";
 import { SubscriptionsPage } from "./pages/SubscriptionsPage";
 import { TicketsPage } from "./pages/TicketsPage";
 import { UsersPage } from "./pages/UsersPage";
@@ -221,7 +220,6 @@ type SectionKey =
   | "tickets"
   | "nodes"
   | "announcements"
-  | "releases"
   | "system";
 type EditorState = {
   type: DrawerType;
@@ -235,7 +233,7 @@ type NodeAccessEditorState = {
 };
 
 type SnapshotListKey = Exclude<keyof AdminSnapshotDto, "dashboard" | "policy">;
-type FullSnapshotListKey = Exclude<SnapshotListKey, "releases">;
+type FullSnapshotListKey = SnapshotListKey;
 
 function createEmptyDashboardSnapshot(): DashboardSnapshotDto {
   return {
@@ -297,10 +295,6 @@ const sectionMeta: Record<SectionKey, { label: string; icon: ReactNode }> = {
     label: "公告管理",
     icon: <IconSpeakerphone size={18} />
   },
-  releases: {
-    label: "发布中心",
-    icon: <IconCloudDownload size={18} />
-  },
   system: {
     label: "系统设置",
     icon: <IconShieldLock size={18} />
@@ -312,7 +306,6 @@ const sectionGroups: Array<{ title: string; sections: SectionKey[] }> = [
   { title: "用户与订阅", sections: ["users", "plans"] },
   { title: "节点与任务", sections: ["nodes"] },
   { title: "客服与公告", sections: ["tickets", "announcements"] },
-  { title: "应用发布", sections: ["releases"] },
   { title: "系统", sections: ["system"] }
 ];
 
@@ -363,7 +356,6 @@ export function App() {
   });
   const [section, setSection] = useState<SectionKey>("overview");
   const sectionRef = useRef<SectionKey>("overview");
-  const [releaseRefreshSignal, setReleaseRefreshSignal] = useState(0);
   const [ticketRefreshSignal, setTicketRefreshSignal] = useState(0);
   const [settingsPanel, setSettingsPanel] = useState<"policies" | "imageBed" | null>(null);
   const settingsPanelRef = useRef(settingsPanel); settingsPanelRef.current = settingsPanel;
@@ -395,7 +387,7 @@ export function App() {
   const [planScopeTab, setPlanScopeTab] = useState<PlanScope>("personal");
   const [subscriptionTab, setSubscriptionTab] = useState<"personal" | "team">("personal");
   const [authBootstrapped, setAuthBootstrapped] = useState(() => hasAdminSession());
-  const [search, setSearch] = useState<Record<Exclude<SectionKey, "overview" | "tickets" | "releases" | "system">, string>>({
+  const [search, setSearch] = useState<Record<Exclude<SectionKey, "overview" | "tickets" | "system">, string>>({
     users: "",
     plans: "",
     subscriptions: "",
@@ -411,6 +403,8 @@ export function App() {
   const kickSubmittingRef = useRef(false);
   const [resetTrafficBusyKey, setResetTrafficBusyKey] = useState<string | null>(null);
   const resetTrafficBusyRef = useRef(false);
+  const [teamTrafficResetTarget, setTeamTrafficResetTarget] = useState<{teamId:string;subscriptionId:string} | null>(null);
+  useEffect(() => {if(!authenticated)setTeamTrafficResetTarget(null);},[authenticated]);
   const [convertSubscriptionTarget, setConvertSubscriptionTarget] = useState<{
     subscriptionId: string;
     ownerLabel: string;
@@ -431,6 +425,10 @@ export function App() {
   const [teamUsageByTeamId, setTeamUsageByTeamId] = useState<Record<string, AdminTeamUsageRecordDto[]>>({});
   const [teamUsageLoadingByTeamId, setTeamUsageLoadingByTeamId] = useState<Record<string, boolean>>({});
   const [teamUsageErrorByTeamId, setTeamUsageErrorByTeamId] = useState<Record<string, string | null>>({});
+  const teamUsageEpochRef = useRef(0);
+  const teamUsageVersionRef = useRef<Record<string, number>>({});
+  const teamUsageInFlightRef = useRef<Record<string, number>>({});
+  useEffect(() => {if(!authenticated)clearTeamUsageCache();},[authenticated]);
   const [probingNodeId, setProbingNodeId] = useState<string | null>(null);
   const [agentNodeCreateOpened, setAgentNodeCreateOpened] = useState(false);
   const [agentNodeResumeId, setAgentNodeResumeId] = useState<string | null>(null);
@@ -620,6 +618,14 @@ export function App() {
       refresh: async (sections) => {
         if (disposed) return;
         const currentSection = sectionRef.current;
+        if (sections.has("resync")) {
+          await loadFullSnapshot();
+          if (disposed) return;
+          if (currentSection === "tickets") setTicketRefreshSignal(value => value + 1);
+          if (settingsPanelRef.current === "imageBed") setImageBedRefreshSignal(value => value + 1);
+          if (leaseRevocationQueueRef.current.opened) refreshNodeCommandQueueDetail(leaseRevocationQueueRef.current.filter);
+          return;
+        }
         // Mark off-screen data stale without fetching every module. It will
         // load once when selected; users and subscriptions share one dataset.
         const stale = new Set([...sections].map(value => value === "users" ? "subscriptions" : value));
@@ -629,7 +635,7 @@ export function App() {
         if (sections.has("overview")) tasks.push(refreshDashboard({ silent: true }));
         if (sections.has(currentSection)) tasks.push(Promise.resolve(refreshCurrentSectionSilently()));
         if (settingsPanelRef.current === "imageBed" && sections.has("imageBed")) setImageBedRefreshSignal(value => value + 1);
-        if (settingsPanelRef.current === "policies" && sections.has("policies")) tasks.push(loadSettingsPolicy());
+        if (settingsPanelRef.current === "policies" && sections.has("policies")) tasks.push(loadSettingsPolicy({ silent: true }));
         if (sections.has("system")) {
           tasks.push(refreshLeaseRevocationJobsAfterPending());
           if (leaseRevocationQueueRef.current.opened) {
@@ -818,9 +824,7 @@ export function App() {
     setConvertTargetTeamId(null);
     setConvertSubmitting(false);
     setTeamUsageDetailTarget(null);
-    setTeamUsageByTeamId({});
-    setTeamUsageLoadingByTeamId({});
-    setTeamUsageErrorByTeamId({});
+    clearTeamUsageCache();
     setNodeAccessEditor(null);
     setNodeAccessSelection([]);
     setNodeAccessLoading(false);
@@ -844,6 +848,7 @@ export function App() {
   }
 
   function mergeSnapshot(patch: Partial<AdminSnapshotDto>) {
+    if (patch.teams) syncLoadedTeamUsage(patch.teams);
     setSnapshot((current) => {
       const base: AdminSnapshotDto = current ?? {
         dashboard: createEmptyDashboardSnapshot(),
@@ -858,8 +863,7 @@ export function App() {
           summaries: { nodes: [], subscriptions: [], users: [], teams: [] }
         },
         announcements: [],
-        policy: patch.policy as AdminPolicyRecordDto,
-        releases: []
+        policy: patch.policy as AdminPolicyRecordDto
       };
       return { ...base, ...patch };
     });
@@ -982,10 +986,7 @@ export function App() {
   }
 
   function refreshCurrentSectionSilently() {
-    if (sectionRef.current === "releases") {
-      setReleaseRefreshSignal(current => current + 1);
-      return;
-    }
+
     if (sectionRef.current === "tickets") {
       setTicketRefreshSignal((current) => current + 1);
       return;
@@ -1097,14 +1098,15 @@ export function App() {
     });
   }
 
-  async function loadSettingsPolicy() {
+  async function loadSettingsPolicy(options?: { silent?: boolean }) {
     if (policyDirtyRef.current || policySavingRef.current) return;
     const request = ++settingsPolicyRequest.current;
-    setSettingsPolicyLoading(true);
+    if (!options?.silent) setSettingsPolicyLoading(true);
     setSettingsPolicyError(null);
     try {
       const policy = await fetchAdminPolicy();
       if (request !== settingsPolicyRequest.current) return;
+      if (policyDirtyRef.current || policySavingRef.current) return;
       mergeSnapshot({ policy });
       setPolicyForm(toPolicyForm(policy));
     } catch (reason) {
@@ -1359,10 +1361,7 @@ export function App() {
       }
       return;
     }
-    if (currentSection === "releases") {
-      setReleaseRefreshSignal((current) => current + 1);
-      return;
-    }
+
     if (currentSection === "tickets") {
       setTicketRefreshSignal((current) => current + 1);
       return;
@@ -1540,7 +1539,7 @@ export function App() {
       return;
     }
     const email = adminSecurityForm.email.trim();
-    const newPassword = adminSecurityForm.newPassword.trim();
+    const newPassword = adminSecurityForm.newPassword;
     if (!email || !adminSecurityForm.currentPassword.trim()) {
       notifications.show({
         color: "red",
@@ -1549,23 +1548,6 @@ export function App() {
       });
       return;
     }
-    if (newPassword && newPassword !== adminSecurityForm.confirmPassword.trim()) {
-      notifications.show({
-        color: "red",
-        title: "账号安全",
-        message: "两次输入的新密码不一致"
-      });
-      return;
-    }
-    if (newPassword && newPassword.length < 8) {
-      notifications.show({
-        color: "red",
-        title: "账号安全",
-        message: "新密码至少 8 位"
-      });
-      return;
-    }
-
     try {
       adminSecuritySavingRef.current = true;
       setAdminSecuritySaving(true);
@@ -2204,7 +2186,7 @@ export function App() {
               dbFirstMutationOptions
             )
           : await runAction(() => createAnnouncement(payload satisfies CreateAnnouncementInputDto), "公告已创建", dbFirstMutationOptions);
-        if (success) closeDrawer();
+        if (success) forceCloseDrawer();
       }
     } finally {
       drawerBusyRef.current = false;
@@ -2420,24 +2402,62 @@ export function App() {
   }
 
   function openTeamSubscriptions(team: AdminTeamRecordDto) {
-    setSubscriptionTab("team");
-    setSearch((current) => ({
-      ...current,
-      subscriptions: team.name || team.ownerEmail || team.id
-    }));
-    selectSection("users");
+    openDrawer("team-subscription", null, team.id);
+  }
+
+  function clearTeamUsageCache() {
+    teamUsageEpochRef.current++;
+    teamUsageVersionRef.current = {};
+    teamUsageInFlightRef.current = {};
+    setTeamUsageByTeamId({});
+    setTeamUsageLoadingByTeamId({});
+    setTeamUsageErrorByTeamId({});
+  }
+
+  function syncLoadedTeamUsage(teams: AdminTeamRecordDto[]) {
+    const requested = Object.keys(teamUsageVersionRef.current);
+    if (!requested.length) return;
+    const byId = new Map(teams.map(team => [team.id,team]));
+    // A committed teams snapshot supersedes earlier standalone usage reads.
+    // Refs change here, not inside a React updater that may be replayed.
+    for (const id of requested) {
+      teamUsageVersionRef.current[id]++;
+      delete teamUsageInFlightRef.current[id];
+    }
+    setTeamUsageByTeamId(current => {
+      const next = {...current};
+      for (const id of requested) {
+        const team = byId.get(id);
+        if (team) next[id] = team.usage;
+        else delete next[id];
+      }
+      return next;
+    });
+    setTeamUsageLoadingByTeamId(current => {
+      const next = {...current};for(const id of requested)next[id]=false;return next;
+    });
+    setTeamUsageErrorByTeamId(current => {
+      const next = {...current};for(const id of requested)next[id]=null;return next;
+    });
   }
 
   async function loadTeamUsage(teamId: string, options: { force?: boolean } = {}) {
-    if (!options.force && (teamUsageByTeamId[teamId] || teamUsageLoadingByTeamId[teamId])) {
+    if (!options.force && (teamUsageByTeamId[teamId] || teamUsageInFlightRef.current[teamId] !== undefined)) {
       return;
     }
+    const epoch = teamUsageEpochRef.current;
+    const version = (teamUsageVersionRef.current[teamId] ?? 0)+1;
+    teamUsageVersionRef.current[teamId] = version;
+    teamUsageInFlightRef.current[teamId] = version;
+    const ownsRequest = () => epoch === teamUsageEpochRef.current && teamUsageVersionRef.current[teamId] === version && teamUsageInFlightRef.current[teamId] === version;
     setTeamUsageLoadingByTeamId((current) => ({ ...current, [teamId]: true }));
     setTeamUsageErrorByTeamId((current) => ({ ...current, [teamId]: null }));
     try {
       const usage = await getTeamUsage(teamId);
+      if (!ownsRequest()) return;
       setTeamUsageByTeamId((current) => ({ ...current, [teamId]: usage }));
     } catch (reason) {
+      if (!ownsRequest()) return;
       const message = readError(reason, "Team 用量加载失败");
       setTeamUsageErrorByTeamId((current) => ({ ...current, [teamId]: message }));
       notifications.show({
@@ -2446,7 +2466,10 @@ export function App() {
         message
       });
     } finally {
-      setTeamUsageLoadingByTeamId((current) => ({ ...current, [teamId]: false }));
+      if (ownsRequest()) {
+        delete teamUsageInFlightRef.current[teamId];
+        setTeamUsageLoadingByTeamId((current) => ({ ...current, [teamId]: false }));
+      }
     }
   }
 
@@ -2476,7 +2499,8 @@ export function App() {
         dbFirstMutationOptions
       );
       if (success) {
-        closeKickMemberModal();
+        setKickMemberTarget(null);
+        setKickDisableAccount(false);
       }
     } finally {
       setKickSubmitting(false);
@@ -2484,22 +2508,30 @@ export function App() {
     }
   }
 
-  async function handleResetSubscriptionTraffic(subscriptionId: string, ownerLabel: string, userId?: string) {
+  async function handleResetSubscriptionTraffic(subscriptionId: string, ownerLabel: string, userId?: string): Promise<boolean> {
     if (resetTrafficBusyRef.current) {
-      return;
+      return false;
     }
+    const subscription = snapshot?.subscriptions.find(item => item.id === subscriptionId);
+    const team = snapshot?.teams.find(item => item.id === subscription?.teamId || item.currentSubscription?.id === subscriptionId);
+    if (subscription?.ownerType === "team" || team) {
+      if (!team || (userId && !team.members.some(item => item.userId === userId))) {
+        notifications.show({color:"red",message:"团队成员信息已变化，请刷新后重新选择。"});return false;
+      }
+      if (!userId) {setTeamTrafficResetTarget({teamId:team.id,subscriptionId});return false;}
+    }
+    if (!subscription && !team) {notifications.show({color:"red",message:"订阅信息尚未同步，请刷新后重试。"});return false;}
     const targetKey = `${subscriptionId}:${userId ?? "all"}`;
-    const confirmed = await actionConfirmation.confirm({ title: "重置订阅流量", message: `确认重置 ${ownerLabel} 的流量吗？后台会立即重置本地流量，相关连接撤销会进入后台同步任务。`, confirmLabel: "确认重置", danger: true });
+    const confirmed = await actionConfirmation.confirm({ title: "重置订阅流量", message: `确认重置 ${ownerLabel} 的流量吗？相关连接会先断开，节点最终流量结算后才会清零。`, confirmLabel: "确认重置", danger: true });
 
     if (!confirmed) {
-      return;
+      return false;
     }
 
     try {
       resetTrafficBusyRef.current = true;
       setResetTrafficBusyKey(targetKey);
-      setTeamUsageByTeamId({});
-      await runAction(() => resetSubscriptionTraffic(subscriptionId, userId), "订阅流量已重置", dbFirstMutationOptions);
+      return await runAction(() => resetSubscriptionTraffic(subscriptionId, userId), "订阅流量已重置", dbFirstMutationOptions);
     } finally {
       setResetTrafficBusyKey(null);
       resetTrafficBusyRef.current = false;
@@ -2956,7 +2988,7 @@ export function App() {
             </Stack>
 
             <div className="admin-nav-footer">
-              <SystemUpdateBadge />
+              <GitHubVersion />
             </div>
           </Stack>
         </AppShell.Navbar>
@@ -3079,6 +3111,9 @@ export function App() {
                     onOpenRenewDrawer={(subscriptionId) => openDrawer("subscription-renew", subscriptionId)}
                     onOpenChangePlanDrawer={(subscriptionId) => openDrawer("subscription-change-plan", subscriptionId)}
                     onOpenAdjustDrawer={(subscriptionId) => openDrawer("subscription-adjust", subscriptionId)}
+                    onOpenConvertToTeamModal={openConvertToTeamModal}
+                    hasAvailableTeamTransferTarget={teamsWithCurrentSubscription.length > 0}
+                    onOpenKickMemberModal={openKickMemberModal}
                     onOpenNodeAccessEditor={(subscriptionId, ownerLabel) => void openNodeAccessEditor(subscriptionId, ownerLabel)}
                     onResetSubscriptionTraffic={(subscriptionId, ownerLabel, userId) =>
                       void handleResetSubscriptionTraffic(subscriptionId, ownerLabel, userId)
@@ -3229,7 +3264,6 @@ export function App() {
               />
             ) : null}
 
-            {section === "releases" ? <UnifiedReleaseCenter refreshSignal={releaseRefreshSignal} sessionActive={authenticated} /> : null}
 
 
 
@@ -3301,7 +3335,7 @@ export function App() {
       <Modal opened={convertSubscriptionTarget !== null} onClose={closeConvertToTeamModal} title="转入团队订阅" centered size="lg">
         <Stack gap="md">
           <Alert color="teal.9" variant="light">
-            转入后会删除当前个人订阅，用户后续改按目标团队的共享订阅规则使用服务。原个人订阅的剩余流量、到期时间和历史不会继承。
+            转入后会停用当前个人订阅并保留历史记录，用户改用目标团队的共享订阅。原个人订阅的剩余流量和到期时间不会继承。
           </Alert>
 
           <SimpleGrid cols={{ base: 1, md: 2 }} spacing="sm">
@@ -3364,6 +3398,8 @@ export function App() {
         onConfirm={() => void handleDeleteNode()}
       />
 
+      <TeamTrafficResetModal team={teamTrafficResetTarget ? snapshot.teams.find(item => item.id === teamTrafficResetTarget.teamId) ?? null : null}
+        onClose={() => setTeamTrafficResetTarget(null)} onReset={(userId,memberName) => teamTrafficResetTarget ? handleResetSubscriptionTraffic(teamTrafficResetTarget.subscriptionId,memberName,userId) : Promise.resolve(false)}/>
       <KickMemberModal
         opened={kickMemberTarget !== null}
         memberName={kickMemberTarget?.memberName ?? null}

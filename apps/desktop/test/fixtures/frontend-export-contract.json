@@ -1,0 +1,486 @@
+{
+  "api": [
+    {
+      "name": "ReleaseChannel",
+      "type": true
+    },
+    {
+      "name": "UpdateDeliveryMode",
+      "type": true
+    },
+    {
+      "name": "ReleaseArtifactType",
+      "type": true
+    },
+    {
+      "name": "ClientUpdateArtifact",
+      "type": true
+    },
+    {
+      "name": "ClientUpdateCheckResult",
+      "type": true
+    },
+    {
+      "name": "createClientRuntimeFallbackRefreshEventTypes",
+      "type": false
+    },
+    {
+      "name": "ApiRequestError",
+      "type": false
+    },
+    {
+      "name": "recordClientDiagnosticLog",
+      "type": false
+    },
+    {
+      "name": "nudgeClientPresence",
+      "type": false
+    },
+    {
+      "name": "getApiErrorStatus",
+      "type": false
+    },
+    {
+      "name": "getApiErrorRawMessage",
+      "type": false
+    },
+    {
+      "name": "isUnauthorizedApiError",
+      "type": false
+    },
+    {
+      "name": "isNotFoundApiError",
+      "type": false
+    },
+    {
+      "name": "isAccessTokenExpiredApiError",
+      "type": false
+    },
+    {
+      "name": "isForbiddenApiError",
+      "type": false
+    },
+    {
+      "name": "login",
+      "type": false
+    },
+    {
+      "name": "probeClientServerLatency",
+      "type": false
+    },
+    {
+      "name": "refreshSession",
+      "type": false
+    },
+    {
+      "name": "logoutSession",
+      "type": false
+    },
+    {
+      "name": "fetchBootstrap",
+      "type": false
+    },
+    {
+      "name": "fetchAnnouncements",
+      "type": false
+    },
+    {
+      "name": "markAnnouncementsRead",
+      "type": false
+    },
+    {
+      "name": "fetchNodes",
+      "type": false
+    },
+    {
+      "name": "reportNodeProbes",
+      "type": false
+    },
+    {
+      "name": "fetchSubscription",
+      "type": false
+    },
+    {
+      "name": "fetchSupportStatus",
+      "type": false
+    },
+    {
+      "name": "launchSupportPortal",
+      "type": false
+    },
+    {
+      "name": "fetchClientRuntime",
+      "type": false
+    },
+    {
+      "name": "connectSession",
+      "type": false
+    },
+    {
+      "name": "fetchRoutingRules",
+      "type": false
+    },
+    {
+      "name": "createRoutingRule",
+      "type": false
+    },
+    {
+      "name": "updateRoutingRule",
+      "type": false
+    },
+    {
+      "name": "deleteRoutingRule",
+      "type": false
+    },
+    {
+      "name": "testRoutingRule",
+      "type": false
+    },
+    {
+      "name": "disconnectSession",
+      "type": false
+    },
+    {
+      "name": "heartbeatSession",
+      "type": false
+    },
+    {
+      "name": "subscribeClientEvents",
+      "type": false
+    },
+    {
+      "name": "splitServerSentEventBlocks",
+      "type": false
+    },
+    {
+      "name": "parseServerSentEventBlock",
+      "type": false
+    },
+    {
+      "name": "parseClientRuntimeEvent",
+      "type": false
+    }
+  ],
+  "runtime": [
+    {
+      "name": "RuntimeStatus",
+      "type": true
+    },
+    {
+      "name": "RuntimeLogs",
+      "type": true
+    },
+    {
+      "name": "RuntimeNodeProbeResult",
+      "type": true
+    },
+    {
+      "name": "RuntimePlatform",
+      "type": true
+    },
+    {
+      "name": "ShellAction",
+      "type": true
+    },
+    {
+      "name": "DesktopUpdateDownloadPhase",
+      "type": true
+    },
+    {
+      "name": "DesktopUpdateDownloadProgress",
+      "type": true
+    },
+    {
+      "name": "DesktopInstallerDownloadResult",
+      "type": true
+    },
+    {
+      "name": "DesktopRuntimeEnvironment",
+      "type": true
+    },
+    {
+      "name": "BundledRuntimeComponentsStatus",
+      "type": true
+    },
+    {
+      "name": "RemoteTextFetchResult",
+      "type": true
+    },
+    {
+      "name": "RuntimeComponentDownloadResult",
+      "type": true
+    },
+    {
+      "name": "DesktopShellSummary",
+      "type": true
+    },
+    {
+      "name": "NativeLeaseHeartbeatEvent",
+      "type": true
+    },
+    {
+      "name": "detectRuntimePlatform",
+      "type": false
+    },
+    {
+      "name": "createIdleRuntimeStatus",
+      "type": false
+    },
+    {
+      "name": "probeLocalNodes",
+      "type": false
+    },
+    {
+      "name": "checkRuntimeNetworkConflict",
+      "type": false
+    },
+    {
+      "name": "connectRuntime",
+      "type": false
+    },
+    {
+      "name": "disconnectRuntime",
+      "type": false
+    },
+    {
+      "name": "ensureRuntimeStopped",
+      "type": false
+    },
+    {
+      "name": "loadRuntimeStatus",
+      "type": false
+    },
+    {
+      "name": "subscribeRuntimeStatusChanged",
+      "type": false
+    },
+    {
+      "name": "loadRuntimeLogs",
+      "type": false
+    },
+    {
+      "name": "loadRuntimeSnapshot",
+      "type": false
+    },
+    {
+      "name": "loadActiveRuntimeConfig",
+      "type": false
+    },
+    {
+      "name": "focusDesktopWindow",
+      "type": false
+    },
+    {
+      "name": "appReady",
+      "type": false
+    },
+    {
+      "name": "showDesktopWindow",
+      "type": false
+    },
+    {
+      "name": "hideDesktopWindow",
+      "type": false
+    },
+    {
+      "name": "quitDesktopApplication",
+      "type": false
+    },
+    {
+      "name": "updateDesktopShellSummary",
+      "type": false
+    },
+    {
+      "name": "subscribeDesktopShellActions",
+      "type": false
+    },
+    {
+      "name": "subscribeDesktopUpdateDownloadProgress",
+      "type": false
+    },
+    {
+      "name": "downloadDesktopInstaller",
+      "type": false
+    },
+    {
+      "name": "openDesktopInstaller",
+      "type": false
+    },
+    {
+      "name": "openExternalUrl",
+      "type": false
+    },
+    {
+      "name": "supportsSupportWindow",
+      "type": false
+    },
+    {
+      "name": "SupportWindowTarget",
+      "type": true
+    },
+    {
+      "name": "createSupportWindowTarget",
+      "type": false
+    },
+    {
+      "name": "closeSupportWindow",
+      "type": false
+    },
+    {
+      "name": "SupportUnreadBridgeEvent",
+      "type": true
+    },
+    {
+      "name": "SupportBridgeEndedEvent",
+      "type": true
+    },
+    {
+      "name": "subscribeSupportWindowEvents",
+      "type": false
+    },
+    {
+      "name": "installWindowsUpdate",
+      "type": false
+    },
+    {
+      "name": "quitForUpdate",
+      "type": false
+    },
+    {
+      "name": "DesktopUpdateInstallReport",
+      "type": true
+    },
+    {
+      "name": "consumeDesktopUpdateInstallReport",
+      "type": false
+    },
+    {
+      "name": "loadDesktopOsLabel",
+      "type": false
+    },
+    {
+      "name": "loadDesktopRuntimeEnvironment",
+      "type": false
+    },
+    {
+      "name": "checkRuntimeComponentFile",
+      "type": false
+    },
+    {
+      "name": "ensureBundledRuntimeComponents",
+      "type": false
+    },
+    {
+      "name": "downloadRuntimeComponent",
+      "type": false
+    },
+    {
+      "name": "probeDownloadCandidates",
+      "type": false
+    },
+    {
+      "name": "cancelRuntimeComponentDownload",
+      "type": false
+    },
+    {
+      "name": "getRuntimeComponentLocalInfo",
+      "type": false
+    },
+    {
+      "name": "listLocalFileLocations",
+      "type": false
+    },
+    {
+      "name": "revealLocalFile",
+      "type": false
+    },
+    {
+      "name": "fetchRemoteText",
+      "type": false
+    },
+    {
+      "name": "subscribeRuntimeComponentDownloadProgress",
+      "type": false
+    },
+    {
+      "name": "subscribeNativeLeaseHeartbeat",
+      "type": false
+    },
+    {
+      "name": "NativeSessionRefreshEvent",
+      "type": true
+    },
+    {
+      "name": "subscribeNativeSessionRefreshed",
+      "type": false
+    },
+    {
+      "name": "loadStoredSession",
+      "type": false
+    },
+    {
+      "name": "saveStoredSession",
+      "type": false
+    },
+    {
+      "name": "refreshStoredSessionNative",
+      "type": false
+    },
+    {
+      "name": "clearStoredSession",
+      "type": false
+    },
+    {
+      "name": "hasActiveRuntime",
+      "type": false
+    },
+    {
+      "name": "hasActivePlatformRuntime",
+      "type": false
+    },
+    {
+      "name": "DesktopRuntimeStatus",
+      "type": true
+    },
+    {
+      "name": "DesktopRuntimeLogs",
+      "type": true
+    },
+    {
+      "name": "DesktopNodeProbeResult",
+      "type": true
+    },
+    {
+      "name": "invokeDesktopConnect",
+      "type": false
+    },
+    {
+      "name": "invokeDesktopDisconnect",
+      "type": false
+    },
+    {
+      "name": "ensureDesktopRuntimeStopped",
+      "type": false
+    },
+    {
+      "name": "loadDesktopRuntimeStatus",
+      "type": false
+    },
+    {
+      "name": "loadDesktopRuntimeLogs",
+      "type": false
+    },
+    {
+      "name": "hasActiveDesktopRuntime",
+      "type": false
+    },
+    {
+      "name": "verifyReleaseManifestSignature",
+      "type": false
+    },
+    {
+      "name": "authorizeReleaseManifest",
+      "type": false
+    }
+  ]
+}

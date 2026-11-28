@@ -10,12 +10,10 @@ const store = createPresenceStore({
   onVisibilityChange: (listener) => {
     document.addEventListener("visibilitychange", listener);
     return () => document.removeEventListener("visibilitychange", listener);
-  },
-  setInterval: (task, ms) => window.setInterval(task, ms),
-  clearInterval: (handle) => window.clearInterval(handle as number)
+  }
 });
 
-/** 在线状态；组件挂载期间自动保持更新。 */
+/** 在线状态；共享初次读取、可见恢复及服务端事件触发的更新。 */
 export function usePresence(): PresenceStoreState & { refresh: () => Promise<void> } {
   const current = useSyncExternalStore(store.subscribe, store.getState, store.getState);
   return { ...current, refresh: store.refresh };

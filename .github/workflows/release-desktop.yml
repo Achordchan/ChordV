@@ -1,180 +1,239 @@
-name: Release Desktop
+name: Release MyGo Desktop
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "发布版本，不带 v，例如 1.1.10"
+        description: "客户端版本，必须与平台版本配置一致"
         required: true
-        default: "1.1.12"
+        type: string
+      minimum_version:
+        description: "最低支持版本"
+        required: true
+        default: "0.0.0"
+        type: string
+      force_upgrade:
+        description: "要求用户安装此更新"
+        required: true
+        default: false
+        type: boolean
+      changelog:
+        description: "更新说明，每行一条"
+        required: true
         type: string
 
+permissions:
+  contents: read
 concurrency:
-  group: chordv-desktop-release-${{ github.event.inputs.version }}
+  group: chordv-desktop-release
   cancel-in-progress: false
 
-permissions:
-  contents: write
+env:
+  RELEASE_TAG_BINDING: signed-manifest-tree
+  VITE_API_BASE_URL: ${{ vars.CHORDV_API_BASE_URL }}
+  VITE_GITHUB_RELEASE_REPOSITORY: ${{ vars.CHORDV_RELEASE_REPOSITORY }}
+  VITE_GITHUB_RELEASE_PUBLIC_KEY: ${{ vars.CHORDV_RELEASE_PUBLIC_KEY }}
+  CHORDV_BUILD_NUMBER: ${{ github.run_number }}
 
 jobs:
   prepare:
-    name: Prepare release version
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
-      tag: ${{ steps.version.outputs.tag }}
     steps:
-      - name: Normalize version
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/desktop/native/go.mod
+          cache-dependency-path: |
+            apps/desktop/native/go.sum
+            apps/server/go.sum
+            apps/agent/go.sum
+      - name: Require explicit publication configuration
         id: version
         env:
-          RAW_VERSION: ${{ github.event.inputs.version }}
+          RAW_VERSION: ${{ inputs.version }}
+          MINIMUM_VERSION: ${{ inputs.minimum_version }}
         run: |
-          version="${RAW_VERSION#v}"
-          if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+){2}([-.][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Invalid version: ${RAW_VERSION}" >&2
-            exit 1
-          fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
-      # 客户端已移除旧工单中心，只能通过新工单系统接口打开工单；生产后台还没上线这些接口时不能发版，
-      # 否则用户会失去应用内工单入口。接口存在时未登录访问返回 401，不存在返回 404。
-      - name: Require new support endpoints on production backend
-        run: |
-          for path in client/support/status client/support/launch; do
-            method=GET
-            [ "$path" = client/support/launch ] && method=POST
-            status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -X "$method" "https://v.achord.cn/api/${path}" || echo 000)"
-            echo "${method} /api/${path} -> ${status}"
-            case "$status" in
-              401|403) ;;
-              *) echo "生产后台的 /api/${path} 不可用（HTTP ${status}），请先发布包含新工单系统接口的后台版本再发布客户端。" >&2; exit 1 ;;
-            esac
-          done
+          node --input-type=module <<'JS'
+          import { checkedVersion, checkedMinimumVersion, checkedRepository } from './.github/scripts/release-artifacts.mjs';
+          import { releasePublicKey } from './.github/scripts/release-public-key.mjs';
+          import { releaseAPIOrigin } from './.github/scripts/release-api-origin.mjs';
+          import { appendFileSync, readFileSync } from 'node:fs';
+          const version = checkedVersion(process.env.RAW_VERSION);
+          checkedMinimumVersion(process.env.MINIMUM_VERSION, version);
+          checkedRepository(process.env.VITE_GITHUB_RELEASE_REPOSITORY);
+          releasePublicKey(process.env.VITE_GITHUB_RELEASE_PUBLIC_KEY);
+          releaseAPIOrigin(process.env.VITE_API_BASE_URL);
+          const versions = JSON.parse(readFileSync('apps/desktop/config/platform-versions.json'));
+          for (const platform of ['macos', 'windows']) if (versions[platform] !== version) throw new Error(`Version mismatch: ${platform}`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
+          JS
+      - name: Test release protocol
+        run: node --test .github/scripts/*.test.mjs
+      - name: Verify shared release binding protocol
+        working-directory: packages/release-protocol
+        run: go test -race ./... && go vet ./...
+
+  verify-desktop:
+    needs: prepare
+    uses: ./.github/workflows/verify-desktop-native.yml
 
   build:
-    name: Build ${{ matrix.platform }}
-    needs: prepare
-    runs-on: ${{ matrix.runner }}
+    needs: [prepare, verify-desktop]
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: macos
+            architecture: arm64
             runner: macos-15
-            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
-            artifact_path: output/release/macos/*.dmg
+          - platform: macos
+            architecture: x64
+            runner: macos-15
           - platform: windows
+            architecture: x64
             runner: windows-2022
-            rust_targets: x86_64-pc-windows-msvc
-            artifact_path: |
-              output/release/windows/*.exe
-              output/release/windows/*.sig
+          - platform: windows
+            architecture: arm64
+            runner: windows-2022
+    runs-on: ${{ matrix.runner }}
     defaults:
       run:
         shell: bash
     env:
-      CHORDV_PUBLIC_BASE_URL: https://v.achord.cn
-      # Monotonic per workflow; tells successive installers of the same version apart.
-      CHORDV_BUILD_NUMBER: ${{ github.run_number }}
+      VERSION: ${{ needs.prepare.outputs.version }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Verify version matches input
-        run: node apps/desktop/scripts/check-version-consistency.mjs "${{ needs.prepare.outputs.version }}"
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
         with:
           version: 9.15.3
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version-file: ".nvmrc"
+          node-version-file: .nvmrc
           cache: pnpm
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
         with:
-          targets: ${{ matrix.rust_targets }}
-
-      - name: Install cargo-xwin
-        if: matrix.platform == 'windows'
-        run: cargo install cargo-xwin --locked
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Verify Rust lockfile
-        run: pnpm --filter @chordv/desktop exec cargo metadata --manifest-path src-tauri/Cargo.toml --locked --format-version 1 > /dev/null
-
-      - name: Build shared package
-        run: pnpm --filter @chordv/shared build
-
-      - name: Verify requested version matches platform configuration
-        env:
-          EXPECTED_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-          RELEASE_PLATFORM: ${{ matrix.platform }}
-        run: node -e 'const v=require("./apps/desktop/config/platform-versions.json")[process.env.RELEASE_PLATFORM];if(v!==process.env.EXPECTED_RELEASE_VERSION)throw new Error("Release version does not match platform configuration");'
-
-      - name: Build desktop bundle
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-        run: |
-          if [ "${{ matrix.platform }}" = "windows" ]; then
-            pnpm --filter @chordv/desktop exec node ./scripts/build-tauri-platform.mjs windows --target x86_64-pc-windows-msvc
-          else
-            pnpm --filter @chordv/desktop exec node ./scripts/build-tauri-platform.mjs macos
-          fi
-
-      - name: Verify Windows bundle
-        if: matrix.platform == 'windows'
-        run: |
-          pnpm --filter @chordv/desktop check:windows-bundle
-          node apps/api/node_modules/tsx/dist/cli.mjs --tsconfig apps/api/tsconfig.json apps/api/scripts/verify-windows-updater-signature.ts
-
-      - name: Verify legacy Windows upgrade before publishing
-        if: matrix.platform == 'windows'
-        shell: powershell
-        run: |
-          $version = (Get-Content apps/desktop/config/platform-versions.json | ConvertFrom-Json).windows
-          $installer = (Get-ChildItem output/release/windows -Filter "ChordV_${version}*_x64-setup.exe" | Select-Object -First 1).FullName
-          ./apps/desktop/test/windows-nsis-upgrade.ps1 -Installer $installer -ExpectedVersion $version
-
-      - name: Verify macOS bundle
+          go-version-file: apps/desktop/native/go.mod
+          cache-dependency-path: apps/desktop/native/go.sum
+      - run: pnpm install --frozen-lockfile
+      - name: Import macOS distribution identity and notarization credentials
         if: matrix.platform == 'macos'
-        run: pnpm --filter @chordv/desktop check:macos-bundle
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        env:
+          CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          RECOVERY_PROFILE: ${{ secrets.MACOS_UPDATE_RECOVERY_PROVISIONING_PROFILE }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$CERTIFICATE" && test -n "$SIGNING_IDENTITY" && test -n "$APPLE_ID" && test -n "$APPLE_TEAM_ID" && test -n "$APPLE_APP_PASSWORD"
+          keychain="$RUNNER_TEMP/chordv-build.keychain-db"
+          password="$(openssl rand -base64 32)"
+          printf '%s' "$CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/chordv-signing.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/chordv-signing.p12" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          xcrun notarytool store-credentials chordv-notary --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --keychain "$keychain"
+          echo "CHORDV_MACOS_SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+          echo "CHORDV_MACOS_NOTARY_PROFILE=chordv-notary" >> "$GITHUB_ENV"
+          echo "CHORDV_MACOS_NOTARY_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          if [ -n "$RECOVERY_PROFILE" ]; then
+            recovery_profile="$RUNNER_TEMP/chordv-update-recovery.provisionprofile"
+            (umask 077; printf '%s' "$RECOVERY_PROFILE" | base64 --decode > "$recovery_profile")
+            echo "CHORDV_MACOS_RECOVERY_PROVISIONING_PROFILE=$recovery_profile" >> "$GITHUB_ENV"
+          fi
+      - name: Prepare Windows Authenticode certificate
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
+        run: |
+          if (-not $env:CERTIFICATE) { throw 'WINDOWS_CERTIFICATE_PFX is required' }
+          $path = Join-Path $env:RUNNER_TEMP 'chordv-signing.pfx'
+          [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:CERTIFICATE))
+          "CHORDV_WINDOWS_CERTIFICATE=$path" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          $tool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe' | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $tool) { throw 'Windows SDK signtool is missing' }
+          $tool.DirectoryName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+      - name: Build MyGo installer
+        env:
+          MYGO_WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: node scripts/mygo-desktop.mjs --release --build-only --platform '${{ matrix.platform }}' --arch '${{ matrix.architecture }}'
+      - name: Verify macOS signature and notarization
+        if: matrix.platform == 'macos'
+        run: |
+          set -euo pipefail
+          app="$(find output/mygo -name 'ChordV.app' -type d | head -1)"
+          dmg="$(find output/mygo -name '*.dmg' -type f | head -1)"
+          test -n "$app" && test -n "$dmg"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+          xcrun stapler validate "$dmg"
+      - name: Verify Windows installer and application signatures
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem output/mygo -Recurse -Filter '*.exe')
+          if ($files.Count -lt 2) { throw 'Expected application and installer executables' }
+          foreach ($file in $files) { if ((Get-AuthenticodeSignature $file.FullName).Status -ne 'Valid') { throw "Invalid signature: $($file.Name)" } }
+      - name: Stage immutable asset and metadata
+        run: node .github/scripts/release-artifacts.mjs stage-desktop '${{ matrix.platform }}' '${{ matrix.architecture }}'
+      - name: Keep legacy transition blocked pending independent Windows installer acceptance
+        if: matrix.platform == 'windows' && matrix.architecture == 'x64'
+        run: node .github/scripts/release-artifacts.mjs stage-legacy windows x64
+      - uses: actions/upload-artifact@v4
         with:
-          name: desktop-${{ matrix.platform }}
-          path: ${{ matrix.artifact_path }}
+          name: desktop-${{ matrix.platform }}-${{ matrix.architecture }}
+          path: release-assets/*
           if-no-files-found: error
+      - name: Remove signing material
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/chordv-signing.p12" "$RUNNER_TEMP/chordv-signing.pfx" "$RUNNER_TEMP/chordv-update-recovery.provisionprofile"
+          if [ '${{ matrix.platform }}' = macos ]; then security delete-keychain "$RUNNER_TEMP/chordv-build.keychain-db" || true; fi
 
-  release:
-    name: Publish GitHub Release
-    needs:
-      - prepare
-      - build
+  publish:
+    needs: [prepare, build]
     runs-on: ubuntu-latest
+    environment: github-release
     steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/download-artifact@v4
         with:
           path: release-assets
           merge-multiple: true
-
-      - name: Publish release
-        uses: softprops/action-gh-release@v2
+      - name: Verify runtime source lock and sign full release manifest
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          MINIMUM_VERSION: ${{ inputs.minimum_version }}
+          FORCE_UPGRADE: ${{ inputs.force_upgrade }}
+          CHANGELOG: ${{ inputs.changelog }}
+          CHORDV_RELEASE_SIGNING_KEY: ${{ secrets.CHORDV_RELEASE_SIGNING_KEY }}
+        run: node .github/scripts/release-artifacts.mjs manifest
+      - name: Create exact signed recovery bundle
+        id: recovery
+        run: node .github/scripts/release-recovery-bundle.mjs
+      - name: Persist exact signed recovery bundle before publishing
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ needs.prepare.outputs.tag }}
-          target_commitish: ${{ github.sha }}
-          name: ChordV ${{ needs.prepare.outputs.tag }}
-          generate_release_notes: true
-          files: |
-            release-assets/**/*.dmg
-            release-assets/**/*.exe
-            release-assets/**/*.sig
+          name: desktop-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.recovery.outputs.bundle_path }}
+          if-no-files-found: error
+          compression-level: 0
+      - name: Publish GitHub Release and signed channel pointer only
+        env:
+          CHORDV_RELEASE_REPOSITORY: ${{ vars.CHORDV_RELEASE_REPOSITORY }}
+          CHORDV_RELEASE_TOKEN: ${{ secrets.CHORDV_RELEASE_TOKEN }}
+        run: node .github/scripts/publish-github-release.mjs

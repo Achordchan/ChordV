@@ -5,25 +5,12 @@
   "type": "module",
   "scripts": {
     "version:platform": "node ./scripts/platform-version.mjs",
-    "tauri:build:platform": "node ./scripts/build-tauri-platform.mjs",
-    "setup:xray": "node ./scripts/setup-xray.mjs",
-    "android:doctor": "node ./scripts/android-doctor.mjs",
-    "android:install": "node ./scripts/android-install.mjs",
-    "android:logcat": "node ./scripts/android-logcat.mjs --clear",
-    "android:smoke": "node ./scripts/android-smoke.mjs",
-    "android:init": "node ./scripts/run-tauri-android.mjs init --ci",
-    "android:dev": "node ./scripts/run-tauri-android.mjs dev",
-    "android:build": "node ./scripts/run-tauri-android.mjs build --debug --target aarch64 --split-per-abi --apk --aab --ci",
-    "android:build:release": "node ./scripts/run-tauri-android.mjs build --target aarch64 --split-per-abi --apk --aab --ci",
-    "check:android-bundle": "node ./scripts/check-android-bundle.mjs ../../output/release/android",
-    "check:macos-bundle": "node ./scripts/check-macos-bundle.mjs",
-    "check:windows-bundle": "node ./scripts/check-windows-bundle.mjs",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "check": "tsc -b",
     "lint": "tsc -b",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "mygo:dev": "node ../../scripts/mygo-desktop.mjs --dev",
+    "mygo:build": "node ../../scripts/mygo-desktop.mjs --build-only"
   },
   "dependencies": {
     "@chordv/shared": "workspace:*",
@@ -31,13 +18,12 @@
     "@mantine/hooks": "^7.15.3",
     "@mantine/notifications": "^7.15.3",
     "@tabler/icons-react": "^3.28.1",
-    "@tauri-apps/api": "^2.2.0",
     "flag-icons": "^7.5.0",
+    "mygo-runtime": "0.9.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.2.4",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
     "@vitejs/plugin-react": "^4.3.4",

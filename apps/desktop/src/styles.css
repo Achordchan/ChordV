@@ -86,6 +86,7 @@ body {
 }
 
 .app-titlebar {
+  --app-region: drag;
   position: fixed;
   top: 0;
   left: 0;
@@ -178,6 +179,8 @@ body {
   grid-template-rows: auto minmax(0, 1fr);
   gap: 10px;
 }
+
+.desktop-main--lifecycle-feedback { grid-template-rows: auto auto minmax(0, 1fr); }
 
 .desktop-content {
   min-height: 0;

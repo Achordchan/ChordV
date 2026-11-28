@@ -1,0 +1,3675 @@
+{
+  "commit": "397a64d",
+  "spec": {
+    "mode": "validate_panel",
+    "inboundTag": "inbound-443",
+    "listenPort": 443,
+    "serverHost": "node.example.com",
+    "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "shortId": "",
+    "serverNames": [
+      "example.com"
+    ],
+    "flow": "",
+    "fingerprint": "chrome",
+    "spiderX": "/",
+    "panelVersion": "auto",
+    "tagOverrideConfirmed": false
+  },
+  "baseReport": {
+    "mode": "validate_panel",
+    "validated": true,
+    "inboundTag": "actual-runtime",
+    "serverHost": "node.example.com",
+    "serverPort": 443,
+    "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "shortId": "",
+    "serverName": "example.com",
+    "flow": "",
+    "fingerprint": "chrome",
+    "spiderX": "/"
+  },
+  "helperSamples": [
+    {
+      "name": "base",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 200,
+      "stage": "helper",
+      "fields": {
+        "serverHost": "node.example.com",
+        "serverPort": 443,
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverName": "example.com",
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/"
+      }
+    },
+    {
+      "name": "report:mode:undefined",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "report:mode:null",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": null,
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "report:mode:true",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": true,
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "report:mode:false",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": false,
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "report:mode:0",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": 0,
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "report:mode:1",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": 1,
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "report:mode:443",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "443",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "report:mode: validate_panel ",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": " validate_panel ",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "report:mode:",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": [],
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "report:mode:[object Object]",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": {},
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "report:validated:undefined",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "report:validated:null",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": null,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "report:validated:true",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 200,
+      "stage": "helper",
+      "fields": {
+        "serverHost": "node.example.com",
+        "serverPort": 443,
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverName": "example.com",
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/"
+      }
+    },
+    {
+      "name": "report:validated:false",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": false,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "report:validated:0",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": 0,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "report:validated:1",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": 1,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "report:validated:443",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": "443",
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "report:validated: true ",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": " true ",
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "report:validated:",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": [],
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "report:validated:[object Object]",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": {},
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "report:inboundTag:undefined",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站 tag 与确认目标不一致"
+    },
+    {
+      "name": "report:inboundTag:null",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": null,
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站 tag 与确认目标不一致"
+    },
+    {
+      "name": "report:inboundTag:true",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": true,
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站 tag 与确认目标不一致"
+    },
+    {
+      "name": "report:inboundTag:false",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": false,
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站 tag 与确认目标不一致"
+    },
+    {
+      "name": "report:inboundTag:0",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": 0,
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站 tag 与确认目标不一致"
+    },
+    {
+      "name": "report:inboundTag:1",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": 1,
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站 tag 与确认目标不一致"
+    },
+    {
+      "name": "report:inboundTag:443",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "443",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 200,
+      "stage": "helper",
+      "fields": {
+        "serverHost": "node.example.com",
+        "serverPort": 443,
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverName": "example.com",
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/"
+      }
+    },
+    {
+      "name": "report:inboundTag: actual-runtime ",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": " actual-runtime ",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站 tag 与确认目标不一致"
+    },
+    {
+      "name": "report:inboundTag:",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": [],
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站 tag 与确认目标不一致"
+    },
+    {
+      "name": "report:inboundTag:[object Object]",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": {},
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站 tag 与确认目标不一致"
+    },
+    {
+      "name": "report:serverHost:undefined",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverHost 与导入规格不一致"
+    },
+    {
+      "name": "report:serverHost:null",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": null,
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverHost 与导入规格不一致"
+    },
+    {
+      "name": "report:serverHost:true",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": true,
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverHost 与导入规格不一致"
+    },
+    {
+      "name": "report:serverHost:false",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": false,
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverHost 与导入规格不一致"
+    },
+    {
+      "name": "report:serverHost:0",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": 0,
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverHost 与导入规格不一致"
+    },
+    {
+      "name": "report:serverHost:1",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": 1,
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverHost 与导入规格不一致"
+    },
+    {
+      "name": "report:serverHost:443",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "443",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverHost 与导入规格不一致"
+    },
+    {
+      "name": "report:serverHost: node.example.com ",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": " node.example.com ",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverHost 与导入规格不一致"
+    },
+    {
+      "name": "report:serverHost:",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": [],
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverHost 与导入规格不一致"
+    },
+    {
+      "name": "report:serverHost:[object Object]",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": {},
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverHost 与导入规格不一致"
+    },
+    {
+      "name": "report:serverPort:undefined",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverPort 与导入规格不一致"
+    },
+    {
+      "name": "report:serverPort:null",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": null,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverPort 与导入规格不一致"
+    },
+    {
+      "name": "report:serverPort:true",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": true,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverPort 与导入规格不一致"
+    },
+    {
+      "name": "report:serverPort:false",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": false,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverPort 与导入规格不一致"
+    },
+    {
+      "name": "report:serverPort:0",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 0,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverPort 与导入规格不一致"
+    },
+    {
+      "name": "report:serverPort:1",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 1,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverPort 与导入规格不一致"
+    },
+    {
+      "name": "report:serverPort:443",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": "443",
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverPort 与导入规格不一致"
+    },
+    {
+      "name": "report:serverPort: 443 ",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": " 443 ",
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverPort 与导入规格不一致"
+    },
+    {
+      "name": "report:serverPort:",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": [],
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverPort 与导入规格不一致"
+    },
+    {
+      "name": "report:serverPort:[object Object]",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": {},
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverPort 与导入规格不一致"
+    },
+    {
+      "name": "report:realityPublicKey:undefined",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 realityPublicKey 与导入规格不一致"
+    },
+    {
+      "name": "report:realityPublicKey:null",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": null,
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 realityPublicKey 与导入规格不一致"
+    },
+    {
+      "name": "report:realityPublicKey:true",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": true,
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 realityPublicKey 与导入规格不一致"
+    },
+    {
+      "name": "report:realityPublicKey:false",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": false,
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 realityPublicKey 与导入规格不一致"
+    },
+    {
+      "name": "report:realityPublicKey:0",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": 0,
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 realityPublicKey 与导入规格不一致"
+    },
+    {
+      "name": "report:realityPublicKey:1",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": 1,
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 realityPublicKey 与导入规格不一致"
+    },
+    {
+      "name": "report:realityPublicKey:443",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "443",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 realityPublicKey 与导入规格不一致"
+    },
+    {
+      "name": "report:realityPublicKey: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA ",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": " AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA ",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 realityPublicKey 与导入规格不一致"
+    },
+    {
+      "name": "report:realityPublicKey:",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": [],
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 realityPublicKey 与导入规格不一致"
+    },
+    {
+      "name": "report:realityPublicKey:[object Object]",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": {},
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 realityPublicKey 与导入规格不一致"
+    },
+    {
+      "name": "report:shortId:undefined",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 shortId 与导入规格不一致"
+    },
+    {
+      "name": "report:shortId:null",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": null,
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 shortId 与导入规格不一致"
+    },
+    {
+      "name": "report:shortId:true",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": true,
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 shortId 与导入规格不一致"
+    },
+    {
+      "name": "report:shortId:false",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": false,
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 shortId 与导入规格不一致"
+    },
+    {
+      "name": "report:shortId:0",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": 0,
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 shortId 与导入规格不一致"
+    },
+    {
+      "name": "report:shortId:1",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": 1,
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 shortId 与导入规格不一致"
+    },
+    {
+      "name": "report:shortId:443",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "443",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 shortId 与导入规格不一致"
+    },
+    {
+      "name": "report:shortId:  ",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "  ",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 shortId 与导入规格不一致"
+    },
+    {
+      "name": "report:shortId:",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": [],
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 shortId 与导入规格不一致"
+    },
+    {
+      "name": "report:shortId:[object Object]",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": {},
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 shortId 与导入规格不一致"
+    },
+    {
+      "name": "report:serverName:undefined",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverName 与导入规格不一致"
+    },
+    {
+      "name": "report:serverName:null",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": null,
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverName 与导入规格不一致"
+    },
+    {
+      "name": "report:serverName:true",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": true,
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverName 与导入规格不一致"
+    },
+    {
+      "name": "report:serverName:false",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": false,
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverName 与导入规格不一致"
+    },
+    {
+      "name": "report:serverName:0",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": 0,
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverName 与导入规格不一致"
+    },
+    {
+      "name": "report:serverName:1",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": 1,
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverName 与导入规格不一致"
+    },
+    {
+      "name": "report:serverName:443",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "443",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverName 与导入规格不一致"
+    },
+    {
+      "name": "report:serverName: example.com ",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": " example.com ",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverName 与导入规格不一致"
+    },
+    {
+      "name": "report:serverName:",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": [],
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverName 与导入规格不一致"
+    },
+    {
+      "name": "report:serverName:[object Object]",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": {},
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 serverName 与导入规格不一致"
+    },
+    {
+      "name": "report:flow:undefined",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 flow 与导入规格不一致"
+    },
+    {
+      "name": "report:flow:null",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": null,
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 flow 与导入规格不一致"
+    },
+    {
+      "name": "report:flow:true",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": true,
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 flow 与导入规格不一致"
+    },
+    {
+      "name": "report:flow:false",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": false,
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 flow 与导入规格不一致"
+    },
+    {
+      "name": "report:flow:0",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": 0,
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 flow 与导入规格不一致"
+    },
+    {
+      "name": "report:flow:1",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": 1,
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 flow 与导入规格不一致"
+    },
+    {
+      "name": "report:flow:443",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "443",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 flow 与导入规格不一致"
+    },
+    {
+      "name": "report:flow:  ",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "  ",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 flow 与导入规格不一致"
+    },
+    {
+      "name": "report:flow:",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": [],
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 flow 与导入规格不一致"
+    },
+    {
+      "name": "report:flow:[object Object]",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": {},
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 flow 与导入规格不一致"
+    },
+    {
+      "name": "report:fingerprint:undefined",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 fingerprint 与导入规格不一致"
+    },
+    {
+      "name": "report:fingerprint:null",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": null,
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 fingerprint 与导入规格不一致"
+    },
+    {
+      "name": "report:fingerprint:true",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": true,
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 fingerprint 与导入规格不一致"
+    },
+    {
+      "name": "report:fingerprint:false",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": false,
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 fingerprint 与导入规格不一致"
+    },
+    {
+      "name": "report:fingerprint:0",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": 0,
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 fingerprint 与导入规格不一致"
+    },
+    {
+      "name": "report:fingerprint:1",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": 1,
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 fingerprint 与导入规格不一致"
+    },
+    {
+      "name": "report:fingerprint:443",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "443",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 fingerprint 与导入规格不一致"
+    },
+    {
+      "name": "report:fingerprint: chrome ",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": " chrome ",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 fingerprint 与导入规格不一致"
+    },
+    {
+      "name": "report:fingerprint:",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": [],
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 fingerprint 与导入规格不一致"
+    },
+    {
+      "name": "report:fingerprint:[object Object]",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": {},
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 fingerprint 与导入规格不一致"
+    },
+    {
+      "name": "report:spiderX:undefined",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 spiderX 与导入规格不一致"
+    },
+    {
+      "name": "report:spiderX:null",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": null
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 spiderX 与导入规格不一致"
+    },
+    {
+      "name": "report:spiderX:true",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": true
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 spiderX 与导入规格不一致"
+    },
+    {
+      "name": "report:spiderX:false",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": false
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 spiderX 与导入规格不一致"
+    },
+    {
+      "name": "report:spiderX:0",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": 0
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 spiderX 与导入规格不一致"
+    },
+    {
+      "name": "report:spiderX:1",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": 1
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 spiderX 与导入规格不一致"
+    },
+    {
+      "name": "report:spiderX:443",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "443"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 spiderX 与导入规格不一致"
+    },
+    {
+      "name": "report:spiderX: / ",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": " / "
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 spiderX 与导入规格不一致"
+    },
+    {
+      "name": "report:spiderX:",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": []
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 spiderX 与导入规格不一致"
+    },
+    {
+      "name": "report:spiderX:[object Object]",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": {}
+          }
+        }
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "面板入站校验结果 spiderX 与导入规格不一致"
+    },
+    {
+      "name": "dto:status:undefined",
+      "input": {
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "status"
+      ]
+    },
+    {
+      "name": "dto:status:null",
+      "input": {
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "status": null
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "status"
+      ]
+    },
+    {
+      "name": "dto:status:true",
+      "input": {
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "status": true
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "status"
+      ]
+    },
+    {
+      "name": "dto:status:false",
+      "input": {
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "status": false
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "status"
+      ]
+    },
+    {
+      "name": "dto:status:0",
+      "input": {
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "status": 0
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "status"
+      ]
+    },
+    {
+      "name": "dto:status:1",
+      "input": {
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "status": 1
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "status"
+      ]
+    },
+    {
+      "name": "dto:status:completed",
+      "input": {
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "status": "completed"
+      },
+      "status": 200,
+      "stage": "helper",
+      "fields": {
+        "serverHost": "node.example.com",
+        "serverPort": 443,
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverName": "example.com",
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/"
+      }
+    },
+    {
+      "name": "dto:status: completed ",
+      "input": {
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "status": " completed "
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "status"
+      ]
+    },
+    {
+      "name": "dto:status:",
+      "input": {
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "status": []
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "status"
+      ]
+    },
+    {
+      "name": "dto:status:[object Object]",
+      "input": {
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "status": {}
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "status"
+      ]
+    },
+    {
+      "name": "dto:completed:result:undefined",
+      "input": {
+        "status": "completed"
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "dto:completed:result:null",
+      "input": {
+        "status": "completed",
+        "result": null
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "dto:completed:result:true",
+      "input": {
+        "status": "completed",
+        "result": true
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "result"
+      ]
+    },
+    {
+      "name": "dto:completed:result:false",
+      "input": {
+        "status": "completed",
+        "result": false
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "result"
+      ]
+    },
+    {
+      "name": "dto:completed:result:1",
+      "input": {
+        "status": "completed",
+        "result": 1
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "result"
+      ]
+    },
+    {
+      "name": "dto:completed:result:",
+      "input": {
+        "status": "completed",
+        "result": ""
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "result"
+      ]
+    },
+    {
+      "name": "dto:completed:result:",
+      "input": {
+        "status": "completed",
+        "result": []
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "result"
+      ]
+    },
+    {
+      "name": "dto:completed:result:[object Object]",
+      "input": {
+        "status": "completed",
+        "result": {}
+      },
+      "status": 400,
+      "stage": "helper",
+      "message": "缺少面板入站只读校验结果"
+    },
+    {
+      "name": "dto:completed:result:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "input": {
+        "status": "completed",
+        "result": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "result"
+      ]
+    },
+    {
+      "name": "dto:completed:error:undefined",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 200,
+      "stage": "helper",
+      "fields": {
+        "serverHost": "node.example.com",
+        "serverPort": 443,
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverName": "example.com",
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/"
+      }
+    },
+    {
+      "name": "dto:completed:error:null",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "error": null
+      },
+      "status": 200,
+      "stage": "helper",
+      "fields": {
+        "serverHost": "node.example.com",
+        "serverPort": 443,
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverName": "example.com",
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/"
+      }
+    },
+    {
+      "name": "dto:completed:error:true",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "error": true
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "error"
+      ]
+    },
+    {
+      "name": "dto:completed:error:false",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "error": false
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "error"
+      ]
+    },
+    {
+      "name": "dto:completed:error:1",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "error": 1
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "error"
+      ]
+    },
+    {
+      "name": "dto:completed:error:",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "error": ""
+      },
+      "status": 200,
+      "stage": "helper",
+      "fields": {
+        "serverHost": "node.example.com",
+        "serverPort": 443,
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverName": "example.com",
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/"
+      }
+    },
+    {
+      "name": "dto:completed:error:",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "error": []
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "error"
+      ]
+    },
+    {
+      "name": "dto:completed:error:[object Object]",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "error": {}
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "error"
+      ]
+    },
+    {
+      "name": "dto:completed:error:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "input": {
+        "status": "completed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "error": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "error"
+      ]
+    },
+    {
+      "name": "dto:failed:result:undefined",
+      "input": {
+        "status": "failed"
+      },
+      "status": 200,
+      "stage": "failed-skips-report"
+    },
+    {
+      "name": "dto:failed:result:null",
+      "input": {
+        "status": "failed",
+        "result": null
+      },
+      "status": 200,
+      "stage": "failed-skips-report"
+    },
+    {
+      "name": "dto:failed:result:true",
+      "input": {
+        "status": "failed",
+        "result": true
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "result"
+      ]
+    },
+    {
+      "name": "dto:failed:result:false",
+      "input": {
+        "status": "failed",
+        "result": false
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "result"
+      ]
+    },
+    {
+      "name": "dto:failed:result:1",
+      "input": {
+        "status": "failed",
+        "result": 1
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "result"
+      ]
+    },
+    {
+      "name": "dto:failed:result:",
+      "input": {
+        "status": "failed",
+        "result": ""
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "result"
+      ]
+    },
+    {
+      "name": "dto:failed:result:",
+      "input": {
+        "status": "failed",
+        "result": []
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "result"
+      ]
+    },
+    {
+      "name": "dto:failed:result:[object Object]",
+      "input": {
+        "status": "failed",
+        "result": {}
+      },
+      "status": 200,
+      "stage": "failed-skips-report"
+    },
+    {
+      "name": "dto:failed:result:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "input": {
+        "status": "failed",
+        "result": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "result"
+      ]
+    },
+    {
+      "name": "dto:failed:error:undefined",
+      "input": {
+        "status": "failed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        }
+      },
+      "status": 200,
+      "stage": "failed-skips-report"
+    },
+    {
+      "name": "dto:failed:error:null",
+      "input": {
+        "status": "failed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "error": null
+      },
+      "status": 200,
+      "stage": "failed-skips-report"
+    },
+    {
+      "name": "dto:failed:error:true",
+      "input": {
+        "status": "failed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "error": true
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "error"
+      ]
+    },
+    {
+      "name": "dto:failed:error:false",
+      "input": {
+        "status": "failed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "error": false
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "error"
+      ]
+    },
+    {
+      "name": "dto:failed:error:1",
+      "input": {
+        "status": "failed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "error": 1
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "error"
+      ]
+    },
+    {
+      "name": "dto:failed:error:",
+      "input": {
+        "status": "failed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "error": ""
+      },
+      "status": 200,
+      "stage": "failed-skips-report"
+    },
+    {
+      "name": "dto:failed:error:",
+      "input": {
+        "status": "failed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "error": []
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "error"
+      ]
+    },
+    {
+      "name": "dto:failed:error:[object Object]",
+      "input": {
+        "status": "failed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "error": {}
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "error"
+      ]
+    },
+    {
+      "name": "dto:failed:error:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "input": {
+        "status": "failed",
+        "result": {
+          "inbound": {
+            "mode": "validate_panel",
+            "validated": true,
+            "inboundTag": "actual-runtime",
+            "serverHost": "node.example.com",
+            "serverPort": 443,
+            "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "shortId": "",
+            "serverName": "example.com",
+            "flow": "",
+            "fingerprint": "chrome",
+            "spiderX": "/"
+          }
+        },
+        "error": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "status": 400,
+      "stage": "dto",
+      "fields": [
+        "error"
+      ]
+    }
+  ]
+}

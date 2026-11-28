@@ -1,3 +1,4 @@
+import { downloadWithMirrorFallback, rankDownloadUrls, rememberProbeResults, urlsNeedingProbe } from "../src/lib/downloadMirrorRanking";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
@@ -22,7 +23,7 @@ import {
   preferredArtifactType,
   type UpdateDownloadState
 } from "../src/lib/updateState";
-import { describeUserError, formatUserError, isCustomerSafeText } from "../src/lib/userFacingErrors";
+import { describeUserError, isCustomerSafeText } from "../src/lib/userFacingErrors";
 import { hasActionableUpdate } from "../src/hooks/useUpdateFlow";
 
 // 普通更新：后台静默下载，同一个包只自动试一次；失败只记诊断日志、不弹提示；
@@ -44,7 +45,7 @@ const optional = {
   publishedAt: null,
   deliveryMode: "desktop_installer_download",
   downloadUrl: "https://example.com/ChordV_1.1.11.dmg",
-  artifact: { fileName: "ChordV_1.1.11.dmg", fileType: "dmg", fileSizeBytes: 100, fileHash: "abc" }
+  artifact: { fileName: "ChordV_1.1.11.dmg", fileType: "dmg", fileSizeBytes: 100, fileHash: "a".repeat(64) }
 } as any;
 
 function candidate(update: any, overrides: Partial<Parameters<typeof isSilentUpdateCandidate>[0]> = {}, check = isSilentUpdateCandidate) {
@@ -174,11 +175,15 @@ type Scenario = {
   outcome: "success" | "throw";
   update?: any;
   duringDownload?: (context: any) => void;
+  reuseCompleted?: boolean;
+  beforeRun?: (context: any) => void;
 };
 
 async function runDownload(scenario: Scenario) {
-  let state: UpdateDownloadState = createIdleUpdateDownloadState();
-  const calls = { notify: [] as any[], showError: [] as any[], logs: [] as Array<[string, string]>, dialog: [] as boolean[], ready: [] as Array<string | null>, background: [] as boolean[] };
+  let state: UpdateDownloadState = scenario.reuseCompleted
+    ? { ...createIdleUpdateDownloadState(), phase: "completed", localPath: "/cache/ChordV_1.1.11.dmg", fileName: "ChordV_1.1.11.dmg", downloadedBytes: 100, totalBytes: 100 }
+    : createIdleUpdateDownloadState();
+  const calls = { installer: [] as string[], downloads: 0, notify: [] as any[], showError: [] as any[], logs: [] as Array<[string, string]>, dialog: [] as boolean[], ready: [] as Array<string | null>, background: [] as boolean[] };
   const context: Record<string, any> = {
     effectiveUpdate: scenario.update ?? optional,
     options: {
@@ -191,7 +196,8 @@ async function runDownload(scenario: Scenario) {
     updatePlatform: scenario.platform ?? "macos",
     updateArtifactIdentity: "artifact-a",
     artifactIdentityRef: { current: "artifact-a" },
-    completedDownloadIdentityRef: { current: null },
+    updateInstallBusyRef: { current: false },
+    completedDownloadIdentityRef: { current: scenario.reuseCompleted ? "artifact-a" : null },
     backgroundDownloadRef: { current: false },
     silentDownloadInFlightRef: { current: false },
     markBackgroundDownload: (value: boolean) => { context.backgroundDownloadRef.current = value; calls.background.push(value); },
@@ -204,23 +210,28 @@ async function runDownload(scenario: Scenario) {
     isDesktopManagedUpdate: (mode: string) => mode === "desktop_installer_download",
     openExternalUrl: async () => { calls.notify.push("external-opened"); return { ok: true }; },
     isCustomerSafeText,
-    openDesktopInstaller: async () => ({ ok: true }),
+    openDesktopInstaller: async (path: string) => { calls.installer.push(path); return { ok: true }; },
     downloadDesktopInstaller: async () => {
+      calls.downloads++;
       scenario.duringDownload?.(context);
       if (scenario.outcome === "throw") throw new Error("error sending request for url (https://mirror.example.com/ChordV.dmg)");
       return { fileName: "ChordV_1.1.11.dmg", localPath: "/cache/ChordV_1.1.11.dmg", totalBytes: 100 };
     },
+    downloadWithMirrorFallback,
+    rankDownloadUrls,
+    rememberProbeResults,
+    urlsNeedingProbe,
+    probeDownloadCandidates: async () => [],
     normalizeUpdateDownloadProgress,
     createIdleUpdateDownloadState,
     describeUserError,
-    formatUserError,
-    recordUpdateDiagnostic: () => {},
     inferInstallerFileName,
     preferredArtifactType,
     recordClientDiagnosticLog: async (category: string, message: string) => { calls.logs.push([category, message]); },
     SILENT_UPDATE_LOG_CATEGORY,
     formatSilentUpdateFailureLog
   };
+  scenario.beforeRun?.(context);
   const run = new Function(...Object.keys(context), `${downloadAction}; return action;`)(...Object.values(context));
   const result = await run(scenario.silent ? { silent: true } : scenario.keepDialogOpen ? { keepDialogOpen: true } : undefined);
   return { result, state: () => state, calls, context };
@@ -271,6 +282,27 @@ async function testSilentSuccessOnlyMarksReady() {
   assert.deepEqual(foreground.calls.dialog, [false]);
 }
 
+async function testDownloadAndCompletedReuseNeverLaunchInstallers() {
+  for (const platform of ["macos", "windows"] as const) {
+    for (const silent of [true, false]) {
+      for (const reuseCompleted of [true, false]) {
+        const run = await runDownload({ platform, silent, reuseCompleted, outcome: "success" });
+        assert.equal(run.result, true);
+        assert.deepEqual(run.calls.installer, [], `${platform}/${silent}/${reuseCompleted}: 下载或复用只允许就绪，禁止开包/断开连接`);
+        assert.equal(run.calls.downloads, reuseCompleted ? 0 : 1);
+        if (silent) assert.deepEqual(run.calls.notify, [], "复用已完成包也不能让后台下载弹提示");
+        assert.doesNotMatch(run.state().message ?? "", /自动完成替换|自动完成安装/);
+      }
+    }
+  }
+  const staleReuse = await runDownload({ silent: false, outcome: "success", reuseCompleted: true,
+    beforeRun: context => { context.artifactIdentityRef.current = "artifact-b"; } });
+  assert.equal(staleReuse.result, false, "旧已完成包的过期回调不得复用");
+  assert.deepEqual(staleReuse.calls.installer, []);
+  assert.equal(staleReuse.calls.downloads, 0);
+  assert.deepEqual(staleReuse.calls.ready, []);
+}
+
 async function testForcedAutoDownloadKeepsDialogAndFallsBackToManual() {
   const ok = await runDownload({ silent: false, keepDialogOpen: true, outcome: "success" });
   assert.equal(ok.result, true);
@@ -291,6 +323,7 @@ async function testStalePackageDiscarded() {
   assert.equal(run.context.completedDownloadIdentityRef.current, null);
   assert.deepEqual(run.calls.ready, [null]);
   assert.deepEqual(run.calls.notify, [], "a background download is discarded quietly");
+  assert.deepEqual(run.calls.installer, [], "换版本后的旧下载结果不能先开包再丢弃");
   // 用户中途打开弹窗接管了后台下载、随后又切换了通道：旧包同样丢弃，不能在新版本的弹窗里被安装。
   const takenOver = await runDownload({ silent: true, outcome: "success", duringDownload: (context: any) => {
     context.backgroundDownloadRef.current = false;
@@ -300,12 +333,14 @@ async function testStalePackageDiscarded() {
   assert.equal(takenOver.state().phase, "idle", "a taken-over stale download is discarded too");
   assert.equal(takenOver.context.completedDownloadIdentityRef.current, null);
   assert.deepEqual(takenOver.calls.ready, [null]);
+  assert.deepEqual(takenOver.calls.installer, []);
   assert.equal(takenOver.calls.notify.length, 1, "the user who is watching is told to download again");
   for (const keepDialogOpen of [false, true]) {
     const foreground = await runDownload({ silent: false, keepDialogOpen, outcome: "success", duringDownload: (context: any) => { context.artifactIdentityRef.current = "artifact-b"; } });
     assert.equal(foreground.result, false);
     assert.equal(foreground.state().phase, "idle", "user-started and forced downloads of an outdated package are discarded");
     assert.deepEqual(foreground.calls.ready, [null], "an outdated package never becomes ready or auto-installs");
+    assert.deepEqual(foreground.calls.installer, []);
   }
 }
 
@@ -322,6 +357,7 @@ function triggerHarness() {
   const starts: unknown[] = [];
   const context: Record<string, any> = {
     silentDownloadInFlightRef: { current: false },
+    updateInstallBusyRef: { current: false },
     silentAttemptedIdentitiesRef: { current: new Set<string>() },
     forcedDownloadAttemptedRef: { current: new Set<string>() },
     shouldStartAutoUpdateDownload,
@@ -392,6 +428,22 @@ function testForcedTriggerDownloadsOnce() {
   assert.deepEqual(silentFirst.starts, [{ silent: true }, { keepDialogOpen: true }]);
 }
 
+function testInstallBusyDoesNotConsumeAutomaticAttempt() {
+  for (const forced of [false, true]) {
+    const { context, starts, trigger } = triggerHarness();
+    context.forcedAutoUpdateCandidate = forced;
+    context.silentUpdateCandidate = !forced;
+    context.updateInstallBusyRef.current = true;
+    trigger();
+    assert.deepEqual(starts, [], "安装准备期间不启动其他自动下载");
+    assert.equal(context.forcedDownloadAttemptedRef.current.size, 0);
+    assert.equal(context.silentAttemptedIdentitiesRef.current.size, 0, "不能提前耗掉另一个包的自动更新机会");
+    context.updateInstallBusyRef.current = false;
+    trigger();
+    assert.equal(starts.length, 1, "失败清忙后普通和强制更新仍可按原规则自动下载");
+  }
+}
+
 function testForcedCountdownInstallsAutomatically() {
   const start = compileHookSnippet(/useEffect\((\(\) => \{\s*if \(!forcedInstallDue[\s\S]*?\n  \}), \[/, "forced install countdown start");
   const tick = compileHookSnippet(/useEffect\((\(\) => \{\s*const step = stepForcedInstallCountdown[\s\S]*?\n  \}), \[/, "forced install countdown tick");
@@ -405,6 +457,7 @@ function testForcedCountdownInstallsAutomatically() {
     const attempted = new Set<string>();
     const setCountdown = (value: number | null) => { countdown = value; };
     const startContext = () => ({
+      updateInstallBusyRef: { current: false },
       forcedInstallDue: valid && !attempted.has("artifact-a"),
       forcedInstallCountdown: countdown,
       updateArtifactIdentity: "artifact-a",
@@ -466,7 +519,7 @@ function testWiring() {
   assert.match(app, /forcedUpdateAllowed: !booting && !windowTransitioning,/);
   assert.match(app, /onInstallUpdate=\{\(\) => void handleQuitForUpdate\(\)\}/, "重启更新 runs the existing install flow");
   assert.match(app, /onInstallApp=\{\(\) => void handleQuitForUpdate\(\)\}/);
-  assert.match(app, /forcedInstallCountdown !== null \? \(\s*<Button color="orange" data-autofocus onClick=\{installForcedUpdateNow\}>\s*立即更新（\{forcedInstallCountdown\} 秒）/);
+  assert.match(app, /forcedInstallCountdown !== null \? \(\s*<Button color="orange" data-autofocus loading=\{updateInstallBusy\} disabled=\{updateInstallBusy\} onClick=\{installForcedUpdateNow\}>\s*立即更新（\{forcedInstallCountdown\} 秒）/);
   assert.match(app, /readAutoDownloadPreference\(localStorage\)/);
   const panel = readFileSync(new URL("../src/components/SubscriptionPanel.tsx", import.meta.url), "utf8");
   assert.match(panel, /onClick=\{updateReady \? props\.onInstallUpdate : props\.onCheckUpdate\}/, "the existing update button becomes 重启更新; no new toolbar element");
@@ -491,11 +544,13 @@ async function main() {
   await testSilentFailureIsLoggedNotShown();
   await testForegroundFailureStillShown();
   await testSilentSuccessOnlyMarksReady();
+  await testDownloadAndCompletedReuseNeverLaunchInstallers();
   await testStalePackageDiscarded();
   await testSilentNeverOpensExternalPages();
   await testForcedAutoDownloadKeepsDialogAndFallsBackToManual();
   testTriggerEffectRunsOncePerArtifact();
   testForcedTriggerDownloadsOnce();
+  testInstallBusyDoesNotConsumeAutomaticAttempt();
   testForcedCountdownInstallsAutomatically();
   testWiring();
   console.log("auto update: silent optional downloads, ready button, forced auto-download and countdown install, beta never forced passed");

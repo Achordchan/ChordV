@@ -2,16 +2,20 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 import { openExternalUrl } from "../src/lib/runtime";
+import { cancelPreparedDesktopUpdate } from "../src/lib/nativeInstaller";
 import { isCustomerSafeText } from "../src/lib/userFacingErrors";
 
 // Exercise the real runtime adapter and update action without opening user apps.
 async function main() {
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const originalMygo = Object.getOwnPropertyDescriptor(globalThis, "mygo");
   const calls: unknown[] = [];
   const testWindow = {
     navigator: { userAgent: "Windows" },
-    __TAURI_INTERNALS__: {
-      invoke: async (command: string, args: unknown) => {
+    mygo: {
+      platform: "windows",
+      call: async (method: string, command: string, args: unknown) => {
+        assert.equal(method, "DesktopService.Invoke");
         calls.push([command, args]);
         return { ok: true };
       }
@@ -19,16 +23,21 @@ async function main() {
     open: () => { throw new Error("Desktop must use native browser dispatch"); }
   };
   Object.defineProperty(globalThis, "window", { configurable: true, value: testWindow });
+  Object.defineProperty(globalThis, "mygo", { configurable: true, value: testWindow.mygo });
   try {
     assert.deepEqual(await openExternalUrl(" https://example.com/setup.exe "), { ok: true });
     assert.deepEqual(calls, [["open_external_url", { url: "https://example.com/setup.exe" }]]);
     assert.deepEqual(await openExternalUrl("  "), { ok: false });
-    testWindow.__TAURI_INTERNALS__.invoke = async () => { throw new Error("Native browser failed"); };
+    assert.deepEqual(await cancelPreparedDesktopUpdate(), { ok: true });
+    assert.deepEqual(calls.at(-1), ["cancel_desktop_update_install", {}], "准备取消通过职责模块直接派发原生命令");
+    testWindow.mygo.call = async () => { throw new Error("Native browser failed"); };
     await assert.rejects(openExternalUrl("https://example.com/setup.exe"), /Native browser failed/);
+    await assert.rejects(cancelPreparedDesktopUpdate(), /Native browser failed/, "原生取消失败必须传递给安装流程");
     Object.defineProperty(globalThis, "window", { configurable: true, value: {
       navigator: { userAgent: "Browser" }, open: () => null
     } });
     assert.deepEqual(await openExternalUrl("https://example.com/setup.exe"), { ok: false });
+    assert.deepEqual(await cancelPreparedDesktopUpdate(), { ok: false }, "浏览器不能假装取消了原生helper");
     const popup = { opener: {} as unknown, location: { replace: (url: string) => {
       assert.equal(popup.opener, null, "Detach opener before visiting external content");
       assert.equal(url, "https://example.com/setup.exe");
@@ -47,6 +56,7 @@ async function main() {
     for (const outcome of ["success", "false", "throw"]) {
       const notices: Array<{ tone: string; title: string; message?: string }> = [];
       const context = {
+        updateInstallBusyRef: { current: false },
         isCustomerSafeText,
         effectiveUpdate: { downloadUrl: "https://example.com/setup.exe", deliveryMode: "external_download" },
         resolveUpdateDownloadUrl: (value: string) => value,
@@ -66,6 +76,8 @@ async function main() {
       if (outcome === "throw") assert.doesNotMatch(notices[0].message ?? "", /Native browser failed/, "raw English errors never reach the notice");
     }
   } finally {
+    if (originalMygo) Object.defineProperty(globalThis, "mygo", originalMygo);
+    else Reflect.deleteProperty(globalThis, "mygo");
     if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
     else Reflect.deleteProperty(globalThis, "window");
   }

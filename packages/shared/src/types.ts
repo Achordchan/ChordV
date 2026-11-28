@@ -413,7 +413,7 @@ export interface ClientBootstrapDto {
     totalCount: number;
     unreadCount: number;
   };
-  version: ClientVersionDto;
+  version: ClientVersionDto | null;
   team?: ClientTeamSummaryDto | null;
 }
 
@@ -869,7 +869,6 @@ export interface AdminSnapshotDto {
   nodeCommandQueue: AdminNodeCommandQueueDto;
   announcements: AdminAnnouncementRecordDto[];
   policy: AdminPolicyRecordDto;
-  releases: AdminReleaseRecordDto[];
 }
 
 export interface AdminImageBedConfigDto {

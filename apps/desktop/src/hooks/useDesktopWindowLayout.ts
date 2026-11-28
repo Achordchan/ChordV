@@ -8,8 +8,13 @@ export function useDesktopWindowLayout(signedIn: boolean, booting: boolean) {
   const latestLayout = useRef(layout);
   latestLayout.current = layout;
   const prepareStartupLayout = useCallback(async (restored: boolean) => {
-    await resizeDesktopWindow(restored, false);
-    dispatch({ type: "success", signedIn: restored });
+    try {
+      if (!await resizeDesktopWindow(restored, false)) throw new Error("窗口尺寸请求已失效");
+      dispatch({ type: "success", signedIn: restored });
+    } catch (error) {
+      dispatch({ type: "failure" });
+      throw error;
+    }
   }, []);
   const retryWindowLayout = useCallback(() => setRetryRevision((value) => value + 1), []);
 
@@ -23,8 +28,8 @@ export function useDesktopWindowLayout(signedIn: boolean, booting: boolean) {
     dispatch({ type: "start" });
     const frame = window.requestAnimationFrame(() => {
       if (!active) return;
-      void resizeDesktopWindow(signedIn, true).then(() => {
-        if (active) dispatch({ type: "success", signedIn });
+      void resizeDesktopWindow(signedIn, true).then(applied => {
+        if (active) dispatch(applied ? { type: "success", signedIn } : { type: "failure" });
       }).catch(() => {
         if (active) dispatch({ type: "failure" });
       });

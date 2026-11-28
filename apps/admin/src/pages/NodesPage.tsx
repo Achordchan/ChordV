@@ -7,6 +7,7 @@ import { DataTable } from "../features/shared/DataTable";
 import { NodeControlDetails } from "../features/nodes/NodeControlCenter";
 import styles from "../features/nodes/NodesWorkspace.module.css";
 import { formatDateTime } from "../utils/admin-format";
+import { nodeAgentStatus, nodeAttention } from "../utils/node-status";
 import { findNodeCommandSummary } from "../utils/node-command-summary";
 import type { LeaseRevocationQueueFilter } from "../utils/admin-queue-filters";
 import {
@@ -47,8 +48,8 @@ export function NodesPage(props: NodesPageProps) {
     const command = findNodeCommandSummary(props.nodeCommandQueue.summaries, "nodes", node.id);
     const total = lease.total + (command?.total ?? 0);
     const failed = lease.failed + (command?.failed ?? 0);
-    const agentStatus = node.controlStatus ?? node.agent?.status;
-    const needsAttention = total > 0 || node.probeStatus === "offline" || node.probeStatus === "degraded" || agentStatus === "offline" || agentStatus === "degraded";
+    const agentStatus = nodeAgentStatus(node);
+    const needsAttention = total > 0 || nodeAttention(node) !== 2;
     return { node, lease, total, failed, agentStatus, needsAttention };
   }).filter(row => filter === "全部" || (filter === "待接入" ? needsOnboarding(row.node) : row.needsAttention));
 

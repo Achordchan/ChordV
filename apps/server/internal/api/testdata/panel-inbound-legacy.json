@@ -1,0 +1,4902 @@
+{
+  "commit": "397a64d",
+  "scope": "Exact original normalizePanelInbound/host/public-IP helpers, ParsePanelLinkDto+whitelist and parsePanelLink; pure CPU execution, no server/network/DB. Original public host specimens are only reference input; Go HTTP uses intentional existing loopback policy.",
+  "normalResults": [
+    {
+      "name": "base",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "mode:undefined",
+      "input": {
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "必须显式选择面板入站校验模式"
+    },
+    {
+      "name": "mode:null",
+      "input": {
+        "mode": null,
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "必须显式选择面板入站校验模式"
+    },
+    {
+      "name": "mode:",
+      "input": {
+        "mode": "",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "必须显式选择面板入站校验模式"
+    },
+    {
+      "name": "mode:true",
+      "input": {
+        "mode": true,
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "必须显式选择面板入站校验模式"
+    },
+    {
+      "name": "mode:false",
+      "input": {
+        "mode": false,
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "必须显式选择面板入站校验模式"
+    },
+    {
+      "name": "mode:0",
+      "input": {
+        "mode": 0,
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "必须显式选择面板入站校验模式"
+    },
+    {
+      "name": "mode:1",
+      "input": {
+        "mode": 1,
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "必须显式选择面板入站校验模式"
+    },
+    {
+      "name": "mode:",
+      "input": {
+        "mode": [],
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "必须显式选择面板入站校验模式"
+    },
+    {
+      "name": "mode:[object Object]",
+      "input": {
+        "mode": {},
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "必须显式选择面板入站校验模式"
+    },
+    {
+      "name": "mode: value ",
+      "input": {
+        "mode": " value ",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "必须显式选择面板入站校验模式"
+    },
+    {
+      "name": "listenPort:undefined",
+      "input": {
+        "mode": "validate_panel",
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站端口必须是 1-65535"
+    },
+    {
+      "name": "listenPort:null",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": null,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站端口必须是 1-65535"
+    },
+    {
+      "name": "listenPort:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": "",
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站端口必须是 1-65535"
+    },
+    {
+      "name": "listenPort:true",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": true,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站端口必须是 1-65535"
+    },
+    {
+      "name": "listenPort:false",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": false,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站端口必须是 1-65535"
+    },
+    {
+      "name": "listenPort:0",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 0,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站端口必须是 1-65535"
+    },
+    {
+      "name": "listenPort:1",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 1,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-1",
+        "listenPort": 1,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "listenPort:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": [],
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站端口必须是 1-65535"
+    },
+    {
+      "name": "listenPort:[object Object]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": {},
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站端口必须是 1-65535"
+    },
+    {
+      "name": "listenPort: value ",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": " value ",
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站端口必须是 1-65535"
+    },
+    {
+      "name": "serverHost:undefined",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "节点地址 不是合法公网地址或域名"
+    },
+    {
+      "name": "serverHost:null",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": null,
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "节点地址 不是合法公网地址或域名"
+    },
+    {
+      "name": "serverHost:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "节点地址 不是合法公网地址或域名"
+    },
+    {
+      "name": "serverHost:true",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": true,
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站参数 serverHost 必须是字符串"
+    },
+    {
+      "name": "serverHost:false",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": false,
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站参数 serverHost 必须是字符串"
+    },
+    {
+      "name": "serverHost:0",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": 0,
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站参数 serverHost 必须是字符串"
+    },
+    {
+      "name": "serverHost:1",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": 1,
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站参数 serverHost 必须是字符串"
+    },
+    {
+      "name": "serverHost:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": [],
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站参数 serverHost 必须是字符串"
+    },
+    {
+      "name": "serverHost:[object Object]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": {},
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站参数 serverHost 必须是字符串"
+    },
+    {
+      "name": "serverHost: value ",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": " value ",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "节点地址 不是合法公网地址或域名"
+    },
+    {
+      "name": "realityPublicKey:undefined",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "Reality 公钥必须是规范的 32 字节 base64url"
+    },
+    {
+      "name": "realityPublicKey:null",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": null,
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "Reality 公钥必须是规范的 32 字节 base64url"
+    },
+    {
+      "name": "realityPublicKey:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "Reality 公钥必须是规范的 32 字节 base64url"
+    },
+    {
+      "name": "realityPublicKey:true",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": true,
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站参数 realityPublicKey 必须是字符串"
+    },
+    {
+      "name": "realityPublicKey:false",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": false,
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站参数 realityPublicKey 必须是字符串"
+    },
+    {
+      "name": "realityPublicKey:0",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": 0,
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站参数 realityPublicKey 必须是字符串"
+    },
+    {
+      "name": "realityPublicKey:1",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": 1,
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站参数 realityPublicKey 必须是字符串"
+    },
+    {
+      "name": "realityPublicKey:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": [],
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站参数 realityPublicKey 必须是字符串"
+    },
+    {
+      "name": "realityPublicKey:[object Object]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": {},
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站参数 realityPublicKey 必须是字符串"
+    },
+    {
+      "name": "realityPublicKey: value ",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": " value ",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "Reality 公钥必须是规范的 32 字节 base64url"
+    },
+    {
+      "name": "shortId:undefined",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "shortId:null",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": null,
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "shortId:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "shortId:true",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": true,
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站参数 shortId 必须是字符串"
+    },
+    {
+      "name": "shortId:false",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": false,
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站参数 shortId 必须是字符串"
+    },
+    {
+      "name": "shortId:0",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": 0,
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站参数 shortId 必须是字符串"
+    },
+    {
+      "name": "shortId:1",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": 1,
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站参数 shortId 必须是字符串"
+    },
+    {
+      "name": "shortId:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": [],
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站参数 shortId 必须是字符串"
+    },
+    {
+      "name": "shortId:[object Object]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": {},
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "入站参数 shortId 必须是字符串"
+    },
+    {
+      "name": "shortId: value ",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": " value ",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "shortId 必须是 0-8 字节十六进制"
+    },
+    {
+      "name": "flow:undefined",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "flow:null",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "flow": null
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "flow:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "flow": ""
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "flow:true",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "flow": true
+      },
+      "status": 400,
+      "message": "入站参数 flow 必须是字符串"
+    },
+    {
+      "name": "flow:false",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "flow": false
+      },
+      "status": 400,
+      "message": "入站参数 flow 必须是字符串"
+    },
+    {
+      "name": "flow:0",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "flow": 0
+      },
+      "status": 400,
+      "message": "入站参数 flow 必须是字符串"
+    },
+    {
+      "name": "flow:1",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "flow": 1
+      },
+      "status": 400,
+      "message": "入站参数 flow 必须是字符串"
+    },
+    {
+      "name": "flow:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "flow": []
+      },
+      "status": 400,
+      "message": "入站参数 flow 必须是字符串"
+    },
+    {
+      "name": "flow:[object Object]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "flow": {}
+      },
+      "status": 400,
+      "message": "入站参数 flow 必须是字符串"
+    },
+    {
+      "name": "flow: value ",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "flow": " value "
+      },
+      "status": 400,
+      "message": "不支持的 flow"
+    },
+    {
+      "name": "fingerprint:undefined",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "fingerprint:null",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "fingerprint": null
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "fingerprint:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "fingerprint": ""
+      },
+      "status": 400,
+      "message": "不支持的 fingerprint"
+    },
+    {
+      "name": "fingerprint:true",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "fingerprint": true
+      },
+      "status": 400,
+      "message": "入站参数 fingerprint 必须是字符串"
+    },
+    {
+      "name": "fingerprint:false",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "fingerprint": false
+      },
+      "status": 400,
+      "message": "入站参数 fingerprint 必须是字符串"
+    },
+    {
+      "name": "fingerprint:0",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "fingerprint": 0
+      },
+      "status": 400,
+      "message": "入站参数 fingerprint 必须是字符串"
+    },
+    {
+      "name": "fingerprint:1",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "fingerprint": 1
+      },
+      "status": 400,
+      "message": "入站参数 fingerprint 必须是字符串"
+    },
+    {
+      "name": "fingerprint:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "fingerprint": []
+      },
+      "status": 400,
+      "message": "入站参数 fingerprint 必须是字符串"
+    },
+    {
+      "name": "fingerprint:[object Object]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "fingerprint": {}
+      },
+      "status": 400,
+      "message": "入站参数 fingerprint 必须是字符串"
+    },
+    {
+      "name": "fingerprint: value ",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "fingerprint": " value "
+      },
+      "status": 400,
+      "message": "不支持的 fingerprint"
+    },
+    {
+      "name": "spiderX:undefined",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "spiderX:null",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "spiderX": null
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "spiderX:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "spiderX": ""
+      },
+      "status": 400,
+      "message": "spiderX 格式错误"
+    },
+    {
+      "name": "spiderX:true",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "spiderX": true
+      },
+      "status": 400,
+      "message": "入站参数 spiderX 必须是字符串"
+    },
+    {
+      "name": "spiderX:false",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "spiderX": false
+      },
+      "status": 400,
+      "message": "入站参数 spiderX 必须是字符串"
+    },
+    {
+      "name": "spiderX:0",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "spiderX": 0
+      },
+      "status": 400,
+      "message": "入站参数 spiderX 必须是字符串"
+    },
+    {
+      "name": "spiderX:1",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "spiderX": 1
+      },
+      "status": 400,
+      "message": "入站参数 spiderX 必须是字符串"
+    },
+    {
+      "name": "spiderX:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "spiderX": []
+      },
+      "status": 400,
+      "message": "入站参数 spiderX 必须是字符串"
+    },
+    {
+      "name": "spiderX:[object Object]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "spiderX": {}
+      },
+      "status": 400,
+      "message": "入站参数 spiderX 必须是字符串"
+    },
+    {
+      "name": "spiderX: value ",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "spiderX": " value "
+      },
+      "status": 400,
+      "message": "spiderX 格式错误"
+    },
+    {
+      "name": "panelVersion:undefined",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ]
+      },
+      "status": 400,
+      "message": "面板版本必须为 3.1.0 或以上的 3.x 稳定版，请先升级并核对版本"
+    },
+    {
+      "name": "panelVersion:null",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": null
+      },
+      "status": 400,
+      "message": "面板版本必须为 3.1.0 或以上的 3.x 稳定版，请先升级并核对版本"
+    },
+    {
+      "name": "panelVersion:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": ""
+      },
+      "status": 400,
+      "message": "面板版本必须为 3.1.0 或以上的 3.x 稳定版，请先升级并核对版本"
+    },
+    {
+      "name": "panelVersion:true",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": true
+      },
+      "status": 400,
+      "message": "入站参数 panelVersion 必须是字符串"
+    },
+    {
+      "name": "panelVersion:false",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": false
+      },
+      "status": 400,
+      "message": "入站参数 panelVersion 必须是字符串"
+    },
+    {
+      "name": "panelVersion:0",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": 0
+      },
+      "status": 400,
+      "message": "入站参数 panelVersion 必须是字符串"
+    },
+    {
+      "name": "panelVersion:1",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": 1
+      },
+      "status": 400,
+      "message": "入站参数 panelVersion 必须是字符串"
+    },
+    {
+      "name": "panelVersion:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": []
+      },
+      "status": 400,
+      "message": "入站参数 panelVersion 必须是字符串"
+    },
+    {
+      "name": "panelVersion:[object Object]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": {}
+      },
+      "status": 400,
+      "message": "入站参数 panelVersion 必须是字符串"
+    },
+    {
+      "name": "panelVersion: value ",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": " value "
+      },
+      "status": 400,
+      "message": "面板版本必须为 3.1.0 或以上的 3.x 稳定版，请先升级并核对版本"
+    },
+    {
+      "name": "inboundTag:undefined",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "inboundTag:null",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "inboundTag": null
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "inboundTag:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "inboundTag": ""
+      },
+      "status": 400,
+      "message": "入站 tag 格式错误"
+    },
+    {
+      "name": "inboundTag:true",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "inboundTag": true
+      },
+      "status": 400,
+      "message": "入站参数 inboundTag 必须是字符串"
+    },
+    {
+      "name": "inboundTag:false",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "inboundTag": false
+      },
+      "status": 400,
+      "message": "入站参数 inboundTag 必须是字符串"
+    },
+    {
+      "name": "inboundTag:0",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "inboundTag": 0
+      },
+      "status": 400,
+      "message": "入站参数 inboundTag 必须是字符串"
+    },
+    {
+      "name": "inboundTag:1",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "inboundTag": 1
+      },
+      "status": 400,
+      "message": "入站参数 inboundTag 必须是字符串"
+    },
+    {
+      "name": "inboundTag:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "inboundTag": []
+      },
+      "status": 400,
+      "message": "入站参数 inboundTag 必须是字符串"
+    },
+    {
+      "name": "inboundTag:[object Object]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "inboundTag": {}
+      },
+      "status": 400,
+      "message": "入站参数 inboundTag 必须是字符串"
+    },
+    {
+      "name": "inboundTag: value ",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "inboundTag": " value "
+      },
+      "status": 400,
+      "message": "自定义 tag 可能指向其他入站，必须确认覆盖警告"
+    },
+    {
+      "name": "tagOverrideConfirmed:undefined",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "tagOverrideConfirmed:null",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": null
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "tagOverrideConfirmed:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": ""
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "tagOverrideConfirmed:true",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": true
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": true
+      }
+    },
+    {
+      "name": "tagOverrideConfirmed:false",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "tagOverrideConfirmed:0",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": 0
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "tagOverrideConfirmed:1",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": 1
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "tagOverrideConfirmed:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": []
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "tagOverrideConfirmed:[object Object]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": {}
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "tagOverrideConfirmed: value ",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": " value "
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "rotateKeys:undefined",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "rotateKeys:null",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "rotateKeys": null
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "rotateKeys:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "rotateKeys": ""
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "rotateKeys:true",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "rotateKeys": true
+      },
+      "status": 400,
+      "message": "面板入站校验不会轮换密钥"
+    },
+    {
+      "name": "rotateKeys:false",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "rotateKeys": false
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "rotateKeys:0",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "rotateKeys": 0
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "rotateKeys:1",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "rotateKeys": 1
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "rotateKeys:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "rotateKeys": []
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "rotateKeys:[object Object]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "rotateKeys": {}
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "rotateKeys: value ",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "rotateKeys": " value "
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "serverNames:[]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "面板导入必须指定一个客户端 SNI"
+    },
+    {
+      "name": "serverNames:[\"a\",\"b\"]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "a",
+          "b"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "面板导入必须指定一个客户端 SNI"
+    },
+    {
+      "name": "serverNames:[1]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          1
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "面板导入必须指定一个客户端 SNI"
+    },
+    {
+      "name": "serverNames:[null]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          null
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "面板导入必须指定一个客户端 SNI"
+    },
+    {
+      "name": "serverNames:[\"\"]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          ""
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "SNI 不是合法公网地址或域名"
+    },
+    {
+      "name": "serverNames:[\" example.com \"]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          " example.com "
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "serverNames:[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.com\"]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.com"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "serverNames:[\"[2606:4700:4700::1111]\"]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "[2606:4700:4700::1111]"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "2606:4700:4700::1111"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "serverNames:[\"127.0.0.1\"]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "127.0.0.1"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "SNI 不得为内网或回环地址"
+    },
+    {
+      "name": "serverNames:[\"-bad.example\"]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "-bad.example"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "SNI 不是合法公网地址或域名"
+    },
+    {
+      "name": "serverNames:[\"singlelabel\"]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "singlelabel"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "SNI 不是合法公网地址或域名"
+    },
+    {
+      "name": "serverNames:[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example\"]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "SNI 不是合法公网地址或域名"
+    },
+    {
+      "name": "version:v3.1.0",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "v3.1.0"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "version:  v3.1.0  ",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "  v3.1.0  "
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "version:03.01.0",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "03.01.0"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "03.01.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "version:3.1.9999999999999999999999999999999999",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.9999999999999999999999999999999999"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.9999999999999999999999999999999999",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "version:3.999999999999999999999999999999999999999999999.0",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.999999999999999999999999999999999999999999999.0"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.999999999999999999999999999999999999999999999.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "version:auto",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "version:AUTO",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "AUTO"
+      },
+      "status": 400,
+      "message": "面板版本必须为 3.1.0 或以上的 3.x 稳定版，请先升级并核对版本"
+    },
+    {
+      "name": "version:3.0.0",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.0.0"
+      },
+      "status": 400,
+      "message": "面板版本必须为 3.1.0 或以上的 3.x 稳定版，请先升级并核对版本"
+    },
+    {
+      "name": "edge:realityPublicKey: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA ",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": " AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA ",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": true
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": true
+      }
+    },
+    {
+      "name": "edge:fingerprint: firefox ",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "fingerprint": " firefox ",
+        "tagOverrideConfirmed": true
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "firefox",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": true
+      }
+    },
+    {
+      "name": "edge:spiderX:/\tbad",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "spiderX": "/\tbad",
+        "tagOverrideConfirmed": true
+      },
+      "status": 400,
+      "message": "spiderX 格式错误"
+    },
+    {
+      "name": "edge:spiderX:/ bad",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "spiderX": "/ bad",
+        "tagOverrideConfirmed": true
+      },
+      "status": 400,
+      "message": "spiderX 格式错误"
+    },
+    {
+      "name": "edge:spiderX:/﻿bad",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "spiderX": "/﻿bad",
+        "tagOverrideConfirmed": true
+      },
+      "status": 400,
+      "message": "spiderX 格式错误"
+    },
+    {
+      "name": "edge:spiderX:/字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "spiderX": "/字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字",
+        "tagOverrideConfirmed": true
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": true
+      }
+    },
+    {
+      "name": "edge:spiderX:/😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "spiderX": "/😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+        "tagOverrideConfirmed": true
+      },
+      "status": 400,
+      "message": "spiderX 格式错误"
+    },
+    {
+      "name": "edge:inboundTag: custom ",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "inboundTag": " custom ",
+        "tagOverrideConfirmed": true
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "custom",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": true
+      }
+    },
+    {
+      "name": "edge:inboundTag:",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "inboundTag": "",
+        "tagOverrideConfirmed": true
+      },
+      "status": 400,
+      "message": "入站 tag 格式错误"
+    },
+    {
+      "name": "sni-ip:[2606:4700:4700::1111]",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "[2606:4700:4700::1111]"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "2606:4700:4700::1111"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "sni-ip:::1",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "::1"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "SNI 不得为内网或回环地址"
+    },
+    {
+      "name": "sni-ip:::ffff:192.168.1.1",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "::ffff:192.168.1.1"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "SNI 不得为内网或回环地址"
+    },
+    {
+      "name": "sni-ip:192.0.2.1",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "192.0.2.1"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "192.0.2.1"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "sni-ip:100.64.0.1",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "100.64.0.1"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "SNI 不得为内网或回环地址"
+    },
+    {
+      "name": "sni-ip:0:0:0:0:0:0:0:1",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "0:0:0:0:0:0:0:1"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "SNI 不得为内网或回环地址"
+    },
+    {
+      "name": "supported-fingerprint:chrome",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "fingerprint": "chrome"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "supported-fingerprint:firefox",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "fingerprint": "firefox"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "firefox",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "supported-fingerprint:safari",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "fingerprint": "safari"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "safari",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "supported-fingerprint:ios",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "fingerprint": "ios"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "ios",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "supported-fingerprint:android",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "fingerprint": "android"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "android",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "supported-fingerprint:edge",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "fingerprint": "edge"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "edge",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "supported-fingerprint:360",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "fingerprint": "360"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "360",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "supported-fingerprint:qq",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "fingerprint": "qq"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "qq",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "supported-fingerprint:random",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "fingerprint": "random"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "random",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "supported-fingerprint:randomized",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "panelVersion": "3.1.0",
+        "fingerprint": "randomized"
+      },
+      "status": 200,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "randomized",
+        "spiderX": "/",
+        "panelVersion": "3.1.0",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "sni-unicode-fold:Key.example",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "Key.example"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "SNI 不是合法公网地址或域名"
+    },
+    {
+      "name": "sni-unicode-fold:ſni.example",
+      "input": {
+        "mode": "validate_panel",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "ſni.example"
+        ],
+        "panelVersion": "3.1.0"
+      },
+      "status": 400,
+      "message": "SNI 不是合法公网地址或域名"
+    }
+  ],
+  "parserResults": [
+    {
+      "name": "base",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "explicit-defaults",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com&type=tcp&fp=chrome&spx=%2F",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "missing-defaults",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "empty-fp",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com&fp=",
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": true,
+      "message": "不支持的 fingerprint"
+    },
+    {
+      "name": "empty-spx",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com&spx=",
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": true,
+      "message": "spiderX 格式错误"
+    },
+    {
+      "name": "empty-type",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com&type=",
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": true,
+      "message": "仅支持 TCP/RAW + Reality 入站"
+    },
+    {
+      "name": "empty-user",
+      "input": {
+        "link": "vless://@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": true,
+      "message": "仅支持 vless 分享链接"
+    },
+    {
+      "name": "empty-password",
+      "input": {
+        "link": "vless://placeholder:@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "password",
+      "input": {
+        "link": "vless://placeholder:secret@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": true,
+      "message": "仅支持 vless 分享链接"
+    },
+    {
+      "name": "upper-scheme",
+      "input": {
+        "link": "VLESS://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "malformed-unknown",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com&unknown=%GG",
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": true,
+      "message": "不支持的链接参数 unknown，拒绝静默丢弃"
+    },
+    {
+      "name": "malformed-supported",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com&sid=%GG",
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": true,
+      "message": "shortId 必须是 0-8 字节十六进制"
+    },
+    {
+      "name": "semicolon",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com&sid=ab;unknown=x",
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": true,
+      "message": "shortId 必须是 0-8 字节十六进制"
+    },
+    {
+      "name": "duplicate",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com&security=reality",
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": true,
+      "message": "链接参数 security 重复"
+    },
+    {
+      "name": "unknown-empty",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com&path=",
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": true,
+      "message": "不支持的链接参数 path，拒绝静默丢弃"
+    },
+    {
+      "name": "missing-port",
+      "input": {
+        "link": "vless://placeholder@node.example.com?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": true,
+      "message": "入站端口必须是 1-65535"
+    },
+    {
+      "name": "hex-port",
+      "input": {
+        "link": "vless://placeholder@node.example.com:0x1bb?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": true,
+      "message": "不是合法的 vless 分享链接"
+    },
+    {
+      "name": "leadingzero-port",
+      "input": {
+        "link": "vless://placeholder@node.example.com:00443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "hash",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com#label",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "path",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443/path?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": true,
+      "message": "分享链接不应携带路径"
+    },
+    {
+      "name": "raw",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com&type=raw",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "dto:link:undefined",
+      "input": {
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "link"
+      ]
+    },
+    {
+      "name": "dto:link:null",
+      "input": {
+        "link": null,
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "link"
+      ]
+    },
+    {
+      "name": "dto:link:",
+      "input": {
+        "link": "",
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": true,
+      "message": "不是合法的 vless 分享链接"
+    },
+    {
+      "name": "dto:link:true",
+      "input": {
+        "link": true,
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "link"
+      ]
+    },
+    {
+      "name": "dto:link:0",
+      "input": {
+        "link": 0,
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "link"
+      ]
+    },
+    {
+      "name": "dto:link:",
+      "input": {
+        "link": [],
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "link"
+      ]
+    },
+    {
+      "name": "dto:link:[object Object]",
+      "input": {
+        "link": {},
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "link"
+      ]
+    },
+    {
+      "name": "dto:link:vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com#xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com#xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "link"
+      ]
+    },
+    {
+      "name": "dto:panelVersion:undefined",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com"
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "panelVersion"
+      ]
+    },
+    {
+      "name": "dto:panelVersion:null",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": null
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "panelVersion"
+      ]
+    },
+    {
+      "name": "dto:panelVersion:",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": ""
+      },
+      "status": 400,
+      "dtoAccepted": true,
+      "message": "面板版本必须为 3.1.0 或以上的 3.x 稳定版，请先升级并核对版本"
+    },
+    {
+      "name": "dto:panelVersion:true",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": true
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "panelVersion"
+      ]
+    },
+    {
+      "name": "dto:panelVersion:0",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": 0
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "panelVersion"
+      ]
+    },
+    {
+      "name": "dto:panelVersion:",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": []
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "panelVersion"
+      ]
+    },
+    {
+      "name": "dto:panelVersion:[object Object]",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": {}
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "panelVersion"
+      ]
+    },
+    {
+      "name": "dto:panelVersion:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "panelVersion"
+      ]
+    },
+    {
+      "name": "dto:inboundTag:undefined",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "dto:inboundTag:null",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto",
+        "inboundTag": null
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "dto:inboundTag:",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto",
+        "inboundTag": ""
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "dto:inboundTag:true",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto",
+        "inboundTag": true
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "inboundTag"
+      ]
+    },
+    {
+      "name": "dto:inboundTag:0",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto",
+        "inboundTag": 0
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "inboundTag"
+      ]
+    },
+    {
+      "name": "dto:inboundTag:",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto",
+        "inboundTag": []
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "inboundTag"
+      ]
+    },
+    {
+      "name": "dto:inboundTag:[object Object]",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto",
+        "inboundTag": {}
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "inboundTag"
+      ]
+    },
+    {
+      "name": "dto:inboundTag:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto",
+        "inboundTag": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "inboundTag"
+      ]
+    },
+    {
+      "name": "dto:tagOverrideConfirmed:undefined",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "dto:tagOverrideConfirmed:null",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": null
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "dto:tagOverrideConfirmed:",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": ""
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "tagOverrideConfirmed"
+      ]
+    },
+    {
+      "name": "dto:tagOverrideConfirmed:true",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": true
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": true
+      }
+    },
+    {
+      "name": "dto:tagOverrideConfirmed:0",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": 0
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "tagOverrideConfirmed"
+      ]
+    },
+    {
+      "name": "dto:tagOverrideConfirmed:",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": []
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "tagOverrideConfirmed"
+      ]
+    },
+    {
+      "name": "dto:tagOverrideConfirmed:[object Object]",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": {}
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "tagOverrideConfirmed"
+      ]
+    },
+    {
+      "name": "dto:tagOverrideConfirmed:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "status": 400,
+      "dtoAccepted": false,
+      "fields": [
+        "tagOverrideConfirmed"
+      ]
+    },
+    {
+      "name": "spider-encoded:/a;b",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com&spx=%2Fa%3Bb",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/a;b",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "spider-encoded:/%GG",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com&spx=%2F%25GG",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/%GG",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "spider-encoded:/a+b",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com&spx=%2Fa%2Bb",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/a+b",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "spider-encoded:/a%20b",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com&spx=%2Fa%2520b",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/a%20b",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "url-folded-tab",
+      "input": {
+        "link": "vless://placeholder@node.\texample.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "fragment-malformed",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com#%GG",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "custom-tag-space",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto",
+        "inboundTag": " ",
+        "tagOverrideConfirmed": true
+      },
+      "status": 400,
+      "dtoAccepted": true,
+      "message": "入站 tag 格式错误"
+    },
+    {
+      "name": "url-path:/.",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443/.?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "url-path:/..",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443/..?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "url-path:/./",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443/./?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "url-path:/one/..",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443/one/..?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "url-path:/%2e/",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443/%2e/?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "url-path:/%2E%2e/",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443/%2E%2e/?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "url-path://",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443//?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": true,
+      "message": "分享链接不应携带路径"
+    },
+    {
+      "name": "url-path:/%2F",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443/%2F?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": true,
+      "message": "分享链接不应携带路径"
+    },
+    {
+      "name": "url-path:/one/../",
+      "input": {
+        "link": "vless://placeholder@node.example.com:443/one/../?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "node.example.com",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "ipv6-host",
+      "input": {
+        "link": "vless://placeholder@[2606:4700:4700::1111]:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "2606:4700:4700::1111",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "ipv6-canonical:[2606:4700:4700:0:0:0:0:1111]",
+      "input": {
+        "link": "vless://placeholder@[2606:4700:4700:0:0:0:0:1111]:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "2606:4700:4700::1111",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "ipv6-canonical:[::ffff:192.0.2.1]",
+      "input": {
+        "link": "vless://placeholder@[::ffff:192.0.2.1]:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 200,
+      "dtoAccepted": true,
+      "output": {
+        "mode": "validate_panel",
+        "inboundTag": "inbound-443",
+        "listenPort": 443,
+        "serverHost": "::ffff:c000:201",
+        "realityPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "shortId": "",
+        "serverNames": [
+          "example.com"
+        ],
+        "flow": "",
+        "fingerprint": "chrome",
+        "spiderX": "/",
+        "panelVersion": "auto",
+        "tagOverrideConfirmed": false
+      }
+    },
+    {
+      "name": "invalid-bracket-zone:[node.example.com]",
+      "input": {
+        "link": "vless://placeholder@[node.example.com]:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": true,
+      "message": "不是合法的 vless 分享链接"
+    },
+    {
+      "name": "invalid-bracket-zone:[127.0.0.1]",
+      "input": {
+        "link": "vless://placeholder@[127.0.0.1]:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": true,
+      "message": "不是合法的 vless 分享链接"
+    },
+    {
+      "name": "invalid-bracket-zone:[2606:4700::1111%25eth0]",
+      "input": {
+        "link": "vless://placeholder@[2606:4700::1111%25eth0]:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sni=example.com",
+        "panelVersion": "auto"
+      },
+      "status": 400,
+      "dtoAccepted": true,
+      "message": "不是合法的 vless 分享链接"
+    }
+  ]
+}

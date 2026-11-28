@@ -1,6 +1,12 @@
 import type { RuntimeAssetsUiState } from "./runtimeComponents";
 
 export function downloadProgressPresentation(state: RuntimeAssetsUiState) {
+  if (state.phase === "unconfigured") {
+    return { title: "未配置组件来源", amount: "组件未安装", percent: null, percentLabel: null, processing: false, cancelled: false };
+  }
+  if (state.phase === "failed" && state.errorCode === "mac_update_pending") {
+    return { title: "组件更新已暂停", amount: "请先完成应用更新", percent: null, percentLabel: null, processing: false, cancelled: false };
+  }
   const name = state.currentComponent === "xray" ? "Xray 内核" : state.currentComponent === "geoip" ? "GeoIP 规则" : state.currentComponent === "geosite" ? "GeoSite 规则" : "组件";
   const cancelled = state.phase === "failed" && state.errorCode === "download_cancelled";
   const processing = state.phase === "downloading" && (state.downloadStage === "verifying" || state.downloadStage === "extracting");

@@ -120,7 +120,7 @@ function testMirrorOnlyChangeStaysCurrent() {
       {
         label: "client_override",
         url: "https://mirror.example.com/xray/v1.8.0/Xray-windows-64-v1.8.0.zip",
-        source: "client_override"
+        source: "mirror"
       },
       {
         label: "origin",
@@ -136,7 +136,7 @@ function testMirrorOnlyChangeStaysCurrent() {
       {
         label: "server_mirror",
         url: "https://other-mirror.example.com/xray/v1.8.0/Xray-windows-64-v1.8.0.zip",
-        source: "server_mirror"
+        source: "mirror"
       },
       {
         label: "origin",

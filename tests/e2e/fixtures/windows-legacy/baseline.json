@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "version": "1.1.7",
+  "platform": "windows",
+  "architecture": "x64",
+  "fileName": "ChordV_1.1.7_x64-setup.exe",
+  "downloadUrl": "https://github.com/Achordchan/ChordV/releases/download/v1.1.7/ChordV_1.1.7_x64-setup.exe",
+  "sha256": "c0f7a4c7914dcfdc600a20156d548230c369b205a77183e2ec390d73bacb8340",
+  "legacyExecutableNames": ["chordv-desktop.exe", "ChordV.exe"],
+  "binaryIncluded": false,
+  "source": "Fixed version and digest preserved from the retired tracked Windows upgrade acceptance script."
+}

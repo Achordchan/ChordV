@@ -16,7 +16,8 @@ export function OnlineUsersPanel({ onOpenCustomers }: { onOpenCustomers: () => v
   const users = listOnlineUsers(snapshot);
   const nodes = summarizeNodeConnections(snapshot);
   const counts = snapshot?.counts ?? { online: 0, connected: 0, idle: 0 };
-  const connectedMinutes = Math.round((snapshot?.connectedWindowSeconds ?? 120) / 60);
+  const connectedSeconds = snapshot?.connectedWindowSeconds ?? 150;
+  const onlineSeconds = snapshot?.onlineWindowSeconds ?? 150;
   return <section className={styles.panel} aria-label="在线用户">
     <div className={dashboardStyles.sectionHeading}><div><h2>在线用户</h2>
       <Text size="sm" c="dimmed" mt={6}>{!snapshot ? loading ? "正在读取在线状态…" : error ?? "正在读取在线状态…" : counts.online ? `当前 ${counts.online} 人在线，其中 ${counts.connected} 人正在使用节点` : "当前没有用户在线"}</Text></div>
@@ -40,6 +41,6 @@ export function OnlineUsersPanel({ onOpenCustomers }: { onOpenCustomers: () => v
     </Table></Table.ScrollContainer>}
     {snapshot && !users.length && <Text className={styles.empty}>当前没有用户在线</Text>}
     {snapshot && error && <Text className={styles.footnote} c="orange.8">{error}</Text>}
-    <Text className={styles.footnote}>“已连接”指节点连接近 {connectedMinutes} 分钟内仍有心跳；“在线”指客户端已打开并登录；电脑睡眠或断网后，新版客户端约 3 分钟内显示离线，1.1.10 及更早版本要等连接超时，可能长达十几分钟。约 30 秒自动刷新，上下线时即时更新。</Text>
+    <Text className={styles.footnote}>“已连接”指节点连接近 {connectedSeconds} 秒内仍有心跳；“在线”指客户端已登录且近 {onlineSeconds} 秒内仍有心跳。上下线和心跳超时由服务端推送更新，返回页面时重新核对。</Text>
   </section>;
 }

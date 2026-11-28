@@ -6,15 +6,16 @@ export function shouldRefreshTicketsForAdminEvent(event: AdminRuntimeEventDto) {
 
 export function adminEventSections(event: AdminRuntimeEventDto): string[] {
   switch (event.type) {
-    case "subscription_updated": return ["overview", "users", "subscriptions", "plans", "tickets"];
-    case "node_access_updated": return ["overview", "nodes", "users", "subscriptions"];
+    case "resync": return ["resync"];
+    case "account_updated": return ["overview", "users", "subscriptions", "teams"];
+    case "subscription_updated": return ["overview", "users", "subscriptions", "teams", "plans", "tickets"];
+    case "node_access_updated": return ["overview", "nodes", "users", "subscriptions", "teams"];
     case "sync_queue_updated": return ["overview", "nodes", "users", "subscriptions", "system"];
     case "ticket_updated": return ["overview", "tickets"];
     case "announcement_updated": return ["overview", "announcements"];
+    case "announcement_read_state_updated": return ["overview", "announcements"];
+    case "presence_updated": return [];
     case "policy_updated": return ["policies"];
-    case "version_updated": return ["releases"];
-    case "release_center_updated": return ["releases"];
-    case "runtime_component_updated": return ["runtimeComponents", "releases"];
     case "image_bed_updated": return ["imageBed"];
     default: return [];
   }

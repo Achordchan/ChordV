@@ -104,7 +104,8 @@ function testUserDisconnectActionsUseDisconnectIcon() {
   const personal = readFileSync(resolve(import.meta.dirname, "../src/features/customers/CustomerWorkspace.tsx"), "utf8");
   const members = readFileSync(resolve(import.meta.dirname, "../src/features/customers/CustomerMembers.tsx"), "utf8");
   assert.match(personal, /leftSection=\{<IconPlugConnectedX size=\{16\}\s*\/>\}[\s\S]{0,500}onDisconnectUser\(customer.user!.id, customer.name, "personal"\)/);
-  assert.match(members, /leftSection=\{<IconPlugConnectedX size=\{16\}\s*\/>\}[\s\S]{0,500}onDisconnectUser\(member.userId, member.displayName, "team-member"\)/);
+  assert.match(members, /leftSection=\{<IconPlugConnectedX size=\{16\}\s*\/>\}[\s\S]{0,500}onOpenKickMemberModal\(team.id, member.id, member.displayName\)/);
+  assert.doesNotMatch(members, /onDisconnectUser\(member.userId/);
 }
 
 function testSubscriptionTrafficAndTeamDisconnectActionsUseDifferentIcons() {

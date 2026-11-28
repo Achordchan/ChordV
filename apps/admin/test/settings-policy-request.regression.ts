@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
-import { isRuntimeVersionUnavailable } from "../src/utils/runtime-version-capability";
 
 const source = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const tree = ts.createSourceFile("App.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -48,8 +47,16 @@ function fixture() {
   f.reject(new Error("offline")); await pending;
   assert.equal(f.state.error,"offline","失败必须保留错误门禁而非暴露缓存表单");
 }
-assert.equal(isRuntimeVersionUnavailable(new Error('{"statusCode":404}')),true);
-for (const message of ['{"statusCode":401}', '{"statusCode":403}', '{"statusCode":500}', 'network failed']) {
-  assert.equal(isRuntimeVersionUnavailable(new Error(message)),false);
+for(const busy of ["policyDirtyRef","policySavingRef"] as const) {
+  const f=fixture(), pending=f.load({silent:true});
+  f.scope[busy].current=true;
+  f.resolve("late"); await pending;
+  assert.equal(f.state.form,"cached","在途刷新不能覆盖后来开始的编辑或保存");
 }
-console.log("settings policy ownership and runtime capability checks passed");
+{
+  const f=fixture(), pending=f.load({silent:true});
+  assert.equal(f.state.loading,false,"SSE后台刷新不能卸载表单、重置滚动位置");
+  f.resolve("fresh"); await pending;
+  assert.equal(f.state.form,"fresh");
+}
+console.log("settings policy request ownership checks passed");

@@ -1,0 +1,1311 @@
+{
+  "commit": "397a64d",
+  "scope": "Actual original DTO ValidationPipe and complete createUser/updateUser methods, actual Prisma6.19.2 with original full DDL in private local schema, actual bcryptjs. Explicit no-op follow-up/event/session adapters and direct row response adapter: proves input/storage only, not old runtime side effects or response projection.",
+  "cases": [
+    {
+      "operation": "create",
+      "name": "base",
+      "input": {},
+      "status": 200,
+      "stored": {
+        "email": "2d6c3775-d2af-4632-ac01-e7be17998060@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": null
+      }
+    },
+    {
+      "operation": "create",
+      "name": "email-\"bad@\"",
+      "input": {
+        "email": "bad@"
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "email-\"a@@example.com\"",
+      "input": {
+        "email": "a@@example.com"
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "email-\"a b@example.com\"",
+      "input": {
+        "email": "a b@example.com"
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "email-\"valid@example.com\"",
+      "input": {
+        "email": "valid@example.com"
+      },
+      "status": 200,
+      "stored": {
+        "email": "valid@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": null
+      }
+    },
+    {
+      "operation": "create",
+      "name": "email-\"  valid@example.com  \"",
+      "input": {
+        "email": "  valid@example.com  "
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "email-\"a@example\"",
+      "input": {
+        "email": "a@example"
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "email-\"a@localhost\"",
+      "input": {
+        "email": "a@localhost"
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "email-\"a@example.1\"",
+      "input": {
+        "email": "a@example.1"
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "email-\"a@bad_domain.com\"",
+      "input": {
+        "email": "a@bad_domain.com"
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "email-\"a@-bad.example\"",
+      "input": {
+        "email": "a@-bad.example"
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "email-\"a@example.com.\"",
+      "input": {
+        "email": "a@example.com."
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "email-\"test+tag@example.com\"",
+      "input": {
+        "email": "test+tag@example.com"
+      },
+      "status": 200,
+      "stored": {
+        "email": "test+tag@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": null
+      }
+    },
+    {
+      "operation": "create",
+      "name": "email-\"a..b@example.com\"",
+      "input": {
+        "email": "a..b@example.com"
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "email-\"\\\"a b\\\"@example.com\"",
+      "input": {
+        "email": "\"a b\"@example.com"
+      },
+      "status": 200,
+      "stored": {
+        "email": "\"a b\"@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": null
+      }
+    },
+    {
+      "operation": "create",
+      "name": "email-\"测试@example.com\"",
+      "input": {
+        "email": "测试@example.com"
+      },
+      "status": 200,
+      "stored": {
+        "email": "测试@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": null
+      }
+    },
+    {
+      "operation": "create",
+      "name": "email-\"a@例子.中国\"",
+      "input": {
+        "email": "a@例子.中国"
+      },
+      "status": 200,
+      "stored": {
+        "email": "a@例子.中国",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": null
+      }
+    },
+    {
+      "operation": "create",
+      "name": "email-\"a@[127.0.0.1]\"",
+      "input": {
+        "email": "a@[127.0.0.1]"
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "email-\"a(comment)@example.com\"",
+      "input": {
+        "email": "a(comment)@example.com"
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "name-null",
+      "input": {
+        "displayName": null
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "name-\"\"",
+      "input": {
+        "displayName": ""
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "name-123",
+      "input": {
+        "displayName": 123
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "name-\"  名称  \"",
+      "input": {
+        "displayName": "  名称  "
+      },
+      "status": 200,
+      "stored": {
+        "email": "4aec774a-2b43-4409-8007-46a0bca352da@example.com",
+        "displayName": "名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": null
+      }
+    },
+    {
+      "operation": "create",
+      "name": "name-\"   \"",
+      "input": {
+        "displayName": "   "
+      },
+      "status": 200,
+      "stored": {
+        "email": "432d5ef8-9654-49f0-b36b-36f1919ea029@example.com",
+        "displayName": "",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": null
+      }
+    },
+    {
+      "operation": "create",
+      "name": "role-\" user \"",
+      "input": {
+        "role": " user "
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "role-null",
+      "input": {
+        "role": null
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "role-\"bogus\"",
+      "input": {
+        "role": "bogus"
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "override-null",
+      "input": {
+        "maxConcurrentSessionsOverride": null
+      },
+      "status": 200,
+      "stored": {
+        "email": "6fa02e32-1ffd-4534-8a0a-0b938d1259b5@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": null
+      }
+    },
+    {
+      "operation": "create",
+      "name": "override-0",
+      "input": {
+        "maxConcurrentSessionsOverride": 0
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "override-false",
+      "input": {
+        "maxConcurrentSessionsOverride": false
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "override-true",
+      "input": {
+        "maxConcurrentSessionsOverride": true
+      },
+      "status": 200,
+      "stored": {
+        "email": "8615c7df-e42f-4e66-8681-461731807d64@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 1
+      }
+    },
+    {
+      "operation": "create",
+      "name": "override-101",
+      "input": {
+        "maxConcurrentSessionsOverride": 101
+      },
+      "status": 200,
+      "stored": {
+        "email": "d13e184e-187d-4485-8981-446a49c9fb35@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 101
+      }
+    },
+    {
+      "operation": "create",
+      "name": "override-1.5",
+      "input": {
+        "maxConcurrentSessionsOverride": 1.5
+      },
+      "status": 200,
+      "stored": {
+        "email": "e543c055-3600-414c-a63a-d308fc56d8d4@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 1
+      }
+    },
+    {
+      "operation": "create",
+      "name": "override-\"2.9\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "2.9"
+      },
+      "status": 200,
+      "stored": {
+        "email": "2b1b1f2c-3bd0-4063-b3a4-28e0d63b9381@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 2
+      }
+    },
+    {
+      "operation": "create",
+      "name": "override-\"0x10\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "0x10"
+      },
+      "status": 200,
+      "stored": {
+        "email": "04ba0d87-b181-4d4d-b16d-d043f2cdc9bd@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 16
+      }
+    },
+    {
+      "operation": "create",
+      "name": "override-\"bad\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "bad"
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "override-[]",
+      "input": {
+        "maxConcurrentSessionsOverride": []
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "override-{}",
+      "input": {
+        "maxConcurrentSessionsOverride": {}
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "create",
+      "name": "override-2147483648",
+      "input": {
+        "maxConcurrentSessionsOverride": 2147483648
+      },
+      "status": 503,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "missing",
+      "input": {},
+      "status": 200,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "name-null",
+      "input": {
+        "displayName": null
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "name-\"\"",
+      "input": {
+        "displayName": ""
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "name-123",
+      "input": {
+        "displayName": 123
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "name-{}",
+      "input": {
+        "displayName": {}
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "name-[]",
+      "input": {
+        "displayName": []
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "name-true",
+      "input": {
+        "displayName": true
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "name-\"  新名称  \"",
+      "input": {
+        "displayName": "  新名称  "
+      },
+      "status": 200,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "新名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "name-\"   \"",
+      "input": {
+        "displayName": "   "
+      },
+      "status": 200,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "name-\"名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名\"",
+      "input": {
+        "displayName": "名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名"
+      },
+      "status": 200,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名名",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "password-null",
+      "input": {
+        "password": null
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "password-\"\"",
+      "input": {
+        "password": ""
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "password-123",
+      "input": {
+        "password": 123
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "password-[]",
+      "input": {
+        "password": []
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "password-{}",
+      "input": {
+        "password": {}
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "password-\"short\"",
+      "input": {
+        "password": "short"
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "password-\"  exact-password  \"",
+      "input": {
+        "password": "  exact-password  "
+      },
+      "status": 200,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "role-\" user \"",
+      "input": {
+        "role": " user "
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "role-null",
+      "input": {
+        "role": null
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "role-\"bogus\"",
+      "input": {
+        "role": "bogus"
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "status-null",
+      "input": {
+        "status": null
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "status-\" active \"",
+      "input": {
+        "status": " active "
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "status-\"bad\"",
+      "input": {
+        "status": "bad"
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "override-null",
+      "input": {
+        "maxConcurrentSessionsOverride": null
+      },
+      "status": 200,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": null
+      }
+    },
+    {
+      "operation": "update",
+      "name": "override-0",
+      "input": {
+        "maxConcurrentSessionsOverride": 0
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "override--1",
+      "input": {
+        "maxConcurrentSessionsOverride": -1
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "override-false",
+      "input": {
+        "maxConcurrentSessionsOverride": false
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "override-true",
+      "input": {
+        "maxConcurrentSessionsOverride": true
+      },
+      "status": 200,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 1
+      }
+    },
+    {
+      "operation": "update",
+      "name": "override-1",
+      "input": {
+        "maxConcurrentSessionsOverride": 1
+      },
+      "status": 200,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 1
+      }
+    },
+    {
+      "operation": "update",
+      "name": "override-101",
+      "input": {
+        "maxConcurrentSessionsOverride": 101
+      },
+      "status": 200,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 101
+      }
+    },
+    {
+      "operation": "update",
+      "name": "override-1.5",
+      "input": {
+        "maxConcurrentSessionsOverride": 1.5
+      },
+      "status": 200,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 1
+      }
+    },
+    {
+      "operation": "update",
+      "name": "override-\"2.9\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "2.9"
+      },
+      "status": 200,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 2
+      }
+    },
+    {
+      "operation": "update",
+      "name": "override-\" 3e0 \"",
+      "input": {
+        "maxConcurrentSessionsOverride": " 3e0 "
+      },
+      "status": 200,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 3
+      }
+    },
+    {
+      "operation": "update",
+      "name": "override-\"0x10\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "0x10"
+      },
+      "status": 200,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 16
+      }
+    },
+    {
+      "operation": "update",
+      "name": "override-\"0b10\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "0b10"
+      },
+      "status": 200,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 2
+      }
+    },
+    {
+      "operation": "update",
+      "name": "override-\"0o10\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "0o10"
+      },
+      "status": 200,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 8
+      }
+    },
+    {
+      "operation": "update",
+      "name": "override-\"Infinity\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "Infinity"
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "override-\"bad\"",
+      "input": {
+        "maxConcurrentSessionsOverride": "bad"
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "override-[]",
+      "input": {
+        "maxConcurrentSessionsOverride": []
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "override-[2]",
+      "input": {
+        "maxConcurrentSessionsOverride": [
+          2
+        ]
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "override-{}",
+      "input": {
+        "maxConcurrentSessionsOverride": {}
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "override-2147483648",
+      "input": {
+        "maxConcurrentSessionsOverride": 2147483648
+      },
+      "status": 503,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "ignored-extra",
+      "input": {
+        "email": "changed@example.com",
+        "authVersion": 99,
+        "passwordHash": "fakehash"
+      },
+      "status": 200,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "unicode-0",
+      "input": {
+        "password": "中文中文"
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "unicode-1",
+      "input": {
+        "password": "😀😀😀😀"
+      },
+      "status": 400,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "unicode-2",
+      "input": {
+        "password": "中文中文中文中文"
+      },
+      "status": 200,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "原名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "unicode-3",
+      "input": {
+        "displayName": "﻿ 名称  "
+      },
+      "status": 200,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "名称",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    },
+    {
+      "operation": "update",
+      "name": "unicode-4",
+      "input": {
+        "displayName": "保留"
+      },
+      "status": 200,
+      "stored": {
+        "email": "legacy-original@example.com",
+        "displayName": "保留",
+        "role": "user",
+        "status": "active",
+        "maxConcurrentSessionsOverride": 7
+      }
+    }
+  ]
+}

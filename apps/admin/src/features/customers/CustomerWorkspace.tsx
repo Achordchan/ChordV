@@ -86,10 +86,11 @@ function CustomerDetail({ customer, actions, onBack }: { customer: CustomerRecor
         <Menu.Item leftSection={<IconPencil size={16}/>} onClick={() => { if (customer.user) actions.onOpenUserDrawer(customer.user.id); else { setTab("profile"); actions.onOpenTeamInlineEditor(customer.team!.id); } }}>{customer.team ? "编辑团队" : "编辑账号"}</Menu.Item>
         {customer.team && <Menu.Item leftSection={<IconUsers size={16}/>} onClick={() => { setTab("members"); actions.onOpenTeamMemberInlineEditor(customer.team!.id); }}>添加成员</Menu.Item>}
         {customer.user && <><Menu.Item leftSection={<IconPlugConnectedX size={16}/>} disabled={actions.actionBusyKey !== null} onClick={() => actions.onDisconnectUser(customer.user!.id, customer.name, "personal")}>断开连接</Menu.Item>
+          <Menu.Item leftSection={<IconUsers size={16}/>} disabled={!customer.subscription || !customer.enabled || !actions.hasAvailableTeamTransferTarget} onClick={() => {if(customer.subscription)actions.onOpenConvertToTeamModal(customer.subscription);}}>转入团队订阅</Menu.Item>
           <Menu.Item color={customer.enabled ? "red" : "green"} leftSection={customer.enabled ? <IconLock size={16}/> : <IconLockOpen2 size={16}/>} disabled={actions.actionBusyKey !== null}
             onClick={() => actions.onToggleUserStatus(customer.user!.id, customer.enabled ? "disabled" : "active", customer.name)}>{customer.enabled ? "禁用账号" : "启用账号"}</Menu.Item></>}
         {subscription && <><Menu.Divider/><Menu.Item color="orange" leftSection={<IconGaugeOff size={16}/>} disabled={actions.resetTrafficBusyKey !== null}
-          onClick={() => actions.onResetSubscriptionTraffic(subscription.id, customer.name)}>重置流量</Menu.Item></>}
+          onClick={() => actions.onResetSubscriptionTraffic(subscription.id, customer.name)}>{customer.team ? "重置成员流量" : "重置流量"}</Menu.Item></>}
       </Menu.Dropdown></Menu>
     </Group></header>
     {notice && <Alert icon={<IconAlertCircle size={20}/>} color="yellow" className={styles.notice}>{notice}</Alert>}

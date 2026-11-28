@@ -1,34 +1,48 @@
 import type { RuntimeStatus } from "./runtime";
+import { isRuntimeComponentVerified, type RuntimeComponentLocalInfo } from "./geoUpdate";
+import { createIdleRuntimeAssetsState } from "./runtimeComponents";
 import type {
   RuntimeAssetsUiState,
   RuntimeComponentDownloadItem,
   RuntimeComponentDownloadProgress,
   RuntimeDownloadFailureReason
 } from "./runtimeComponents";
-import { applyUpdateMirrorPrefix } from "./updateState";
 
 export function resolveRuntimePlanPlatform(platformTarget: RuntimeStatus["platformTarget"]): "macos" | "windows" {
   return platformTarget === "windows" ? "windows" : "macos";
 }
 
-export function trimRuntimeMirrorPrefix(value: string) {
-  return value.replace(/\/+$/, "");
-}
-
-export function resolveRuntimeComponentCandidate(component: RuntimeComponentDownloadItem, customPrefix: string) {
-  const normalizedPrefix = customPrefix.trim();
-  if (normalizedPrefix && component.allowClientMirror !== false) {
-    const originCandidate = component.candidates.find((candidate) => candidate.source === "origin") ?? component.candidates[0];
-    if (originCandidate?.url) {
-      return {
-        url: applyUpdateMirrorPrefix(originCandidate.url, trimRuntimeMirrorPrefix(normalizedPrefix)),
-        source: "client_override" as const
-      };
-    }
-  }
+export function resolveRuntimeComponentCandidate(component: RuntimeComponentDownloadItem) {
   const selectedCandidate =
     component.candidates.find((candidate) => candidate.url === component.selectedUrl) ?? component.candidates[0];
   return selectedCandidate ? { url: selectedCandidate.url, source: selectedCandidate.source } : null;
+}
+
+/** 缺少发布来源是安装前置条件，不是已经发生过的下载失败。 */
+export function resolveUnconfiguredRuntimeAssets(input: {
+  local: Record<"xray" | "geoip" | "geosite", RuntimeComponentLocalInfo | null>;
+  xrayVersion: string | null;
+  geoVersion: string | null;
+  blocking: boolean;
+}) {
+  const xrayInstalled = isRuntimeComponentVerified(input.local.xray);
+  const geoInstalled = isRuntimeComponentVerified(input.local.geoip) && isRuntimeComponentVerified(input.local.geosite);
+  const invalid = (component: RuntimeComponentLocalInfo | null) => component?.exists === true && !isRuntimeComponentVerified(component);
+  const xrayInvalid = invalid(input.local.xray);
+  const geoInvalid = invalid(input.local.geoip) || invalid(input.local.geosite);
+  const ready = xrayInstalled && geoInstalled;
+  const state: RuntimeAssetsUiState = {
+    ...createIdleRuntimeAssetsState(), phase: ready ? "ready" : "unconfigured",
+    message: ready ? "未配置组件来源，继续使用已安装组件。" : xrayInvalid || geoInvalid ? "未配置组件来源，本地组件校验或安装记录未通过。" : "未配置组件来源，本地组件尚未完整安装。",
+    blocking: !ready && input.blocking
+  };
+  return {
+    ready, state, sourceConfigured: false as const, current: false,
+    xray: { localVersion: xrayInstalled ? input.xrayVersion ?? "已安装" : null, remoteVersion: null,
+      current: false, available: false, message: xrayInstalled ? "未配置组件来源，继续使用本地 Xray。" : xrayInvalid ? "未配置组件来源，Xray 本地校验或安装记录未通过。" : "未配置组件来源，Xray 内核未安装。" },
+    geo: { localVersion: geoInstalled ? input.geoVersion ?? "已安装" : null, remoteVersion: null,
+      current: false, available: false, message: geoInstalled ? "未配置组件来源，继续使用本地 GEO 数据。" : geoInvalid ? "未配置组件来源，GEO 本地校验或安装记录未通过。" : "未配置组件来源，GEO 数据未完整安装。" }
+  };
 }
 
 function hasKnownTotalBytes(totalBytes: number | null): totalBytes is number {
@@ -128,6 +142,7 @@ export function normalizeRuntimeAssetsProgress(
 }
 
 export function extractRuntimeAssetsErrorCode(message: string): RuntimeDownloadFailureReason {
+  if (message.includes("mac_update_pending:")) return "mac_update_pending";
   const prefixed = message.match(/^runtime_component_error:([a-z_]+):/i);
   if (prefixed?.[1]) {
     return prefixed[1] as RuntimeDownloadFailureReason;

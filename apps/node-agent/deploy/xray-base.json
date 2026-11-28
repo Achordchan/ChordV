@@ -1,7 +1,0 @@
-{
-  "log": { "loglevel": "warning" },
-  "outbounds": [
-    { "tag": "direct", "protocol": "freedom" },
-    { "tag": "blocked", "protocol": "blackhole" }
-  ]
-}

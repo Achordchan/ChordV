@@ -7,14 +7,13 @@ export type RuntimeComponentSourceFormat = "direct" | "zip_entry";
 export type RuntimeComponentDownloadCandidate = {
   label: string;
   url: string;
-  source: "client_override" | "server_mirror" | "origin";
+  source: "mirror" | "origin";
 };
 
 export type RuntimeComponentDownloadItem = {
   id: string;
   revision: string | null;
   versionLabel?: string | null;
-  allowClientMirror?: boolean;
   component: RuntimeComponentKind;
   fileName: string;
   fileSizeBytes: number | null;
@@ -29,12 +28,11 @@ export type RuntimeComponentDownloadItem = {
 export type ClientRuntimeComponentsPlan = {
   platform: Extract<PlatformTarget, "macos" | "windows">;
   architecture: RuntimeComponentArchitecture;
-  allowClientMirrorOverride: boolean;
-  defaultMirrorPrefix: string | null;
   components: RuntimeComponentDownloadItem[];
 };
 
 export type RuntimeDownloadFailureReason =
+  | "mac_update_pending"
   | "plan_missing"
   | "plan_fetch_failed"
   | "component_missing"
@@ -76,7 +74,7 @@ export type RuntimeComponentFileStatus = {
 
 export type RuntimeAssetsUiState = {
   downloadStage?: RuntimeComponentDownloadProgress["phase"];
-  phase: "idle" | "checking" | "downloading" | "completed" | "ready" | "failed";
+  phase: "idle" | "checking" | "downloading" | "completed" | "ready" | "unconfigured" | "failed";
   currentComponent: RuntimeComponentKind | null;
   fileName: string | null;
   downloadedBytes: number;
@@ -120,6 +118,7 @@ export function resolveRuntimeAssetsTone(
 }
 
 export function formatRuntimeAssetsTitle(state: RuntimeAssetsUiState) {
+  if (state.phase === "unconfigured") return "未配置组件来源";
   if (!state.blocking) {
     if (state.phase === "checking") return "正在检查组件更新";
     if (state.phase === "downloading") return "正在更新组件";
@@ -145,6 +144,7 @@ export function formatRuntimeAssetsTitle(state: RuntimeAssetsUiState) {
 }
 
 export function formatRuntimeAssetsMessage(state: RuntimeAssetsUiState) {
+  if (state.phase === "unconfigured") return state.message ?? "组件未安装，请先配置组件来源。";
   if (state.phase === "checking") {
     return state.message ?? "正在检查连接所需组件，请稍候。";
   }

@@ -433,7 +433,7 @@ function testDisplaySurfacesUseErrorNumber() {
   assert.match(toastStyles, /\.description \{[^}]*white-space: pre-line/, "toast body keeps its line breaks");
   const notice = readFileSync(resolve(import.meta.dirname, "../src/components/NoticeRow.module.css"), "utf8");
   assert.match(notice, /\.text \{[^}]*white-space: pre-line/, "inline notices keep the code line break");
-  const client = readFileSync(resolve(import.meta.dirname, "../src/api/client.ts"), "utf8");
+  const client = readFileSync(resolve(import.meta.dirname, "../src/api/http.ts"), "utf8");
   assert.doesNotMatch(client, /璇锋眰瓒呮椂/, "no mojibake in client request errors");
   const appState = readFileSync(resolve(import.meta.dirname, "../src/lib/appState.ts"), "utf8");
   assert.match(appState, /describeUserError\(/, "toasts are routed through the user-facing mapping");
@@ -460,3 +460,11 @@ testGuidanceSourceHasNoDeveloperJargon();
 testDisplaySurfacesUseErrorNumber();
 testStoredUpdateFailureIsNotRemapped();
 console.log("user-facing error mapping regression checks passed");
+
+for (const context of ["connect", "update_install"] as const) {
+  const raw = "mac_update_pending: 发现未完成的应用更新，已保留原记录";
+  const mapped = describeUserError(new Error(raw), { context });
+  assert.equal(mapped.code, "mac_update_pending");
+  assert.equal(mapped.title, "应用更新尚未完成");
+  assertNoLeak(mapped.message, context);
+}

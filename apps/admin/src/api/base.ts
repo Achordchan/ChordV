@@ -27,6 +27,13 @@ type AuthSessionResponse = {
 
 let refreshPromise: Promise<string | null> | null = null;
 let adminAccessToken: string | null = null;
+let sessionGeneration = 0;
+
+export function captureAdminSession() {
+  const generation = sessionGeneration;
+  return () => { if (generation !== sessionGeneration) throw new Error("管理会话已变更，旧请求已停止。"); };
+}
+
 
 function buildHttpErrorMessage(status: number, text: string, requestId?: string | null) {
   const trimmed = text.trim();
@@ -82,6 +89,12 @@ export function getStoredAdminProfile() {
 }
 
 export function persistAdminSessionTokens(session: Pick<AuthSessionResponse, "accessToken" | "refreshToken" | "user">) {
+  sessionGeneration++;
+  refreshPromise = null;
+  storeAdminSessionTokens(session);
+}
+
+function storeAdminSessionTokens(session: Pick<AuthSessionResponse, "accessToken" | "refreshToken" | "user">) {
   adminAccessToken = session.accessToken;
   localStorage.removeItem(ADMIN_ACCESS_TOKEN_KEY);
   localStorage.removeItem(ADMIN_REFRESH_TOKEN_KEY);
@@ -97,6 +110,8 @@ export function persistAdminSessionTokens(session: Pick<AuthSessionResponse, "ac
 }
 
 export function clearStoredAdminSession(options?: { notify?: boolean }) {
+  sessionGeneration++;
+  refreshPromise = null;
   adminAccessToken = null;
   localStorage.removeItem(ADMIN_ACCESS_TOKEN_KEY);
   localStorage.removeItem(ADMIN_REFRESH_TOKEN_KEY);
@@ -169,6 +184,8 @@ export async function refreshAdminAccessToken() {
     return refreshPromise;
   }
 
+  const generation = sessionGeneration;
+  const assertCurrent = captureAdminSession();
   refreshPromise = (async () => {
     try {
       const response = await requestOnce(
@@ -180,24 +197,22 @@ export async function refreshAdminAccessToken() {
         false
       );
 
+      assertCurrent();
+      if (response.status === 401 || response.status === 403) return null;
       if (!response.ok) {
-        clearStoredAdminSession();
-        return null;
+        throw new Error(buildHttpErrorMessage(response.status, "暂时无法刷新登录状态，请稍后重试。", response.headers.get(REQUEST_ID_HEADER)));
       }
 
       const session = (await response.json()) as AuthSessionResponse;
-      if (!session?.accessToken || !session?.refreshToken || session.user?.role !== "admin") {
-        clearStoredAdminSession();
-        return null;
+      assertCurrent();
+      if (!session?.accessToken || !session.refreshToken || !session.user?.role) {
+        throw new Error("登录状态刷新响应不完整，请稍后重试。");
       }
-
-      persistAdminSessionTokens(session);
+      if (session.user.role !== "admin") return null;
+      storeAdminSessionTokens(session);
       return session.accessToken;
-    } catch {
-      clearStoredAdminSession();
-      return null;
     } finally {
-      refreshPromise = null;
+      if (generation === sessionGeneration) refreshPromise = null;
     }
   })();
 
@@ -205,12 +220,16 @@ export async function refreshAdminAccessToken() {
 }
 
 export async function requestResponse(path: string, init?: RequestOptions, useAuth = true) {
+  const assertCurrent = useAuth ? captureAdminSession() : undefined;
   let response = await requestOnce(path, init, useAuth);
 
+  assertCurrent?.();
   if (!response.ok) {
     const text = await response.text();
+    assertCurrent?.();
     if (useAuth && isAccessTokenError(response.status, text)) {
       const refreshedAccessToken = await refreshAdminAccessToken();
+      assertCurrent?.();
       if (refreshedAccessToken) {
         response = await requestOnce(path, init, useAuth, refreshedAccessToken);
       } else {
@@ -224,8 +243,10 @@ export async function requestResponse(path: string, init?: RequestOptions, useAu
     }
   }
 
+  assertCurrent?.();
   if (!response.ok) {
     const text = await response.text();
+    assertCurrent?.();
     if (useAuth && isAccessTokenError(response.status, text)) {
       clearStoredAdminSession({ notify: true });
       throw new Error(
@@ -239,12 +260,15 @@ export async function requestResponse(path: string, init?: RequestOptions, useAu
 }
 
 export async function request<T>(path: string, init?: RequestOptions, useAuth = true) {
+  const assertCurrent = useAuth ? captureAdminSession() : undefined;
   const response = await requestResponse(path, init, useAuth);
+  assertCurrent?.();
   if (response.status === 204) {
     return undefined as T;
   }
 
   const text = await response.text();
+  assertCurrent?.();
   if (text.trim().length === 0) {
     return undefined as T;
   }
